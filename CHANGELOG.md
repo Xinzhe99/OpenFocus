@@ -14,6 +14,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   with the command-line inference scale option.
 
 ### Changed
+- Compute deferred perspective, OpenFocus alignment, and OpenFocus translation
+  crops directly over the requested ROI or tile, reuse direct-mapped RGB TIFF
+  digests within a render scope, reuse adjacent-pair pyramids, and fuse
+  OpenFocus alignment's 4D candidate search into native CPU slices while
+  preserving exact source hashes, transforms, and warped pixels.
+  Region warps use the full transform at ambiguous Lanczos rounding boundaries.
+  Direct TIFF reads verify the file generation, cached regions stay borrowable,
+  and dense search checks for cancellation between bounded batches.
 - Accelerate ECC preprocessing, deferred perspective warping, and OpenFocus
   alignment on single-strip RGB TIFFs and deep stacks while preserving exact
   source hashes, transforms, and warped pixels. Account for hash buffers in

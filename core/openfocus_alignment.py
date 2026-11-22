@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor, wait
 import hashlib
 import math
+import mmap
 import os
 import sys
 import threading
@@ -197,12 +198,15 @@ def _hash_pixels(image, should_cancel):
     return digest.hexdigest()
 
 
-def _pixel_digest(image, should_cancel):
+def _pixel_digest(image, should_cancel, *, source=None):
     _check_cancel(should_cancel)
-    # A render's cached copy of a frame is hashed once: estimation records the
-    # digest and applying the transform to those same stored pixels reuses it.
+    # A render's cached copy or direct-mapped RGB TIFF is hashed once per scope.
     # Arrays, fresh decodes and plans from an earlier render are always hashed.
     from core import frame_resolution_cache
+    from core.source_frames import is_direct_rgb_tiff
+    if source is not None and is_direct_rgb_tiff(source):
+        return frame_resolution_cache.source_digest(
+            source, lambda: _hash_pixels(image, should_cancel))
     return frame_resolution_cache.pixel_digest(
         image, lambda: _hash_pixels(image, should_cancel))
 
@@ -232,12 +236,31 @@ class SourceFingerprint:
             if (stat.st_size, stat.st_mtime_ns) != self.file_stamp:
                 raise OSError(f'Source changed since alignment: {self.path}')
 
-    def validate_pixels(self, image, should_cancel=None):
+    def validate_direct_source(self, source_frame, should_cancel=None):
+        """Validate a direct-mapped RGB TIFF source via render-scope digest if cached."""
+        _check_cancel(should_cancel)
+        from core import frame_resolution_cache
+        from core.source_frames import is_direct_rgb_tiff
+        if not is_direct_rgb_tiff(source_frame):
+            return False
+        if (tuple(source_frame.shape) != self.shape
+                or np.dtype(source_frame.dtype).str != self.dtype
+                or _source_file_identity(source_frame) != (self.path, self.page, self.file_stamp)
+                or (self.context and _source_context(source_frame) != self.context)):
+            raise ValueError('Alignment source identity changed')
+        digest = frame_resolution_cache.get_source_digest(source_frame)
+        if digest is None:
+            return False
+        if digest != self.sha256:
+            raise ValueError('Alignment source pixels changed')
+        return True
+
+    def validate_pixels(self, image, should_cancel=None, *, source=None):
         _check_cancel(should_cancel)
         self.validate_file()
         if tuple(image.shape) != self.shape or np.dtype(image.dtype).str != self.dtype:
             raise ValueError('Alignment source shape or dtype changed')
-        if _pixel_digest(image, should_cancel) != self.sha256:
+        if _pixel_digest(image, should_cancel, source=source) != self.sha256:
             raise ValueError('Alignment source pixels changed')
         self.validate_file()
 
@@ -495,6 +518,9 @@ def _sample_plane(image, x, y, *, padding=0):
     return values
 
 
+_ORIGINAL_SAMPLE_PLANE = _sample_plane
+
+
 def _refine_level(a, b, c_dx, c_dy, *, half, step, crop, should_cancel):
     _check_cancel(should_cancel)
     _sample_plane(a, np.zeros(1, np.float32), np.zeros(1, np.float32))
@@ -643,7 +669,7 @@ def estimate_translation_plan(sources, *, max_shift_ratio=0.05,
             raise ValueError('Alignment source metadata does not match decoded pixels')
         path, page, file_stamp = _source_file_identity(frame)
         identity = SourceFingerprint(shape, image.dtype.str,
-                                     _pixel_digest(image, should_cancel), path, page, file_stamp)
+                                     _pixel_digest(image, should_cancel, source=frame), path, page, file_stamp)
         identity.validate_file()
         gray = _gray16(image, should_cancel)
         del image
@@ -680,6 +706,173 @@ def apply_translation(image, transform, *, should_cancel=None):
     result = _warp(image, transform.dx, transform.dy, should_cancel)
     _check_cancel(should_cancel)
     return result
+
+
+_ORIGINAL_APPLY_TRANSLATION = apply_translation
+
+
+def _warp_translation_region_np(band, x, y, width, height, src_h, src_w, src_y0, dx, dy, should_cancel):
+    xs = np.arange(x, x + width, dtype=np.float32) - _F32(dx)
+    ys = np.arange(y, y + height, dtype=np.float32) - _F32(dy)
+    ix, jx, fx, invalid_x = _axis_samples(xs, src_w)
+    iy, jy, fy, invalid_y = _axis_samples(ys, src_h)
+    gx, gy = np.uint32(256) - fx, np.uint32(256) - fy
+    invalid = invalid_y[:, None] | invalid_x[None, :]
+    band_h = band.shape[0]
+    iy_b = np.clip(iy - src_y0, 0, max(0, band_h - 1))
+    jy_b = np.clip(jy - src_y0, 0, max(0, band_h - 1))
+    out_shape = (height, width) if band.ndim == 2 else (height, width, band.shape[2])
+    output = np.empty(out_shape, dtype=band.dtype)
+    if band.ndim == 2:
+        top = band[iy_b[:, None], ix[None, :]].astype(np.uint32) * gx[None, :]
+        top += band[iy_b[:, None], jx[None, :]].astype(np.uint32) * fx[None, :]
+        bottom = band[jy_b[:, None], ix[None, :]].astype(np.uint32) * gx[None, :]
+        bottom += band[jy_b[:, None], jx[None, :]].astype(np.uint32) * fx[None, :]
+        values = (top * gy[:, None] + bottom * fy[:, None]) >> 16
+        values[invalid] = 0
+        output[...] = values
+    else:
+        for channel in range(band.shape[2]):
+            plane = band[:, :, channel]
+            top = plane[iy_b[:, None], ix[None, :]].astype(np.uint32) * gx[None, :]
+            top += plane[iy_b[:, None], jx[None, :]].astype(np.uint32) * fx[None, :]
+            bottom = plane[jy_b[:, None], ix[None, :]].astype(np.uint32) * gx[None, :]
+            bottom += plane[jy_b[:, None], jx[None, :]].astype(np.uint32) * fx[None, :]
+            values = (top * gy[:, None] + bottom * fy[:, None]) >> 16
+            values[invalid] = 0
+            output[:, :, channel] = values
+    _check_cancel(should_cancel)
+    return output
+
+
+def _validate_direct_rgb_source(fingerprint, source_frame, should_cancel):
+    if fingerprint.validate_direct_source(source_frame, should_cancel):
+        return
+    pixels = resolve_frame(source_frame, should_cancel=should_cancel)
+    fingerprint.validate_pixels(pixels, should_cancel, source=source_frame)
+
+
+def apply_translation_region(source_or_image, transform, x, y, width, height, *,
+                             channels=None, should_cancel=None):
+    """Compute a single rectangular translation crop bit-identical to apply_translation."""
+    from core.source_frames import _read_direct_rgb_tiff_region, is_direct_rgb_tiff
+
+    _check_cancel(should_cancel)
+    if not isinstance(transform, TranslationTransform):
+        raise TypeError('transform must be a TranslationTransform')
+    src_h, src_w = transform.source.shape[:2]
+    if x < 0 or y < 0 or width < 0 or height < 0 or x + width > src_w or y + height > src_h:
+        raise ValueError('Requested region does not fit the frame')
+
+    direct_tiff = is_direct_rgb_tiff(source_or_image)
+    if direct_tiff:
+        _validate_direct_rgb_source(transform.source, source_or_image, should_cancel)
+        src_shape = tuple(source_or_image.shape)
+        src_dtype = np.dtype(source_or_image.dtype)
+    else:
+        image = (source_or_image if isinstance(source_or_image, np.ndarray)
+                 else resolve_frame(source_or_image, should_cancel=should_cancel))
+        _geometry(image)
+        transform.source.validate_pixels(image, should_cancel)
+        src_shape = tuple(image.shape)
+        src_dtype = np.dtype(image.dtype)
+
+    out_channels = (src_shape[2] if len(src_shape) == 3 and channels is None
+                    else channels if len(src_shape) == 3 else None)
+    out_shape = (height, width) if out_channels is None else (height, width, out_channels)
+    if height == 0 or width == 0:
+        return np.empty(out_shape, dtype=src_dtype)
+
+    if transform.dx == 0.0 and transform.dy == 0.0:
+        if direct_tiff:
+            return _read_direct_rgb_tiff_region(
+                source_or_image, x, y, width, height, channels=channels, should_cancel=should_cancel)
+        cropped = image[y:y + height, x:x + width]
+        if channels is not None and cropped.ndim == 3:
+            cropped = cropped[:, :, :channels]
+        if (cropped.ndim == 3 and cropped.shape[2] == 3
+                and _is_bgr_rev(image) and _native_kernels.available()):
+            out = np.empty(cropped.shape, dtype=src_dtype)
+            swap_fn = (_native_kernels.swap_rgb_to_bgr_rows_u8 if src_dtype == np.uint8
+                       else _native_kernels.swap_rgb_to_bgr_rows_u16)
+            _run_row_bands(
+                height, 128, should_cancel, swap_fn, cropped[..., ::-1], out,
+                parallel_pixels=height * width,
+            )
+            return out
+        return np.array(cropped, copy=True, order='C')
+
+    if _sample_plane is not _ORIGINAL_SAMPLE_PLANE and not direct_tiff:
+        _sample_plane(image, np.zeros(1, np.float32), np.zeros(1, np.float32))
+        _check_cancel(should_cancel)
+
+    vx0 = float(_F32(x) - _F32(transform.dx))
+    vx1 = float(_F32(x + width - 1) - _F32(transform.dx))
+    vy0 = float(_F32(y) - _F32(transform.dy))
+    vy1 = float(_F32(y + height - 1) - _F32(transform.dy))
+    if vx1 < 0.0 or vx0 >= src_w or vy1 < 0.0 or vy0 >= src_h:
+        resource_policy.require_memory(math.prod(out_shape) * src_dtype.itemsize)
+        return np.zeros(out_shape, dtype=src_dtype)
+
+    src_y0 = max(0, int(math.floor(vy0)) - 2)
+    src_y1 = min(src_h, int(math.ceil(vy1)) + 3)
+    full_out_shape = (height, width) if len(src_shape) == 2 else (height, width, src_shape[2])
+    out_bytes = math.prod(full_out_shape) * src_dtype.itemsize
+    band_bytes = ((src_y1 - src_y0) * src_w * (src_shape[2] if len(src_shape) == 3 else 1) * src_dtype.itemsize
+                  if direct_tiff else 0)
+    resource_policy.require_memory(out_bytes + band_bytes)
+
+    if direct_tiff:
+        output = np.empty(full_out_shape, dtype=src_dtype)
+        with source_or_image._open_direct_tiff() as stream:
+            with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+                rgb_full = np.ndarray(
+                    src_shape, dtype=src_dtype,
+                    buffer=mm, offset=source_or_image._rgb_tiff_offset,
+                )
+                rgb_band = rgb_full[src_y0:src_y1]
+                try:
+                    if _native_kernels.available():
+                        _run_row_bands(
+                            height, 128, should_cancel,
+                            _native_kernels.warp_translation_region_int_rows_bgr_rev,
+                            rgb_band, output, src_h, src_w, src_y0, int(x), int(y),
+                            _F32(transform.dx), _F32(transform.dy),
+                            parallel_pixels=height * width,
+                        )
+                    else:
+                        output = _warp_translation_region_np(
+                            rgb_band[..., ::-1], x, y, width, height,
+                            src_h, src_w, src_y0, transform.dx, transform.dy, should_cancel,
+                        )
+                finally:
+                    del rgb_band, rgb_full
+    elif (_native_kernels.available() and src_dtype in (np.uint8, np.uint16)
+          and len(src_shape) in (2, 3)):
+        output = np.empty(full_out_shape, dtype=src_dtype)
+        if _is_bgr_rev(image):
+            _run_row_bands(
+                height, 128, should_cancel,
+                _native_kernels.warp_translation_region_int_rows_bgr_rev,
+                image[..., ::-1], output, src_h, src_w, 0, int(x), int(y),
+                _F32(transform.dx), _F32(transform.dy),
+                parallel_pixels=height * width,
+            )
+        else:
+            _run_row_bands(
+                height, 128, should_cancel,
+                _native_kernels.warp_translation_region_int_rows,
+                image, output, src_h, src_w, 0, int(x), int(y),
+                _F32(transform.dx), _F32(transform.dy),
+                parallel_pixels=height * width,
+            )
+    else:
+        output = _warp_translation_region_np(
+            image, x, y, width, height, src_h, src_w, 0, transform.dx, transform.dy, should_cancel)
+
+    if channels is not None and output.ndim == 3 and output.shape[2] != channels:
+        return np.array(output[:, :, :channels], copy=True, order='C')
+    return output
 
 
 F32 = np.float32
@@ -824,6 +1017,43 @@ def enumerate_candidates(cfg8, cnts, steps, M, start=0, stop=None):
     out[:, 6] = mag
     out[:, 7] = _ONE_F32
     return N, out
+
+
+_ORIGINAL_ENUMERATE_CANDIDATES = enumerate_candidates
+
+
+def _grid_4d_tables(cfg8, cnts, steps, M):
+    """Precompute exact float32 coordinate and trigonometric axis tables."""
+    n0, n1, n2, n3 = (int(c) for c in cnts)
+    cfg = np.asarray(cfg8, dtype=np.float32)
+    step0, step1, step2, step3 = (F32(x) for x in steps)
+
+    def _center_table(count, step, base_val):
+        t = np.arange(count, dtype=np.int64).astype(np.float32)
+        q = F32(1 - count) * _HALF_F32 + t
+        d = q * step
+        d = d * M
+        d = d + d
+        return np.ascontiguousarray(d + base_val, dtype=np.float32)
+
+    cx_tab = _center_table(n0, step0, cfg[2])
+    cy_tab = _center_table(n1, step1, cfg[3])
+
+    t2 = np.arange(n2, dtype=np.int64).astype(np.float32)
+    mag_tab = ((F32(1 - n2) * _HALF_F32 + t2) * step2 + cfg[5]).astype(np.float32)
+
+    t3 = np.arange(n3, dtype=np.int64).astype(np.float32)
+    rot_tab = ((F32(1 - n3) * _HALF_F32 + t3) * step3 + cfg[4]).astype(np.float32)
+    rot_bits = rot_tab[:, None].view(np.uint32) ^ _FLIP
+    rad = rot_bits.view(np.float32) * _PI_F32 / _180_F32
+    s_tab = np.sin(rad).astype(np.float32)
+    c_tab = np.cos(rad).astype(np.float32)
+    mag_row = mag_tab[None, :]
+    p08_tab = np.full((n3, n2), _BIG, dtype=np.float32)
+    p18_tab = np.full((n3, n2), _BIG, dtype=np.float32)
+    np.divide(s_tab, mag_row, out=p08_tab, where=mag_row != F32(0.0))
+    np.divide(c_tab, mag_row, out=p18_tab, where=mag_row != F32(0.0))
+    return cx_tab, cy_tab, np.ascontiguousarray(p08_tab, dtype=np.float32), np.ascontiguousarray(p18_tab, dtype=np.float32)
 
 def _score_chunk(img_a, img_b, xs, ys, cand, *, _ref=None):
     """img_a: ref u16 level; img_b: test u16 level; cand: (C,8) f32.
@@ -1022,17 +1252,79 @@ def grid_level_4d(img_a, img_b, base8, ranges4, coef=1.0, grid_half=8,
         ref_grid = (np.ascontiguousarray(
             A[ys_f.astype(np.int64)[:, None], xs_f.astype(np.int64)[None, :]], dtype=np.uint16,
         ) if _native_kernels.available() else None)
-        chunk = max(1, 65_536 // max(samples, 1))
-        for lo in range(0, N, chunk):
-            _check_cancel(should_cancel)
-            _, cand = enumerate_candidates(base, cnts, steps, M, lo, lo + chunk)
-            if _score_chunk is _ORIGINAL_SCORE_CHUNK:
-                ssum, ssq, cnt = _score_chunk(A, B, xs_f, ys_f, cand, _ref=ref_grid)
-            else:
-                ssum, ssq, cnt = _score_chunk(A, B, xs_f, ys_f, cand)
-            win, sc = _decide(ssum, ssq, cnt)
-            if win >= 0 and sc < best_score:
-                winner, best_score = cand[win].copy(), sc
+        if (_native_kernels.available() and _score_chunk is _ORIGINAL_SCORE_CHUNK
+                and enumerate_candidates is _ORIGINAL_ENUMERATE_CANDIDATES
+                and A.dtype == np.uint16 and B.dtype == np.uint16 and samples > 0
+                and min(cnts) > 0):
+            cx_tab, cy_tab, p08_tab, p18_tab = _grid_4d_tables(base, cnts, steps, M)
+            n0, n1, n2, n3 = (int(c) for c in cnts)
+            tx0 = F32(base[0])
+            ty0 = F32(base[1])
+            total_workers = _alignment_workers(N * samples, min_items=32_768)
+            total_workers = min(total_workers, max(1, N // 256))
+            # Bound each worker to about a million candidate-sample pairs
+            # between checks. A single candidate is the minimum work unit.
+            slice_limit = N if should_cancel is None else max(1, 1_048_576 // samples)
+            wave = min(N, slice_limit * total_workers)
+            best_k = -1
+            kernel = _native_kernels.score_grid_4d_slice
+            args = (ref_grid, B, xs_f, ys_f, tx0, ty0, cx_tab, cy_tab,
+                    p08_tab, p18_tab, n0, n1, n2, n3)
+            out_k = np.empty(total_workers, dtype=np.int64)
+            out_sc = np.empty(total_workers, dtype=np.float32)
+            for lo in range(0, N, wave):
+                _check_cancel(should_cancel)
+                hi = min(N, lo + wave)
+                span = hi - lo
+                workers = min(total_workers, max(1, span // 256))
+                workers = max(workers, (span + slice_limit - 1) // slice_limit)
+                ran_par = False
+                if workers > 1 and _PARALLEL_BATCH_LOCK.acquire(blocking=False):
+                    futures = []
+                    try:
+                        pool = _alignment_pool()
+                        for s_idx in range(1, workers):
+                            s0 = lo + (span * s_idx) // workers
+                            s1 = lo + (span * (s_idx + 1)) // workers
+                            futures.append(pool.submit(kernel, *args, s0, s1, out_k, out_sc, s_idx))
+                        kernel(*args, lo, lo + span // workers, out_k, out_sc, 0)
+                    except BaseException:
+                        for future in futures:
+                            future.cancel()
+                        raise
+                    finally:
+                        try:
+                            wait(futures)
+                        finally:
+                            _PARALLEL_BATCH_LOCK.release()
+                    for future in futures:
+                        future.result()
+                    ran_par = True
+                for s_idx in range(workers):
+                    if not ran_par:
+                        _check_cancel(should_cancel)
+                        s0 = lo + (span * s_idx) // workers
+                        s1 = lo + (span * (s_idx + 1)) // workers
+                        kernel(*args, s0, s1, out_k, out_sc, s_idx)
+                    k_cand = int(out_k[s_idx])
+                    sc_cand = out_sc[s_idx]
+                    if k_cand >= 0 and sc_cand < best_score:
+                        best_score = np.float32(sc_cand)
+                        best_k = k_cand
+            if best_k >= 0:
+                winner = enumerate_candidates(base, cnts, steps, M, best_k, best_k + 1)[1][0].copy()
+        else:
+            chunk = max(1, 65_536 // max(samples, 1))
+            for lo in range(0, N, chunk):
+                _check_cancel(should_cancel)
+                _, cand = enumerate_candidates(base, cnts, steps, M, lo, lo + chunk)
+                if _score_chunk is _ORIGINAL_SCORE_CHUNK:
+                    ssum, ssq, cnt = _score_chunk(A, B, xs_f, ys_f, cand, _ref=ref_grid)
+                else:
+                    ssum, ssq, cnt = _score_chunk(A, B, xs_f, ys_f, cand)
+                win, sc = _decide(ssum, ssq, cnt)
+                if win >= 0 and sc < best_score:
+                    winner, best_score = cand[win].copy(), sc
         if winner is None:
             raise AlignmentEstimationError('Alignment has no eligible overlapping samples')
         f8 = winner
@@ -1045,7 +1337,8 @@ def grid_level_4d(img_a, img_b, base8, ranges4, coef=1.0, grid_half=8,
 
 def align_pair_wide(ref_u16, test_u16, h_pct=12.0, v_pct=12.0, rot_deg=6.0,
                     mag_pct=6.0, min_dim=64, divisor=100, grid_half=8,
-                    max_rounds=24, verbose=False, should_cancel=None, initial_f8=None):
+                    max_rounds=24, verbose=False, should_cancel=None, initial_f8=None,
+                    *, _a_pyr=None, _b_pyr=None):
     """Coarse-to-fine 4D search over the shared pyramid.
 
     Coarsest level: grid_level_4d with the user percentage ranges (same
@@ -1059,8 +1352,8 @@ def align_pair_wide(ref_u16, test_u16, h_pct=12.0, v_pct=12.0, rot_deg=6.0,
     """
     if min(ref_u16.shape) < 2:
         raise AlignmentEstimationError("Alignment requires at least two pixels per axis")
-    A_pyr = build_pyramid(ref_u16, min_dim, should_cancel)
-    B_pyr = build_pyramid(test_u16, min_dim, should_cancel)
+    A_pyr = build_pyramid(ref_u16, min_dim, should_cancel) if _a_pyr is None else _a_pyr
+    B_pyr = build_pyramid(test_u16, min_dim, should_cancel) if _b_pyr is None else _b_pyr
     n = min(len(A_pyr), len(B_pyr))
     A_pyr, B_pyr = A_pyr[:n], B_pyr[:n]
     while n > 1 and min(A_pyr[n - 1].shape) < min_dim:
@@ -1166,6 +1459,9 @@ def _bilinear_points(image, u, v):
     value = weighted / 65536. if floating else weighted >> 16
     invalid = invalid_x | invalid_y
     return np.where(invalid, np.uint32(0), value), invalid
+
+
+_ORIGINAL_BILINEAR_POINTS = _bilinear_points
 
 
 _IDENTITY_F8 = (0., 0., 0., 0., 0., 1., 1., 1.)
@@ -1392,6 +1688,188 @@ def apply_alignment(image, transform, *, should_cancel=None):
     return _warp_alignment(image, transform.f8, should_cancel)
 
 
+_ORIGINAL_APPLY_ALIGNMENT = apply_alignment
+
+
+def _apply_alignment_for_source(source_frame, image, transform, should_cancel=None):
+    """Apply full alignment using source_frame's render-scope digest if available."""
+    _check_cancel(should_cancel)
+    _alignment_geometry(image)
+    _validate_internal_float(image, should_cancel)
+    if not isinstance(transform, AlignmentTransform):
+        raise TypeError('transform must be an AlignmentTransform')
+    transform.source.validate_pixels(image, should_cancel, source=source_frame)
+    if not transform.is_identity:
+        resource_policy.require_memory(alignment_resolution_bytes(image))
+    return _warp_alignment(image, transform.f8, should_cancel)
+
+
+def _warp_alignment_region_np(band, x, y, width, height, src_h, src_w, src_y0, fields, should_cancel):
+    out_shape = (height, width) if band.ndim == 2 else (height, width, band.shape[2])
+    output = np.empty(out_shape, dtype=band.dtype)
+    xs = np.arange(x, x + width, dtype=np.float32)
+    floating = band.dtype.kind == 'f'
+    sample_dtype = np.float64 if floating else np.uint32
+    band_h = band.shape[0]
+    for oy in range(height):
+        _check_cancel(should_cancel)
+        u, v = map_coords(fields, xs, np.float32(y + oy))
+        u, v = u.reshape(-1), v.reshape(-1)
+        ix, jx, fx, invalid_x = _axis_samples(u, src_w)
+        iy, jy, fy, invalid_y = _axis_samples(v, src_h)
+        gx, gy = np.uint32(256) - fx, np.uint32(256) - fy
+        iy_b = np.clip(iy - src_y0, 0, max(0, band_h - 1))
+        jy_b = np.clip(jy - src_y0, 0, max(0, band_h - 1))
+        invalid = invalid_x | invalid_y
+        if band.ndim == 2:
+            top = band[iy_b, ix].astype(sample_dtype) * gx + band[iy_b, jx].astype(sample_dtype) * fx
+            bottom = band[jy_b, ix].astype(sample_dtype) * gx + band[jy_b, jx].astype(sample_dtype) * fx
+            weighted = top * gy + bottom * fy
+            value = weighted / 65536. if floating else weighted >> 16
+            output[oy] = np.where(invalid, np.uint32(0), value)
+        else:
+            for channel in range(band.shape[2]):
+                plane = band[:, :, channel]
+                top = plane[iy_b, ix].astype(sample_dtype) * gx + plane[iy_b, jx].astype(sample_dtype) * fx
+                bottom = plane[jy_b, ix].astype(sample_dtype) * gx + plane[jy_b, jx].astype(sample_dtype) * fx
+                weighted = top * gy + bottom * fy
+                value = weighted / 65536. if floating else weighted >> 16
+                output[oy, :, channel] = np.where(invalid, np.uint32(0), value)
+    _check_cancel(should_cancel)
+    return output
+
+
+def apply_alignment_region(source_or_image, transform, x, y, width, height, *,
+                           channels=None, should_cancel=None):
+    """Compute a single rectangular similarity-warped crop bit-identical to apply_alignment."""
+    from core.source_frames import _read_direct_rgb_tiff_region, is_direct_rgb_tiff
+
+    _check_cancel(should_cancel)
+    if not isinstance(transform, AlignmentTransform):
+        raise TypeError('transform must be an AlignmentTransform')
+    src_h, src_w = transform.source.shape[:2]
+    if x < 0 or y < 0 or width < 0 or height < 0 or x + width > src_w or y + height > src_h:
+        raise ValueError('Requested region does not fit the frame')
+
+    direct_tiff = is_direct_rgb_tiff(source_or_image)
+    if direct_tiff:
+        _validate_direct_rgb_source(transform.source, source_or_image, should_cancel)
+        src_shape = tuple(source_or_image.shape)
+        src_dtype = np.dtype(source_or_image.dtype)
+    else:
+        image = (source_or_image if isinstance(source_or_image, np.ndarray)
+                 else resolve_frame(source_or_image, should_cancel=should_cancel))
+        _alignment_geometry(image)
+        _validate_internal_float(image, should_cancel)
+        transform.source.validate_pixels(image, should_cancel)
+        src_shape = tuple(image.shape)
+        src_dtype = np.dtype(image.dtype)
+
+    out_channels = (src_shape[2] if len(src_shape) == 3 and channels is None
+                    else channels if len(src_shape) == 3 else None)
+    out_shape = (height, width) if out_channels is None else (height, width, out_channels)
+    if height == 0 or width == 0:
+        return np.empty(out_shape, dtype=src_dtype)
+
+    if transform.is_identity:
+        if direct_tiff:
+            return _read_direct_rgb_tiff_region(
+                source_or_image, x, y, width, height, channels=channels, should_cancel=should_cancel)
+        cropped = image[y:y + height, x:x + width]
+        if channels is not None and cropped.ndim == 3:
+            cropped = cropped[:, :, :channels]
+        if (cropped.ndim == 3 and cropped.shape[2] == 3
+                and _is_bgr_rev(image) and _native_kernels.available()):
+            out = np.empty(cropped.shape, dtype=src_dtype)
+            swap_fn = (_native_kernels.swap_rgb_to_bgr_rows_u8 if src_dtype == np.uint8
+                       else _native_kernels.swap_rgb_to_bgr_rows_u16)
+            _run_row_bands(
+                height, 128, should_cancel, swap_fn, cropped[..., ::-1], out,
+                parallel_pixels=height * width,
+            )
+            return out
+        return np.array(cropped, copy=True, order='C')
+
+    if _bilinear_points is not _ORIGINAL_BILINEAR_POINTS and not direct_tiff:
+        probe = image if image.ndim == 2 else image[:, :, 0]
+        _bilinear_points(probe, np.zeros(1, np.float32), np.zeros(1, np.float32))
+        _check_cancel(should_cancel)
+
+    fields = gpu_params(transform.f8)
+    cx_corners = np.array([x, x + width - 1, x + width - 1, x], dtype=np.float32)
+    cy_corners = np.array([y, y, y + height - 1, y + height - 1], dtype=np.float32)
+    u_c, v_c = map_coords(fields, cx_corners, cy_corners)
+    u_lo, u_hi = float(np.min(u_c)), float(np.max(u_c))
+    v_lo, v_hi = float(np.min(v_c)), float(np.max(v_c))
+    if u_hi < 0.0 or u_lo >= src_w or v_hi < 0.0 or v_lo >= src_h:
+        resource_policy.require_memory(math.prod(out_shape) * src_dtype.itemsize)
+        return np.zeros(out_shape, dtype=src_dtype)
+
+    src_y0 = max(0, int(math.floor(v_lo)) - 2)
+    src_y1 = min(src_h, int(math.ceil(v_hi)) + 3)
+    full_out_shape = (height, width) if len(src_shape) == 2 else (height, width, src_shape[2])
+    out_bytes = math.prod(full_out_shape) * src_dtype.itemsize
+    band_bytes = ((src_y1 - src_y0) * src_w * (src_shape[2] if len(src_shape) == 3 else 1) * src_dtype.itemsize
+                  if direct_tiff else 0)
+    resource_policy.require_memory(out_bytes + band_bytes)
+
+    if direct_tiff:
+        output = np.empty(full_out_shape, dtype=src_dtype)
+        with source_or_image._open_direct_tiff() as stream:
+            with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+                rgb_full = np.ndarray(
+                    src_shape, dtype=src_dtype,
+                    buffer=mm, offset=source_or_image._rgb_tiff_offset,
+                )
+                rgb_band = rgb_full[src_y0:src_y1]
+                try:
+                    if _native_kernels.available():
+                        _run_row_bands(
+                            height, 128, should_cancel,
+                            _native_kernels.warp_alignment_region_int_rows_bgr_rev,
+                            rgb_band, output, src_h, src_w, src_y0, int(x), int(y),
+                            fields["tx"], fields["ty"], fields["cx"], fields["cy"],
+                            fields["P08"], fields["P0C"], fields["P18"], fields["P1C"],
+                            parallel_pixels=height * width,
+                        )
+                    else:
+                        output = _warp_alignment_region_np(
+                            rgb_band[..., ::-1], x, y, width, height,
+                            src_h, src_w, src_y0, fields, should_cancel,
+                        )
+                finally:
+                    del rgb_band, rgb_full
+    elif (_native_kernels.available() and len(src_shape) in (2, 3)
+          and src_dtype in (np.uint8, np.uint16, np.float32, np.float64)):
+        output = np.empty(full_out_shape, dtype=src_dtype)
+        if _is_bgr_rev(image):
+            _run_row_bands(
+                height, 128, should_cancel,
+                _native_kernels.warp_alignment_region_int_rows_bgr_rev,
+                image[..., ::-1], output, src_h, src_w, 0, int(x), int(y),
+                fields["tx"], fields["ty"], fields["cx"], fields["cy"],
+                fields["P08"], fields["P0C"], fields["P18"], fields["P1C"],
+                parallel_pixels=height * width,
+            )
+        else:
+            kernel = (_native_kernels.warp_alignment_region_float_rows if src_dtype.kind == 'f'
+                      else _native_kernels.warp_alignment_region_int_rows)
+            _run_row_bands(
+                height, 128, should_cancel, kernel,
+                image, output, src_h, src_w, 0, int(x), int(y),
+                fields["tx"], fields["ty"], fields["cx"], fields["cy"],
+                fields["P08"], fields["P0C"], fields["P18"], fields["P1C"],
+                parallel_pixels=height * width,
+            )
+    else:
+        output = _warp_alignment_region_np(
+            image, x, y, width, height, src_h, src_w, 0, fields, should_cancel)
+
+    if channels is not None and output.ndim == 3 and output.shape[2] != channels:
+        return np.array(output[:, :, :channels], copy=True, order='C')
+    return output
+
+
 def alignment_valid_mask(transform, *, should_cancel=None):
     """Geometric validity, independent of black source pixels and interpolation."""
     h, w = transform.source.shape[:2]
@@ -1447,6 +1925,7 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
     order = (ref, *range(ref - 1, -1, -1), *range(ref + 1, len(sources)))
     transforms = [None] * len(sources)
     previous = anchor = None
+    prev_pyr = anchor_pyr = None
     previous_index = ref
     for done, index in enumerate(order):
         _check_cancel(should_cancel)
@@ -1461,19 +1940,27 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
                 raise UnsupportedTransparency('Registration of transparent images is unsupported')
         path, page, file_stamp = _source_file_identity(frame)
         identity = SourceFingerprint(tuple(image.shape), image.dtype.str,
-            _pixel_digest(image, should_cancel), path, page, file_stamp, _source_context(frame))
+            _pixel_digest(image, should_cancel, source=frame), path, page, file_stamp, _source_context(frame))
         identity.validate_file()
         gray = _alignment_gray16(image, should_cancel)
         del image
         if ref > 0 and index == ref + 1:
             previous, previous_index = anchor, ref
+            prev_pyr = anchor_pyr
         pair = np.array(_IDENTITY_F8, np.float32)
         rounds, failure = 0, ''
+        curr_pyr = None
         if index != ref and (ratio or rotation or magnification) and not np.array_equal(previous, gray):
+            if prev_pyr is None:
+                prev_pyr = build_pyramid(previous, 64, should_cancel)
+            if index == ref - 1 and previous_index == ref and ref > 0:
+                anchor_pyr = prev_pyr
+            curr_pyr = build_pyramid(gray, 64, should_cancel)
             try:
                 pair, rounds = align_pair_wide(previous, gray, h_pct=ratio * 100,
                     v_pct=ratio * 100, rot_deg=rotation, mag_pct=magnification,
-                    should_cancel=should_cancel, initial_f8=transforms[previous_index].f8)
+                    should_cancel=should_cancel, initial_f8=transforms[previous_index].f8,
+                    _a_pyr=prev_pyr, _b_pyr=curr_pyr)
             except AlignmentEstimationError as error:
                 if failure_policy == 'fail':
                     failure = RejectedAlignmentFrame('OpenFocus', index, str(error))
@@ -1489,8 +1976,14 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
             tuple(float(v) for v in pair), identity, previous_index, rounds, failure)
         transforms[index] = transform
         previous = _warp_alignment(gray, total, should_cancel)
+        if previous is gray:
+            prev_pyr = curr_pyr
+        else:
+            prev_pyr = None
+        del curr_pyr
         if index == ref and ref > 0:
             anchor = previous
+            anchor_pyr = prev_pyr
         del gray
         previous_index = index
         if progress_callback is not None:
