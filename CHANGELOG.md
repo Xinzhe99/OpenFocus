@@ -15,6 +15,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and output kernels and optimize shared OpenFocus B/C depth axis blocks and
   `uint16` transpose packing with single-threaded native CPU kernels while
   preserving bit-exact `float32` and `uint16` results.
+- Accelerate OpenFocus A Burt selection and shared A/B integer row kernels.
+  Use scalar selection on small images to limit first-render compilation
+  and include the expanded-row workspace in the large-image memory budget.
+- Plan StackMFF V1 and V3 tiles before building the grid. Put the manual
+  tile controls in a collapsible section.
 - Reuse OpenCL contexts and compiled kernels across OpenFocus A/B/C and ECC
   resize jobs. Reuse upload buffers within a job and drain pending work
   before releasing buffers after cancellation or error.
