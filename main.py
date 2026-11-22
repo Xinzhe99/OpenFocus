@@ -17,6 +17,9 @@ os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 if __name__ == "__main__":
     import multiprocessing
     multiprocessing.freeze_support()
+    if sys.argv[1:] == ['--prepare-depth-cache']:
+        from fusion_methods._depth_warmup import warm_depth_cache
+        sys.exit(0 if warm_depth_cache() else 1)
     if sys.platform == "win32" and "--shell-server" in sys.argv[1:]:
         from core.windows_shell import run_drop_target
         try:
@@ -1376,6 +1379,54 @@ class OpenFocus(QMainWindow):
         """Disable fusion methods whose dependencies are not installed."""
         self._stackmff_available = bool(is_ai_fusion_available())
         self.refresh_method_availability()
+
+    def _schedule_depth_warmup(self) -> None:
+        from PyQt6.QtCore import QProcess, QTimer
+        from fusion_methods._depth_warmup import depth_cache_revision
+        from utils.settings_store import get_settings
+
+        revision = depth_cache_revision()
+        key = 'runtime/depth_cache_revision'
+        if revision is None or get_settings().value(key) == revision:
+            return
+        process = self._depth_warmup = QProcess(self)
+        process.setStandardOutputFile(QProcess.nullDevice())
+        process.setStandardErrorFile(QProcess.nullDevice())
+        timer = self._depth_warmup_timer = QTimer(self)
+        timer.setInterval(500)
+        idle_ticks = 0
+
+        def tick():
+            nonlocal idle_ticks
+            busy = (getattr(self, '_shutting_down', False) or self._has_work_in_flight()
+                    or self._close_confirmation_active or QApplication.activeModalWidget() is not None)
+            if process.state() != QProcess.ProcessState.NotRunning:
+                if busy:
+                    self._cancel_depth_warmup()
+            elif busy:
+                idle_ticks = 0
+            else:
+                idle_ticks += 1
+                if idle_ticks == 5:
+                    args = [] if getattr(sys, 'frozen', False) else [os.path.abspath(__file__)]
+                    process.start(sys.executable, [*args, '--prepare-depth-cache'])
+
+        def finished(code, status):
+            timer.stop()
+            if status == QProcess.ExitStatus.NormalExit and code == 0:
+                get_settings().setValue(key, revision)
+
+        process.finished.connect(finished)
+        process.errorOccurred.connect(lambda _: timer.stop())
+        timer.timeout.connect(tick)
+        timer.start()
+
+    def _cancel_depth_warmup(self) -> None:
+        process = getattr(self, '_depth_warmup', None)
+        if process is not None:
+            self._depth_warmup_timer.stop()
+            if process.state() != process.ProcessState.NotRunning:
+                process.kill()
 
     def _probe_device_kind_async(self) -> None:
         """Resolve the neural backend off the UI thread, then poll for it.
@@ -3573,6 +3624,9 @@ class OpenFocus(QMainWindow):
 
     def _account_loaded(self, client, error) -> None:
         self._account_load_job = None
+        if error is not None:
+            from utils.account_client import log_sign_in_failure
+            log_sign_in_failure('restore', error)
         if error is None and getattr(self, '_account_client', None) is None:
             self._account_client = client
             if client.is_signed_in() and not getattr(self, '_shutting_down', False):
@@ -4277,6 +4331,7 @@ class OpenFocus(QMainWindow):
             finally:
                 self._close_confirmation_active = False
         self._shutting_down = True
+        self._cancel_depth_warmup()
         self.render_manager.cancel_storage_preflight()
 
         # Keep modal owners and their documents alive while native work stops.
@@ -4892,6 +4947,9 @@ if __name__ == "__main__":
 
     from ui.report_retry import schedule_report_retries, start_failure_capture
     start_failure_capture(window)
+    from utils.app_paths import user_data_dir
+    if (user_data_dir() / 'reports' / 'reports.json').exists():
+        schedule_report_retries(window)
 
     # An existing local session is sufficient offline; a new profile must sign in.
     _quit_on_last_window = app.quitOnLastWindowClosed()
@@ -5028,13 +5086,11 @@ if __name__ == "__main__":
         app.queue_import(_shell_paths, explorer=True, request_path=_shell_request)
 
     window.show()
+    window._schedule_depth_warmup()
     if _ai_runtime_flag:
         QTimer.singleShot(0, window.accelerator_banner.open_settings)
     else:
         QTimer.singleShot(0, window.accelerator_banner.check_at_startup)
-    from utils.app_paths import user_data_dir
-    if (user_data_dir() / 'reports' / 'reports.json').exists():
-        schedule_report_retries(window)
     try:
         from ui.crash_report import offer_previous_crash
         offer_previous_crash(window)

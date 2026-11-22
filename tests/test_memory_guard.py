@@ -148,11 +148,11 @@ def test_exposure_match_refuses_larger_mixed_frames_before_copy(monkeypatch):
 
 
 @pytest.mark.parametrize('dtype', [np.uint8, np.uint16, np.float32])
-def test_exposure_statistics_stream_mapped_source(monkeypatch, tmp_path, dtype):
-    from utils import image_utils
+def test_exposure_statistics_stream_mapped_source(tmp_path, dtype):
+    import tracemalloc
     from core import multi_focus_fusion as mff
 
-    shape = (259, 53, 4)
+    shape = (513, 1025, 4)
     frame = np.memmap(tmp_path / 'exposure.bin', dtype=dtype, mode='w+', shape=shape)
     frame[:] = np.arange(shape[0], dtype=dtype)[:, None, None] % 181
     frame[:, :, 3] = 0  # Alpha must not enter the mean.
@@ -162,21 +162,17 @@ def test_exposure_statistics_stream_mapped_source(monkeypatch, tmp_path, dtype):
     if dtype == np.uint16:
         color *= 255.0 / 65535.0
     expected_gain = 170.0 / color.mean(dtype=np.float64)
-    original = np.ascontiguousarray
-    converted = []
-
-    def contiguous(values, dtype=None, *args, **kwargs):
-        result = original(values, dtype, *args, **kwargs)
-        if dtype == np.float32 and np.shares_memory(values, frame):
-            converted.append(result.shape[0])
-            assert result.shape[0] <= 128
-        return result
-
-    monkeypatch.setattr(image_utils.np, 'ascontiguousarray', contiguous)
-    gains = mff.MultiFocusFusion('dct')._exposure_gains_for_source(
-        [frame, reference], normalize_uint16=True)
+    fusion = mff.MultiFocusFusion('dct')
+    # Native startup is admitted separately from exposure statistics scratch.
+    fusion._exposure_gains_for_source([frame[:128], reference[:128]], normalize_uint16=True)
+    tracemalloc.start()
+    try:
+        gains = fusion._exposure_gains_for_source([frame, reference], normalize_uint16=True)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
     np.testing.assert_allclose(gains, [expected_gain, 1.0], rtol=1e-12)
-    assert converted and sum(converted) == shape[0]
+    assert peak <= 2 * 128 * color.shape[1] * color.shape[2] * color.dtype.itemsize
     np.testing.assert_array_equal(frame, before)
 
 
@@ -195,6 +191,7 @@ def test_exposure_statistics_cancel_between_source_strips(monkeypatch, dtype):
         converted.append(result.shape[0])
         return result
 
+    monkeypatch.setattr(image_utils, '_load_image_kernels', lambda: None)
     monkeypatch.setattr(image_utils.np, 'ascontiguousarray', contiguous)
     with pytest.raises(RegistrationCancelled):
         MultiFocusFusion('dct')._exposure_gains_for_source(

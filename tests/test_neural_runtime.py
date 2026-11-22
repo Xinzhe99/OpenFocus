@@ -12,6 +12,16 @@ from fusion_methods import neural_runtime
 from utils.weights import weights_path
 
 
+class _RunOptions:
+    """Stand-in for the runtime's run options that records its entries."""
+
+    def __init__(self):
+        self.entries = {}
+
+    def add_run_config_entry(self, key, value):
+        self.entries[key] = value
+
+
 def _focus_stack():
     texture = np.random.default_rng(37).integers(0, 256, (64, 80, 3), dtype=np.uint8)
     blurred = cv2.GaussianBlur(texture, (9, 9), 2)
@@ -79,7 +89,7 @@ def test_sessions_isolate_checkpoint_shape_and_directml_adapter(monkeypatch, tmp
             return ['DmlExecutionProvider', 'CPUExecutionProvider']
 
     monkeypatch.setitem(sys.modules, 'onnxruntime', SimpleNamespace(
-        SessionOptions=Options, InferenceSession=Session,
+        SessionOptions=Options, InferenceSession=Session, RunOptions=_RunOptions,
         ExecutionMode=SimpleNamespace(ORT_SEQUENTIAL=0)))
     monkeypatch.setattr(neural_runtime, '_SESSIONS', OrderedDict())
     first = tmp_path / 'v1.onnx'
@@ -96,6 +106,131 @@ def test_sessions_isolate_checkpoint_shape_and_directml_adapter(monkeypatch, tmp
     monkeypatch.setattr(neural_runtime, '_DIRECTML_ADAPTER_INDEX', 2)
     assert neural_runtime._session(str(first), (2, 64, 64), 'DIRECTML', 1) is not gpu
     assert calls[-1][1][0] == ('DmlExecutionProvider', {'device_id': 2})
+
+
+def test_cpu_sessions_plan_without_buffer_reuse_and_return_their_arena(monkeypatch, tmp_path):
+    built = {}
+
+    class Options:
+        def add_free_dimension_override_by_name(self, *args):
+            pass
+
+    class Session:
+        def __init__(self, path, sess_options, providers):
+            provider = providers[0]
+            built[provider if isinstance(provider, str) else provider[0]] = sess_options
+            self.run_options = []
+
+        def disable_fallback(self):
+            pass
+
+        def get_providers(self):
+            return ['DmlExecutionProvider', 'CPUExecutionProvider']
+
+        def run(self, outputs, inputs, run_options=None):
+            self.run_options.append(run_options)
+            return ['logits']
+
+    monkeypatch.setitem(sys.modules, 'onnxruntime', SimpleNamespace(
+        SessionOptions=Options, InferenceSession=Session, RunOptions=_RunOptions,
+        ExecutionMode=SimpleNamespace(ORT_SEQUENTIAL=0)))
+    monkeypatch.setattr(neural_runtime, '_SESSIONS', OrderedDict())
+    monkeypatch.setattr(neural_runtime, '_DIRECTML_ADAPTER_INDEX', 0)
+    model = tmp_path / 'model.onnx'
+    model.write_bytes(b'model')
+
+    cpu = neural_runtime._session(str(model), (2, 64, 64), 'CPU', 1)
+    options = built['CPUExecutionProvider']
+    assert options.enable_mem_reuse is False
+    assert not hasattr(options, 'enable_cpu_mem_arena')     # the arena stays on
+    assert cpu.run(['logits'], {}) == ['logits']
+    assert cpu.run(['logits'], {}) == ['logits']
+    # Every run asks for the arena back, not only the first.
+    assert [entry.entries for entry in cpu.session.run_options] == [
+        {'memory.enable_memory_arena_shrinkage': 'cpu:0'}] * 2
+
+    neural_runtime._session(str(model), (2, 64, 64), 'DIRECTML', 1)
+    options = built['DmlExecutionProvider']
+    assert options.enable_cpu_mem_arena is False
+    assert not hasattr(options, 'enable_mem_reuse')         # accelerators keep the default
+
+
+@pytest.mark.parametrize('name', ['stackmff_final.onnx', 'stackmff_v2_final.onnx',
+                                  'stackmff_v3_final.onnx'])
+def test_cpu_session_logits_equal_a_session_planned_with_buffer_reuse(monkeypatch, name):
+    ort = pytest.importorskip('onnxruntime')
+    monkeypatch.setattr(neural_runtime, '_SESSIONS', OrderedDict())
+    monkeypatch.setattr(neural_runtime, '_TRACED', {})
+    planes = np.random.default_rng(5).random((1, 3, 64, 128), dtype=np.float32)
+    path = weights_path(name)
+    options = ort.SessionOptions()
+    options.intra_op_num_threads = 1
+    options.enable_cpu_mem_arena = False
+    for dimension, value in zip(('layers', 'height', 'width'), planes.shape[1:]):
+        options.add_free_dimension_override_by_name(dimension, value)
+    expected = ort.InferenceSession(
+        path, sess_options=options, providers=['CPUExecutionProvider']).run(
+            ['logits'], {'input': planes})[0]
+    try:
+        session = neural_runtime._session(path, planes.shape[1:], 'CPU', 1)
+        # The second run of a shape uses the tensor layout recorded during the first.
+        for _ in range(2):
+            actual = session.run(['logits'], {'input': planes})[0]
+            assert actual.dtype == expected.dtype and actual.shape == expected.shape
+            assert actual.tobytes() == expected.tobytes()
+    finally:
+        neural_runtime._clear_sessions()
+
+
+@pytest.mark.skipif(not sys.platform.startswith('linux'), reason='reads /proc/self/statm')
+def test_cpu_session_holds_its_working_set_only_while_it_runs(monkeypatch):
+    pytest.importorskip('onnxruntime')
+    import os
+    import threading
+
+    def resident():
+        with open('/proc/self/statm') as stream:
+            return int(stream.read().split()[1]) * os.sysconf('SC_PAGE_SIZE')
+
+    def run(session):
+        """Resident growth at the highest point of one run, and after it."""
+        before = peak = resident()
+        done = threading.Event()
+
+        def watch():
+            nonlocal peak
+            while not done.is_set():
+                peak = max(peak, resident())
+                done.wait(0.001)
+
+        watcher = threading.Thread(target=watch)
+        watcher.start()
+        try:
+            session.run(['logits'], {'input': planes})
+        finally:
+            done.set()
+            watcher.join()
+        return peak - before, resident() - before
+
+    monkeypatch.setattr(neural_runtime, '_SESSIONS', OrderedDict())
+    monkeypatch.setattr(neural_runtime, '_TRACED', {})
+    shape = (8, 256, 256)
+    planes = np.random.default_rng(5).random((1, *shape), dtype=np.float32)
+    # One quarter-resolution feature tensor of the V3 network: layers x H/4 x W/4 x 48 float32.
+    tokens = shape[0] * (shape[1] // 4) * (shape[2] // 4) * 48 * 4
+    try:
+        session = neural_runtime._session(weights_path('stackmff_v3_final.onnx'), shape, 'CPU', 1)
+        run(session)
+        peak, kept = run(session)
+        # About 16 feature tensors without buffer reuse, 39 with it.
+        assert 8 * tokens < peak < 24 * tokens
+        assert kept < 4 * tokens
+        # The same session keeps its working set when a run does not ask for
+        # the arena back, which is what the limit above would catch.
+        _, kept = run(session.session)
+        assert kept > 8 * tokens
+    finally:
+        neural_runtime._clear_sessions()
 
 
 def test_accelerator_sessions_keep_two_shapes_and_evict_oldest(monkeypatch, tmp_path):
@@ -226,7 +361,7 @@ def test_traced_session_released_before_replacement(monkeypatch, tmp_path):
 
     monkeypatch.setattr(Options, 'add_free_dimension_override_by_name', remember_dimension)
     monkeypatch.setitem(sys.modules, 'onnxruntime', SimpleNamespace(
-        SessionOptions=Options, InferenceSession=make_session))
+        SessionOptions=Options, InferenceSession=make_session, RunOptions=_RunOptions))
     monkeypatch.setattr(neural_runtime, '_SESSIONS', OrderedDict())
     monkeypatch.setattr(neural_runtime, '_TRACED', {})
     monkeypatch.setattr(neural_runtime, 'operator_trace_directory', lambda: str(tmp_path))
@@ -737,12 +872,12 @@ def test_cancelled_failed_gpu_does_not_start_cpu(monkeypatch):
 def test_reduced_buffers_released_at_consumption_boundaries(monkeypatch):
     import weakref
     original_resize = neural_runtime._resize_antialias
-    original_softmax = neural_runtime.softmax
+    original_softmax = neural_runtime.softmax_inplace
     refs = {}
     def resize(*args):
         small = original_resize(*args)
         refs['small'] = weakref.ref(small)
-        refs['backing'] = weakref.ref(small.base)
+        refs['backing'] = weakref.ref(small.base) if small.base is not None else refs['small']
         return small
     def softmax(values):
         if 'small' in refs:
@@ -757,7 +892,7 @@ def test_reduced_buffers_released_at_consumption_boundaries(monkeypatch):
         return gaussian(*args, **kwargs)
     monkeypatch.setattr(neural_runtime, '_resize_antialias', resize)
     monkeypatch.setattr(neural_runtime, 'logits', lambda planes, *_: planes.copy())
-    monkeypatch.setattr(neural_runtime, 'softmax', softmax)
+    monkeypatch.setattr(neural_runtime, 'softmax_inplace', softmax)
     monkeypatch.setattr(cv2, 'GaussianBlur', blur)
     neural_runtime.probabilities(np.zeros((1, 3, 64, 64), np.float32), 'model', 'CPU', 1, 0.5)
 
@@ -784,6 +919,45 @@ def test_probability_layer_cancellation_stops_next_layer(monkeypatch, stage):
                                      0.5, lambda: cancelled[0])
     assert counts == ({'resize': 1, 'gaussian': 0} if stage == 'resize'
                       else {'resize': 5, 'gaussian': 1})
+
+
+@pytest.mark.parametrize('shape', [(4, 4), (64, 192), (260, 128)])
+def test_three_quarters_resize_matches_general_triangle_filter(shape):
+    # Float32 products must be rounded before summing, including both edges.
+    h, w = shape
+    planes = np.random.default_rng(408).normal(size=(2, 3, h, 2 * w)).astype(np.float32)[..., ::2]
+    np.testing.assert_array_equal(neural_runtime._resize_three_quarters(planes),
+                                  neural_runtime._resize_triangle(planes, 0.75))
+
+
+@pytest.mark.parametrize('shape, dtype, scale, grouped', [
+    ((64, 128), np.float32, 0.75, True),
+    ((8, 10), np.float32, 0.75, False),     # width is not whole groups of four
+    ((6, 8), np.float32, 0.75, False),      # nor is this height
+    ((64, 128), np.float64, 0.75, False),
+    ((64, 128), np.float32, 0.5, False),
+])
+def test_antialias_groups_rows_only_for_whole_float32_groups(monkeypatch, shape, dtype, scale, grouped):
+    used = []
+    for name in ('_resize_three_quarters', '_resize_triangle'):
+        original = getattr(neural_runtime, name)
+        monkeypatch.setattr(neural_runtime, name,
+                            lambda *args, name=name, original=original: used.append(name) or original(*args))
+    result = neural_runtime._resize_antialias(np.ones((1, 2, *shape), dtype), scale)
+    assert used == ['_resize_three_quarters' if grouped else '_resize_triangle']
+    assert result.dtype == np.float32
+    assert result.shape == (1, 2, int(shape[0] * scale), int(shape[1] * scale))
+    np.testing.assert_allclose(result, 1, rtol=1e-6)
+
+
+def test_three_quarters_resize_stops_between_planes():
+    from core.registration import RegistrationCancelled
+    polls = []
+    with pytest.raises(RegistrationCancelled):
+        neural_runtime._resize_antialias(np.zeros((1, 3, 8, 8), np.float32), 0.75,
+                                         lambda: polls.append(1) or len(polls) > 3)
+    # Once on entry, twice for the first plane, then before the second.
+    assert len(polls) == 4
 
 
 def test_antialias_cancellation_between_output_positions(monkeypatch):
@@ -911,27 +1085,48 @@ def test_cpu_retry_failure_propagates_without_success_reporting(monkeypatch):
         neural_runtime.start_inference_job()
 
 
-@pytest.mark.parametrize('count,shape', [(2, (64, 64)), (3, (65, 71)), (17, (66, 70))])
+@pytest.mark.parametrize('count,shape,batch,threads', [
+    (2, (64, 64), 1, 1), (3, (65, 71), 1, 1), (17, (66, 70), 1, 1),
+    (16, (96, 96), 2, 4),
+])
 @pytest.mark.parametrize('sigma', [0, 0.5])
-def test_probability_arithmetic_matches_original_order(monkeypatch, count, shape, sigma):
+@pytest.mark.parametrize('dual_scale', [True, False])
+def test_probability_arithmetic_matches_original_order(monkeypatch, count, shape, batch, threads, sigma, dual_scale):
     rng = np.random.default_rng(42)
-    planes = rng.random((1, count, shape[0], shape[1] * 2), dtype=np.float32)[..., ::2]
-    monkeypatch.setattr(neural_runtime, 'logits', lambda values, *_: values.copy())
-    p = neural_runtime.softmax(planes.copy())
-    small = neural_runtime._resize_antialias(planes, 0.75)
-    q = neural_runtime.softmax(small.copy())
-    h, w = shape
-    for n in range(count):
-        p[0, n] += cv2.resize(q[0, n], (w, h), interpolation=cv2.INTER_LINEAR)
-    p *= 0.5
+    planes = rng.random((batch, count, shape[0], shape[1] * 2), dtype=np.float32)[..., ::2]
+
+    def logits(values, *_):
+        h, w = values.shape[-2:]
+        backing = np.empty(values.shape[:2] + (h + (-h) % 64, w + (-w) % 64), np.float32)
+        view = backing[..., :h, :w]
+        view[...] = values
+        return view
+
+    def reference_softmax(values):
+        shifted = values - values.max(axis=1, keepdims=True)
+        np.exp(shifted, out=shifted)
+        shifted /= shifted.sum(axis=1, keepdims=True)
+        return shifted
+
+    monkeypatch.setattr(neural_runtime, 'logits', logits)
+    original = planes.copy()
+    p = reference_softmax(original)
+    if dual_scale:
+        small = neural_runtime._resize_antialias(planes, 0.75)
+        q = reference_softmax(small)
+        h, w = shape
+        for n in range(count):
+            p[0, n] += cv2.resize(q[0, n], (w, h), interpolation=cv2.INTER_LINEAR)
+        p *= 0.5
     if sigma:
         radius = int(3 * sigma + 0.5)
         for n in range(count):
             p[0, n] = cv2.GaussianBlur(p[0, n], (radius * 2 + 1,) * 2, sigma,
                                         borderType=cv2.BORDER_REPLICATE)
         p /= p.sum(axis=1, keepdims=True)
-    actual = neural_runtime.probabilities(planes, 'model', 'CPU', 1, sigma)
+    actual = neural_runtime.probabilities(planes, 'model', 'CPU', threads, sigma, dual_scale=dual_scale)
     np.testing.assert_array_equal(actual, p)
+    np.testing.assert_array_equal(planes, original)
 
 
 @pytest.mark.parametrize('entry', ['infer', 'fusion', 'depth', 'tiled_depth', 'tiled_fusion'])

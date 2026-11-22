@@ -246,17 +246,19 @@ class ReportClient:
                 self._save(state)
             return removed
 
-    def enable_automatic(self):
+    def enable_automatic(self, *, preserve_sign_in=False):
         """Clear revoked reports before granting a new generation of permission."""
         key = _profile_key(self._path.parent)
         with self._state_lock():
             with _LOCK:
                 permission = _PERMISSIONS.setdefault(key, [0, True, False])
                 generation = permission[0]
+                preserve_sign_in = preserve_sign_in and not permission[2]
             state = self._load()
             pending = state["pending"]
             state["pending"] = [entry for entry in pending
-                                if entry.get("metadata", {}).get("source") != "auto"]
+                                if entry.get("metadata", {}).get("source") != "auto"
+                                or (preserve_sign_in and entry.get("sign_in") is True)]
             if len(state["pending"]) != len(pending):
                 self._save(state)
             with _LOCK:
@@ -266,13 +268,14 @@ class ReportClient:
                 permission[1] = True
                 return generation
 
-    def enqueue(self, metadata, bundle, *, owner_id=None, permission=None, cancel=None, deadline=None):
+    def enqueue(self, metadata, bundle, *, owner_id=None, sign_in=False,
+                permission=None, cancel=None, deadline=None):
         if permission is None:
             permission = automatic_snapshot(self._path.parent)
         with self._state_lock(cancel, deadline):
             if isinstance(metadata, dict) and metadata.get("source") == "auto" and not _permitted(_profile_key(self._path.parent), permission):
                 return "dropped"
-            if self._enqueue(metadata, bundle, owner_id) is None:
+            if self._enqueue(metadata, bundle, owner_id, sign_in=sign_in) is None:
                 return "dropped"
         return "queued"
 
@@ -311,13 +314,15 @@ class ReportClient:
             token = None
         return self._attempt(entry["id"], token, owner_id, permission, cancel, deadline)
 
-    def _enqueue(self, metadata, bundle, owner_id):
+    def _enqueue(self, metadata, bundle, owner_id, *, sign_in=False):
         if owner_id is not None and (not isinstance(owner_id, str) or not owner_id):
             raise ReportError("Invalid report owner")
         if not isinstance(bundle, bytes) or len(bundle) > MAX_BUNDLE_BYTES:
             raise ReportError("Report bundle must be at most 2 MiB")
         if not isinstance(metadata, dict) or set(metadata) - _FIELDS:
             raise ReportError("Invalid report metadata")
+        if sign_in and (owner_id is not None or metadata.get("source") != "auto"):
+            raise ReportError("Sign-in diagnostics require anonymous automatic reporting")
         if "build_channel" in metadata and metadata["build_channel"] not in ("release", "development"):
             raise ReportError("Invalid report metadata")
         try:
@@ -338,12 +343,15 @@ class ReportClient:
         entry = {"id": str(uuid.uuid4()), "metadata": metadata,
                  "bundle": base64.b64encode(bundle).decode("ascii"),
                  "attempts": 0, "next_attempt": 0, "owner_id": owner_id}
+        if sign_in:
+            entry["sign_in"] = True
         pending.append(entry)
         self._save(state)
         return entry
 
     def retry_pending(self, bearer_token=None, *, owner_id=None, include_auto=True,
-                      include_anonymous_auto=True, permission=None, cancel=None, deadline=None):
+                      include_anonymous_auto=True, include_sign_in=False,
+                      permission=None, cancel=None, deadline=None):
         self._validate_owner(owner_id, bearer_token)
         if permission is None:
             permission = automatic_snapshot(self._path.parent)
@@ -351,7 +359,8 @@ class ReportClient:
             entries = [(item.get("id"), item.get("owner_id")) for item in self._load()["pending"]
                        if "owner_id" in item and
                        (include_auto or item.get("metadata", {}).get("source") != "auto") and
-                       (include_anonymous_auto or item.get("owner_id") is not None or
+                       (include_sign_in if item.get("sign_in") is True else
+                        include_anonymous_auto or item["owner_id"] is not None or
                         item.get("metadata", {}).get("source") != "auto") and
                        (item["owner_id"] is None or item["owner_id"] == owner_id)]
         successes = 0

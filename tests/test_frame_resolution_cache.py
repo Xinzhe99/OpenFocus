@@ -58,6 +58,19 @@ def test_source_frame_decodes_once_per_scope(tmp_path, monkeypatch):
     assert cache_module.current() is None
 
 
+def test_source_frame_can_use_direct_disk_cache(tmp_path):
+    frame = _source(tmp_path, value=57)
+    disk = cache_module.ResolutionCache(frame.nbytes)
+    try:
+        with cache_module.active(disk), _bound([frame]):
+            image = frame.full_resolution()
+            stored = disk.get(frame)
+            assert np.shares_memory(image, stored)
+            np.testing.assert_array_equal(stored, np.full(frame.shape, 57, np.uint8))
+    finally:
+        disk.close()
+
+
 def test_processed_frame_runs_processor_once(tmp_path):
     counter = []
     processed = _processed(_source(tmp_path), counter)
@@ -427,21 +440,41 @@ def test_remembered_digest_still_rejects_a_mismatched_fingerprint(tmp_path, monk
     assert len(hashed) == 1
 
 
+def test_cached_tile_does_not_need_room_for_another_full_decode(tmp_path, monkeypatch):
+    from core import resource_policy
+    from core.source_frames import resolve_region
+    frame = _source(tmp_path)
+    with cache_module.render_scope([frame]), _bound([frame]):
+        pixels = frame.full_resolution()
+        def only_tile_fits(size, *args, **kwargs):
+            if size > 12:
+                raise resource_policy.ResourceLimitError('Only the tile fits')
+        monkeypatch.setattr(resource_policy, 'require_memory', only_tile_fits)
+        tile = resolve_region(frame, 1, 2, 2, 2)
+        np.testing.assert_array_equal(tile, pixels[2:4, 1:3])
+        assert not np.shares_memory(tile, pixels)
+
+
 def test_cached_materialized_snapshot_retains_original_identity(tmp_path):
     from core.source_frames import materialize_for_repeated_access, crop_frame
     source = _source(tmp_path)
     snapshot = materialize_for_repeated_access([source], required=True)[0]
     crop = crop_frame(snapshot, 0, 0, 4, 4)
+    # Staging a crop of prepared pixels must carry the original fingerprint
+    # through a second snapshot, including after a cache hit.
+    second = materialize_for_repeated_access([crop], required=True)[0]
     with cache_module.render_scope([snapshot, crop]):
         first = snapshot.full_resolution()
+        assert np.shares_memory(first, snapshot.source)
+        assert not first.flags.writeable
         np.testing.assert_array_equal(first, snapshot.full_resolution())
+        np.testing.assert_array_equal(second.full_resolution(), first[:4, :4])
         crop.full_resolution()
         stamp = source.fingerprint[1] + 10_000_000_000
         os.utime(source.path, ns=(stamp, stamp))
-        with pytest.raises(OSError):
-            snapshot.full_resolution()
-        with pytest.raises(OSError):
-            crop.full_resolution()
+        for frame in (snapshot, crop, second):
+            with pytest.raises(OSError):
+                frame.full_resolution()
 
 
 def test_cache_discards_unpublished_store_on_cancellation(monkeypatch):
@@ -455,3 +488,28 @@ def test_cache_discards_unpublished_store_on_cancellation(monkeypatch):
     with pytest.raises(RegistrationCancelled):
         cache.put(object(), np.zeros((2, 2), np.uint8), should_cancel=lambda: bool(cancelled))
     assert cache._used == 0 and not cache._entries
+
+
+@pytest.mark.parametrize('method', ['openfocus_a', 'openfocus_c'])
+def test_whole_cpu_fusion_reuses_existing_snapshots_without_new_writes(tmp_path, monkeypatch, method):
+    from core.multi_focus_fusion import MultiFocusFusion
+    from utils.performance_profile import PerformanceProfile, active
+
+    frames = [_source(tmp_path, f'source-{i}.png', value) for i, value in enumerate((12, 64, 220))]
+    eager = [frame.full_resolution().copy() for frame in frames]
+    options = dict(algorithm=method, use_gpu=False, exposure_match=False, tile_enabled=False)
+    expected = MultiFocusFusion(**options).fuse(eager, thread_count=1)
+    SOURCE_CACHE.clear()
+    profile = PerformanceProfile()
+    with active(profile), cache_module.render_scope(frames) as scope, _bound(frames):
+        frames[0].full_resolution()
+        with monkeypatch.context() as patch:
+            patch.setattr(SOURCE_CACHE, 'put',
+                          lambda *args, **kwargs: pytest.fail('single-pass source retained in RAM'))
+            actual = MultiFocusFusion(**options).fuse(frames, thread_count=1)
+        np.testing.assert_array_equal(actual, expected)
+        assert scope.get(frames[1]) is None
+        np.testing.assert_array_equal(frames[1].full_resolution(), eager[1])
+        np.testing.assert_array_equal(scope.get(frames[1]), eager[1])
+    counts = profile.report('completed')['cache']['by_kind']['source']
+    assert counts['puts'] == 2 and counts['hits'] >= 2

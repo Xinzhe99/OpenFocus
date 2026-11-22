@@ -34,17 +34,72 @@ def test_streamed_v3_color_matches_full_stack_reference(mode):
 def test_streamed_v1_color_keeps_nearest_frame_chroma():
     frames = _mixed_frames()
     normalized, _ = normalize_fuse_input(frames)
-    colors = [neural_common._ycbcr(frame) for frame in normalized]
+    blue, green, red = np.moveaxis(np.stack(normalized), -1, 0)
+    luma = 0.299 * red + 0.587 * green + 0.114 * blue
     target = np.random.default_rng(4).uniform(0, 255, (13, 17))
     target = target.astype(np.float32)
-    nearest = np.abs(np.stack([item[0] for item in colors]) - target)
-    nearest = nearest.argmin(axis=0)
+    nearest = np.abs(luma - target).argmin(axis=0)
     rows, cols = np.arange(13)[:, None], np.arange(17)[None, :]
-    cb = np.stack([item[1] for item in colors])[nearest, rows, cols]
-    cr = np.stack([item[2] for item in colors])[nearest, rows, cols]
-    expected = np.clip(neural_common._ycbcr_to_bgr(target, cb, cr), 0, 255)
+    cb = ((blue - luma) * 0.564 + 128.0)[nearest, rows, cols] - 128.0
+    cr = ((red - luma) * 0.713 + 128.0)[nearest, rows, cols] - 128.0
+    expected = np.clip(np.stack((target + 1.773 * cb,
+                                 target - 0.714 * cr - 0.344 * cb,
+                                 target + 1.403 * cr), axis=-1), 0, 255)
     np.testing.assert_array_equal(neural_common.tensor_to_bgr(target, frames),
                                   expected)
+
+
+@pytest.mark.parametrize('mixed_depth', [False, True])
+@pytest.mark.parametrize('gains', [None, (1.0, 0.79, 1.21)])
+def test_lazy_tiles_match_eager_packed_exposure(mixed_depth, gains):
+    from core.source_frames import resolve_frame
+    from utils.image_utils import apply_exposure_gain
+
+    frames = _mixed_frames()
+    if not mixed_depth:
+        frames[1] = frames[1].astype(np.uint8)
+    # A full-width singleton row can be contiguous without owning its pixels.
+    coords = (0, 12, 17, 13)
+    eager, _ = normalize_fuse_input([frame[12:13].copy() for frame in frames])
+    if gains is not None:
+        eager = [apply_exposure_gain(frame, gain) for frame, gain in zip(eager, gains)]
+    sources = neural_common.tile_sources(frames, coords, exposure_gains=gains)
+    for source, frame, expected in zip(sources, frames, eager):
+        image = resolve_frame(source)
+        assert image.dtype == source.dtype == expected.dtype
+        assert image.flags.c_contiguous
+        assert not np.shares_memory(image, frame)
+        np.testing.assert_array_equal(image, expected)
+    np.testing.assert_array_equal(neural_common.stage_planes(sources, 1),
+                                  neural_common.stage_planes(eager, 1))
+
+
+def test_tiled_v1_releases_packed_pixels_between_frame_reads(monkeypatch):
+    import weakref
+    from core.multi_focus_fusion import MultiFocusFusion
+    from fusion_methods import neural_runtime
+
+    monkeypatch.setattr(MultiFocusFusion, '_validate_environment', lambda self: None)
+    monkeypatch.setattr(neural_runtime, 'probabilities',
+                        lambda planes, *_args: np.full_like(planes, 1 / planes.shape[1]))
+    pack = neural_common.copy_tile_colors
+    packed = []
+
+    def track(pixels, normalize_stack, gain):
+        if packed:
+            assert packed[-1]() is None
+        crop = pack(pixels, normalize_stack, gain)
+        packed.append(weakref.ref(crop))
+        return crop
+
+    monkeypatch.setattr(neural_common, 'copy_tile_colors', track)
+    frames = _mixed_frames()
+    fusion = MultiFocusFusion('stackmff', use_gpu=False)
+    result = fusion._fuse_tiled(frames, 'stackmff', block_size=8, overlap=2,
+                               exposure_gains=(1.0, 0.79, 1.21), thread_count=1)
+    assert result.shape == frames[0].shape
+    assert len(packed) > len(frames)  # Luma and chroma both resolved the crops.
+    assert packed[-1]() is None
 
 
 @pytest.mark.parametrize('shape,origin,dtypes,gains', [
@@ -96,13 +151,13 @@ def test_v2_tile_planes_release_crop_before_next_read(monkeypatch, cancel_after)
             return crop
 
     source = LazySource()
-    convert = neural_common.luma_plane
+    convert = neural_common.write_luma_plane
 
-    def track_plane(frame):
+    def track_plane(frame, destination):
         source.staged += 1
-        return convert(frame)
+        convert(frame, destination)
 
-    monkeypatch.setattr(neural_common, 'luma_plane', track_plane)
+    monkeypatch.setattr(neural_common, 'write_luma_plane', track_plane)
     if cancel_after is not None:
         with pytest.raises(RegistrationCancelled):
             _stage_tile_planes(source, (0, 0, 64, 64), lambda: source.staged == cancel_after)
@@ -133,6 +188,168 @@ def test_v2_single_padded_tile_matches_whole_frame_depth():
                                tile_size=32, thread_count=1)
     np.testing.assert_allclose(depth, expected_depth, rtol=1e-6, atol=1e-6)
     np.testing.assert_array_equal(index, expected_index)
+
+
+@pytest.mark.parametrize('layout', ['c', 'fortran', 'cropped'])
+@pytest.mark.parametrize('dtype', [np.float16, np.float32])
+def test_v2_expected_positions_matches_promoted_reference(layout, dtype):
+    from fusion_methods import neural_runtime, stackmff_v2
+
+    rng = np.random.default_rng(18)
+    logits = rng.normal(size=(1, 137, 17, 41)).astype(dtype)
+    if layout == 'fortran':
+        logits = np.asfortranarray(logits)
+    elif layout == 'cropped':
+        logits = logits[..., 1::2]
+    weights = np.arange(1, 138, dtype=np.float32)[None, :, None, None]
+    expected = (neural_runtime.softmax(logits) * weights).sum(axis=1)[0]
+
+    actual = stackmff_v2._expected_positions(logits, None)
+
+    assert actual.dtype == expected.dtype
+    np.testing.assert_array_equal(actual, expected)
+
+
+@pytest.mark.parametrize('channels,mixed', [(0, True), (1, False), (3, True), (3, False)])
+def test_v2_whole_and_tiled_match_padded_reference(monkeypatch, channels, mixed):
+    from types import SimpleNamespace
+    import weakref
+
+    from fusion_methods import neural_runtime, stackmff_v2 as v2, stackmff_v2_tiled as tiled
+
+    rng = np.random.default_rng(218)
+    h, w = 49, 91
+    shape = (h, w) + ((channels,) if channels else ())
+    frames = [rng.integers(0, 65536 if dtype == np.uint16 else 256, shape, dtype=dtype)
+              for dtype in (np.uint8, np.uint16 if mixed else np.uint8, np.uint8)]
+    normalized, _ = normalize_fuse_input(frames)
+    logits = rng.normal(size=(1, 3, 64, 128)).astype(np.float32) * np.float32(0.3)
+    logits[0, :, 0, 0] = [4, -4, -4]
+    logits[0, :, 0, 1] = [-4, -4, 4]
+    # Both extrema are outside the crop, in different tiles.
+    logits[0, :, -1, 0] = [30, -30, -30]
+    logits[0, :, -1, -1] = [-30, -30, 30]
+    weights = np.arange(1, 4, dtype=np.float32)[None, :, None, None]
+    positions = (neural_runtime.softmax(logits) * weights).sum(axis=1)[0]
+    lo, hi = positions.min(), positions.max()
+    expected_depth = ((positions - lo) / (hi - lo + 1e-8))[:h, :w]
+    expected_index = np.clip(np.rint(expected_depth * 2), 0, 2).astype(np.int64)
+    rows, cols = np.arange(h)[:, None], np.arange(w)[None, :]
+    expected = np.stack(normalized)[expected_index, rows, cols]
+    if channels == 1:
+        expected = expected[..., 0]
+
+    tile_calls = 0
+    previous = None
+
+    def run_model(planes, *_):
+        nonlocal tile_calls, previous
+        assert previous is None or previous() is None
+        if planes.shape[-1] == 64:
+            x = (tile_calls % 2) * 64
+            scores = logits[..., x:x + 64].copy()
+            tile_calls += 1
+        else:
+            assert planes.shape == logits.shape
+            scores = logits.copy()
+        previous = weakref.ref(scores)
+        return scores
+
+    plan = SimpleNamespace(native_threads=1)
+    monkeypatch.setattr(neural_runtime, 'logits', run_model)
+    monkeypatch.setattr(v2, '_prepare_inference', lambda *a, **k: ('model', 'CPU', plan))
+    monkeypatch.setattr(tiled, '_plan', lambda *_: (64, 'model', 'CPU', plan))
+
+    whole, depth, index = v2._infer_under_lease(frames, 'model', False)
+    source = tiled._Source(frames, None, None, None)
+    tile_depth, tile_index = tiled._tiled_depth_under_lease(source, 'model', False)
+    tile_image = tiled._tiled_fusion_under_lease(frames, None, 'model', False)
+
+    assert tile_calls == 4
+    assert previous() is None
+    for actual_depth, actual_index, image in ((depth, index, whole), (tile_depth, tile_index, tile_image)):
+        np.testing.assert_array_equal(actual_depth, expected_depth)
+        np.testing.assert_array_equal(actual_index, expected_index)
+        assert image.dtype == expected.dtype
+        np.testing.assert_array_equal(image, expected)
+
+
+@pytest.mark.parametrize('mixed', [False, True])
+def test_v2_tiled_selected_pixels_keep_exposure_and_alpha(monkeypatch, mixed):
+    from fusion_methods import stackmff_v2_tiled as tiled
+    from utils.image_utils import apply_exposure_gain
+
+    rng = np.random.default_rng(316)
+    h, w = 129, 11
+    shape = (h, w, 4)
+    dtype = np.uint16 if mixed else np.uint8
+    frames = [rng.integers(0, 256, shape, np.uint8),
+              rng.integers(0, np.iinfo(dtype).max + 1, shape, dtype)]
+    gains = (1.14, 0.71)
+    index = rng.integers(0, 2, (h, w), np.int64)
+    normalized, _ = normalize_fuse_input(frames)
+    adjusted = np.stack([apply_exposure_gain(frame, gain) for frame, gain in zip(normalized, gains)])
+    expected = adjusted[index, np.arange(h)[:, None], np.arange(w)[None, :]]
+    monkeypatch.setattr(tiled, '_tiled_depth_under_lease', lambda *_: (None, index))
+
+    actual = tiled._tiled_fusion_under_lease(frames, None, 'model', False, exposure_gains=gains)
+
+    assert actual.dtype == expected.dtype
+    np.testing.assert_array_equal(actual, expected)
+
+
+@pytest.mark.parametrize('cancel', [False, True])
+def test_v2_sparse_sampling_releases_sources_and_skips_unused_strips(monkeypatch, cancel):
+    import weakref
+
+    from core import frame_storage, source_frames
+    from core.registration import RegistrationCancelled
+    from fusion_methods.stackmff_v2 import _sample
+
+    shape = (257, 11)
+    frames = [np.full(shape, layer + 1, np.uint8) for layer in range(200)]
+    index = np.zeros((shape[0], shape[1] + 1), dtype=np.int64)[:, :-1]
+    index[0, :2] = (-1, len(frames))
+    index[-1] = len(frames) - 1
+    resolved, borrowed = [], []
+    frame_region = frame_storage.frame_region
+
+    def resolve(frame, **kwargs):
+        assert not resolved or resolved[-1][1]() is None
+        image = frame.copy()
+        resolved.append((int(image[0, 0]), weakref.ref(image)))
+        return image
+
+    def borrow(image, rows):
+        borrowed.append((int(image[0, 0]), rows.start))
+        return frame_region(image, rows)
+
+    monkeypatch.setattr(source_frames, 'resolve_frame', resolve)
+    monkeypatch.setattr(frame_storage, 'frame_region', borrow)
+    if cancel:
+        with pytest.raises(RegistrationCancelled):
+            _sample(frames, index, lambda: bool(resolved))
+        assert [layer for layer, _ in resolved] == [1]
+        assert not borrowed
+    else:
+        actual = _sample(frames, index)
+        assert [(layer, ref()) for layer, ref in resolved] == [(1, None), (200, None)]
+        assert borrowed == [(1, 0), (1, 128), (200, 256)]
+        expected = np.ones(shape, np.float32)
+        expected[0, :2] = 0
+        expected[-1] = 200
+        np.testing.assert_array_equal(actual, expected)
+
+
+def test_v2_tiled_admission_bounds_live_maps_and_strips():
+    from fusion_methods.stackmff_v2_tiled import tiled_output_bytes
+
+    h, w, channels = 1545, 2041, 3
+    padded_pixels, strip_pixels = 1600 * 2048, 128 * 2048
+    depth_bytes = padded_pixels * 12 + strip_pixels * 12
+    color_bytes = padded_pixels * 8 + h * w * channels * 4 + strip_pixels * (1 + 8 * channels)
+    assert tiled_output_bytes(h, w, channels, 0) == depth_bytes
+    assert tiled_output_bytes(h, w, channels, 1) == max(depth_bytes, color_bytes)
 
 
 def test_two_hundred_large_frames_get_a_bounded_full_stack_plan():
@@ -170,6 +387,13 @@ def test_directory_rejects_oversized_frame_before_decode(tmp_path, monkeypatch, 
     encoded[16:24] = struct.pack('>II', 500000, 500000)
     encoded[29:33] = struct.pack('>I', zlib.crc32(encoded[12:29]))
     path.write_bytes(encoded)
+    oversized_paths = {str(path)}
+    if entry == 'stackmffv2':
+        # Match tile geometry so the decode guard is reached before any
+        # independent rejection for mismatched frame sizes.
+        first_path = tmp_path / 'first.png'
+        first_path.write_bytes(encoded)
+        oversized_paths.add(str(first_path))
     snapshot = resource_policy.ResourceSnapshot(
         available_ram=2 * 1024 ** 3, total_ram=4 * 1024 ** 3,
         physical_cores=2, logical_cpus=2)
@@ -195,7 +419,7 @@ def test_directory_rejects_oversized_frame_before_decode(tmp_path, monkeypatch, 
         else:
             for item in stackmffv3._read_stack(str(tmp_path), None):
                 source_frames.resolve_frame(item)
-    assert str(path) not in decoded
+    assert oversized_paths.isdisjoint(decoded)
 
 
 @pytest.mark.parametrize('method', ['stackmff', 'stackmffv2', 'stackmffv3'])
@@ -241,20 +465,24 @@ def test_tiled_preparation_survives_transport_and_rejects_changed_source(
         return original_decode(frame, key, cache, should_cancel)
     monkeypatch.setattr(source_frames.SourceFrame, '_decode', decode)
 
-    def consume(_self, images, **kwargs):
-        return sum(source_frames.resolve_frame(frame).astype(np.float32)
-                   for frame in images)
-    monkeypatch.setattr(MultiFocusFusion, '_fuse_tiled', consume)
+    monkeypatch.setattr(stackmffv3, '_probabilities',
+                        lambda batch, *args: np.full_like(batch, 1 / batch.shape[1]))
     monkeypatch.setattr(MultiFocusFusion, '_validate_environment', lambda self: None)
     def fusion():
         return MultiFocusFusion('stackmffv3', use_gpu=False, tile_enabled=True,
-                                tile_threshold=1, exposure_match=exposure_match)
+                                tile_threshold=1, tile_block_size=8, tile_overlap=2,
+                                exposure_match=exposure_match, base_frame='first')
 
     first = fusion()
     first.retain_preparation = True
     with frame_storage.scratch_directory():
+        normalized, _ = normalize_fuse_input(_mixed_frames())
+        reference = fusion()._fuse_under_lease(normalized, None, None, None, thread_count=1)
         expected = first._fuse_under_lease(frames, None, None, None, thread_count=1)
+    np.testing.assert_array_equal(reference, expected)
     assert first.prepared_cache is not None
+    if exposure_match:
+        assert [f.dtype for f in first.prepared_cache] == [f.dtype for f in frames]
     snapshot_paths = [frame_storage.describe_frame(frame.source)['path']
                       for frame in first.prepared_cache]
     encoder = FrameEncoder()
@@ -263,6 +491,8 @@ def test_tiled_preparation_survives_transport_and_rejects_changed_source(
     decoded_count = len(calls)
     second = fusion()
     second.prepared_cache = transferred
+    monkeypatch.setattr(MultiFocusFusion, '_exposure_gains_for_source',
+                        lambda *a, **kw: pytest.fail('recomputed cached gains'))
     with frame_storage.scratch_directory():
         actual = second._fuse_under_lease(frames, None, None, None, thread_count=1)
     np.testing.assert_array_equal(actual, expected)
@@ -278,3 +508,72 @@ def test_tiled_preparation_survives_transport_and_rejects_changed_source(
     import gc
     gc.collect()
     assert all(not os.path.exists(path) for path in snapshot_paths)
+
+
+@pytest.mark.parametrize('method', ['stackmff', 'stackmffv2', 'stackmffv3'])
+@pytest.mark.parametrize('exposure_match', [False, True])
+def test_deep_tiled_fusion_preserves_mixed_tiff_pixels(tmp_path, monkeypatch, method, exposure_match):
+    pytest.importorskip('onnxruntime')
+    import tifffile
+    from core import multi_focus_fusion, source_frames
+
+    frames = []
+    for index, pixels in enumerate(_mixed_frames()):
+        path = tmp_path / f'{index}.tif'
+        tifffile.imwrite(path, pixels[..., ::-1], photometric='rgb',
+                         compression='deflate' if index == 2 else None)
+        frames.extend(source_frames.scan_source(str(path), header_only=True))
+
+    def fuse():
+        fusion = multi_focus_fusion.MultiFocusFusion(
+            method, use_gpu=False, tile_threshold=1, tile_block_size=13,
+            tile_overlap=2, exposure_match=exposure_match)
+        steps = []
+        result = fusion.fuse(frames, thread_count=1,
+                             progress_callback=lambda done, total: steps.append((done, total)))
+        assert steps[0][0] == 0 and steps[-1][0] == steps[-1][1]
+        assert all(total == steps[-1][1] for _, total in steps)
+        return result
+
+    expected = fuse()
+    # Native samples fit the retention limit, but their float32 snapshot does not.
+    monkeypatch.setattr(multi_focus_fusion, '_PREPARED_CACHE_BYTES', sum(frame.nbytes for frame in frames))
+    monkeypatch.setattr(source_frames, 'SOURCE_CACHE', source_frames.FrameCache(0))
+    from core import image_loader
+    decode_tiff = image_loader.decode_tiff_page
+    decoded = []
+
+    def record_decode(path, *args, **kwargs):
+        decoded.append(path)
+        return decode_tiff(path, *args, **kwargs)
+
+    monkeypatch.setattr(image_loader, 'decode_tiff_page', record_decode)
+    np.testing.assert_array_equal(fuse(), expected)
+    assert set(decoded) == {frames[2].path}
+
+
+@pytest.mark.parametrize('byteorder', ['<', '>'])
+def test_tiff_regions_preserve_byte_order_and_source_identity(tmp_path, byteorder):
+    import os
+    import tifffile
+    from core.frame_storage import frame_region
+    from core.source_frames import map_native_rgb_tiffs, resolve_frame, scan_source
+
+    rng = np.random.default_rng(109)
+    images = rng.integers(0, 65536, (2, 71, 76, 3), dtype=np.uint16)
+    path = tmp_path / 'pages.tiff'
+    with tifffile.TiffWriter(path, byteorder=byteorder) as writer:
+        for image in images:
+            writer.write(image, photometric='rgb', rowsperstrip=7, contiguous=False)
+    sources = scan_source(str(path), header_only=True)
+    mapped = map_native_rgb_tiffs(sources)
+    for image, frame in zip(images, mapped, strict=True):
+        image_map = resolve_frame(frame)
+        if np.dtype('u2').newbyteorder(byteorder).isnative:
+            assert isinstance(image_map, np.memmap) and os.path.samefile(image_map.filename, path)
+        with frame_region(image_map, np.s_[4:66, 3:73]) as pixels:
+            np.testing.assert_array_equal(pixels, image[4:66, 3:73, ::-1])
+    stamp = path.stat()
+    os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns + 1_000_000_000))
+    with pytest.raises(OSError, match='Source changed'):
+        resolve_frame(mapped[1])

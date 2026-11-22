@@ -1,10 +1,14 @@
 """Shared staging, cancellation and resource planning for neural fusion."""
 import os
 from contextlib import contextmanager
+from dataclasses import dataclass
+from functools import partial
 
 import cv2
 import numpy as np
 
+from core.source_frames import ProcessedFrame, borrow_frame_region
+from utils.performance_profile import current as _profile
 from utils.sorting import natural_sort_key
 ATTENTION_PAD_ALIGN = 64
 
@@ -64,6 +68,57 @@ def read_stack(input_source, img_resize, should_cancel=None, execution_plan=None
     return frames
 
 
+def copy_tile_colors(pixels, normalize_stack, gain=1.0):
+    """Pack one color tile in its backend's working domain."""
+    from utils.image_utils import apply_exposure_gain
+
+    crop = np.array(pixels, dtype=np.float32 if normalize_stack else pixels.dtype,
+                    copy=True, order='C')
+    if pixels.dtype == np.uint16:
+        crop *= 255.0 / 65535.0
+    return apply_exposure_gain(crop, gain, copy=False)
+
+
+@dataclass(frozen=True, eq=False, kw_only=True)
+class _TileCrop(ProcessedFrame):
+    """Pack a single admitted crop on demand without caching its pixels."""
+
+    region: tuple
+
+    def full_resolution(self, *, should_cancel=None, cache_result=True, store_result=True):
+        def cancelled():
+            return ((should_cancel is not None and should_cancel()) or
+                    (self.should_cancel is not None and self.should_cancel()))
+
+        cancel(cancelled)
+        with _profile().stage('resolve_region'):
+            with borrow_frame_region(self.source, self.region, should_cancel=cancelled) as pixels:
+                if pixels.shape != self.shape:
+                    raise ValueError('All frames must have the same dimensions')
+                crop = self.processor(pixels)
+        cancel(cancelled)
+        return crop
+
+
+def tile_sources(frames, coords, *, exposure_gains=None, should_cancel=None):
+    """Describe packed crops in the same working domain as eager tile staging."""
+    x0, y0, x1, y1 = coords
+    region = np.s_[y0:y1, x0:x1]
+    normalize_stack = any(frame.dtype == np.uint16 for frame in frames)
+    sources = []
+    for index, frame in enumerate(frames):
+        cancel(should_cancel)
+        if frame.shape[0] < y1 or frame.shape[1] < x1:
+            raise ValueError('All frames must have the same dimensions')
+        gain = exposure_gains[index] if exposure_gains is not None else 1.0
+        shape = (y1 - y0, x1 - x0) + frame.shape[2:]
+        converted = normalize_stack or (gain != 1.0 and frame.dtype != np.uint8)
+        dtype = np.dtype(np.float32) if converted else frame.dtype
+        pack = partial(copy_tile_colors, normalize_stack=normalize_stack, gain=gain)
+        sources.append(_TileCrop(frame, pack, shape, dtype, should_cancel, region=region))
+    return sources
+
+
 def working_frame(frame, normalize_stack):
     """Convert a single frame exactly as 16-bit stack normalization does."""
     from core.source_frames import resolve_frame
@@ -76,16 +131,20 @@ def working_frame(frame, normalize_stack):
     return result
 
 
-def luma_plane(frame):
-    """Return one 0-1 float32 luma plane from a grayscale or BGR frame."""
+def write_luma_plane(frame, destination):
+    """Write BT.601 luma at 0–1 into one float32 model input plane."""
     if frame.ndim == 2:
         gray = frame
     elif frame.shape[2] == 1:
         gray = frame[:, :, 0]
     else:
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    scale = 65535.0 if gray.dtype == np.uint16 else 255.0
-    return gray.astype(np.float32, copy=False) / scale
+        if frame.dtype == np.float32:
+            cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY, dst=destination)
+            gray = destination
+        else:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    scale = np.float32(65535 if gray.dtype == np.uint16 else 255)
+    np.divide(gray, scale, out=destination, dtype=np.float32)
 
 
 def stage_planes(frames, align, should_cancel=None):
@@ -106,7 +165,7 @@ def stage_planes(frames, align, should_cancel=None):
         if ph or pw:
             padding = ((0, ph), (0, pw)) + ((0, 0),) * (frame.ndim - 2)
             frame = np.pad(frame, padding, mode=mode)
-        batch[0, index] = luma_plane(frame)
+        write_luma_plane(frame, batch[0, index])
     cancel(should_cancel)
     return batch
 
@@ -160,9 +219,10 @@ def plan_attention_inference(algorithm, frames, model_path, device,
     requested = device
     for device in candidate_devices(requested):
         host, _ = attention_inference_bytes(n, h, w, c, device, result_count)
+        required_ram = host + fixed_bytes
         workload = Workload(algorithm=algorithm, frames=n, height=h, width=w,
                             channels=c, itemsize=itemsize, parallel_layer='native',
-                            fixed_bytes=host + fixed_bytes, per_worker_bytes=0)
+                            fixed_bytes=required_ram, per_worker_bytes=0)
         try:
             plan = plan_execution(workload, snapshot, preference=resource_preference,
                                   user_threads=thread_count,
@@ -177,21 +237,68 @@ def plan_attention_inference(algorithm, frames, model_path, device,
         if device != requested:
             fallback = f'{requested} did not fit the host memory budget'
         plan = replace(plan, device_kind=device, device_fallback=fallback,
+                       required_ram=required_ram,
                        vram_budget=getattr(execution_plan, 'vram_budget', 0))
         apply_inference_budget(plan)
         return model_path, device, plan
 
 
-def _ycbcr(frame):
-    """BT.601 Y/Cb/Cr in 0-255, independent of cv2's float input range."""
-    data = frame.astype(np.float32, copy=False)
-    if data.ndim == 3 and data.shape[2] == 1:
-        data = data[:, :, 0]
-    if data.ndim == 2:
-        data = np.repeat(data[:, :, None], 3, axis=2)
-    blue, green, red = data[:, :, 0], data[:, :, 1], data[:, :, 2]
-    luma = 0.299 * red + 0.587 * green + 0.114 * blue
-    return luma, (blue - luma) * 0.564 + 128.0, (red - luma) * 0.713 + 128.0
+def plan_rgb_staging(plan, tile_count, tile_bytes, scratch_bytes, byte_cap):
+    """Admit extra RGB tile data alongside the full inference working set."""
+    limit = min(tile_count, min(byte_cap, plan.ram_budget // 4) // tile_bytes)
+    reserved = plan.required_ram + scratch_bytes
+    if limit < 2 or reserved + tile_bytes > plan.ram_budget:
+        return None, 1
+    kernels = load_stackmff_kernels()
+    if kernels is None:
+        return None, 1
+    from core.resource_policy import probe_memory, ram_ceiling
+
+    headroom = min(plan.ram_budget, ram_ceiling(probe_memory()))
+    size = min(limit, 1 + (headroom - reserved) // tile_bytes)
+    return (kernels, size) if size > 1 else (None, 1)
+
+
+
+
+_STACKMFF_KERNELS = None
+_STACKMFF_KERNELS_DISABLED = False
+
+
+class StackMFFKernelUnavailable(MemoryError):
+    """An optional specialization ran out of memory before touching its output."""
+
+
+def disable_stackmff_kernels():
+    global _STACKMFF_KERNELS_DISABLED
+    _STACKMFF_KERNELS_DISABLED = True
+
+
+def reset_stackmff_kernels():
+    global _STACKMFF_KERNELS_DISABLED
+    _STACKMFF_KERNELS_DISABLED = False
+
+
+def load_stackmff_kernels():
+    """Load the optional native dispatchers for this inference job."""
+    global _STACKMFF_KERNELS
+    if _STACKMFF_KERNELS_DISABLED:
+        return None
+    if _STACKMFF_KERNELS is not None:
+        return _STACKMFF_KERNELS
+    from core.algorithm_adapters import DEPTH_KERNEL_STARTUP_BYTES
+    from core.resource_policy import probe_memory, require_memory
+
+    try:
+        require_memory(DEPTH_KERNEL_STARTUP_BYTES, probe_memory())
+        from fusion_methods import _stackmff_kernels
+    except MemoryError:
+        disable_stackmff_kernels()
+        return None
+    except ImportError:
+        return None
+    _STACKMFF_KERNELS = _stackmff_kernels
+    return _STACKMFF_KERNELS
 
 
 def _ycbcr_to_bgr(luma, cb, cr):
@@ -212,20 +319,69 @@ def tensor_to_bgr(fused_luma, frames, should_cancel=None):
     The conversion is written out because cv2's float32 YCrCb path expects
     0-1 inputs, while every buffer here is in the project's 0-255 range.
     """
+    from core.source_frames import resolve_frame
+
     cancel(should_cancel)
     normalize_stack = any(frame.dtype == np.uint16 for frame in frames)
-    target = np.clip(fused_luma, 0.0, 255.0)
-    best = cb = cr = None
-    for frame in frames:
+    target = np.clip(fused_luma, 0.0, 255.0).astype(np.float32, copy=False)
+    best = np.empty(target.shape, dtype=np.float32)
+    cb = np.empty_like(best)
+    cr = np.empty_like(best)
+    kernels = load_stackmff_kernels()
+    luma = work = better = None
+    target_c = np.ascontiguousarray(target) if kernels is not None else None
+    for index, frame in enumerate(frames):
         cancel(should_cancel)
-        luma, frame_cb, frame_cr = _ycbcr(working_frame(frame, normalize_stack))
-        distance = np.abs(luma - target)
-        if best is None:
-            best, cb, cr = distance, frame_cb, frame_cr
-            continue
-        better = (distance < best) | (np.isnan(distance) & ~np.isnan(best))
-        np.copyto(best, distance, where=better)
-        np.copyto(cb, frame_cb, where=better)
-        np.copyto(cr, frame_cr, where=better)
+        raw = resolve_frame(frame, should_cancel=should_cancel)
+        used_kernel = False
+        if (kernels is not None and raw.ndim == 3 and raw.shape[2] >= 3
+                and raw.flags.c_contiguous and target_c.shape == raw.shape[:2]):
+            update = None
+            if raw.dtype == np.float32:
+                update = kernels.v1_update_nearest_f32
+            elif raw.dtype == np.uint16:
+                update = kernels.v1_update_nearest_u16
+            elif raw.dtype == np.uint8:
+                update = kernels.v1_update_nearest_u8
+            if update is not None:
+                try:
+                    update(raw, target_c, best, cb, cr, index == 0)
+                except StackMFFKernelUnavailable:
+                    kernels = target_c = None
+                else:
+                    used_kernel = True
+        if not used_kernel:
+            if luma is None:
+                luma = np.empty_like(best)
+                work = np.empty_like(best)
+                better = np.empty(best.shape, dtype=bool)
+            source = working_frame(raw, normalize_stack).astype(np.float32, copy=False)
+            if source.ndim == 3 and source.shape[2] == 1:
+                source = source[:, :, 0]
+            blue, green, red = ((source,) * 3 if source.ndim == 2 else
+                                (source[:, :, 0], source[:, :, 1], source[:, :, 2]))
+            # Keep the reference's float32 arithmetic order.
+            np.multiply(red, np.float32(0.299), out=luma)
+            np.multiply(green, np.float32(0.587), out=work)
+            np.add(luma, work, out=luma)
+            np.multiply(blue, np.float32(0.114), out=work)
+            np.add(luma, work, out=luma)
+            np.subtract(luma, target, out=work)
+            np.abs(work, out=work)
+            if index == 0:
+                better.fill(True)
+            else:
+                np.less(work, best, out=better)
+                better |= np.isnan(work) & ~np.isnan(best)
+            np.copyto(best, work, where=better)
+            np.subtract(blue, luma, out=cb, where=better)
+            np.subtract(red, luma, out=cr, where=better)
+            del source, blue, green, red
+        del raw
     cancel(should_cancel)
-    return np.clip(_ycbcr_to_bgr(target, cb, cr), 0.0, 255.0)
+    cb *= np.float32(0.564)
+    cb += np.float32(128)
+    cr *= np.float32(0.713)
+    cr += np.float32(128)
+    result = _ycbcr_to_bgr(target, cb, cr)
+    return np.clip(result, 0.0, 255.0, out=result)

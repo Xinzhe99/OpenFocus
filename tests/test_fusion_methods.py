@@ -492,12 +492,13 @@ def test_guided_tiled_exposure_matches_whole_frame_preprocessing(dtype, base_fra
 @pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
 def test_v3_tiled_exposure_matches_whole_stack_preprocessing(dtype, monkeypatch):
     import core.multi_focus_fusion as fusion_module
+    from core.source_frames import resolve_frame
     from utils.image_utils import apply_exposure_gain, exposure_gains
 
     monkeypatch.setattr(MultiFocusFusion, '_validate_ai_environment', lambda self: None)
 
     def fuse_crop(source, *args, **kwargs):
-        normalized, _ = normalize_fuse_input(source)
+        normalized, _ = normalize_fuse_input([resolve_frame(frame) for frame in source])
         return sum(frame.astype(np.float32) for frame in normalized) / len(normalized)
 
     monkeypatch.setattr(fusion_module, '_stackmffv3_impl', fuse_crop)
@@ -575,6 +576,16 @@ def test_v2_mapped_source_sampling_crosses_row_strip_boundary(grayscale):
     actual = _sample(frames, index)
     assert isinstance(actual, np.memmap)
     np.testing.assert_array_equal(actual, expected)
+
+
+def test_v2_uint8_sampling_rounds_in_float32_domain():
+    from fusion_methods.stackmff_v2 import _sample
+
+    frames = [np.zeros((1, 2), np.uint8),
+              np.array([[np.nextafter(126.5, 127), np.nextafter(129.5, 129)]])]
+    positions = np.ones((1, 2), np.int64)
+    result = _sample(frames, positions, dtype=np.uint8, round_uint8=True)
+    np.testing.assert_array_equal(result, np.array([[126, 130]], np.uint8))
 
 
 def test_neural_source_normalization_preserves_mixed_stack_precision():

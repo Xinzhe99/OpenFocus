@@ -14,16 +14,27 @@ import numpy as np
 # ResizeArea_Invoker: ordered binary32 products and sums on the MSVC SSE
 # baseline, followed by saturate_cast (nearest even for integer pixels).
 # Integral scale factors dispatch to a different CPU implementation.
-_TAPS = 5
+_MAX_SCALE = 8
+_TAPS = _MAX_SCALE + 1
 _AXIS = np.dtype([('start', '<i4'), ('count', '<i4'), ('weight', '<f4', _TAPS)])
 _TILE_ROWS = 128
 _MIN_SOURCE_BYTES = 8 * 1024**2
 _MAX_SIDE = 32768
-_KERNEL_NAMES = ((1, 'area8'), (2, 'area16'))
+_KERNEL_NAMES = (
+    (1, False, 'area8'),
+    (2, False, 'area16'),
+    (1, True, 'area8_bgr_rev'),
+    (2, True, 'area16_bgr_rev'),
+)
 
 _cache_lock = Lock()
 _queue_lock = Lock()
 _PROGRAM_CACHE = None
+
+
+def _is_bgr_rev(image):
+    return (not image.flags.c_contiguous and image.ndim == 3 and image.shape[2] == 3
+            and image.dtype in (np.uint8, np.uint16) and image[..., ::-1].flags.c_contiguous)
 
 
 def _get_or_build_program(cl, device):
@@ -37,7 +48,7 @@ def _get_or_build_program(cl, device):
         context = cl.Context([device])
         queue = cl.CommandQueue(context, device=device)
         program = cl.Program(context, _KERNEL).build()
-        kernels = {size: cl.Kernel(program, name) for size, name in _KERNEL_NAMES}
+        kernels = {(size, rev): cl.Kernel(program, name) for size, rev, name in _KERNEL_NAMES}
         _PROGRAM_CACHE = (key, context, queue, kernels)
         return context, queue, kernels
 
@@ -47,19 +58,21 @@ def _invalidate_program_cache():
     with _cache_lock:
         _PROGRAM_CACHE = None
 
-_KERNEL = r'''
+_KERNEL = f'#define AREA_TAPS {_TAPS}\n' + r'''
 #pragma OPENCL FP_CONTRACT OFF
 
-typedef struct { int start, count; float weight[5]; } Span;
+typedef struct { int start, count; float weight[AREA_TAPS]; } Span;
 
-#define AREA(NAME, TYPE, STORE) \
+#define AREA(NAME, TYPE, STORE, REVERSE) \
 __kernel void NAME(__global const TYPE *src, __global TYPE *dst, \
                    __global const Span *xs, __global const Span *ys, \
                    int channels, int src_stride, int first_src_y, int first_dst_y) \
 { \
     int k = get_global_id(0), y = get_global_id(1); \
     Span xspan = xs[k / channels], yspan = ys[first_dst_y + y]; \
-    int i = (yspan.start - first_src_y) * src_stride + xspan.start * channels + k % channels; \
+    int c = k % channels; \
+    int i = (yspan.start - first_src_y) * src_stride + xspan.start * channels \
+            + (REVERSE ? 2 - c : c); \
     float total = 0.0f; \
     for (int dy = 0; dy < yspan.count; ++dy, i += src_stride) { \
         float row = 0.0f; \
@@ -69,8 +82,10 @@ __kernel void NAME(__global const TYPE *src, __global TYPE *dst, \
     } \
     dst[y * get_global_size(0) + k] = STORE(total); \
 }
-AREA(area8, uchar, convert_uchar_sat_rte)
-AREA(area16, ushort, convert_ushort_sat_rte)
+AREA(area8, uchar, convert_uchar_sat_rte, 0)
+AREA(area16, ushort, convert_ushort_sat_rte, 0)
+AREA(area8_bgr_rev, uchar, convert_uchar_sat_rte, 1)
+AREA(area16_bgr_rev, ushort, convert_ushort_sat_rte, 1)
 '''
 
 
@@ -119,12 +134,13 @@ def _axis_table(source, dest):
 class ExactAreaGpu:
     """One stack's lazy kernel and stripe buffers. None requests CPU resize."""
 
-    def __init__(self):
+    def __init__(self, *, should_cancel=None):
+        self._should_cancel = should_cancel
         self._lock = Lock()
         self._disabled = False
         self._cl = None
         self._shape = None
-        self._buffers = None
+        self._buffers = self._ys = None
         self._context = None
         self._queue = None
         self._kernels = None
@@ -150,10 +166,12 @@ class ExactAreaGpu:
         from core import resource_policy as policy
         from fusion_methods._openfocus_gpu import _free_vram
 
-        self._buffers = self._shape = None
+        self._buffers = self._shape = self._ys = None
         source_h, source_w = image.shape[:2]
         itemsize = image.itemsize
-        rows = min(_TILE_ROWS, height)
+        # Preserve the source-stripe row bound of the fourfold path. At
+        # larger ratios this reduces transfer staging and device residency.
+        rows = min(_TILE_ROWS, height, _TILE_ROWS * 4 * height // source_h)
         src_bytes = min(source_h, math.ceil(rows * source_h / height) + 2) * source_w * channels * itemsize
         dst_bytes = rows * width * channels * itemsize
         table_bytes = (width + height) * _AXIS.itemsize
@@ -179,6 +197,7 @@ class ExactAreaGpu:
                          cl.Buffer(context, flags.READ_ONLY | flags.COPY_HOST_PTR, hostbuf=xs),
                          cl.Buffer(context, flags.READ_ONLY | flags.COPY_HOST_PTR, hostbuf=ys))
         self._ys = ys
+        self._rows = rows
         self._shape = image.shape, image.dtype, width, height
         return True
 
@@ -186,22 +205,28 @@ class ExactAreaGpu:
         """Return CPU-equivalent cv2.resize(image, dsize, interpolation=INTER_AREA), or None.
 
         dsize is explicit (OpenCV may use different coefficients with fx/fy).
-        Large contiguous uint8/uint16 gray, BGR and BGRA images are eligible.
-        Both axes must shrink by at most four, with a fractional factor on at
-        least one axis. All other calls remain ordinary CPU operations.
+        Large contiguous uint8/uint16 gray, BGR, BGRA and bgr_rev images are eligible.
+        Both axes must shrink by at most eight, with a fractional factor on
+        at least one axis. Integer fast paths remain ordinary CPU operations.
         """
+        bgr_rev = _is_bgr_rev(image)
         if (self._disabled or image.dtype not in (np.uint8, np.uint16)
-                or image.ndim not in (2, 3) or not image.flags.c_contiguous
+                or image.ndim not in (2, 3) or not (image.flags.c_contiguous or bgr_rev)
                 or image.nbytes < _MIN_SOURCE_BYTES):
             return None
         h, w = image.shape[:2]
         width, height = dsize
         channels = image.shape[2] if image.ndim == 3 else 1
         if (channels not in (1, 3, 4) or max(h, w) > _MAX_SIDE
-                or not (0 < width < w <= 4 * width and 0 < height < h <= 4 * height)
+                or not (0 < width < w <= _MAX_SCALE * width
+                        and 0 < height < h <= _MAX_SCALE * height)
                 or (w % width == 0 and h % height == 0)):
             return None
+        from core.registration import RegistrationCancelled, _check_cancel
+
+        should_cancel = self._should_cancel
         with self._lock, _queue_lock:
+            _check_cancel(should_cancel)
             if self._disabled:
                 return None
             try:
@@ -217,23 +242,31 @@ class ExactAreaGpu:
                 shape = (height, width) if channels == 1 else (height, width, channels)
                 output = np.empty(shape, image.dtype)
                 src, dst, xs, ys = self._buffers
-                kernel = self._kernels[image.itemsize]
+                kernel = self._kernels[(image.itemsize, bgr_rev)]
+                source_view = image[..., ::-1] if bgr_rev else image
                 starts, counts = self._ys['start'], self._ys['count']
-                for row in range(0, height, _TILE_ROWS):
-                    stop = min(row + _TILE_ROWS, height)
+                for row in range(0, height, self._rows):
+                    _check_cancel(should_cancel)
+                    stop = min(row + self._rows, height)
                     first = starts[row]
                     last = starts[stop - 1] + counts[stop - 1]
-                    band = image[first:last]
-                    self._cl.enqueue_copy(self._queue, src, band, is_blocking=False)
+                    band = source_view[first:last]
+                    # Keep the host buffer export alive through the blocking readback.
+                    upload = self._cl.enqueue_copy(self._queue, src, band, is_blocking=False)
                     kernel(self._queue, (width * channels, stop - row), None, src, dst, xs, ys,
                            np.int32(channels), np.int32(w * channels), first, np.int32(row))
                     self._cl.enqueue_copy(self._queue, output[row:stop], dst, is_blocking=True)
+                    del upload
+                _check_cancel(should_cancel)
                 if self.frames_resized == 0:
                     from fusion_methods._openfocus_gpu import opencl_device_name
                     self.device_name = opencl_device_name(self._device)
                     logging.getLogger(__name__).info('ECC working-frame resize on %s', self.device_name)
                 self.frames_resized += 1
                 return output
+            except RegistrationCancelled:
+                # All cancellation checks are at stripe boundaries with no work in flight.
+                raise
             except Exception as exc:
                 drain_failed = False
                 queue = self._queue
@@ -249,7 +282,7 @@ class ExactAreaGpu:
                 if drain_failed or (err_types and isinstance(exc, err_types)):
                     _invalidate_program_cache()
                 self._disabled = True
-                self._buffers = None
+                self._buffers = self._ys = None
                 self._context = None
                 self._queue = None
                 self._kernels = None

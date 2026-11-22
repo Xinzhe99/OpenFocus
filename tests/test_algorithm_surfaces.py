@@ -386,35 +386,29 @@ def test_every_method_has_a_selection_hint_and_ordered_models_lock_reverse(
 
 
 def test_method_dropdown_groups_families_in_a_stable_order(qapp, algorithm_host):
-    """Section headers are visible, non-selectable and ordered AI → spatial → transform."""
-    from PyQt6.QtCore import Qt
-    from core.algorithms import fusion_algorithms
+    """Each section contains the expected method IDs in display order."""
     from locales import trans
-    from ui.algorithm_combo import CATEGORY_KEYS, CATEGORY_ORDER
 
     combo = algorithm_host.combo_fusion
-    headers, methods, last_category = [], [], None
-    for index in range(combo.count()):
-        code = combo.itemData(index)
-        item = combo.model().item(index)
-        if code is None:
-            assert item is not None and not item.isEnabled()
-            headers.append(combo.itemText(index))
-        elif code != "none":
-            methods.append(code)
-
     assert combo.itemData(0) == "none"
-    assert headers == [trans.t(CATEGORY_KEYS[category]) for category in CATEGORY_ORDER]
-    expected = [spec.id for spec in sorted(
-        fusion_algorithms(), key=lambda spec: CATEGORY_ORDER.index(spec.category))]
-    assert methods == expected
-    # Header rows stay disabled and a step smaller than the method text.
-    for index in range(combo.count()):
-        if combo.itemData(index) is None:
+    groups = []
+    for index in range(1, combo.count()):
+        code = combo.itemData(index)
+        if code is None:
             item = combo.model().item(index)
-            assert not item.isEnabled()
+            assert item is not None and not item.isEnabled()
             if combo.font().pointSizeF() > 0:
                 assert item.font().pointSizeF() < combo.font().pointSizeF()
+            groups.append((combo.itemText(index), []))
+        else:
+            assert groups
+            groups[-1][1].append(code)
+
+    assert groups == [
+        (trans.t("group_openfocus_methods"), ["openfocus_a", "openfocus_b", "openfocus_c"]),
+        (trans.t("group_stackmff_methods"), ["stackmffv3", "stackmffv2", "stackmff"]),
+        (trans.t("group_other_methods"), ["guided_filter", "gfgfgf", "dct", "dtcwt", "extension"]),
+    ]
 
 
 @pytest.mark.parametrize('method', ['openfocus_a', 'openfocus_b', 'openfocus_c'])
@@ -483,3 +477,43 @@ def test_compare_and_batch_edit_smoothing_locally(algorithm_host):
         for dialog in (compare, batch):
             dialog.reject()
             dialog.deleteLater()
+
+
+def test_stackmff_scale_crosses_main_batch_and_settings(algorithm_host, tmp_path, monkeypatch):
+    from PyQt6.QtCore import QSettings
+    from core.workers import RenderWorker
+    from dialogs.batch import BatchProcessingDialog
+    from utils import settings_store
+
+    monkeypatch.setattr('core.multi_focus_fusion.is_ai_fusion_available', lambda: True)
+    settings = QSettings(str(tmp_path / 'scale.ini'), QSettings.Format.IniFormat)
+    monkeypatch.setattr(settings_store, 'get_settings', lambda: settings)
+    settings.setValue('fusion/ai_mode', 'hard')
+    host = algorithm_host
+    method = 'stackmffv3'
+    settings_store.load_parameter_memories(host)
+    host.set_fusion_method(method)
+    panel = host.fusion_parameter_panel
+    assert panel.values() == {'mode': 'hard', 'inference_scale': 'single'}
+
+    scale = panel.editors['inference_scale']
+    assert [scale.itemData(i) for i in range(scale.count())] == ['single', 'dual']
+    scale.setCurrentIndex(scale.findData('dual'))
+    render = RenderWorker(host.raw_images, algorithm=method,
+                          fusion_parameters=host.fusion_parameters_for(method))
+    assert render.fusion_parameters == {'mode': 'hard', 'inference_scale': 'dual'}
+    settings_store.save_parameter_memories(host)
+    host._fusion_parameters_by_method = {}
+    settings_store.load_parameter_memories(host)
+    assert host.fusion_parameters_for(method) == render.fusion_parameters
+
+    batch = BatchProcessingDialog(host)
+    try:
+        assert batch.get_processing_settings()['fusion_params'] == render.fusion_parameters
+        batch_scale = batch.fusion_parameter_panel.editors['inference_scale']
+        batch_scale.setCurrentIndex(batch_scale.findData('single'))
+        assert batch.get_processing_settings()['fusion_params'] == {'mode': 'hard', 'inference_scale': 'single'}
+        assert host.fusion_parameters_for(method)['inference_scale'] == 'dual'
+    finally:
+        batch.reject()
+        batch.deleteLater()

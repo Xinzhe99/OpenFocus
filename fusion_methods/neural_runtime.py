@@ -15,6 +15,8 @@ import traceback
 import cv2
 import numpy as np
 
+from core.models.attention_workspace import released_attention_workspace_bytes
+
 from utils.logging_setup import get_logger, log_action
 from utils.performance_profile import current as _profile
 
@@ -25,11 +27,13 @@ _PROVIDER = {'CPU': 'CPUExecutionProvider', 'DIRECTML': 'DmlExecutionProvider',
              'OPENVINO': 'OpenVINOExecutionProvider', 'COREML': 'CoreMLExecutionProvider'}
 _ORT_ORDER = ('CUDA', 'ROCM', 'DIRECTML', 'OPENVINO', 'COREML')
 _NATIVE_ORDER = ('TENSORRT', 'TORCH_CUDA', 'TORCH_MPS')
+_NATIVE_TORCH = ('TORCH_CUDA', 'TORCH_MPS')
 # A refresh publishes one immutable installation snapshot. A live job holds
 # its own reference, so an installer cannot switch its interpreter mid-job.
 _PACK = None
 _JOB_PACK = None
 _WORKER = None
+_WORKER_CUDA_TILE = None
 _JOB_RAM_LIMIT = _JOB_VRAM_LIMIT = None
 _WORKER_FAILURE = None
 _FAILED_SHAPES = {}
@@ -120,7 +124,8 @@ def _record_admission(kind, snapshot):
 
 
 def finish_inference_job():
-    global _WORKER
+    global _WORKER, _WORKER_CUDA_TILE
+    _WORKER_CUDA_TILE = None
     worker, _WORKER = _WORKER, None
     if worker is not None:
         worker.close()
@@ -145,6 +150,9 @@ def start_inference_job():
     """Reset actual-device reporting and fallback for a new serialized job."""
     global _ACTUAL_DEVICE, _JOB_ACCELERATOR, _FALLBACK_CPU, _ACTUAL_CHECKPOINT
     global _JOB_PACK, _WORKER_FAILURE, _JOB_RAM_LIMIT, _JOB_VRAM_LIMIT
+    from fusion_methods.neural_common import reset_stackmff_kernels
+
+    reset_stackmff_kernels()
     finish_inference_job()
     _JOB_PACK = _WORKER_FAILURE = None
     _JOB_RAM_LIMIT = _JOB_VRAM_LIMIT = None
@@ -270,6 +278,21 @@ class _ProfiledSession:
         return result
 
 
+class _CpuSession:
+    """A CPU session that releases its arena's unused memory after each run.
+
+    The arena would otherwise keep the working set of both inference scales
+    between tiles and after the render.
+    """
+
+    def __init__(self, session, run_options):
+        self.session = session
+        self._run_options = run_options
+
+    def run(self, outputs, inputs):
+        return self.session.run(outputs, inputs, self._run_options)
+
+
 def refresh_accelerator_pack():
     """Refresh local pack eligibility without importing its engines or running a model."""
     global _PACK
@@ -378,11 +401,17 @@ def estimate_inference_bytes(n, h, w, kind):
     pixels = hp * wp
     feature_base = 7 if kind == 'CPU' else 12
     workspace = 0
+    if kind in _NATIVE_TORCH:
+        # Only the released checkpoints enter these engines, with bounded
+        # attention enabled by the app-supplied worker source.
+        attention = released_attention_workspace_bytes(n, hp, wp)
+    else:
+        attention = pixels // 16 * 3 * 4 * (n * 64 + n * n)
     if kind == 'TENSORRT':
         from core.inference_tensorrt import workspace_bytes
         workspace = workspace_bytes(n, hp, wp)
     return (int(n * pixels * 3 * 4 * (feature_base + 4))
-            + int(pixels / 16 * 3 * 4 * (n * 64 + n * n))
+            + attention
             + n * pixels * 4 * 6 + 4 * 1024 * 1024 + workspace)
 
 
@@ -477,7 +506,16 @@ def _session(path, shape, device, threads):
                 profile.session_evicted(_describe_session(evicted))
         options = ort.SessionOptions()
         options.intra_op_num_threads = max(1, int(threads or 1))
-        options.enable_cpu_mem_arena = False
+        if device == 'CPU':
+            # Buffer reuse keeps a buffer allocated from the first tensor
+            # planned into it until the last one, so a run held about 2.5
+            # times the memory it holds without reuse, and took longer.
+            # Without reuse, the first run of a shape allocates each tensor
+            # separately. The arena keeps that run fast, and _CpuSession
+            # asks it to release its unused memory when every run ends.
+            options.enable_mem_reuse = False
+        else:
+            options.enable_cpu_mem_arena = False
         trace_directory = operator_trace_directory() if device == 'CPU' else None
         if device != 'CPU':
             options.enable_profiling = True
@@ -521,8 +559,12 @@ def _session(path, shape, device, threads):
                    shape=shape, threads=options.intra_op_num_threads)
         if device != 'CPU':
             session = _ProfiledSession(session, device)
-        elif trace_directory is not None:
-            _TRACED[key] = session
+        else:
+            if trace_directory is not None:
+                _TRACED[key] = session
+            run_options = ort.RunOptions()
+            run_options.add_run_config_entry('memory.enable_memory_arena_shrinkage', 'cpu:0')
+            session = _CpuSession(session, run_options)
         _SESSIONS[key] = session
     _SESSIONS.move_to_end(key)
     return _SESSIONS[key]
@@ -590,6 +632,14 @@ def resolve_job_device(use_gpu):
     return device
 
 
+def _worker_covers_cuda_tile(path, shape):
+    if _WORKER_CUDA_TILE is None:
+        return False
+    model, (layers, height, width) = _WORKER_CUDA_TILE
+    n, hp, wp = shape
+    return model == path and layers == n and hp <= height and wp <= width
+
+
 def _memory_refusal(path, shape, device, threads, *, reclaim=True):
     if device == 'TORCH_MPS':
         from core.resource_policy import probe_memory, ram_ceiling
@@ -622,6 +672,13 @@ def _memory_refusal(path, shape, device, threads, *, reclaim=True):
         del session
     n, hp, wp = shape
     required = estimate_inference_bytes(*shape, device) + n * hp * wp * 4 * 6
+    if _JOB_VRAM_LIMIT is not None and required > _JOB_VRAM_LIMIT:
+        return f'GPU memory plan budget {_JOB_VRAM_LIMIT} bytes, requires {required}'
+    if device == 'TORCH_CUDA' and _worker_covers_cuda_tile(path, shape):
+        # The worker's caching allocator retains its working set. A driver
+        # probe counts that reusable space as unavailable. The worker still
+        # verifies the checkpoint and reports any allocation failure.
+        return None
     snapshot = _vram_snapshot(device)
     if reclaim and (_vram_unknown(snapshot) or required > vram_budget(snapshot)) and (_SESSIONS or _WORKER):
         _clear_sessions()
@@ -657,7 +714,7 @@ def _run_ort(planes, path, device, threads, should_cancel, profile):
 
 
 def _run_native(planes, path, device, should_cancel, profile):
-    global _WORKER, _WORKER_FAILURE, _JOB_PACK
+    global _WORKER, _WORKER_CUDA_TILE, _WORKER_FAILURE, _JOB_PACK
     from fusion_methods.inference_client import Worker, WorkerLost, WorkerError
     from core.inference_pack import pack_root
     if _WORKER_FAILURE:
@@ -686,6 +743,10 @@ def _run_native(planes, path, device, should_cancel, profile):
             raise WorkerError('Engine unavailable on this GPU/driver')
         with profile.stage('session.run'):
             result = _WORKER.run(device, path, planes, pack_root() / 'engine-cache', should_cancel)
+        if device != 'TORCH_CUDA':
+            _WORKER_CUDA_TILE = None
+        elif not _worker_covers_cuda_tile(path, planes.shape[1:]):
+            _WORKER_CUDA_TILE = path, planes.shape[1:]
         return result, device
     except (WorkerLost, OSError) as exc:
         _WORKER_FAILURE = str(exc)
@@ -730,7 +791,7 @@ def logits(planes, path, device, threads, should_cancel=None):
         if device == 'CPU' and requested != 'CPU':
             from core.resource_policy import require_memory
             require_memory(estimate_inference_bytes(*shape, device), None, _JOB_RAM_LIMIT)
-        reason = _memory_refusal(path, shape, device, threads)
+        reason = _memory_refusal(model, shape, device, threads)
         if reason is None:
             try:
                 if device in _NATIVE_ORDER:
@@ -778,22 +839,77 @@ def logits(planes, path, device, threads, should_cancel=None):
 
 
 def softmax(x):
-    x = x - x.max(axis=1, keepdims=True)
+    return _softmax_shifted(x - x.max(axis=1, keepdims=True))
+
+
+def _softmax_slice(x):
+    x -= x.max(axis=1, keepdims=True)
+    return _softmax_shifted(x)
+
+
+def softmax_inplace(x):
+    """Normalize an owned, writable float32 logits buffer over all layers."""
+    return _softmax_slice(x)
+
+
+_DEFAULT_SOFTMAX_INPLACE = softmax_inplace
+
+
+def _run_softmax_inplace(x, threads=1):
+    workers = max(1, min(4, int(threads or 1)))
+    if (workers > 1 and softmax_inplace is _DEFAULT_SOFTMAX_INPLACE
+            and x.ndim == 4 and x.size >= 262144 and x.shape[2] >= workers):
+        from concurrent.futures import ThreadPoolExecutor
+
+        h = x.shape[2]
+        step = (h + workers - 1) // workers
+        slices = [x[:, :, y0:min(h, y0 + step), :] for y0 in range(0, h, step)]
+        with ThreadPoolExecutor(max_workers=len(slices)) as executor:
+            list(executor.map(_softmax_slice, slices))
+        return x
+    return softmax_inplace(x)
+
+
+def _softmax_shifted(x):
     np.exp(x, out=x)
     x /= x.sum(axis=1, keepdims=True)
     return x
 
 
 def _resize_antialias(planes, scale, should_cancel=None):
+    return _resize_antialias_impl(planes, scale, should_cancel, 1)
+
+
+def _resize_antialias_impl(planes, scale, should_cancel, workers):
+    from fusion_methods.neural_common import StackMFFKernelUnavailable, cancel, load_stackmff_kernels
+
+    if (planes.ndim == 4 and planes.dtype == np.float32 and planes.size >= 65536
+            and min(planes.shape[-2:]) > 1):
+        cancel(should_cancel)
+        kernels = load_stackmff_kernels()
+        if kernels is not None:
+            try:
+                return _resize_antialias_native(planes, scale, should_cancel, workers, kernels)
+            except StackMFFKernelUnavailable:
+                pass
+
+    h, w = planes.shape[-2:]
+    if (scale == 0.75 and planes.dtype == np.float32 and h and w
+            and h % 4 == 0 and w % 4 == 0):
+        return _resize_three_quarters(planes, should_cancel)
+    return _resize_triangle(planes, scale, should_cancel)
+
+
+def _resize_triangle(planes, scale, should_cancel=None):
+    """Antialiased bilinear resize of the last two axes, at any scale."""
     from fusion_methods.neural_common import cancel
-    # PyTorch bilinear antialias uses a triangle filter widened for downsampling.
     result = planes
     for axis in (2, 3):
         cancel(should_cancel)
         old = result.shape[axis]
-        new = int(old * scale)
-        if new < 1:
-            raise ValueError('Input is too small for the inference scale')
+        new = max(1, int(old * scale))
+        if new == old == 1:
+            continue
         src = np.moveaxis(result, axis, -1)
         dst = np.empty(src.shape[:-1] + (new,), dtype=np.float32)
         for i in range(new):
@@ -809,36 +925,182 @@ def _resize_antialias(planes, scale, should_cancel=None):
     return result
 
 
-def probabilities(planes, path, device, threads, sigma, cancel=None):
+def _resize_antialias_native(planes, scale, should_cancel, workers, kernels):
+    from fusion_methods.neural_common import cancel
+
+    batches, layers, height, width = planes.shape
+    y_taps = kernels.precompute_antialias_taps(height, scale)
+    x_taps = kernels.precompute_antialias_taps(width, scale)
+    out_h, out_w = len(y_taps[0]), len(x_taps[0])
+    out = np.empty((batches, layers, out_h, out_w), dtype=np.float32)
+    # Large planes check cancellation within a layer. Small tiles keep batching.
+    row_block = min(out_h, max(1, (1024 * 1024) // width))
+    layer_block = min(8, max(1, (1024 * 1024) // (width * row_block)))
+
+    def resize_range(batch, start, stop):
+        scratch = np.empty(width, dtype=np.float32)
+        for first in range(start, stop, layer_block):
+            last = min(stop, first + layer_block)
+            for top in range(0, out_h, row_block):
+                cancel(should_cancel)
+                kernels.resize_antialias_range(
+                    planes, batch, first, last, *y_taps, *x_taps, out,
+                    top, min(out_h, top + row_block), scratch)
+
+    if workers > 1 and layers >= 8:
+        from concurrent.futures import ThreadPoolExecutor
+
+        step = (layers + workers - 1) // workers
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            for batch in range(batches):
+                cancel(should_cancel)
+                def resize_partition(start):
+                    resize_range(batch, start, min(layers, start + step))
+
+                for _ in executor.map(resize_partition, range(0, layers, step)):
+                    pass
+    else:
+        for batch in range(batches):
+            resize_range(batch, 0, layers)
+    cancel(should_cancel)
+    return out
+
+
+_DEFAULT_RESIZE_ANTIALIAS = _resize_antialias
+
+
+def _run_resize_antialias(planes, scale, should_cancel=None, threads=1):
+    if _resize_antialias is not _DEFAULT_RESIZE_ANTIALIAS:
+        return _resize_antialias(planes, scale, should_cancel)
+    workers = max(1, min(4, int(threads or 1)))
+    return _resize_antialias_impl(planes, scale, should_cancel, workers)
+
+
+def _resize_three_quarters_axis(source, dest, should_cancel):
+    """Reduce the first axis by 3/4: four input rows make three output rows.
+
+    These are the weights `_resize_triangle` computes at this scale. Output
+    centers repeat at input offsets 1/6, 3/2 and 17/6 with radius 4/3, so the
+    outer two outputs also read one row of the neighbouring group. At either
+    end of the axis that row is missing, and renormalizing the two remaining
+    taps gives 7/10 and 3/10. Products are summed in input order, which keeps
+    every float32 result identical to the general filter.
+    """
+    from fusion_methods.neural_common import cancel
+
+    a, b, c, d = (source[offset::4] for offset in range(4))
+    dest[0] = a[0] * 0.7 + b[0] * 0.3
+    dest[-1] = c[-1] * 0.3 + d[-1] * 0.7
+    # Bound temporary products and the work between cancellation checks.
+    groups = max(1, 262144 // source.shape[1])
+    for start in range(0, len(a), groups):
+        if start:
+            cancel(should_cancel)
+        stop = min(start + groups, len(a))
+        dest[3 * start + 1:3 * stop:3] = b[start:stop] * 0.5 + c[start:stop] * 0.5
+        first = max(1, start)
+        dest[3 * first:3 * stop:3] = (d[first - 1:stop - 1] * (1 / 11)
+                                      + a[first:stop] * (7 / 11) + b[first:stop] * (3 / 11))
+        last = min(stop, len(a) - 1)
+        dest[3 * start + 2:3 * last + 2:3] = (c[start:last] * (3 / 11)
+                                               + d[start:last] * (7 / 11) + a[start + 1:last + 1] * (1 / 11))
+
+
+def _resize_three_quarters(planes, should_cancel=None):
+    """`_resize_triangle` at 3/4 scale for float32 planes of whole four-row groups.
+
+    Each plane is finished before the next starts, so the intermediate
+    vertical pass is one plane however deep the stack is.
+    """
+    from fusion_methods.neural_common import cancel
+    cancel(should_cancel)
+    h, w = planes.shape[-2:]
+    height, width = 3 * h // 4, 3 * w // 4
+    result = np.empty((*planes.shape[:2], height, width), dtype=np.float32)
+    vertical = np.empty((height, w), dtype=np.float32)
+    for batch, layer in np.ndindex(planes.shape[:2]):
+        cancel(should_cancel)
+        _resize_three_quarters_axis(planes[batch, layer], vertical, should_cancel)
+        cancel(should_cancel)
+        _resize_three_quarters_axis(vertical.T, result[batch, layer].T, should_cancel)
+    return result
+
+
+def probabilities(planes, path, device, threads, sigma, cancel=None, *, dual_scale=True):
     from fusion_methods.neural_common import cancel as check
     profile = _profile()
     h, w = planes.shape[-2:]
+    workers = max(1, min(4, int(threads or 1)))
     with profile.stage('logits.full'):
         p = logits(planes, path, device, threads, cancel)
     with profile.stage('softmax.full'):
-        p = softmax(p)
+        p = _run_softmax_inplace(p, workers)
     check(cancel)
-    with profile.stage('resize.0.75'):
-        small = _resize_antialias(planes, 0.75, cancel)
-    with profile.stage('logits.reduced'):
-        q = logits(small, path, device, threads, cancel)
-    del small
-    with profile.stage('softmax.reduced'):
-        q = softmax(q)
-    with profile.stage('upsample_combine'):
-        for n in range(p.shape[1]):
-            check(cancel)
-            p[0, n] += cv2.resize(q[0, n], (w, h), interpolation=cv2.INTER_LINEAR)
-        del q
-        p *= 0.5
+    n_layers = p.shape[1]
+    if dual_scale:
+        with profile.stage('resize.0.75'):
+            small = _run_resize_antialias(planes, 0.75, cancel, workers)
+        with profile.stage('logits.reduced'):
+            q = logits(small, path, device, threads, cancel)
+        del small
+        with profile.stage('softmax.reduced'):
+            q = _run_softmax_inplace(q, workers)
+        with profile.stage('upsample_combine'):
+            if workers > 1 and n_layers >= 8:
+                from concurrent.futures import ThreadPoolExecutor
+
+                step = (n_layers + workers - 1) // workers
+                ranges = [(n0, min(n_layers, n0 + step)) for n0 in range(0, n_layers, step)]
+                def _upsample_range(rng_pair):
+                    scratch = np.empty((h, w), np.float32)
+                    for n in range(*rng_pair):
+                        check(cancel)
+                        cv2.resize(q[0, n], (w, h), dst=scratch, interpolation=cv2.INTER_LINEAR)
+                        p[0, n] += scratch
+                        p[:, n] *= np.float32(0.5)
+                with ThreadPoolExecutor(max_workers=len(ranges)) as executor:
+                    list(executor.map(_upsample_range, ranges))
+            else:
+                scratch = np.empty((h, w), np.float32)
+                for n in range(n_layers):
+                    check(cancel)
+                    cv2.resize(q[0, n], (w, h), dst=scratch, interpolation=cv2.INTER_LINEAR)
+                    p[0, n] += scratch
+                p *= 0.5
+            del q
     if sigma:
         with profile.stage('gaussian'):
             radius = int(3 * sigma + 0.5)
-            for n in range(p.shape[1]):
+            ksize = (radius * 2 + 1,) * 2
+            if workers > 1 and n_layers >= 8:
+                from concurrent.futures import ThreadPoolExecutor
+
+                step = (n_layers + workers - 1) // workers
+                ranges = [(n0, min(n_layers, n0 + step)) for n0 in range(0, n_layers, step)]
+                def _blur_range(rng_pair):
+                    scratch = np.empty((h, w), np.float32)
+                    for n in range(rng_pair[0], rng_pair[1]):
+                        check(cancel)
+                        cv2.GaussianBlur(p[0, n], ksize, sigma,
+                                         dst=scratch, borderType=cv2.BORDER_REPLICATE)
+                        p[0, n] = scratch
+                with ThreadPoolExecutor(max_workers=len(ranges)) as executor:
+                    list(executor.map(_blur_range, ranges))
                 check(cancel)
-                p[0, n] = cv2.GaussianBlur(p[0, n], (radius * 2 + 1,) * 2, sigma,
-                                            borderType=cv2.BORDER_REPLICATE)
-            check(cancel)
-            p /= p.sum(axis=1, keepdims=True)
+                ystep = (h + workers - 1) // workers
+                yslices = [p[:, :, y0:min(h, y0 + ystep), :] for y0 in range(0, h, ystep) if y0 < h]
+                def _norm_slice(sub):
+                    sub /= sub.sum(axis=1, keepdims=True)
+                with ThreadPoolExecutor(max_workers=len(yslices)) as executor:
+                    list(executor.map(_norm_slice, yslices))
+            else:
+                scratch = np.empty((h, w), np.float32)
+                for n in range(n_layers):
+                    check(cancel)
+                    cv2.GaussianBlur(p[0, n], ksize, sigma,
+                                     dst=scratch, borderType=cv2.BORDER_REPLICATE)
+                    p[0, n] = scratch
+                check(cancel)
+                p /= p.sum(axis=1, keepdims=True)
     check(cancel)
     return p

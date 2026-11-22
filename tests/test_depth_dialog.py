@@ -1113,13 +1113,13 @@ def test_depth_preview_detail_preserves_model_data(depth_dialog, monkeypatch, qa
     assert calls == ["dct"]
 
 
-def test_depth_ai_mode_defaults_soft_and_uses_selected_mode(depth_dialog, monkeypatch, qapp):
+def test_depth_ai_mode_and_inference_scale_are_independent(depth_dialog, monkeypatch, qapp):
     from types import SimpleNamespace
     from core import depth_map
     seen = []
 
     def measure(images, progress, should_cancel, **kwargs):
-        seen.append(kwargs["mode"])
+        seen.append((kwargs['mode'], kwargs['inference_scale']))
         return _ramp(images, "stackmffv3")
 
     monkeypatch.setattr(depth_map, "_measure_stackmffv3", measure)
@@ -1134,21 +1134,27 @@ def test_depth_ai_mode_defaults_soft_and_uses_selected_mode(depth_dialog, monkey
         return resolve_fusion_parameters(method, values, depth=depth)
     dialog, window = depth_dialog('stackmffv3', fusion_parameters_for=parameters_for)
     assert dialog.fusion_parameter_panel.editors['mode'].currentData() == "hard"
+    scale = dialog.fusion_parameter_panel.editors['inference_scale']
+    assert scale.currentData() == 'single'
+    scale.setCurrentIndex(scale.findData('dual'))
     dialog.fusion_parameter_panel.editors['mode'].setCurrentIndex(dialog.fusion_parameter_panel.editors['mode'].findData("soft"))
     _click_and_finish(qapp, dialog)
-    assert seen == ["soft"]
-    assert dialog._map_parameters["mode"] == "soft"
+    assert seen == [('soft', 'dual')]
+    assert dialog._map_parameters == {'mode': 'soft', 'inference_scale': 'dual', 'reverse_order': False}
     assert window.fusion_parameters_for('stackmffv3', depth=True)['mode'] == 'hard'
     assert dialog.btn_save_3d.isEnabled()
     _select(dialog.method_combo, "dct")
     assert 'mode' not in dialog.fusion_parameter_panel.editors
+    assert 'inference_scale' not in dialog.fusion_parameter_panel.editors
     _select(dialog.method_combo, "stackmffv3")
     assert dialog.fusion_parameter_panel.editors['mode'].currentData() == "soft"
+    scale = dialog.fusion_parameter_panel.editors['inference_scale']
+    assert scale.currentData() == 'dual'
     dialog.fusion_parameter_panel.editors['mode'].setCurrentIndex(dialog.fusion_parameter_panel.editors['mode'].findData("hard"))
     assert dialog._stale and dialog._map_parameters["mode"] == "soft"
     _click_and_finish(qapp, dialog)
-    assert seen == ["soft", "hard"]
-    assert dialog._map_parameters["mode"] == "hard"
+    assert seen == [('soft', 'dual'), ('hard', 'dual')]
+    assert dialog._map_parameters == {'mode': 'hard', 'inference_scale': 'dual', 'reverse_order': False}
 
 
 def test_depth_dtcwt_levels_seed_from_main_and_preserve_local_draft(depth_dialog, monkeypatch, qapp):

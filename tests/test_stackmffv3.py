@@ -50,6 +50,7 @@ def test_hard_mode_values_come_from_the_source_frames():
 def test_tiled_hard_selection_does_not_blend_conflicting_tiles(monkeypatch):
     """Overlapping tiles may choose different source frames at one pixel."""
     import core.multi_focus_fusion as mff
+    from core.source_frames import resolve_frame
 
     frames = [np.full((16, 24, 3), value, np.uint8) for value in (16, 240)]
     fusion = MultiFocusFusion('stackmffv3', use_gpu=False, exposure_match=False)
@@ -58,7 +59,7 @@ def test_tiled_hard_selection_does_not_blend_conflicting_tiles(monkeypatch):
         choices = iter([0, 1] * 20)
 
         def predict(_fusion, crops, _resize, **_kwargs):
-            return crops[next(choices)]
+            return resolve_frame(crops[next(choices)])
 
         monkeypatch.setattr(mff, 'resolve_runner', lambda _name: predict)
         return fusion._fuse_tiled_neural(
@@ -155,6 +156,7 @@ def test_ai_tile_progress_never_skips_ahead(monkeypatch):
 @pytest.mark.parametrize('grayscale', [False, True])
 def test_gray_staging_matches_single_replicate_padding(shape, grayscale):
     from fusion_methods import stackmffv3 as ai
+    import cv2
     from utils.image_utils import normalize_fuse_input
 
     rng = np.random.default_rng(315)
@@ -163,7 +165,10 @@ def test_gray_staging_matches_single_replicate_padding(shape, grayscale):
     frames = [rng.integers(0, 65536, source_shape, np.uint16)[:, ::2]
               for _ in range(3)]
     normalized, _ = normalize_fuse_input(frames)
-    expected = np.stack([ai._gray01(f) for f in normalized])[None]
+    expected = np.stack([
+        (frame if grayscale else cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)) / np.float32(255)
+        for frame in normalized
+    ])[None]
     expected = np.pad(expected, ((0, 0), (0, 0), (0, (-h) % 64),
                                  (0, (-w) % 64)), mode='edge')
     actual = ai._stage_gray(frames, None)
@@ -222,7 +227,7 @@ def test_cancel_between_native_inference_scales(monkeypatch):
     frames = [np.full((17, 19, 3), value, np.uint8) for value in (30, 70)]
     with pytest.raises(RegistrationCancelled):
         ai.model_probabilities(frames, WEIGHTS, False, thread_count=1,
-                               should_cancel=lambda: bool(completed))
+                               should_cancel=lambda: bool(completed), inference_scale='dual')
     assert len(completed) == 1
 
 
@@ -273,14 +278,15 @@ def test_direct_probability_inference_cannot_bypass_memory_budget(monkeypatch):
 
 
 @pytest.mark.parametrize('mode', ['soft', 'hard'])
-def test_adapter_matches_probability_weighted_source_pixels(mode):
+@pytest.mark.parametrize('scale', ['single', 'dual'])
+def test_adapter_matches_probability_weighted_source_pixels(mode, scale):
     from fusion_methods import stackmffv3 as ai
     rng = np.random.default_rng(905)
     frames = [rng.uniform(0, 255, (17, 38, 3)).astype(np.float32)[:, ::2]
               for _ in range(3)]
     probs = ai.model_probabilities(frames, WEIGHTS, False,
                                    sigma=0.5 if mode == 'soft' else 0.0,
-                                   thread_count=1)
+                                   thread_count=1, inference_scale=scale)
     colors = np.stack(frames)
     if mode == 'soft':
         expected = (probs[..., None] * colors).sum(axis=0)
@@ -288,7 +294,7 @@ def test_adapter_matches_probability_weighted_source_pixels(mode):
         expected = colors[probs.argmax(0), np.arange(17)[:, None],
                           np.arange(19)[None, :]]
     actual = ai._stackmffv3_batch_impl([frames], WEIGHTS, False, mode,
-                                       thread_count=1)[0]
+                                       thread_count=1, inference_scale=scale)[0]
     np.testing.assert_allclose(actual, expected, rtol=0, atol=1e-5)
 
 

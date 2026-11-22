@@ -9,6 +9,83 @@ model workspaces and full-size outputs still require available RAM and temporary
 data requires free disk space. A stack can be rejected if its working set cannot
 fit. See [GPU support](GPU_SUPPORT.md) for provider and validation limitations.
 
+## 8K deep stacks
+
+The CPU measurements compare one run at `b7ad5345` with one optimized run
+for each method. The input stack repeats 12 distinct synthetic images across
+100 uncompressed 7680 × 4320 RGB16 TIFFs. Each run used four requested threads
+on a Ryzen 9 7945HX with 16 GiB RAM on Windows. Fusion time includes source
+preparation and ends before export. Both versions ran with registration and
+exposure matching off. Working pixels and 16-bit TIFF read-backs matched
+for each method.
+
+| Method | Fusion time (s) | Peak process-tree RSS (GiB) | Peak temporary mappings (GiB) |
+| --- | ---: | ---: | ---: |
+| OpenFocus A | 109.59 → 31.96 | 2.09 → 0.81 | 19.28 → 0.74 |
+| OpenFocus B | 99.42 → 31.49 | 1.68 → 0.70 | 18.91 → 0.37 |
+| OpenFocus C | 310.16 → 115.47 | 2.00 → 1.23 | 20.04 → 0.73 |
+
+All three methods also completed 500-layer 8K renders on the optimized
+revision. Reading each RGB16 TIFF back from disk matched the quantized pixels.
+
+| Method | Fusion time (s) | Peak process-tree RSS (GiB) | Peak temporary mappings (GiB) |
+| --- | ---: | ---: | ---: |
+| OpenFocus A | 153.51 | 0.74 | 0.88 |
+| OpenFocus B | 178.71 | 0.60 | 0.37 |
+| OpenFocus C | 758.35 | 1.18 | 0.73 |
+
+Large renders can read eligible contiguous RGB TIFFs directly. Compression,
+applied registration and resizing can still incur decode or staging costs.
+
+On an RTX 4060 Laptop GPU with PyTorch 2.5.1 CUDA, all three StackMFF checkpoints
+produced identical logits and focus indices before and after bounding attention
+workspace. The 15 comparisons covered 100, 200, 300, 400 and 500 layers at
+128 × 128. At 500 layers, PyTorch peak allocated memory fell from 1,546 MiB to
+886 MiB and peak reserved memory from 1,680 MiB to 1,022 MiB. These measurements
+cover one inference tile including the model and inputs on the device.
+
+The following pairs fused 100 RGB16 TIFFs at 2048 × 1152 on the same CUDA
+backend, with 40 tiles of 256 × 256 and zero overlap. V3 used soft fusion.
+Both working and exported pixels matched within each pair.
+
+| Checkpoint | Fusion time (s) | Peak process-tree RSS (GiB) | Peak temporary mappings (GiB) |
+| --- | ---: | ---: | ---: |
+| StackMFF V1 | 120.57 → 80.48 | 0.89 → 0.51 | 6.63 → 0.04 |
+| StackMFF V2 | 87.86 → 35.89 | 1.30 → 2.00 | 6.64 → 0.05 |
+| StackMFF V3 | 94.84 → 43.77 | 1.68 → 3.20 | 6.63 → 0.04 |
+
+Peak process-tree commit was 6.18 → 6.13 GiB for V2 and 6.26 → 6.23 GiB for V3.
+The render process itself peaked at 1.25 → 0.23 GiB RSS for V2 and
+1.86 → 0.33 GiB for V3. The process-tree measurements also count the separate
+PyTorch worker.
+
+With 8.12 GiB available RAM and 6.93 GiB free VRAM in the same resource
+snapshot, TIFF-header preflight admitted the six methods at 2K, 4K and 8K
+in 100-layer steps through 500. At 8K, preflight selected 256-pixel StackMFF
+tiles at 100 and 200 layers and 128-pixel tiles at 300 through 500.
+
+A separate StackMFF V2 run fused 500 RGB16 TIFFs at 7680 × 4320 on the
+RTX 4060 Laptop GPU with PyTorch CUDA. Registration and exposure matching
+were off. The run used 2,040 tiles of 128 × 128 with zero overlap and took
+2,296.87 s in the fusion stage. Peak process-tree RSS was 2.49 GiB, peak
+process-tree commit was 6.12 GiB, and temporary mappings peaked at 0.62 GiB.
+The exported TIFF matched the quantized pixels on read-back. The inference
+session calls accounted for 752.80 s of the fusion stage.
+
+## Switching fusion methods on the same stack
+
+The Windows desktop rendered six compressed 512 × 320 RGB16 TIFFs using ECC
+and CPU fusion. One run started with StackMFF V3 and switched through
+OpenFocus B, StackMFF V1, OpenFocus C, StackMFF V2 and OpenFocus A. A second
+run started with V2 and continued through A, V3, B, C and V1. Both orders
+produced identical TIFF pixel hashes for each method.
+
+Only the first render of each order ran ECC. The first StackMFF render computed
+the shared exposure gains and prepared tiled source frames. Later StackMFF
+renders reused them across intervening OpenFocus renders. Disabling exposure
+matching for V2 produced the same pixels as a fresh render with matching off.
+Prepared and retained aligned pixels share a 2 GiB retention limit.
+
 ## StackMFF on an RTX 4060 Laptop GPU
 
 The Windows desktop render worker fused 29 registered 4096 × 3072 photographs
@@ -347,34 +424,55 @@ above). For the 24×256 tile it was 0.95 GB against 0.45 GB; at that size the
 process baseline (runtime, model, libraries) dominates, so the ratio does not
 describe the per-tile working set.
 
+## Consecutive desktop renders
+
+A full tiled StackMFF render can retain its disk-backed prepared pixels for
+the next render on the same stack. V1, V2 and V3 can reuse that snapshot in any
+order. A compatible render with another fusion method can run between them.
+The cache key includes the selected sources in order, registration and exposure
+matching. Each source is revalidated on use. The retained preparation and
+aligned pixels share a 2 GiB budget. Renders above the limit still use per-job
+scratch and can reuse matching registration transforms.
+
+On Windows 11, a CPU render of six 512 × 384 RGB16 frames with exposure
+matching took 2.97 s in the render process. After running OpenFocus A, StackMFF
+V1 and V2 in between, the same V3 render took 2.47 s with identical exported
+pixels. The three intervening and repeated StackMFF cache hits performed zero
+source decodes and skipped exposure statistics. Turning exposure matching off
+and back on triggered fresh preparation.
+
+Desktop startup can precompile the shared B/C CPU depth recurrence in a
+low-priority subprocess after a quiet interval. The process requires spare RAM
+and exits when foreground work needs it. On the test machine the recurrence
+took 5.63 s to compile fresh and 1.20 s to load from the compiled cache. An
+actual B render request reaped the idle compiler within 139 ms and completed.
+
 ## Current bounded execution (unreleased)
 
-OpenFocus A/B/C choose either a RAM-admitted frame window or one reusable row
-executor. The two parallel layers do not overlap. Activity selection preserves
-strict first-frame ties. B/C finish activity production and global depth before
-consuming source bands. B reads contributing source bands; C rereads sources
-through a bounded window in reverse order, using one completed canvas depth.
-A worker budget includes
-completed results waiting for reduction and original-size conversion before
-resizing. Explicit spatial tiles borrow the parent's lease and keep their
-private OpenFocus child execution serial.
+OpenFocus A/B/C bound concurrency to one admitted parallel layer at a time.
+A can produce responses in a frame window or select winners as each response
+row is computed. B finishes global depth before visiting contributing source
+regions. C builds the weighted detail pyramid in source order using two
+rolling Gaussian buffers. Activity and detail selection keep the first frame
+when scores tie. A worker budget includes results waiting for reduction and
+original-size conversion before resizing. Explicit spatial tiles borrow the
+parent's lease and keep their private OpenFocus child execution serial.
 
 Repeated source consumption retains each immutable source's exposure gain as
-a scalar; pixels still resolve through the same admitted window and source
-validation. Winner selection writes the final integer depth code directly.
-C builds immutable gray-resampling axis plans once per job and shares them
-across source producers. Its integer merge follows native reverse ordering
-and signed truncation; it does not allocate RGB reconstruction pyramids.
+a scalar and validates sources when resolving pixels. B's activity pass shares
+one gray-resampling axis plan across its workers and writes integer depth codes
+directly. C's depth export remains a separate calculation from C fusion.
 
 The decoded source cache evicts old entries before admitting an incoming decode.
 An existing consumer keeps its array views valid after eviction; the cache no
 longer pins an entire old cache while the decoder allocates its next frame.
 A stores selected codes as uint16 and accumulates focus-weighted source codes
 for low-detail background blending. Accumulators above 32 MiB use temporary
-row-windowed mappings; their pages are released between bands. The response
-and accumulation planes are released before the common float32 output conversion.
+row-windowed mappings. Bands that have enough response to skip background
+blending can bypass those mappings. A releases its accumulators before the
+common float32 output conversion.
 
-OpenFocus B and C estimate depth on floor-half gray planes at a fixed 0.5 scale.
+OpenFocus B fusion and B/C depth exports use half-resolution gray processing.
 Their 64-node gray kernel stores normalized float32 coefficients and evaluates
 vertical then horizontal taps with explicit LLVM float32 FMA. Intermediate
 float storage is limited to 128 rows per worker. B/C confidence uses the
@@ -468,6 +566,11 @@ limit and resource mode. A serial deferred warp can borrow idle threads only
 when the active OpenCV backend can be shown to enforce the limit; unknown or
 unbounded backends keep native parallelism disabled.
 
+ECC can reuse the result of a successful ordered pair of identical prepared
+gray planes. The cache is local to a render and holds up to 32 transforms.
+When a deferred integer-image warp is an exact in-bounds translation, it
+copies the matching crop directly. General transforms use OpenCV Lanczos4.
+
 #### ECC preparation measurements (2026-11-13)
 
 The first 12 frames of a real 5220×3912 Olympus ORF stack were registered
@@ -502,6 +605,11 @@ Alignment plan manifests and encoded aligned images share the alignment cache
 budget. Accounting covers manifest file bytes and encoded image bytes, not all
 filesystem allocation. Evicted plans are estimated again; source files are not
 cache entries. Eviction is best effort if deletion fails.
+
+Tiled StackMFF V2 writes expected layer positions directly when a regular grid
+covers every pixel of the padded image exactly once. This saves 48 MiB of
+weight storage on a 4096 × 3072 canvas. The depth normalization uses the full
+padded image. Shifted edge tiles and feathered overlaps still accumulate weights.
 
 Grouped fusion checks temporary disk capacity with the shared safety reserve
 before writing intermediate results. This check does not reserve disk space;
@@ -550,7 +658,8 @@ only the isolated process is terminated; the GUI thread is never terminated.
 Fresh processes still re-import libraries and create new inference sessions.
 Numba kernels may reuse compiled code from a writable cache across render
 processes; an unavailable, busy or damaged cache falls back to compilation.
-The first render still pays compilation costs.
+First use can compile kernels absent from the cache. The desktop can precompile
+the shared B/C depth recurrence during idle time.
 
 Within a render, decoded and deferred processed frames may be reused from the
 job's selected temporary volume. The cache checks source fingerprints, leaves

@@ -396,12 +396,32 @@ def test_shutdown_delivers_already_queued_errors_under_original_scope(
     monkeypatch.setattr(shutdown_reports, 'AccountClient', lambda: account)
     monkeypatch.setattr(shutdown_reports, 'user_data_dir', lambda: tmp_path)
     monkeypatch.setattr(reporting, 'ReportClient', lambda _path: client)
-    shutdown_reports._ShutdownReport(None, True, account_only)._run()
+    shutdown_reports._ShutdownReport(None, True, account_only, opted_out=False)._run()
     assert bool(client._opener.requests) == expected
     assert client.pending_count == (0 if expected else 1)
     if expected:
         post = client._opener.requests[0][0]
         assert post.get_header('Authorization') == ('Bearer test-token' if owner else None)
+
+
+@pytest.mark.parametrize('opted_out', [False, True])
+def test_shutdown_retains_staged_sign_in_report_until_explicit_opt_out(
+        qapp, tmp_path, monkeypatch, opted_out):
+    from types import SimpleNamespace
+    from ui import shutdown_reports
+    from utils import reporting
+
+    client = ReportClient(tmp_path / 'reports')
+    client._opener = Server()
+    assert client.enqueue({'source': 'auto'}, b'zip', sign_in=True) == 'queued'
+    account = SimpleNamespace(current_user=lambda: None)
+    monkeypatch.setattr(shutdown_reports, 'user_data_dir', lambda: tmp_path)
+    monkeypatch.setattr(reporting, 'ReportClient', lambda _path: client)
+
+    shutdown_reports._ShutdownReport(account, False, False, opted_out=opted_out)._run()
+
+    assert not client._opener.requests
+    assert client.pending_count == (0 if opted_out else 1)
 
 
 def test_source_run_automatic_reports_are_skipped(monkeypatch):

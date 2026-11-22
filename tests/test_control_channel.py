@@ -684,6 +684,8 @@ def test_settings_save_tile_geometry_for_other_methods(server):
         dialog = server._dialogs["settings"]
         roots = window_roots(server.window)
         assert call(server, "ui.set", path=path_for(roots, dialog.tabs), value=1)["ok"]
+        disclosure = path_for(roots, dialog.manual_tile_disclosure)
+        assert call(server, "ui.click", path=disclosure)["result"]["clicked"]
         for editor, value in ((dialog.spin_block, 768), (dialog.spin_overlap, 96),
                               (dialog.spin_threshold, 1536)):
             assert editor.isVisible() and editor.isEnabled()
