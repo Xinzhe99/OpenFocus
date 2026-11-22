@@ -35,6 +35,11 @@ supports 8-bit and 16-bit output. The depth-map dialog uses the shared B/C
 depth estimator. B's external tiles share a full-image depth map; resizing uses
 whole frames.
 
+StackMFF automatically chooses a tile size within the device and host memory
+budgets. The default upper limit is 1024 px. The debug log records the RAM and
+VRAM checks when that size or a smaller candidate is rejected. **Advanced
+Settings → Fusion → Manual tile settings** exposes the limit and overlap.
+
 Direct Python directory inputs to the DCT, DTCWT, guided filter and GFG-FGF
 backends collect regular image files with supported extensions, ignoring case
 and excluding other files and directories. Files are naturally sorted by each
@@ -138,6 +143,12 @@ position, not a measured surface, a physical distance or the true pixel
 provenance of a fused image. StackMFF V2 reports the sampled focal layer;
 StackMFF V3 reports a probability-weighted position (soft blend) or the most
 probable frame (hard pick).
+
+StackMFF V3 runs one inference at the working size by default. Choose
+**Dual scale** to average the predictions from the working size and 75% of
+that size. Dual scale takes longer and can change which frames contribute
+to the result. It works with both output modes and with depth maps. On the
+CLI, pass a JSON string with `--method stackmffv3 --param 'inference_scale="dual"'`.
 
 Depth maps are unavailable for transparent PNG stacks and for grouped fusion.
 The GUI requires an explicit **Compute** click and can export raw depth, index

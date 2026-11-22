@@ -77,6 +77,28 @@ def test_openfocus_a_gpu_matches_cpu_and_reports_device(
     np.testing.assert_array_equal(actual, expected)
 
 
+@pytest.mark.parametrize('shape', [(1, 2, 4), (1, 130, 4), (130, 1, 4)])
+def test_openfocus_a_gpu_mixed_sources_match_cpu_on_thin_pyramids(shape, monkeypatch):
+    from fusion_methods import _openfocus_gpu
+    from fusion_methods.openfocus_a import openfocus_a_impl
+
+    if not _openfocus_gpu.gpu_available():
+        pytest.skip('No OpenCL GPU is available')
+    monkeypatch.setattr(_openfocus_gpu, '_free_vram',
+                        lambda device: (int(device.global_mem_size),) * 2)
+    rng = np.random.default_rng(4020)
+    frame8 = rng.integers(119, 124, shape, dtype=np.uint8)
+    frame16 = rng.integers(30705, 31324, shape, dtype=np.uint16)
+    frame_float = rng.uniform(119, 124, shape).astype(np.float32)
+    frames = [frame8, frame16, frame_float, frame8.copy()]
+    devices = []
+    expected = openfocus_a_impl(frames, thread_count=1, kernel_size=129)
+    actual = openfocus_a_impl(frames, thread_count=1, kernel_size=129,
+                              use_gpu=True, device_callback=devices.append)
+    assert devices[0].startswith('OpenCL: ')
+    np.testing.assert_array_equal(actual, expected)
+
+
 def test_openfocus_a_missing_opencl_falls_back(monkeypatch):
     import builtins
     frames = _stack(np.uint8, 3)
@@ -299,6 +321,77 @@ def test_openfocus_c_gpu_matches_cpu_and_reports_device(
     assert cpu.get_info()['device'] == 'CPU'
     assert gpu.get_info()['device'].startswith('OpenCL: ')
     np.testing.assert_array_equal(actual, expected)
+
+
+@pytest.mark.parametrize('maximum_mib,unified,reason', [
+    (640, False, None),
+    (500, False, 'host memory budget'),
+    (640, True, 'device budget'),
+])
+def test_openfocus_c_admits_one_scaled_source_under_job_cap(
+        tmp_path, monkeypatch, maximum_mib, unified, reason):
+    from types import SimpleNamespace
+    from core import resource_policy, source_frames
+    from fusion_methods import _openfocus_gpu
+    from fusion_methods._openfocus_gpu_c import GpuC
+
+    path = tmp_path / 'stack.tif'
+    path.touch()
+    stamp = source_frames._fingerprint(path)
+    shape = (1366, 2048, 3)
+    frames = [process_frame(source_frames.SourceFrame(
+        str(path), page, shape, np.dtype(np.uint8), None, stamp, scale=.25,
+        native_shape=(5464, 8192, 3)),
+        lambda _: pytest.fail('Admission must not resolve source pixels')) for page in range(92)]
+    mib = 1024 ** 2
+    monkeypatch.setattr(resource_policy, 'probe_resources', lambda: resource_policy.ResourceSnapshot(
+        available_ram=8 * 1024 * mib, total_ram=16 * 1024 * mib))
+    monkeypatch.setattr(_openfocus_gpu, '_free_vram', lambda device: (8 * 1024 * mib,) * 2)
+
+    class AllocationReached(Exception):
+        pass
+
+    def allocate(*args):
+        raise AllocationReached
+
+    gpu = GpuC.__new__(GpuC)
+    gpu.cl = SimpleNamespace(Buffer=allocate)
+    gpu.ctx = None
+    gpu.mf = SimpleNamespace(READ_WRITE=1)
+    gpu.device = SimpleNamespace(global_mem_size=8 * 1024 * mib,
+                                 max_mem_alloc_size=2 * 1024 * mib,
+                                 host_unified_memory=unified)
+    envelope = resource_policy.ProcessBudget(384 * mib, maximum_mib * mib, 192 * mib)
+    with resource_policy.process_budget(envelope):
+        if reason is None:
+            with pytest.raises(AllocationReached):
+                gpu._fuse_locked(frames, shape, None, 4., None, None)
+        else:
+            with pytest.raises(_openfocus_gpu.GpuError, match=reason):
+                gpu._fuse_locked(frames, shape, None, 4., None, None)
+
+
+def test_openfocus_c_gpu_single_pixel_keeps_first_frame_and_focus_index(monkeypatch):
+    from fusion_methods import _openfocus_gpu
+    from fusion_methods.openfocus_bc import openfocus_c_impl
+
+    if not _openfocus_gpu.gpu_available():
+        pytest.skip('No OpenCL GPU is available')
+    monkeypatch.setattr(_openfocus_gpu, '_free_vram',
+                        lambda device: (int(device.global_mem_size),
+                                        int(device.global_mem_size)))
+    frames = [np.array([[value]], dtype=np.uint8) for value in (201, 17, 63)]
+    devices, focus = [], []
+    actual = openfocus_c_impl(frames, use_gpu=True, thread_count=1,
+                             device_callback=devices.append,
+                             focus_callback=lambda positions, scale: focus.append((positions, scale)))
+
+    assert devices[0].startswith('OpenCL: ')
+    np.testing.assert_array_equal(actual, frames[0])
+    [(positions, scale)] = focus
+    assert positions.shape == (1, 1)
+    np.testing.assert_array_equal(positions, 0)
+    assert scale == len(frames) - 1
 
 
 def test_openfocus_c_missing_opencl_falls_back(monkeypatch):
@@ -569,8 +662,8 @@ def test_openfocus_ac_program_cache_reuse_and_invalidation(module_name, cls_name
     cl = __import__('pyopencl')
     dev = _openfocus_gpu._device(cl)
     try:
-        ctx1, q1, k1 = mod._get_or_build_program(cl, dev)
-        ctx2, q2, k2 = mod._get_or_build_program(cl, dev)
+        ctx1, q1, k1, *_ = mod._get_or_build_program(cl, dev)
+        ctx2, q2, k2, *_ = mod._get_or_build_program(cl, dev)
         assert ctx1 is ctx2 and q1 is q2 and k1 is k2
     finally:
         mod._invalidate_program_cache()
@@ -670,7 +763,7 @@ def test_openfocus_b_full_depth_drains_queue_before_clearing_buffers_on_cancel()
     resamp_k = {n: DummyEvent() for n in _openfocus_gpu._RESAMPLE_KERNEL_NAMES}
 
     engine = _openfocus_gpu._GpuB(
-        gpu, None, lambda: True,
+        gpu, None,
         depth_kernels=depth_k, filter_kernels=filt_k, resample_kernels=resamp_k,
     )
     engine._cbuf = TrackingDict()

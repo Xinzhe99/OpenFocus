@@ -53,6 +53,17 @@ def test_error_detection_for_failed_unhandled_and_crash():
     assert report_bundle.session_has_error('', 'native crash text')
 
 
+def test_general_report_excludes_sign_in_evidence():
+    text = _event('account_sign_in.failed', {
+        'method': 'email', 'stage': 'exchange', 'category': 'network',
+        'run_id': 'AAAAAAAAAAAAAAAAAAAAAA', 'edge_request_id': '0123456789abcdef-IAD',
+    })
+    bundle = report_bundle.build_report_bundle(log_text=text, crash_text='', facts={})
+    assert _contents(bundle)['events.json'] == []
+    assert 'account_sign_in.failed' not in bundle.log_excerpt
+    assert not bundle.has_error
+
+
 def test_fingerprint_normalizes_and_excludes_version():
     def trace(path, message, kind='ValueError'):
         return ('Traceback (most recent call last):\n'
@@ -110,7 +121,8 @@ def test_fusion_report_keeps_reproduction_settings_without_private_text():
         'settings': {'algorithm': 'stackmffv3', 'exposure_match': True,
                      'sharpen_output': True, 'sharpen_strength': 160,
                      'sort_mode': 'asc', 'base_frame': 'none', 'tile_enabled': True,
-                     'tile_block_size': 1024, 'fusion_parameters': {'mode': 'soft', 'path': '/private/photo.jpg'}},
+                     'tile_block_size': 1024, 'fusion_parameters': {
+                         'mode': 'soft', 'inference_scale': 'dual', 'path': '/private/photo.jpg'}},
         'sources': [{'index': 0, 'shape': [10, 20, 3], 'dtype': 'uint8', 'path': '/private/photo.jpg'},
                     {'index': 1, 'shape': [10, 20, 3], 'dtype': 'uint8'}],
         'path': '/private/photo.jpg',
@@ -123,7 +135,7 @@ def test_fusion_report_keeps_reproduction_settings_without_private_text():
     assert events[0]['parameters']['settings']['exposure_match'] is True
     assert events[0]['parameters']['settings']['sharpen_output'] is True
     assert events[0]['parameters']['settings']['sharpen_strength'] == 160
-    assert events[0]['parameters']['settings']['fusion_parameters'] == {'mode': 'soft'}
+    assert events[0]['parameters']['settings']['fusion_parameters'] == {'mode': 'soft', 'inference_scale': 'dual'}
     assert events[0]['parameters']['fusion_order'] == [0, 1]
     assert events[0]['parameters']['sources'][1]['shape'] == [10, 20, 3]
     assert events[1]['parameters']['control'] == 'OpenFocus.ui_objs.action_save'
@@ -131,6 +143,7 @@ def test_fusion_report_keeps_reproduction_settings_without_private_text():
     assert '/private/photo.jpg' not in repr(events)
     assert report_bundle._numeric_fields({'sharpen_strength': 201}) == {}
     assert report_bundle._numeric_fields({'sharpen_strength': True}) == {}
+    assert report_bundle._numeric_fields({'inference_scale': '/private/photo.jpg'}) == {}
 
 
 def test_report_discloses_omitted_history(monkeypatch):

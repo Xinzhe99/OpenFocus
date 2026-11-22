@@ -410,9 +410,9 @@ def _plan_stackmffv2_depth(images, model_path, use_gpu, thread_count,
 
 def _measure_stackmffv3(images, progress, should_cancel,
                        model_path=None, use_gpu=False, execution_plan=None,
-                       mode="soft"):
+                       mode="soft", inference_scale="single"):
     """Soft: expected frame position. Hard: per-pixel most probable frame."""
-    from fusion_methods.stackmffv3 import model_probabilities, normalize_mode
+    from fusion_methods.stackmffv3 import SOFT_SIGMA, model_probabilities, normalize_mode
 
     mode = normalize_mode(mode)
     h, w = images[0].shape[:2]
@@ -423,8 +423,9 @@ def _measure_stackmffv3(images, progress, should_cancel,
 
     def measure(crops):
         probabilities = model_probabilities(
-            crops, model_path, use_gpu, sigma=0.0 if mode == "hard" else 0.5,
-            should_cancel=should_cancel, execution_plan=execution_plan)
+            crops, model_path, use_gpu, sigma=0.0 if mode == "hard" else SOFT_SIGMA,
+            should_cancel=should_cancel, execution_plan=execution_plan,
+            inference_scale=inference_scale)
         if mode == "hard":
             return probabilities.argmax(0).astype(np.float32)
         return (probabilities * indices).sum(0).astype(np.float32)

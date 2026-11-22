@@ -71,7 +71,7 @@ def test_algorithm_help_translates_and_does_not_change_the_choice(qapp, monkeypa
         assert title == trans.t('label_ai_mode')
         assert title in button.accessibleName()
         assert trans.t('parameter_help_ai_mode') in text
-        assert panel.values() == {'mode': 'hard'}
+        assert panel.values() == {'mode': 'hard', 'inference_scale': 'single'}
         assert not changes
     finally:
         panel.close()

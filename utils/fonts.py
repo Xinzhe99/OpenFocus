@@ -8,6 +8,7 @@ guess missed, which is invisible in the UI and wrong in the export.
 """
 from __future__ import annotations
 
+from functools import lru_cache
 import os
 import sys
 from typing import Dict, List, Optional, Tuple
@@ -193,9 +194,6 @@ def load_font(size: int, family: str = None,
     return result
 
 
-_coverage_cache: Dict[tuple, bool] = {}
-
-
 def _glyph_signature(font, char: str):
     """Bitmap of one character, or None when it cannot be rendered."""
     try:
@@ -205,8 +203,9 @@ def _glyph_signature(font, char: str):
         return None
 
 
+@lru_cache(maxsize=128)
 def covers_text(font, text: str) -> bool:
-    """True when every non-space character has a real glyph in `font`.
+    """True when `font` covers and can lay out the complete text.
 
     FreeType substitutes the .notdef box for missing characters and Pillow
     exposes no coverage API, so each character is compared against a private
@@ -216,24 +215,19 @@ def covers_text(font, text: str) -> bool:
     """
     if font is None or not text:
         return True
-    key = (id(font), text)
-    cached = _coverage_cache.get(key)
-    if cached is not None:
-        return cached
     sentinel = _glyph_signature(font, "\ue000")
-    ok = True
     for char in set(text):
         if char.isspace():
             continue
         signature = _glyph_signature(font, char)
-        if signature is None:
-            ok = False
-            break
-        if sentinel is not None and signature == sentinel:
-            ok = False
-            break
-    _coverage_cache[key] = ok
-    return ok
+        if signature is None or (sentinel is not None and signature == sentinel):
+            return False
+    # A selected face must also handle shaping the full string at this size.
+    try:
+        font.getbbox(text)
+    except OSError:
+        return False
+    return True
 
 
 def _cjk_capable_candidates():
@@ -245,6 +239,7 @@ def _cjk_capable_candidates():
         "C:/Windows/Fonts/msgothic.ttc",
         "/System/Library/Fonts/PingFang.ttc",
         "/System/Library/Fonts/Hiragino Sans GB.ttc",
+        "/System/Library/Fonts/Supplemental/Songti.ttc",
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
@@ -279,7 +274,7 @@ def load_font_for_text(size: int, family: str, text: str,
 
 def clear_font_cache() -> None:
     """Drop cached faces (used by tests and after a font install)."""
-    _coverage_cache.clear()
+    covers_text.cache_clear()
     global _family_index
     _font_cache.clear()
     _family_index = None

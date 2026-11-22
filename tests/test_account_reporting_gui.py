@@ -6,7 +6,7 @@ from threading import Event
 import pytest
 from PyQt6.QtCore import QSettings, Qt
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QPushButton, QWidget
+from PyQt6.QtWidgets import QDialog, QPushButton, QWidget
 
 
 def _wait(qapp, predicate):
@@ -516,6 +516,196 @@ def test_failed_sign_in_can_be_retried(qapp, settings, failure):
     finally:
         dialog.reject()
         window.deleteLater()
+
+
+_REPORT_EMAIL = 'offline-sign-in@example.test'
+_REPORT_TOKEN = 'synthetic-account-bearer'
+_REPORT_MESSAGE = 'private exception detail from terms lookup'
+
+
+class _ReportingAccount(_Account):
+    def __init__(self, *, offline):
+        super().__init__()
+        self.offline = offline
+
+    def terms(self):
+        if self.offline:
+            from utils.account_client import AccountError
+            error = AccountError('network')
+            error.args = (_REPORT_MESSAGE, _REPORT_TOKEN)
+            raise error
+        return super().terms()
+
+    def token(self, *, expected_owner):
+        assert self.is_signed_in() and expected_owner == self.user['id']
+        return _REPORT_TOKEN
+
+
+def _submit_startup_email(qapp, window):
+    from dialogs.account import AccountDialog
+    dialog = AccountDialog(window, required=True)
+    try:
+        dialog.show()
+        dialog.email.setText(_REPORT_EMAIL)
+        dialog.terms.setChecked(True)
+        dialog.email_button.click()
+        _wait(qapp, lambda: dialog._job is None)
+        return dialog.result()
+    finally:
+        dialog.reject()
+        dialog.deleteLater()
+
+
+@pytest.fixture
+def sign_in_reports(qapp, settings, tmp_path, monkeypatch, caplog):
+    import logging
+    from urllib import request
+
+    from tests.test_report_client import Server
+    from ui import report_retry
+    from utils import logging_setup, reporting
+    from utils.report_client import ReportClient
+
+    monkeypatch.setattr(report_retry, 'build_channel', lambda: 'release')
+    monkeypatch.setattr(reporting, 'build_channel', lambda: 'release')
+    monkeypatch.setattr(report_retry.diagnostics, 'system_facts', lambda: {})
+    # Drive the same retry entry point synchronously without the background timer.
+    monkeypatch.setattr(report_retry, 'schedule_report_retries', lambda *_args, **_kwargs: None)
+    server = Server()
+    monkeypatch.setattr(request, 'build_opener', lambda *_args: server)
+    logger = logging_setup.get_logger()
+    monkeypatch.setattr(logger, 'propagate', True)
+    monkeypatch.setattr(logging_setup, '_session_had_error', False)
+    caplog.set_level(logging.INFO, logger=logger.name)
+
+    window = QWidget()
+    window._account_client = _ReportingAccount(offline=True)
+    before = set(logger.handlers)
+    report_retry.start_failure_capture(window)
+    handler, = set(logger.handlers) - before
+    directory = tmp_path / 'profile' / 'reports'
+    try:
+        yield window, ReportClient(directory), directory / 'reports.json', server
+    finally:
+        logger.removeHandler(handler)
+        handler.close()
+        window.deleteLater()
+
+
+@pytest.mark.parametrize('unselected', [False, True], ids=['fresh', 'unselected'])
+def test_startup_sign_in_diagnostics_retry_anonymously_after_accepting_terms(
+        qapp, settings, monkeypatch, sign_in_reports, unselected):
+    import io
+    import zipfile
+
+    from utils import reporting
+    from utils.report_client import ReportClient
+    from utils.settings_store import (REPORTS_AUTO_SEND_KEY, REPORTS_CHOICE_KEY,
+                                      automatic_reports_allowed)
+
+    if unselected:
+        settings.setValue(REPORTS_CHOICE_KEY, 'unselected')
+        settings.setValue(REPORTS_AUTO_SEND_KEY, True)
+        settings.sync()
+    assert not automatic_reports_allowed(settings)
+    window, queue, path, server = sign_in_reports
+    offline_account = window._account_client
+    _submit_startup_email(qapp, window)
+    assert not offline_account.is_signed_in()
+    entry, = json.loads(path.read_text(encoding='utf-8'))['pending']
+    assert entry['sign_in'] is True
+    assert entry['owner_id'] is None
+    assert entry['metadata']['source'] == 'auto'
+    assert entry['metadata']['build_channel'] == 'release'
+
+    now = [1000]
+    monkeypatch.setattr(reporting, 'ReportClient', lambda location: ReportClient(location, clock=lambda: now[0]))
+    assert reporting.retry_reports(offline_account, include_auto=False) == 0
+    assert queue.pending_count == 1
+    assert not server.requests
+
+    account = window._account_client = _ReportingAccount(offline=False)
+    assert _submit_startup_email(qapp, window) == QDialog.DialogCode.Accepted
+    assert account.is_signed_in()
+    assert account.calls[1][:2] == ('email', '2026-11-11')
+    assert automatic_reports_allowed(settings)
+    assert settings.value(REPORTS_CHOICE_KEY) == 'account_default'
+
+    def offline_post(request, timeout):
+        server.requests.append((request, timeout))
+        raise OSError('offline')
+
+    with monkeypatch.context() as offline:
+        offline.setattr(server, 'open', offline_post)
+        assert reporting.retry_reports(account, include_auto=True, account_only_auto=True) == 0
+    failed_post, = [request for request, _ in server.requests]
+    assert failed_post.method == 'POST'
+    assert failed_post.get_header('Authorization') is None
+    assert queue.pending_count == 1
+
+    assert reporting.retry_reports(account, include_auto=True, account_only_auto=True) == 0
+    assert len(server.requests) == 1
+    now[0] += 60
+    assert reporting.retry_reports(account, include_auto=True, account_only_auto=True) == 1
+    assert queue.pending_count == 0
+    post, put = [request for request, _ in server.requests[1:]]
+    assert (post.method, put.method) == ('POST', 'PUT')
+    assert post.get_header('Authorization') is None
+    assert put.get_header('Authorization') is None
+
+    with zipfile.ZipFile(io.BytesIO(put.data)) as archive:
+        assert set(archive.namelist()) == {'capture.json', 'error.json', 'events.json', 'system.json'}
+        contents = {name: archive.read(name).decode('utf-8') for name in archive.namelist()}
+    error = json.loads(contents['error.json'])
+    assert not error.get('stack_lines') and not error.get('stack')
+    event, = json.loads(contents['events.json'])
+    assert event['event'] == 'account_sign_in.failed'
+    evidence = event['parameters']
+    assert set(evidence) <= {'method', 'stage', 'category', 'run_id', 'status', 'elapsed_ms', 'edge_request_id'}
+    assert {name: evidence[name] for name in ('method', 'stage', 'category')} == {
+        'method': 'email', 'stage': 'terms', 'category': 'network',
+    }
+    for text in (*contents.values(), post.data.decode('utf-8')):
+        for private in (_REPORT_EMAIL, _REPORT_TOKEN, _REPORT_MESSAGE, account.user['email']):
+            assert private not in text
+
+
+def test_explicit_reporting_opt_out_keeps_sign_in_failure_local(qapp, settings, caplog, sign_in_reports):
+    from utils.settings_store import REPORTS_AUTO_SEND_KEY, REPORTS_CHOICE_KEY
+
+    settings.setValue(REPORTS_AUTO_SEND_KEY, False)
+    settings.setValue(REPORTS_CHOICE_KEY, 'chosen')
+    settings.sync()
+    window, queue, _, server = sign_in_reports
+    _submit_startup_email(qapp, window)
+    (record,) = [record for record in caplog.records if getattr(record, 'event', None) == 'account_sign_in.failed']
+    prefix, _, payload = record.getMessage().partition(' ')
+    assert prefix == 'event=account_sign_in.failed'
+    evidence = json.loads(payload)
+    assert evidence['category'] == 'network' and evidence['stage'] == 'terms'
+    assert _REPORT_EMAIL not in payload and _REPORT_MESSAGE not in payload
+    assert queue.pending_count == 0
+    assert not server.requests
+
+
+def test_revoking_automatic_reporting_removes_staged_sign_in_report(qapp, settings, sign_in_reports):
+    from ui.report_retry import discard_automatic_reports
+    from utils.settings_store import REPORTS_AUTO_SEND_KEY, REPORTS_CHOICE_KEY
+
+    window, queue, path, server = sign_in_reports
+    _submit_startup_email(qapp, window)
+    assert queue.pending_count == 1
+    assert queue.enqueue({'source': 'auto'}, b'ordinary automatic report') == 'queued'
+    assert queue.enqueue({'source': 'manual'}, b'manual report') == 'queued'
+
+    settings.setValue(REPORTS_AUTO_SEND_KEY, False)
+    settings.setValue(REPORTS_CHOICE_KEY, 'chosen')
+    settings.sync()
+    discard_automatic_reports()
+    _wait(qapp, lambda: queue.pending_count == 1)
+    remaining, = json.loads(path.read_text(encoding='utf-8'))['pending']
+    assert remaining['metadata']['source'] == 'manual'
+    assert not server.requests
 
 
 @pytest.mark.parametrize('language,operation', [('en', 'github'), ('zh', 'browser')])

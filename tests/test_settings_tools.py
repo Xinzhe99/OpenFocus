@@ -18,7 +18,7 @@ def settings_window(qapp):
     window.reg_downscale_width = 1024
     window.align_cache_enabled = True
     window.ai_batch_size = 2
-    window._fusion_parameters_by_method = {"stackmffv3": {"mode": "soft"}}
+    window._fusion_parameters_by_method = {"stackmffv3": {"mode": "soft", "inference_scale": "single"}}
     window.fusion_parameters_for = lambda method, depth=False: dict(
         window._fusion_parameters_by_method.get(method, {}))
     window.set_fusion_parameters = lambda method, values: window._fusion_parameters_by_method.__setitem__(
@@ -252,7 +252,7 @@ def test_settings_pages_expose_translated_controls_and_privacy_defaults(settings
     pages = (
         ('advanced_tab_general', [dialog.chk_experimental_features, dialog.chk_auto_error_reports,
                                   dialog.chk_usage, dialog.storage_directory, dialog.output_prefix]),
-        ('group_fusion', [dialog.chk_tile, dialog.spin_block, dialog.spin_overlap, dialog.spin_threshold,
+        ('group_fusion', [dialog.manual_tile_disclosure,
                           dialog.combo_resources, dialog.sensor_cleanup_disclosure, dialog.tile_status]),
         ('advanced_tab_registration', [dialog.spin_reg_width, dialog.registration_options_disclosure]),
         ('advanced_tab_other', [dialog.chk_restore, dialog.chk_ask_scale,
@@ -270,9 +270,11 @@ def test_settings_pages_expose_translated_controls_and_privacy_defaults(settings
             tabs.setCurrentIndex(index)
             assert all(control.isVisible() for control in controls)
             assert all(tabs.currentWidget().isAncestorOf(control) for control in controls)
+        assert dialog.manual_tile_panel.isHidden()
         assert dialog.sensor_cleanup.isHidden() and dialog.openfocus_registration_panel.isHidden()
         keys = {key for key, _ in pages} | {'advanced_privacy', 'advanced_working_storage',
-                                              'advanced_tile_memory_status'}
+                                              'advanced_tile_memory_status', 'advanced_tile_manual',
+                                              'advanced_tile_neural_status'}
         for code in trans.PACK_ORDER:
             assert all(trans.translations[code].get(key) for key in keys)
     finally:
@@ -305,11 +307,30 @@ def test_registration_page_fits_collapsed_and_expanded_controls(qapp, settings_w
 def test_collapsing_optional_settings_preserves_edits(settings_window):
     from PyQt6.QtCore import Qt
     from PyQt6.QtTest import QTest
+    from core.algorithms import get_fusion
     from dialogs.advanced_settings import AdvancedSettingsDialog
+    from locales import trans
 
+    settings_window.current_fusion_method = lambda: 'stackmffv3'
     dialog = AdvancedSettingsDialog(settings_window)
     dialog.show()
     dialog.tabs.setCurrentIndex(1)
+    manual_tiles = dialog.manual_tile_disclosure
+    tile_controls = (dialog.chk_tile, dialog.spin_block, dialog.spin_overlap, dialog.spin_threshold)
+    assert not manual_tiles.isChecked() and dialog.tile_status.isVisible()
+    assert not any(control.isVisible() for control in tile_controls)
+    status = trans.t('advanced_tile_neural_status')
+    method = get_fusion('stackmffv3').display_name
+    assert dialog.tile_status.text() == status.format(method=method, block=1024)
+    manual_tiles.setFocus()
+    QTest.keyClick(manual_tiles, Qt.Key.Key_Space)
+    assert manual_tiles.isChecked() and all(control.isVisible() for control in tile_controls)
+    dialog.spin_block.setValue(768)
+    dialog.spin_overlap.setValue(192)
+    dialog.spin_threshold.setValue(4096)
+    assert dialog.tile_status.text() == status.format(method=method, block=768)
+    QTest.keyClick(manual_tiles, Qt.Key.Key_Space)
+    assert not manual_tiles.isChecked() and dialog.manual_tile_panel.isHidden()
     toggle = dialog.sensor_cleanup_disclosure
     toggle.setFocus()
     QTest.keyClick(toggle, Qt.Key.Key_Space)
@@ -326,6 +347,9 @@ def test_collapsing_optional_settings_preserves_edits(settings_window):
     dialog._apply()
     assert dialog.result() == QDialog.DialogCode.Accepted
     assert settings_window.sensor_denoise
+    assert settings_window.tile_enabled
+    assert (settings_window.tile_block_size, settings_window.tile_overlap,
+            settings_window.tile_threshold) == (768, 192, 4096)
     assert settings_window._registration_parameters_by_method['openfocus']['reference_frame'] == 3
     dialog.deleteLater()
 
@@ -471,7 +495,7 @@ def test_resource_mode_only_changes_concurrency(settings_window):
     dialog._apply()
     assert settings_window.resource_preference == "responsive"
     assert settings_window.tile_block_size == 512
-    assert settings_window.fusion_parameters_for("stackmffv3") == {"mode": "soft"}
+    assert settings_window.fusion_parameters_for("stackmffv3") == {"mode": "soft", "inference_scale": "single"}
     dialog.deleteLater()
 
 
@@ -599,11 +623,14 @@ def test_dtcwt_uses_memory_instead_of_the_size_threshold(settings_window):
 def test_settings_invalid_text_prevents_any_commit(settings_window):
     from dialogs.advanced_settings import AdvancedSettingsDialog
     dialog = AdvancedSettingsDialog(settings_window)
+    dialog.show()
     dialog.tabs.setCurrentIndex(3)
     dialog.spin_block.lineEdit().clear()
     dialog.chk_auto_update.setChecked(False)
     dialog._apply()
     assert dialog.tabs.currentWidget().isAncestorOf(dialog.spin_block)
+    assert dialog.manual_tile_disclosure.isChecked() and dialog.spin_block.isVisible()
+    assert dialog.focusWidget() in (dialog.spin_block, dialog.spin_block.lineEdit())
     assert dialog.status.text()
     assert settings_window.update_manager.auto_download
     assert not settings_window.saved

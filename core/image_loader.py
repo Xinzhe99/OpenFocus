@@ -46,6 +46,18 @@ RAW_FORMATS = {'.3fr', '.arw', '.bay', '.cap', '.cr2', '.cr3', '.crw',
 from core.frame_storage import store_frame
 
 
+_JPEG_EXTENSIONS = ('.jpg', '.jpeg', '.jpe', '.jfif')
+
+
+def is_scaled_jpeg(path, scale_factor):
+    """Whether ``decode_image`` reduces this file by ``scale_factor`` itself.
+
+    A caller that resizes after decoding must skip a JPEG that was loaded at
+    a reducing scale, exactly as it skips a RAW developed at the load scale.
+    """
+    return 0 < scale_factor < 1 and os.path.splitext(path)[1].lower() in _JPEG_EXTENSIONS
+
+
 def _is_dng_tiff(path):
     """DNG may have a TIFF extension and a thumbnail as its first IFD."""
     if os.path.splitext(path)[1].lower() not in ('.tif', '.tiff'):
@@ -395,22 +407,29 @@ def _read_raw(path: str, scale_factor: float = 1.0) -> Optional[np.ndarray]:
 
 
 def decode_image(path: str, *, allow_transparent_png: bool = False,
-                 preserve_grayscale: bool = False, scale_factor: float = 1.0) -> Optional[np.ndarray]:
+                 preserve_grayscale: bool = False, scale_factor: float = 1.0,
+                 area_resizer=None) -> Optional[np.ndarray]:
     """Decode an oriented still image, rejecting unsupported transparency.
 
-    ``scale_factor`` applies to RAW decoding only; other callers resize after
-    orientation and transparency handling.
+    Only RAW and JPEG apply ``scale_factor``; ``is_scaled_jpeg`` tells a
+    caller that the JPEG it gets back needs no further resize. A JPEG is
+    decoded at full size, then area-resized (by ``area_resizer`` when it
+    accepts the image) before its EXIF orientation, so the rotation moves
+    only the reduced pixels. Other formats are returned at full size.
     """
     ext = os.path.splitext(path)[1].lower()
     if is_raw_source(path):
         return _read_raw(path, scale_factor)
     if ext in ('.tif', '.tiff'):
         return decode_tiff_page(path, preserve_grayscale=preserve_grayscale)
+    # _downscale_page leaves the image alone at a scale of one.
+    jpeg_scale = scale_factor if is_scaled_jpeg(path, scale_factor) else 1.0
     if PIL_AVAILABLE:
         with PILImage.open(path) as header:
             validate_pil_header(path, header)
             if header.mode == 'CMYK':
                 image = cmyk_to_bgr(header, path, header.info.get('icc_profile', b''))
+                image = _downscale_page(image, jpeg_scale, area_resizer)
                 return apply_exif_orientation(path, image)
     # IMREAD_IGNORE_ORIENTATION is required: modern OpenCV already rotates by
     # the EXIF Orientation tag itself, so letting apply_exif_orientation run
@@ -445,6 +464,7 @@ def decode_image(path: str, *, allow_transparent_png: bool = False,
         img = _read_via_pil(path)
     if img is not None:
         _validate_depth(path, img.dtype)
+        img = _downscale_page(img, jpeg_scale, area_resizer)
         img = apply_exif_orientation(path, img)
     return img
 
@@ -692,15 +712,31 @@ def stack_icc_profile(window, indices=None) -> bytes:
     return common_profile_values(profiles[i] for i in selected)
 
 
+def _quarter_turn(image, turns):
+    """Rotate a quarter turn: ``turns`` is 1 (counter-clockwise) or -1.
+
+    Callers copy the upright pixels into a contiguous array. np.rot90 returns
+    a view, and copying it walks a whole image column for every output row.
+    OpenCV writes the same pixels in blocks. It drops a single-channel third
+    axis, so that layout and unusual dtypes keep the NumPy view.
+    """
+    supported_layout = image.ndim == 2 or (image.ndim == 3 and image.shape[2] in (3, 4))
+    if (supported_layout and image.size and image.flags.c_contiguous
+            and image.dtype in (np.uint8, np.uint16)):
+        code = cv2.ROTATE_90_CLOCKWISE if turns == -1 else cv2.ROTATE_90_COUNTERCLOCKWISE
+        return cv2.rotate(image, code)
+    return np.rot90(image, turns)
+
+
 # EXIF Orientation tag values that need a pixel transform (1 = already OK).
 _EXIF_TRANSFORMS = {
     2: lambda a: a[:, ::-1],                       # mirror horizontal
     3: lambda a: np.rot90(a, 2),                   # rotate 180
     4: lambda a: a[::-1, :],                       # mirror vertical
     5: lambda a: np.rot90(a[:, ::-1], 1),          # transpose
-    6: lambda a: np.rot90(a, -1),                  # rotate 90 CW
+    6: lambda a: _quarter_turn(a, -1),             # rotate 90 CW
     7: lambda a: np.rot90(a[::-1, :], 1),          # anti-transpose
-    8: lambda a: np.rot90(a, 1),                   # rotate 90 CCW
+    8: lambda a: _quarter_turn(a, 1),              # rotate 90 CCW
 }
 
 
@@ -855,8 +891,9 @@ def _decode_one_source(path: str, scale_factor: float,
         pages = _read_tiff_pages(path, scale_factor, should_cancel)
         if pages is not None:
             return DecodedSource(path, pages)
-        if is_raw_source(path):
-            image = _read_raw(path, scale_factor)
+        if is_raw_source(path) or is_scaled_jpeg(path, scale_factor):
+            # decode_image applies the load scale to these formats itself.
+            image = decode_image(path, scale_factor=scale_factor)
             if image is None:
                 return DecodedSource(path, error=ValueError("decode failed"))
             return DecodedSource(path, [image])
@@ -877,11 +914,17 @@ class _DecodeCancelled(Exception):
     """Internal marker: a cancelled decode is not a failed file."""
 
 
-def _downscale_page(image: np.ndarray, scale_factor: float) -> np.ndarray:
+def _downscale_page(image: np.ndarray, scale_factor: float, area_resizer=None) -> np.ndarray:
+    """Area-resize by a reducing scale; ``area_resizer`` may decline with None."""
     if scale_factor != 1.0 and 0 < scale_factor < 1.0:
         width = max(1, int(image.shape[1] * scale_factor))
         height = max(1, int(image.shape[0] * scale_factor))
-        return cv2.resize(image, (width, height), interpolation=cv2.INTER_AREA)
+        target = (width, height)
+        if area_resizer is not None:
+            resized = area_resizer.resize(image, target)
+            if resized is not None:
+                return resized
+        return cv2.resize(image, target, interpolation=cv2.INTER_AREA)
     return image
 
 

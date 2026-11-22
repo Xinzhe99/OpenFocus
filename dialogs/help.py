@@ -7,7 +7,7 @@ from html.parser import HTMLParser
 from PyQt6.QtGui import QTextOption
 from PyQt6.QtWidgets import QDialog, QVBoxLayout, QTextBrowser, QPushButton
 
-from core.algorithms import fusion_algorithms, registration_algorithms
+from core.algorithms import registration_algorithms
 from locales import trans
 from utils.design_tokens import palette
 
@@ -93,17 +93,15 @@ class RenderMethodHelpDialog(HelpDialog):
     """Fusion methods, grouped in the same order as the method selector."""
 
     def __init__(self, parent=None):
-        from ui.algorithm_combo import CATEGORY_KEYS, CATEGORY_ORDER, fusion_label
+        from ui.algorithm_combo import fusion_label, fusion_method_groups
 
-        specs = fusion_algorithms()
         sections = [(None, [(trans.t('radio_no_fusion'),
                              trans.t('radio_no_fusion_hint'))])]
-        for category in CATEGORY_ORDER:
+        for label, members in fusion_method_groups():
             methods = [(fusion_label(spec),
                         trans.t(spec.hint_key) if spec.hint_key else '')
-                       for spec in specs if spec.category == category]
-            if methods:
-                sections.append((trans.t(CATEGORY_KEYS[category]), methods))
+                       for spec in members]
+            sections.append((label, methods))
         title = trans.t('help_render_title')
         super().__init__(title, _method_help(title, sections, parent), parent)
         self.resize(620, 560)

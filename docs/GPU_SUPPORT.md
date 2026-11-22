@@ -66,6 +66,19 @@ The GPU Acceleration menu option is a preference for future supported jobs. For 
 
 For tiled StackMFF V1 and V3 inference, OpenFocus retains the two compiled input scales when GPU memory permits. Cached sessions are released and memory is checked again before a new shape falls back to CPU.
 
+The spatial planner prefers the largest tile that fits a verified accelerator's
+memory budget. Engine priority breaks ties, and CPU provides the final fallback.
+The PyTorch CUDA and MPS worker bounds FP32 attention scores by processing part
+of the query at a time. Every cross-layer query still uses all focus layers.
+On CUDA, the worker can reuse admission for a checkpoint and layer count on
+tiles up to the size it has already completed.
+
+Large tiled renders read plain native-endian RGB TIFF directly when its samples
+are contiguous and no resize or orientation transform is needed. Other sources
+can be prepared once in their native bit depth when temporary space allows.
+Exposure adjustment and float32 normalization then operate on each crop.
+Applied registration and export can still require substantial temporary space.
+
 During a render, a rejected engine for a model and input shape is skipped when the shape recurs. A later independent render can try the accelerator again. When inference fails, OpenFocus releases the failed session before admitting a retry. The provider or driver controls when its native memory is returned.
 
 Multiscale inference releases temporary host arrays after their last use: the reduced input after its inference returns, and the reduced probabilities after they have been combined. Memory admission remains conservative; actual host memory usage and release depend on the allocator and runtime.

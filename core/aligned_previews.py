@@ -4,16 +4,16 @@ from functools import partial
 import cv2
 import numpy as np
 
-from core.source_frames import (PREVIEW_EDGE, ProcessedFrame, RetainedFrame, SourceFrame,
+from core.source_frames import (PREVIEW_EDGE, PreparedFrame, ProcessedFrame, RetainedFrame, SourceFrame,
                                 _ExposureGain, _crop_pixels, _normalize_frame, _small,
-                                _validated_snapshot, ensure_preview, validate_frame_source)
+                                ensure_preview, validate_frame_source)
 
 
 def _operation(frame):
     from core.openfocus_alignment import apply_alignment
     from core.registration import PerspectiveWarp
 
-    if isinstance(frame, RetainedFrame):
+    if isinstance(frame, (PreparedFrame, RetainedFrame)):
         return 'snapshot', None
     processor = frame.processor
     if isinstance(processor, PerspectiveWarp):
@@ -26,8 +26,6 @@ def _operation(frame):
         return 'alignment', processor
     if isinstance(processor, partial) and processor.func is _crop_pixels:
         return 'crop', processor
-    if isinstance(processor, partial) and processor.func is _validated_snapshot:
-        return 'snapshot', processor
     return None, None
 
 

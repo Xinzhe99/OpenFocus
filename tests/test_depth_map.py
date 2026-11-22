@@ -441,18 +441,21 @@ def test_depth_cancel_during_last_frame_never_publishes_map():
                             should_cancel=lambda: cancelled)
 
 
-def test_odd_size_neural_depth_uses_fusion_probabilities():
+@pytest.mark.parametrize('scale', ['single', 'dual'])
+def test_odd_size_neural_depth_uses_fusion_probabilities(scale):
     pytest.importorskip('onnxruntime')
     from fusion_methods import stackmffv3 as ai
     rng = np.random.default_rng(517)
     frames = [rng.integers(0, 65536, (17, 38, 3), np.uint16)[:, ::2]
               for _ in range(3)]
     probabilities = ai.model_probabilities(
-        frames, 'weights/stackmff_v3_final.onnx', False, sigma=0.5, thread_count=1)
+        frames, 'weights/stackmff_v3_final.onnx', False, sigma=0.5, thread_count=1,
+        inference_scale=scale)
     assert probabilities.shape == (3, 17, 19)
     np.testing.assert_allclose(probabilities.sum(axis=0), 1, atol=1e-6)
     expected = (probabilities * np.arange(3, dtype=np.float32)[:, None, None]).sum(0) / 2
-    actual = compute_focus_index(frames, 'stackmffv3', thread_count=1)
+    actual = compute_focus_index(frames, 'stackmffv3', thread_count=1,
+                                 parameters={'inference_scale': scale})
     np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
 
 
@@ -489,24 +492,13 @@ def test_dct_depth_block_size_is_a_legacy_input():
 
 @pytest.mark.parametrize("smoothing", [0, 5])
 @pytest.mark.parametrize("winner", [500, 999])
-def test_deep_stack_depth_index_is_preserved(monkeypatch, smoothing, winner):
+def test_deep_stack_depth_index_is_preserved(smoothing, winner):
     from fusion_methods import openfocus_depth
 
-    calls = 0
-
-    def fake_filter(src, radius, cancel, guide=None, low=None, *,
-                    allocate=None):
-        nonlocal calls
-        if guide is not None:
-            return src.astype(np.int64)
-        calls += 1
-        return np.zeros_like(src) if calls % 2 else src
-
-    monkeypatch.setattr(openfocus_depth, "_filter", fake_filter)
     blank = np.zeros((2, 2), np.uint8)
     frames = [blank] * 1000
-    frames[winner] = np.full((2, 2), 255, np.uint8)
-    depth = openfocus_depth.depth_map(frames, None, 11, smoothing, None)
+    frames[winner] = np.array([[0, 255], [255, 0]], np.uint8)
+    depth = openfocus_depth.depth_map(frames, None, 11, smoothing, None, thread_count=1)
     np.testing.assert_allclose(depth, winner, atol=0.01)
 
 

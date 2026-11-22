@@ -85,6 +85,46 @@ def test_desc_orders_sources_before_openfocus_registration(monkeypatch, method):
     assert [int(frame[0, 0]) for frame in frames] == [10, 20, 30]
 
 
+@pytest.mark.parametrize('scale', ['single', 'dual'])
+def test_cli_stackmff_inference_scale_reaches_fusion_and_depth(tmp_path, monkeypatch, scale):
+    from core import cli, depth_map, multi_focus_fusion
+
+    seen = {}
+
+    def fuse(fusion, *, input_source, **kwargs):
+        seen['fusion'] = dict(fusion.fusion_parameters)
+        return np.zeros((8, 8, 3), dtype=np.uint8)
+
+    def focus_index(frames, method, *, parameters, **kwargs):
+        seen['depth'] = dict(parameters)
+        return np.zeros((8, 8), dtype=np.float32)
+
+    monkeypatch.setattr(multi_focus_fusion.MultiFocusFusion, '_validate_environment', lambda self: None)
+    monkeypatch.setattr(multi_focus_fusion.MultiFocusFusion, 'fuse', fuse)
+    monkeypatch.setattr(depth_map, 'compute_focus_index', focus_index)
+    output = tmp_path / 'out.png'
+    argv = ['-i', 'in', '-o', str(output), '-m', 'stackmffv3', '--align', 'none',
+            '--cpu', '--ai-mode', 'hard', '--depth-map']
+    if scale == 'dual':
+        argv.extend(['--param', 'inference_scale="dual"'])
+    args = cli.build_parser().parse_args(argv)
+    frames = [np.full((8, 8, 3), value, dtype=np.uint8) for value in (20, 120)]
+    cli._fuse_stack_admitted_body(frames, args)
+    cli._save_depth(args, str(output))
+    expected = {'mode': 'hard', 'inference_scale': scale}
+    assert seen == {'fusion': expected, 'depth': expected}
+    assert (tmp_path / 'out_depth.png').is_file()
+
+
+def test_cli_rejects_invalid_stackmff_inference_scale():
+    from core import cli
+
+    args = cli.build_parser().parse_args([
+        '-i', 'in', '-o', 'out.png', '-m', 'stackmffv3', '--param', 'inference_scale="triple"'])
+    with pytest.raises(ValueError, match='inference_scale'):
+        cli._resolve_algorithm_arguments(args)
+
+
 def test_help_exits_zero(tmp_path):
     r = run_cli("--help")
     assert r.returncode == 0

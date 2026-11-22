@@ -4,12 +4,12 @@
 The network predicts, for every pixel, a probability distribution over the N
 input frames. Two output modes consume that distribution:
 
-* ``soft`` — probability-weighted blend of the observed frame values. This is
-  the paper's default: probabilities are averaged over the inference scales
-  and lightly smoothed, then used as weights.
-* ``hard`` — the value of the most probable frame (argmax), a pure pixel pick
-  with no interpolation between frames. Same scales, no smoothing (the
-  reference implementation's ``--hard``).
+* ``soft`` — probability-weighted blend of the observed frame values, with
+  light spatial smoothing of the probabilities.
+* ``hard`` — the value of the most probable frame (argmax), without smoothing.
+
+Inference runs at the working size by default. Dual-scale inference averages
+the probabilities from the working size and 75% of that size for either mode.
 
 The network sees luma only; the resulting per-pixel weights or indices are
 applied to the three colour channels, exactly as in the reference code.
@@ -29,9 +29,6 @@ from fusion_methods import neural_common as common
 # 对齐量预处理批内瓦片，让同批张量形状一致。
 PAD_ALIGN = common.ATTENTION_PAD_ALIGN
 
-# 推理尺度（论文配置）：soft 在全分辨率与 0.75 倍上平均概率；hard 用同一
-# 组尺度、不做平滑，然后取 argmax。
-INFER_SCALES = (1.0, 0.75)
 SOFT_SIGMA = 0.5
 
 VALID_MODES = ("soft", "hard")
@@ -56,23 +53,18 @@ def _cancel(should_cancel):
         raise RegistrationCancelled()
 
 
-def _gray01(bgr):
-    """Luma in [0, 1] (BT.601, as cv2.COLOR_BGR2GRAY) for one frame."""
-    gray = (bgr if bgr.ndim == 2 else bgr[:, :, 0]
-            if bgr.shape[2] == 1 else cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY))
-    maxv = 65535.0 if gray.dtype == np.uint16 else 255.0
-    return gray.astype(np.float32) / maxv
-
-
-def _forward_probabilities(batch_input, model, device, sigma, should_cancel, threads=1):
+def _forward_probabilities(batch_input, model, device, sigma, should_cancel,
+                           threads, inference_scale):
     from fusion_methods.neural_runtime import probabilities
-    return probabilities(batch_input, model, device, threads, sigma, should_cancel)
+    return probabilities(batch_input, model, device, threads, sigma, should_cancel,
+                         dual_scale=inference_scale == 'dual')
 
 
-def _probabilities(batch_input, model, device, mode, should_cancel=None, threads=1):
+def _probabilities(batch_input, model, device, mode, should_cancel, threads,
+                   inference_scale):
     return _forward_probabilities(batch_input, model, device,
                                   0.0 if mode == 'hard' else SOFT_SIGMA,
-                                  should_cancel, threads)
+                                  should_cancel, threads, inference_scale)
 
 
 def _blend_tile(probs, frames, mode, should_cancel=None, focus_callback=None):
@@ -87,38 +79,89 @@ def _blend_tile(probs, frames, mode, should_cancel=None, focus_callback=None):
     if mode == 'hard':
         from core.frame_storage import create_frame
         selected_indices = create_frame((height, width), np.intp)
-        for row in range(0, height, 256):
+        # NumPy packs strided argmax input. Bound that copy by stack depth.
+        row_bytes = len(frames) * width * probs.dtype.itemsize
+        scan_rows = max(1, min(height, (8 * 1024 ** 2) // row_bytes))
+        for row in range(0, height, scan_rows):
             _cancel(should_cancel)
-            stop = min(row + 256, height)
-            selected_indices[row:stop] = probs[:, row:stop].argmax(0)
+            stop = min(row + scan_rows, height)
+            np.argmax(probs[:, row:stop], axis=0, out=selected_indices[row:stop])
     elif focus_callback is not None:
         from core.frame_storage import create_transient_frame
         expected = create_transient_frame((height, width), np.float32)
         expected[...] = 0
-    from core.source_frames import resolve_frame
-    band_rows = 256
+    from core.source_frames import resolve_frame, validate_frame_source
+    kernels = common.load_stackmff_kernels()
+    band_rows = min(height, 256, max(1, (64 * 1024) // (width * channels)))
+    selected_counts = None
     if selected_indices is None:
-        # Aim for at most 256 KiB per float32 color temporary, with at least one row.
-        band_rows = min(band_rows, max(1, (64 * 1024) // (width * channels)))
+        source_dtypes = {np.float32} if normalize_stack else {frame.dtype for frame in frames}
+        scratch = None
+    else:
+        selected_counts = np.bincount(selected_indices.ravel(), minlength=len(frames))
     for index, frame in enumerate(frames):
         _cancel(should_cancel)
-        image = resolve_frame(frame)
+        if selected_counts is not None and not selected_counts[index]:
+            validate_frame_source(frame)
+            continue
+        image = resolve_frame(frame, should_cancel=should_cancel)
+        blend = None
+        if (kernels is not None and result.flags.c_contiguous and image.flags.c_contiguous
+                and ((image.ndim == 3 and image.shape[2] == channels)
+                     or (image.ndim == 2 and channels == 1))):
+            if selected_indices is None:
+                if image.dtype == np.float32:
+                    blend = kernels.v3_accumulate_soft_f32
+                elif image.dtype == np.uint16:
+                    blend = kernels.v3_accumulate_soft_u16
+                elif image.dtype == np.uint8:
+                    blend = kernels.v3_accumulate_soft_u8
+            elif image.dtype == np.float32:
+                blend = kernels.v3_scatter_hard_f32
+            elif image.dtype == np.uint16:
+                blend = kernels.v3_scatter_hard_u16
+            elif image.dtype == np.uint8:
+                blend = kernels.v3_scatter_hard_u8
         for row in range(0, height, band_rows):
             _cancel(should_cancel)
             stop = min(row + band_rows, height)
-            source = common.working_frame(image[row:stop], normalize_stack)
+            output = result[row:stop]
+            img_band = image[row:stop]
+            if blend is not None:
+                src_band = img_band[:, :, None] if img_band.ndim == 2 else img_band
+                try:
+                    if selected_indices is None:
+                        exp_band = expected[row:stop] if expected is not None else output[:, :, 0]
+                        blend(src_band, np.ascontiguousarray(probs[index, row:stop]), output,
+                              exp_band, float(index), bool(expected is not None and index))
+                    else:
+                        blend(src_band, np.ascontiguousarray(selected_indices[row:stop]), index, output)
+                except common.StackMFFKernelUnavailable:
+                    kernels = blend = None
+                else:
+                    continue
+                finally:
+                    del src_band
+            source = common.working_frame(img_band, normalize_stack)
             if source.ndim == 2:
                 source = source[:, :, None]
-            output = result[row:stop]
             if selected_indices is None:
-                output += probs[index, row:stop, :, None] * source
+                if scratch is None:
+                    scratch = np.empty((band_rows, width, channels),
+                                       dtype=np.result_type(probs.dtype, np.float32, *source_dtypes))
+                probability = probs[index, row:stop]
+                product = scratch[:stop - row]
+                np.multiply(probability[:, :, None], source, out=product)
+                np.add(output, product, out=output)
                 if expected is not None and index:
-                    expected[row:stop] += probs[index, row:stop] * np.float32(index)
+                    depth_product = product[:, :, 0]
+                    np.multiply(probability, np.float32(index), out=depth_product)
+                    np.add(expected[row:stop], depth_product, out=expected[row:stop])
             else:
                 np.copyto(output, source,
                           where=(selected_indices[row:stop] == index)[:, :, None])
             del source
-        del image
+        del img_band, image
     _cancel(should_cancel)
     if focus_callback is not None:
         focus_callback(selected_indices if expected is None else expected, len(frames) - 1)
@@ -148,7 +191,7 @@ def _stage_gray(frames, should_cancel):
     normalize_stack = any(frame.dtype == np.uint16 for frame in frames)
     for f, frame in enumerate(frames):
         _cancel(should_cancel)
-        batch[0, f, :h, :w] = _gray01(common.working_frame(frame, normalize_stack))
+        common.write_luma_plane(common.working_frame(frame, normalize_stack), batch[0, f, :h, :w])
     if wp != w:
         batch[:, :, :h, w:] = batch[:, :, :h, w - 1:w]
     if hp != h:
@@ -171,7 +214,7 @@ def _prepare_inference(frames, model_path, use_gpu, thread_count=None,
 def _stackmffv3_batch_impl(tiles_list, model_path, use_gpu, mode='soft',
                           should_cancel=None, thread_count=None,
                           resource_preference='balanced', execution_plan=None,
-                          focus_callback=None, *, tile_plan=None):
+                          focus_callback=None, *, tile_plan=None, inference_scale='single'):
     """Fuse tiles in order with B=1 until true batching passes GPU gates.
 
     The spatial scheduler supplies a tile plan covering the complete grid.
@@ -202,7 +245,7 @@ def _stackmffv3_batch_impl(tiles_list, model_path, use_gpu, mode='soft',
                 batch_input = _stage_gray(frames, should_cancel)
             with profile.stage('probabilities'):
                 probs = _probabilities(batch_input, model, device, mode, should_cancel,
-                                       plan.native_threads)
+                                       plan.native_threads, inference_scale)
             del batch_input
             h, w = frames[0].shape[:2]
             # Color mixing does not need an N-frame color stack.
@@ -230,7 +273,8 @@ def _read_stack(input_source, img_resize, should_cancel=None, execution_plan=Non
 def _stackmffv3_impl(input_source, img_resize, model_path, use_gpu,
                      mode='soft', progress_callback=None, should_cancel=None,
                      thread_count=None, resource_preference='balanced',
-                     execution_plan=None, focus_callback=None, *, tile_plan=None):
+                     execution_plan=None, focus_callback=None, *, tile_plan=None,
+                     inference_scale='single'):
     """Whole-frame fusion with the same resource contract as tiled fusion."""
     from core.resource_policy import heavy_job
 
@@ -246,7 +290,8 @@ def _stackmffv3_impl(input_source, img_resize, model_path, use_gpu,
             [frames], model_path, use_gpu, mode,
             should_cancel=should_cancel, thread_count=thread_count,
             resource_preference=resource_preference, execution_plan=execution_plan,
-            focus_callback=focus_callback, tile_plan=tile_plan)[0]
+            focus_callback=focus_callback, tile_plan=tile_plan,
+            inference_scale=inference_scale)[0]
         _cancel(should_cancel)
         if progress_callback is not None:
             progress_callback(1, 1)
@@ -256,8 +301,9 @@ def _stackmffv3_impl(input_source, img_resize, model_path, use_gpu,
 
 def model_probabilities(frames, model_path, use_gpu, sigma=0.0,
                         should_cancel=None, thread_count=None,
-                        resource_preference='balanced', execution_plan=None):
-    """Per-pixel [N,H,W] probabilities, using fusion's single replicated pad."""
+                        resource_preference='balanced', execution_plan=None, *,
+                        inference_scale='single'):
+    """Per-pixel [N,H,W] probabilities with the selected fusion inference scale."""
     with common.neural_lease(execution_plan, should_cancel):
         _cancel(should_cancel)
         _validate_tiles([frames])
@@ -266,7 +312,7 @@ def model_probabilities(frames, model_path, use_gpu, sigma=0.0,
             resource_preference, execution_plan)
         batch = _stage_gray(frames, should_cancel)
         probabilities = _forward_probabilities(batch, model, device, sigma,
-                                               should_cancel, plan.native_threads)
+                                               should_cancel, plan.native_threads, inference_scale)
         h, w = frames[0].shape[:2]
         result = probabilities[0, :, :h, :w]
         _cancel(should_cancel)

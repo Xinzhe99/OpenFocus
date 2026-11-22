@@ -9,8 +9,25 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Offer PyTorch CUDA on supported NVIDIA Linux systems and PyTorch MPS on
   Apple Silicon. The optional packs use the same installer and verify all
   three StackMFF models before activation.
+- Use single-scale inference by default in StackMFF V3. Select dual-scale
+  inference in fusion, batch, method comparison, and depth settings, or
+  with the command-line inference scale option.
 
 ### Changed
+- Accelerate ECC preprocessing, deferred perspective warping, and OpenFocus
+  alignment on single-strip RGB TIFFs and deep stacks while preserving exact
+  source hashes, transforms, and warped pixels. Account for hash buffers in
+  ECC's memory check, check for cancellation between GPU resize stripes, and
+  respect the thread budget during alignment and deferred warps.
+- Vectorize OpenFocus C pyramid normalization, downsampling, synthesis, merge,
+  and output kernels and optimize shared OpenFocus B/C depth axis blocks and
+  `uint16` transpose packing with single-threaded native CPU kernels while
+  preserving bit-exact `float32` and `uint16` results.
+- Accelerate OpenFocus A Burt selection and shared A/B integer row kernels.
+  Use scalar selection on small images to limit first-render compilation
+  and include the expanded-row workspace in the large-image memory budget.
+- Plan StackMFF V1 and V3 tiles before building the grid. Put the manual
+  tile controls in a collapsible section.
 - Reuse OpenCL contexts and compiled kernels across OpenFocus A/B/C and ECC
   resize jobs. Reuse upload buffers within a job and drain pending work
   before releasing buffers after cancellation or error.
@@ -20,6 +37,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   uint8 translation warping, pyramid downsizing, and validity mask generation
   with single-threaded native CPU kernels while preserving bit-exact results
   and row-band cancellation.
+- Accelerate ECC with a coarse-to-fine CPU solver and retain the OpenCV
+  fallback when the native solver cannot accept a pair.
+- Reduce CPU DTCWT processing time and peak memory with native transform
+  kernels and sparse coefficient selection.
+- Group desktop fusion choices under OpenFocus, StackMFF, and Other.
 - Preselect NVIDIA acceleration review on Windows PCs with an NVIDIA driver,
   including when upgrading from 2.0.0.
 - Stream background replacement focus protection and CPU focus measures in
@@ -27,6 +49,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   guided filtering with closed-form banded computation, band initial frame
   grayscale loading, and cache the OpenCL background-focus program. Drain
   the queue on cancellation and fall back to the CPU if synchronization fails.
+- Reuse existing decoded frames during whole-image CPU OpenFocus A and C
+  without adding single-use frames to disk or memory caches.
 - Choose the PyTorch download order from the network region, with a manual
   override and a server-maintained list of mirrors. Resume interrupted
   transfers on the next source and log why the source changed.
@@ -34,6 +58,43 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   materializing the stack or pre-converting all 16-bit frames to float32.
   Bound concurrent frame workers by the memory budget and preserve the
   existing focus decisions for low-contrast and mixed-bit-depth inputs.
+- Reuse prepared tiled StackMFF frames when switching methods on the same stack
+  with matching registration and exposure settings. Check source identities
+  before reuse and share the existing 2 GiB limit with retained aligned frames.
+- Precompile shared OpenFocus B/C depth and transpose kernels in a low-priority
+  process when the desktop is idle and enough memory is available. Stop
+  precompilation when a render starts and let the render compile as needed.
+- Continue compilation without the disk cache when another process holds its
+  lock on Windows, avoiding repeated waits during a cold render.
+- Reduce OpenFocus A/B/C CPU and OpenCL working sets with bounded row processing,
+  reusable pyramid storage, and fewer full-image operations. Expand exact
+  OpenCL ECC resize coverage and reuse successful repeated pair solves.
+- Upload packed reversed-channel TIFF data without a host copy in OpenFocus
+  A/B/C. Prefetch one frame when the job budget allows, and cap GPU OpenFocus
+  C color readback buffers at 8 MiB. Use tiled OpenCL transposes when the
+  device and compiled kernel support the work-group size.
+- Stream whole-image OpenFocus B when optional stack snapshots do not fit
+  on disk and the streamed job fits the available RAM.
+- Write neural input grayscale directly into model planes. Reduce V1 color
+  reconstruction allocations, size V2 tiles from frame metadata, skip V2 weight
+  maps when tiles cover each pixel once, and bound V3 hard-choice scratch by
+  the stack depth.
+- On large stacks, read plain RGB TIFF pixels from the source file and retain
+  native bit depth in StackMFF tile snapshots. Prepare a warped or compressed
+  frame once when temporary storage can hold the prepared stack.
+- Resolve prepared StackMFF V1 and V3 tile colors one source at a time.
+  Bound direct TIFF staging by the available RAM and the admitted tile grid.
+- Limit the lifetime of ONNX Runtime CPU work buffers and release unused
+  arena memory after each StackMFF inference.
+- Reuse OpenFocus A response rows and limit GPU output readback size. Skip
+  inactive OpenFocus B merge tiles and reuse OpenFocus C pyramid buffers.
+- Bound PyTorch CUDA and MPS attention workspace while retaining all focus
+  layers. Reuse CUDA worker admission on completed tile sizes and reuse logits
+  storage for probabilities. StackMFF V2 reads only contributing color strips.
+- Accelerate integer exposure matching, fusion output conversion, and 16-bit
+  previews with native row kernels. Preserve OpenCV's exposure calculation
+  for normalized grayscale. Encode compressed TIFF strips in a bounded queue
+  and preserve their output order.
 
 ### Fixed
 - Show progress while restoring a startup recovery snapshot, and keep the
@@ -42,6 +103,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Preserve the watermark on historical outputs.
 - Explain why Image Stitching and Dust Map are unavailable in this release,
   even when experimental features are enabled.
+- Choose a fallback font for watermarks when the selected face cannot lay out
+  the complete text at the requested size.
+- Keep DTCWT focus scores independent of where NumPy allocates its work buffers.
 - Close the desktop process when its CLI launcher times out waiting for the
   control channel, and explain how to complete first-run sign-in.
 - Give comparison alignment workers on macOS enough stack for the first

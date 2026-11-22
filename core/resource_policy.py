@@ -777,16 +777,18 @@ def plan_execution(workload: Workload, snapshot: Optional[ResourceSnapshot] = No
 
 
 def neural_tile_bytes(frames, height, width, channels, block, kind,
-                      estimate_inference, source_bytes=0, *, output_bytes=None):
+                      estimate_inference, source_bytes=0, *, output_bytes=None,
+                      streamed_crops=False):
     """Host and device working sets for one complete-stack spatial tile."""
     padded = ((block + 63) // 64) * 64
     tile_pixels = padded * padded
     from fusion_methods.neural_runtime import native_startup_bytes
     if output_bytes is None:
         output_bytes = height * width * ((channels + 1) * 4 + channels * 4)
-    # Matched/normalized crops may coexist with their predecessors.
-    crops = frames * block * block * channels * 8
-    staging = frames * tile_pixels * 4 * (2 * channels + 3)
+    # Packed crops and their scratch stay on the host. Streamed inference
+    # reuses that workspace for one frame and only stages luma on the device.
+    crops = block * block * channels * (12 if streamed_crops else frames * 8)
+    staging = frames * tile_pixels * 4 * (6 if streamed_crops else 2 * channels + 3)
     reduction = tile_pixels * (channels * 4 * 3 + 8)
     inference = estimate_inference(frames, block, block, kind)
     device = inference + staging + reduction
@@ -798,10 +800,11 @@ def plan_neural_tiles(frames: int, height: int, width: int, channels: int,
                       *, directory: bool = False, itemsize: int = 1,
                       source_resolution_bytes: int = 0, source_cache_bytes: int = 0,
                       output_bytes: Optional[int] = None, resident_output_bytes: int = 0,
+                      streamed_crops: bool = False,
                       snapshot: Optional[ResourceSnapshot] = None,
                       preference: str = PREFERENCE_BALANCED,
                       user_threads: Optional[int] = None):
-    """Choose the largest viable spatial tile for the first viable device.
+    """Choose the largest viable accelerator tile, breaking ties by device order.
 
     Include future output, source crops, staging, inference and reduction.
     Already initialized maps are accounted for by the live reading, so debit
@@ -829,11 +832,18 @@ def plan_neural_tiles(frames: int, height: int, width: int, channels: int,
                                                candidate_devices)
     requested = str(device_kind).upper()
     kinds = candidate_devices(requested, probe_ort=live)
+    native_cuda = ('TENSORRT', 'TORCH_CUDA')
+    best = None
     for kind in kinds:
+        if kind == 'CPU' and best is not None:
+            break
         dedicated = kind in VRAM_GATED_KINDS
         if dedicated:
-            device_snapshot = probe_resources(kind) if live and kind != requested else snapshot
-            if device_snapshot.device_kind.upper() != kind or not device_snapshot.vram_known:
+            # Both native NVIDIA engines run on CUDA ordinal zero.
+            same_device = kind == requested or (kind in native_cuda and requested in native_cuda)
+            device_snapshot = probe_resources(kind) if live and not same_device else snapshot
+            expected_kind = requested if same_device else kind
+            if device_snapshot.device_kind.upper() != expected_kind or not device_snapshot.vram_known:
                 continue
             device_budget = vram_budget(device_snapshot)
         elif kind == 'CPU' or kind in UNIFIED_MEMORY_KINDS:
@@ -841,38 +851,43 @@ def plan_neural_tiles(frames: int, height: int, width: int, channels: int,
         else:
             continue
         block = maximum
-        while True:
+        while best is None or block > best[0]:
             required, device_required = neural_tile_bytes(
                 frames, height, width, channels, block, kind, estimate_inference,
-                source_bytes, output_bytes=output_bytes)
+                source_bytes, output_bytes=output_bytes, streamed_crops=streamed_crops)
             device_fits = not dedicated or fits_in_budget(device_required, device_budget)
-            if required <= ceiling and ceiling > 0 and device_fits:
-                capacity = cpu_capacity(snapshot, preference)
-                threads = (min(capacity, int(user_threads))
-                           if user_threads is not None and user_threads > 0 else capacity)
-                # Why a tile is smaller than requested: the first size whose
-                # working set fits the ceiling, halving from the image clamp.
-                log_debug('neural_tile_plan', frames=frames, shape=(height, width, channels),
-                          block_requested=int(block_size), block_after_image_clamp=maximum,
-                          block=block, device=kind, required_bytes=required,
-                          required_vram_bytes=device_required if dedicated else 0, ram_ceiling=ceiling,
-                          available_ram=snapshot.available_ram, resident_output_bytes=resident_output_bytes,
-                          preference=preference,
-                          user_threads=user_threads, cpu_capacity=capacity,
-                          native_threads=max(1, threads))
-                return block, ExecutionPlan(
-                    workers=1, native_threads=max(1, threads), max_in_flight=1,
-                    ram_budget=ceiling,
-                    vram_budget=device_budget,
-                    device_kind=kind,
-                    required_ram=required,
-                    required_vram=device_required if dedicated else 0,
-                    device_fallback=(None if kind == requested else
-                                     f'{requested} did not fit the available memory budget'),
-                    reasons=(f'neural tile {block}px, {kind}',))
+            ram_fits = ceiling > 0 and required <= ceiling
+            if ram_fits and device_fits:
+                best = block, kind, required, device_required if dedicated else 0, device_budget
+                break
+            log_debug('neural_tile_rejected', block=block, device=kind,
+                      required_bytes=required, ram_ceiling=ceiling, ram_fits=ram_fits,
+                      required_vram_bytes=device_required if dedicated else 0,
+                      vram_budget=device_budget, vram_fits=device_fits)
             if block <= minimum:
                 break
             block = max(minimum, block // 2)
+        if best is not None and best[0] == maximum:
+            break
+    if best is not None:
+        block, kind, required, device_required, device_budget = best
+        capacity = cpu_capacity(snapshot, preference)
+        threads = (min(capacity, int(user_threads))
+                   if user_threads is not None and user_threads > 0 else capacity)
+        log_debug('neural_tile_plan', frames=frames, shape=(height, width, channels),
+                  block_requested=int(block_size), block_after_image_clamp=maximum,
+                  block=block, device=kind, required_bytes=required,
+                  required_vram_bytes=device_required, ram_ceiling=ceiling,
+                  available_ram=snapshot.available_ram, resident_output_bytes=resident_output_bytes,
+                  preference=preference, user_threads=user_threads, cpu_capacity=capacity,
+                  native_threads=max(1, threads))
+        return block, ExecutionPlan(
+            workers=1, native_threads=max(1, threads), max_in_flight=1,
+            ram_budget=ceiling, vram_budget=device_budget, device_kind=kind,
+            required_ram=required, required_vram=device_required,
+            device_fallback=(None if kind == requested else
+                             f'{requested} did not fit the selected {block}px tile within the available memory budget'),
+            reasons=(f'neural tile {block}px, {kind}',))
     raise ResourceLimitError(
         f'Insufficient memory for neural fusion: minimum {minimum}px tile '
         f'and output need {memory.mb(required):.0f} MB of new allocations; '

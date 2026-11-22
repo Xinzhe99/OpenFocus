@@ -63,15 +63,19 @@ def _native_sources(tmp_path):
     return sources, pixels
 
 
-def test_b_active_sources_include_fractional_neighbors_across_row_bands():
+def test_b_active_sources_include_fractional_neighbors_across_tiles():
     count = 92
     step = 65535 // (count - 1)
-    depth = np.zeros((129, 4), np.uint16)
+    depth = np.zeros((129, 259), np.uint16)
     depth[0, 0] = 7 * step
-    depth[128, 0] = 23 * step + 1
-    depth[128, 1] = 65535
-    active = bc._active_sources(depth, count, None)
+    depth[128, 128] = 23 * step + 1
+    depth[128, 258] = 65535
+    tiles = np.zeros((2, 3, count), bool)
+    active = bc._active_sources(depth, count, None, tiles=tiles)
     assert np.flatnonzero(active).tolist() == [0, 7, 23, 24, 91]
+    assert np.flatnonzero(tiles[0, 0]).tolist() == [0, 7]
+    assert np.flatnonzero(tiles[1, 1]).tolist() == [0, 23, 24]
+    assert np.flatnonzero(tiles[1, 2]).tolist() == [0, 91]
 
 
 @pytest.mark.parametrize('method', [bc.openfocus_b_impl])
@@ -177,3 +181,39 @@ def test_b_active_sources_match_the_numpy_selection(count, dtype):
     active = bc._active_sources(depth, count, None)
     assert active.dtype == np.bool_
     np.testing.assert_array_equal(active, _numpy_active_sources(depth, count))
+
+
+@pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
+def test_b_sparse_tiles_match_dense_ordered_merge(monkeypatch, dtype):
+    rng = np.random.default_rng(319)
+    shape = (133, 263, 3)
+    count = 12
+    frames = [rng.integers(0, np.iinfo(dtype).max + 1, shape, dtype) for _ in range(count)]
+    depth = np.zeros(shape[:2], np.float32)
+    depth[:128, 128:256] = 2.75
+    depth[:128, 256:] = 3.0  # Source 2 is globally active but overwritten here.
+    depth[128:, :128] = 10.5
+    depth[128:, 128:256] = 12.0  # One step past the final frame.
+    depth[128:, 256:] = -1.0
+    options = dict(depth_override=depth, thread_count=1)
+    actual = bc.openfocus_b_impl(frames, **options)
+    monkeypatch.setattr(bc, '_MAX_MERGE_MASK_BYTES', 0)
+    expected = bc.openfocus_b_impl(frames, **options)
+    np.testing.assert_array_equal(actual, expected)
+
+
+def test_b_depth_pass_already_validates_inactive_processors():
+    from core.source_frames import process_frame
+
+    image = np.full((13, 17, 3), 141, np.uint8)
+    calls = [0, 0, 0]
+
+    def mark(index):
+        def process(pixels):
+            calls[index] += 1
+            return pixels
+        return process
+
+    frames = [process_frame(image, mark(index)) for index in range(len(calls))]
+    np.testing.assert_array_equal(bc.openfocus_b_impl(frames, thread_count=1), image)
+    assert calls == [2, 1, 1]
