@@ -1,7 +1,7 @@
 """Tests for deep-stack ECC, PerspectiveWarp, and OpenFocus alignment optimizations."""
 
 import hashlib
-from pathlib import Path
+from threading import get_ident
 
 import cv2
 import numpy as np
@@ -114,7 +114,7 @@ def test_hash_pixels_streaming_matches_sha256_and_cancels(dtype, layout):
         oa._hash_pixels(big_arr, cancel_mid)
 
 
-def test_alignment_kernels_and_plan_bgr_rev_parallel_bit_exact():
+def test_alignment_kernels_and_plan_bgr_rev_parallel_bit_exact(monkeypatch):
     if not kernels.available():
         pytest.skip("Numba alignment kernels unavailable")
 
@@ -162,8 +162,21 @@ def test_alignment_kernels_and_plan_bgr_rev_parallel_bit_exact():
     np.testing.assert_array_equal(mask_par, mask_ser)
 
     plan_rev = oa.estimate_alignment_plan([bgr_rev0, bgr_rev1], max_shift_ratio=0.05, rotation=2.0, magnification=2.0)
-    with deferred_warp_threads(1):
-        plan_ctg = oa.estimate_alignment_plan([contig0, contig1], max_shift_ratio=0.05, rotation=2.0, magnification=2.0)
+    used_threads = set()
+    gray_rows = kernels.gray16_u16_rows
+
+    def observe_gray_rows(*args):
+        used_threads.add(get_ident())
+        return gray_rows(*args)
+
+    monkeypatch.setattr(oa.os, "cpu_count", lambda: 4)
+    monkeypatch.setattr(kernels, "gray16_u16_rows", observe_gray_rows)
+    serial = ImageRegistration("openfocus", defer_warps=True, parameters={
+        "max_shift_ratio": 0.05, "rotation": 2.0, "magnification": 2.0,
+    })
+    serial.process([contig0, contig1], thread_count=1)
+    assert used_threads == {get_ident()}
+    plan_ctg = serial.alignment_plan
     for t_rev, t_ctg in zip(plan_rev.transforms, plan_ctg.transforms):
         assert t_rev.f8 == t_ctg.f8
         assert t_rev.source.sha256 == t_ctg.source.sha256

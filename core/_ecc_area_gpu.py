@@ -49,8 +49,6 @@ def _get_or_build_program(cl, device):
         queue = cl.CommandQueue(context, device=device)
         program = cl.Program(context, _KERNEL).build()
         kernels = {(size, rev): cl.Kernel(program, name) for size, rev, name in _KERNEL_NAMES}
-        kernels[1] = kernels[(1, False)]
-        kernels[2] = kernels[(2, False)]
         _PROGRAM_CACHE = (key, context, queue, kernels)
         return context, queue, kernels
 
@@ -65,14 +63,16 @@ _KERNEL = f'#define AREA_TAPS {_TAPS}\n' + r'''
 
 typedef struct { int start, count; float weight[AREA_TAPS]; } Span;
 
-#define AREA(NAME, TYPE, STORE) \
+#define AREA(NAME, TYPE, STORE, REVERSE) \
 __kernel void NAME(__global const TYPE *src, __global TYPE *dst, \
                    __global const Span *xs, __global const Span *ys, \
                    int channels, int src_stride, int first_src_y, int first_dst_y) \
 { \
     int k = get_global_id(0), y = get_global_id(1); \
     Span xspan = xs[k / channels], yspan = ys[first_dst_y + y]; \
-    int i = (yspan.start - first_src_y) * src_stride + xspan.start * channels + k % channels; \
+    int c = k % channels; \
+    int i = (yspan.start - first_src_y) * src_stride + xspan.start * channels \
+            + (REVERSE ? 2 - c : c); \
     float total = 0.0f; \
     for (int dy = 0; dy < yspan.count; ++dy, i += src_stride) { \
         float row = 0.0f; \
@@ -82,29 +82,10 @@ __kernel void NAME(__global const TYPE *src, __global TYPE *dst, \
     } \
     dst[y * get_global_size(0) + k] = STORE(total); \
 }
-AREA(area8, uchar, convert_uchar_sat_rte)
-AREA(area16, ushort, convert_ushort_sat_rte)
-
-#define AREA_BGR_REV(NAME, TYPE, STORE) \
-__kernel void NAME(__global const TYPE *src, __global TYPE *dst, \
-                   __global const Span *xs, __global const Span *ys, \
-                   int channels, int src_stride, int first_src_y, int first_dst_y) \
-{ \
-    int k = get_global_id(0), y = get_global_id(1); \
-    int c = k % 3; \
-    Span xspan = xs[k / 3], yspan = ys[first_dst_y + y]; \
-    int i = (yspan.start - first_src_y) * src_stride + xspan.start * 3 + (2 - c); \
-    float total = 0.0f; \
-    for (int dy = 0; dy < yspan.count; ++dy, i += src_stride) { \
-        float row = 0.0f; \
-        for (int dx = 0; dx < xspan.count; ++dx) \
-            row += (float)src[i + dx * 3] * xspan.weight[dx]; \
-        total += row * yspan.weight[dy]; \
-    } \
-    dst[y * get_global_size(0) + k] = STORE(total); \
-}
-AREA_BGR_REV(area8_bgr_rev, uchar, convert_uchar_sat_rte)
-AREA_BGR_REV(area16_bgr_rev, ushort, convert_ushort_sat_rte)
+AREA(area8, uchar, convert_uchar_sat_rte, 0)
+AREA(area16, ushort, convert_ushort_sat_rte, 0)
+AREA(area8_bgr_rev, uchar, convert_uchar_sat_rte, 1)
+AREA(area16_bgr_rev, ushort, convert_ushort_sat_rte, 1)
 '''
 
 
@@ -153,12 +134,13 @@ def _axis_table(source, dest):
 class ExactAreaGpu:
     """One stack's lazy kernel and stripe buffers. None requests CPU resize."""
 
-    def __init__(self):
+    def __init__(self, *, should_cancel=None):
+        self._should_cancel = should_cancel
         self._lock = Lock()
         self._disabled = False
         self._cl = None
         self._shape = None
-        self._buffers = None
+        self._buffers = self._ys = None
         self._context = None
         self._queue = None
         self._kernels = None
@@ -184,7 +166,7 @@ class ExactAreaGpu:
         from core import resource_policy as policy
         from fusion_methods._openfocus_gpu import _free_vram
 
-        self._buffers = self._shape = None
+        self._buffers = self._shape = self._ys = None
         source_h, source_w = image.shape[:2]
         itemsize = image.itemsize
         # Preserve the source-stripe row bound of the fourfold path. At
@@ -240,7 +222,11 @@ class ExactAreaGpu:
                         and 0 < height < h <= _MAX_SCALE * height)
                 or (w % width == 0 and h % height == 0)):
             return None
+        from core.registration import RegistrationCancelled, _check_cancel
+
+        should_cancel = self._should_cancel
         with self._lock, _queue_lock:
+            _check_cancel(should_cancel)
             if self._disabled:
                 return None
             try:
@@ -260,20 +246,27 @@ class ExactAreaGpu:
                 source_view = image[..., ::-1] if bgr_rev else image
                 starts, counts = self._ys['start'], self._ys['count']
                 for row in range(0, height, self._rows):
+                    _check_cancel(should_cancel)
                     stop = min(row + self._rows, height)
                     first = starts[row]
                     last = starts[stop - 1] + counts[stop - 1]
                     band = source_view[first:last]
-                    self._cl.enqueue_copy(self._queue, src, band, is_blocking=False)
+                    # Keep the host buffer export alive through the blocking readback.
+                    upload = self._cl.enqueue_copy(self._queue, src, band, is_blocking=False)
                     kernel(self._queue, (width * channels, stop - row), None, src, dst, xs, ys,
                            np.int32(channels), np.int32(w * channels), first, np.int32(row))
                     self._cl.enqueue_copy(self._queue, output[row:stop], dst, is_blocking=True)
+                    del upload
+                _check_cancel(should_cancel)
                 if self.frames_resized == 0:
                     from fusion_methods._openfocus_gpu import opencl_device_name
                     self.device_name = opencl_device_name(self._device)
                     logging.getLogger(__name__).info('ECC working-frame resize on %s', self.device_name)
                 self.frames_resized += 1
                 return output
+            except RegistrationCancelled:
+                # All cancellation checks are at stripe boundaries with no work in flight.
+                raise
             except Exception as exc:
                 drain_failed = False
                 queue = self._queue
@@ -289,7 +282,7 @@ class ExactAreaGpu:
                 if drain_failed or (err_types and isinstance(exc, err_types)):
                     _invalidate_program_cache()
                 self._disabled = True
-                self._buffers = None
+                self._buffers = self._ys = None
                 self._context = None
                 self._queue = None
                 self._kernels = None
