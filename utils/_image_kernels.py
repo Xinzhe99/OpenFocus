@@ -9,13 +9,15 @@ import sys
 from threading import Event
 
 from llvmlite import ir
-from numba import njit as _numba_njit, types
+from numba import config, njit as _numba_njit, types
+from numba.core.errors import NumbaError
 from numba.extending import intrinsic
 import numpy as np
 
 
 _BAND_ROWS = 128
 _MIN_PARALLEL_ELEMENTS = 500_000
+_JIT_ENABLED = not config.DISABLE_JIT
 
 
 def _njit(*args, cache=True, **kwargs):
@@ -219,46 +221,6 @@ def sum_u16_3ch_norm_f64(arr, start, stop):
             s0 += np.float64(np.float32(row[x, 0]) * scale)
             s1 += np.float64(np.float32(row[x, 1]) * scale)
             s2 += np.float64(np.float32(row[x, 2]) * scale)
-        total += (s0 + s1) + s2
-    return total
-
-
-@_njit(nogil=True, fastmath=False)
-def sum_f32_2d_f64(arr, start, stop):
-    total = np.float64(0.0)
-    width = arr.shape[1]
-    width4 = width & ~3
-    for y in range(start, stop):
-        row = arr[y]
-        s0 = np.float64(0.0)
-        s1 = np.float64(0.0)
-        s2 = np.float64(0.0)
-        s3 = np.float64(0.0)
-        for x in range(0, width4, 4):
-            s0 += np.float64(row[x])
-            s1 += np.float64(row[x + 1])
-            s2 += np.float64(row[x + 2])
-            s3 += np.float64(row[x + 3])
-        row_sum = (s0 + s1) + (s2 + s3)
-        for x in range(width4, width):
-            row_sum += np.float64(row[x])
-        total += row_sum
-    return total
-
-
-@_njit(nogil=True, fastmath=False)
-def sum_f32_3ch_f64(arr, start, stop):
-    total = np.float64(0.0)
-    width = arr.shape[1]
-    for y in range(start, stop):
-        row = arr[y]
-        s0 = np.float64(0.0)
-        s1 = np.float64(0.0)
-        s2 = np.float64(0.0)
-        for x in range(width):
-            s0 += np.float64(row[x, 0])
-            s1 += np.float64(row[x, 1])
-            s2 += np.float64(row[x, 2])
         total += (s0 + s1) + s2
     return total
 
@@ -564,48 +526,58 @@ def worker_count(elements: int, height: int, band: int = _BAND_ROWS,
     return max(1, min(max_workers, cap, bands))
 
 
-def run_image_bands(height: int, band: int, fn, *, workers: int = 1, should_cancel=None):
-    """Run fn(start, stop) across disjoint row bands, returning per-slot values."""
+def run_image_bands(height: int, band: int, fn, *args, workers: int = 1, should_cancel=None):
+    """Run native bands in row order, or return None if a kernel is unavailable."""
     def check():
         if should_cancel is not None and should_cancel():
             from core.registration import RegistrationCancelled
             raise RegistrationCancelled()
 
-    check()
-    if workers <= 1:
-        results = []
-        for start in range(0, height, band):
-            check()
-            results.append(fn(start, min(height, start + band)))
-        check()
-        return results
-
-    stop = Event()
-
-    def work(slot: int):
-        out = []
-        for start in range(slot * band, height, workers * band):
-            if stop.is_set():
-                from core.registration import RegistrationCancelled
-                raise RegistrationCancelled()
-            check()
-            out.append(fn(start, min(height, start + band)))
-        return out
-
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = [pool.submit(work, slot) for slot in range(workers)]
-        pending = set(futures)
+    def run(index):
+        start = index * band
         try:
-            while pending:
+            results[index] = fn(*args, start, min(height, start + band))
+        except (NumbaError, OSError, RuntimeError) as exc:
+            raise _KernelUnavailable() from exc
+
+    check()
+    results = [None] * ((height + band - 1) // band)
+    try:
+        if workers <= 1:
+            for index in range(len(results)):
                 check()
-                done, pending = wait(pending, timeout=0.05, return_when=FIRST_COMPLETED)
-                for fut in done:
-                    fut.result()
-            check()
-        except BaseException:
-            stop.set()
-            for fut in futures:
-                fut.cancel()
-            wait(futures)
-            raise
-        return [item for fut in futures for item in fut.result()]
+                run(index)
+        else:
+            stop = Event()
+
+            def work(slot):
+                for index in range(slot, len(results), workers):
+                    if stop.is_set():
+                        break
+                    run(index)
+
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = []
+                try:
+                    for slot in range(workers):
+                        check()
+                        futures.append(pool.submit(work, slot))
+                    pending = set(futures)
+                    while pending:
+                        check()
+                        done, pending = wait(pending, timeout=0.05, return_when=FIRST_COMPLETED)
+                        for future in done:
+                            future.result()
+                finally:
+                    stop.set()
+                    for future in futures:
+                        future.cancel()
+    except _KernelUnavailable:
+        check()
+        return None
+    check()
+    return results
+
+
+class _KernelUnavailable(Exception):
+    """A native kernel could not be compiled or loaded."""
