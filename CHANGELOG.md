@@ -14,6 +14,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   with the command-line inference scale option.
 
 ### Changed
+- Accelerate ECC preprocessing, deferred perspective warping, and OpenFocus
+  alignment on single-strip RGB TIFFs and deep stacks while preserving exact
+  source hashes, transforms, and warped pixels. Account for hash buffers in
+  ECC's memory check, check for cancellation between GPU resize stripes, and
+  respect the thread budget during alignment and deferred warps.
 - Vectorize OpenFocus C pyramid normalization, downsampling, synthesis, merge,
   and output kernels and optimize shared OpenFocus B/C depth axis blocks and
   `uint16` transpose packing with single-threaded native CPU kernels while

@@ -235,6 +235,20 @@ def test_memory_rejection_precedes_any_native_warp(monkeypatch):
         registration.ImageRegistration('ecc').process(_stack(), thread_count=4)
 
 
+def test_deferred_ecc_rejects_when_reversed_rgb_hash_does_not_fit(monkeypatch):
+    image = np.zeros((32, 1024, 3), dtype=np.uint16)[..., ::-1]
+    snapshot = resource_policy.ResourceSnapshot(
+        available_ram=3 * 1024**3, total_ram=4 * 1024**3, commit_headroom=160 * 1024,
+    )
+    monkeypatch.setattr(resource_policy, 'probe_resources', lambda: snapshot)
+    engine = registration.ImageRegistration('ecc', downscale_width=64, defer_warps=True)
+
+    with pytest.raises(resource_policy.ResourceLimitError) as exc:
+        engine.process([image, image], thread_count=1)
+
+    assert exc.value.admission['required_bytes'] >= image.nbytes
+
+
 def test_directory_registration_checks_memory_before_decode(tmp_path, monkeypatch):
     from core import image_loader
 
