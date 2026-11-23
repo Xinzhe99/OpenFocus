@@ -326,6 +326,7 @@ class MultiFocusFusion:
         self.retain_aligned_pixels = False
         self.prepared_cache = None
         self.ecc_warp_device = None
+        self.registration_warp_devices = {}
         self.retain_preparation = False
         # 资源偏好（'balanced' | 'responsive' | 'maximum'）：只影响并发、
         # 预取和预算，不改变任何输出几何或数值路径。
@@ -674,9 +675,10 @@ class MultiFocusFusion:
             self._actual_device = None
             self._fallback_reasons = ()
             self.ecc_warp_device = None
+            self.registration_warp_devices = {}
             try:
-                with deferred_ecc_warp_accelerator(
-                        self.use_gpu and self.algorithm == 'openfocus_b') as warp:
+                # Every method resolves deferred frames here, in whole images or tiles.
+                with deferred_ecc_warp_accelerator(self.use_gpu) as warp:
                     result = self._fuse_under_lease(
                         input_source, img_resize, should_cancel, progress_callback, ecc_warp=warp, **kwargs)
             except RegistrationCancelled:
@@ -684,6 +686,7 @@ class MultiFocusFusion:
                 raise
             if warp is not None and warp.gpu_warps:
                 self.ecc_warp_device = ('CPU / ' if warp.cpu_warps else '') + warp.device_name
+                self.registration_warp_devices = warp.devices_by_method
                 _profile().set('ecc_warp', device=self.ecc_warp_device,
                                accelerated=warp.gpu_warps, cpu=warp.cpu_warps)
                 log_action('deferred_ecc_warp', device=self.ecc_warp_device,
@@ -1912,7 +1915,7 @@ class MultiFocusFusion:
         # tile-coordinate order — the same order a single-worker run uses, so
         # the accumulation is reproducible while the pool still overlaps work.
         from collections import deque
-        from core.registration import RegistrationCancelled
+        from core.registration import RegistrationCancelled, carry_warp_accelerator
 
         def _check_cancel():
             if should_cancel is not None and should_cancel():
@@ -1930,6 +1933,7 @@ class MultiFocusFusion:
         window = deque()
         scratch = capture_scratch()
         next_to_submit = 0
+        process_tile = carry_warp_accelerator(process_single_tile)
         from contextlib import nullcontext
         with (native_execution_scope() if native_codes else nullcontext()), \
                 concurrent.futures.ThreadPoolExecutor(
@@ -1940,7 +1944,7 @@ class MultiFocusFusion:
                 while (next_to_submit < total_tiles
                        and len(window) < optimal_threads):
                     window.append(executor.submit(
-                        run_with_scratch, scratch, process_single_tile, tile_coords[next_to_submit]))
+                        run_with_scratch, scratch, process_tile, tile_coords[next_to_submit]))
                     next_to_submit += 1
                 with profile.stage('wait_for_tile'):
                     result = window.popleft().result()

@@ -97,18 +97,33 @@ def deferred_warp_threads(threads):
 @contextmanager
 def deferred_ecc_warp_accelerator(enabled):
     """Share one admitted OpenCL workspace across a prepared stack."""
-    if not enabled:
-        yield None
-        return
-    from core._perspective_gpu import ExactPerspectiveGpu
+    backend = None
+    if enabled:
+        from core._perspective_gpu import ExactPerspectiveGpu
 
-    backend = ExactPerspectiveGpu()
+        backend = ExactPerspectiveGpu()
     token = _deferred_ecc_gpu.set(backend)
     try:
         yield backend
     finally:
         _deferred_ecc_gpu.reset(token)
-        backend.close()
+        if backend is not None:
+            backend.close()
+
+
+def carry_warp_accelerator(function):
+    """Run ``function`` on a pool thread with the submitting thread's warp accelerator."""
+    backend = _deferred_ecc_gpu.get()
+    if backend is None:
+        return function
+
+    def carried(*args, **kwargs):
+        token = _deferred_ecc_gpu.set(backend)
+        try:
+            return function(*args, **kwargs)
+        finally:
+            _deferred_ecc_gpu.reset(token)
+    return carried
 
 
 def exchange_opencv_threads(threads):
@@ -318,7 +333,7 @@ def _compute_valid_region_from_transforms(H_matrices, img_shape, margin=2):
 # ========== 单应性对齐算法实现（非线性） ==========
 
 
-def _align_homography_impl(input_source, output_path=None, img_filenames=None, downscale_width=1600, thread_count: int = 4, should_cancel=None, failure_policy='continue', *, defer_warps=False, plan_callback=None, dispatch_callback=None):
+def _align_homography_impl(input_source, output_path=None, img_filenames=None, downscale_width=1600, thread_count: int = 4, should_cancel=None, failure_policy='continue', *, defer_warps=False, plan_callback=None, dispatch_callback=None, accelerate_warp=False):
     """
     商业级图像对齐算法优化版
     特性：
@@ -492,13 +507,18 @@ def _align_homography_impl(input_source, output_path=None, img_filenames=None, d
     # 构造裁切平移矩阵
     T_crop = np.array([[1, 0, offset_x], [0, 1, offset_y], [0, 0, 1]], dtype=np.float32)
 
-    aligned_images = _apply_perspective_warps(
-        images, H_matrices, T_crop if do_crop else None, (target_w, target_h),
-        max_workers, should_cancel, defer_warps, method='homography', sources=source_identities,
-        bounds=(top, bottom, left, right), plan_callback=plan_callback)
-    _save_registration(aligned_images, output_path, img_filenames, should_cancel)
+    with deferred_ecc_warp_accelerator(accelerate_warp and
+                                       (not defer_warps or output_path)) as warp:
+        aligned_images = _apply_perspective_warps(
+            images, H_matrices, T_crop if do_crop else None, (target_w, target_h),
+            max_workers, should_cancel, defer_warps, method='homography', sources=source_identities,
+            bounds=(top, bottom, left, right), plan_callback=plan_callback)
+        _save_registration(aligned_images, output_path, img_filenames, should_cancel)
+    warp_device = 'CPU'
+    if warp is not None and warp.gpu_warps:
+        warp_device = ('CPU / ' if warp.cpu_warps else '') + warp.device_name
     if dispatch_callback is not None:
-        dispatch_callback('homography', estimation='CPU', warp='CPU')
+        dispatch_callback('homography', estimation='CPU', warp=warp_device)
 
     return aligned_images
 
@@ -638,12 +658,14 @@ class PerspectiveWarp:
             # A resolved warp owns its pixels even without a render cache.
             return crop.copy(order='C')
         matrix = np.asarray(self.matrix, dtype=self.matrix_dtype).reshape(3, 3)
-        backend = _deferred_ecc_gpu.get() if self.method == 'ecc' else None
+        backend = _deferred_ecc_gpu.get()
         if backend is not None:
-            result = backend.warp(image, matrix, self.dsize, cancel_fn)
+            # Direct RGB TIFF frames arrive as a reversed view of contiguous storage.
+            bgr_rev = _is_bgr_rev(image)
+            result = backend.warp(image[..., ::-1] if bgr_rev else image, matrix, self.dsize,
+                                  cancel_fn, bgr_rev=bgr_rev, method=self.method)
             if result is not None:
                 return result
-            backend.note_cpu_warp()
         bgr_rev = _is_bgr_rev(image) and _native_kernels.available()
         src = image[..., ::-1] if bgr_rev else image
         threads = _warp_thread_budget()
@@ -655,6 +677,8 @@ class PerspectiveWarp:
                 warped.shape[0], 128, cancel_fn, swap_fn, warped,
                 parallel_pixels=warped.shape[0] * warped.shape[1], workers=threads,
             )
+        if backend is not None:
+            backend.note_cpu_warp(self.method)
         return warped
 
     def __call__(self, image):
@@ -779,6 +803,28 @@ class PerspectiveWarp:
         if sx0 >= sx1 or sy0 >= sy1:
             require_memory(math.prod(out_shape) * src_dtype.itemsize)
             return np.zeros(out_shape, dtype=src_dtype)
+        backend = _deferred_ecc_gpu.get()
+        if backend is not None:
+            if direct_tiff:
+                with source_or_image._open_direct_tiff() as stream:
+                    with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+                        rgb = np.ndarray(src_shape, dtype=src_dtype, buffer=mm,
+                                         offset=source_or_image._rgb_tiff_offset)
+                        try:
+                            warped = backend.warp(rgb, M64, self.dsize, cancel_fn,
+                                                  bgr_rev=True, region=(x, y, width, height),
+                                                  method=self.method)
+                        finally:
+                            del rgb
+            else:
+                bgr_rev = _is_bgr_rev(image)
+                warped = backend.warp(image[..., ::-1] if bgr_rev else image, M64, self.dsize,
+                                      cancel_fn, bgr_rev=bgr_rev, region=(x, y, width, height),
+                                      method=self.method)
+            if warped is not None:
+                if channels is not None and warped.ndim == 3 and warped.shape[2] != channels:
+                    return np.array(warped[:, :, :channels], copy=True, order='C')
+                return warped
 
         if _perspective_near_lanczos_boundary(
                 M_inv, x, y, width, height, sx0, sy0, float(np.min(sc[2])), cancel_fn):
@@ -831,6 +877,8 @@ class PerspectiveWarp:
                     parallel_pixels=warped.shape[0] * warped.shape[1], workers=threads,
                 )
 
+        if backend is not None:
+            backend.note_cpu_warp(self.method)
         if channels is not None and warped.ndim == 3 and warped.shape[2] != channels:
             return np.array(warped[:, :, :channels], copy=True, order='C')
         return warped
@@ -2186,7 +2234,7 @@ class ImageRegistration:
         return _align_homography_impl(input_source, output_path, downscale_width=self.downscale_width,
             thread_count=thread_count, should_cancel=should_cancel, failure_policy=failure_policy,
             defer_warps=self.defer_warps and not self.use_gpu, plan_callback=self._perspective_stages.append,
-            dispatch_callback=self._record_dispatch)
+            dispatch_callback=self._record_dispatch, accelerate_warp=self.accelerate_ecc)
     
     def _process_ecc(self, 
                     input_source: Union[str, List[np.ndarray]], 

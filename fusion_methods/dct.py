@@ -229,6 +229,9 @@ def dct_focus_stack_fusion(
             if progress_callback is not None:
                 progress_callback(idx + 1, total_steps)
     else:
+        from core.registration import carry_warp_accelerator
+
+        prepare_variance = carry_warp_accelerator(frame_variance)
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
             window = deque()
             next_submit = 0
@@ -238,7 +241,7 @@ def dct_focus_stack_fusion(
                     while next_submit < count and len(window) < max_workers:
                         window.append((
                             next_submit,
-                            pool.submit(run_with_scratch, scratch, frame_variance, next_submit),
+                            pool.submit(run_with_scratch, scratch, prepare_variance, next_submit),
                         ))
                         next_submit += 1
                     for _, pending in window:

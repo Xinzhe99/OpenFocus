@@ -19,13 +19,19 @@ ECC uses compatible OpenCL GPUs by default. On the supported Windows x64
 OpenCV 5.0.0 build, large 8-bit and 16-bit images can use GPU `INTER_AREA`
 for whole-block and fractional reductions up to 8× on each axis. OpenCV
 handles the special 2×2 reduction. ECC estimates the transforms on the CPU.
-With a compatible GPU and sufficient memory, large 8-bit color frames use
-the exact Lanczos4 OpenCL warp during registration or OpenFocus B input
-resolution. Unsupported frames, unavailable devices and failed GPU
-operations use the CPU. Turn off **GPU Acceleration** in the desktop or
-pass `--cpu` to use the CPU for both stages. The log events
-`registration_ecc_resize`, `registration_warp` and `deferred_ecc_warp`
-record the work completed on the accelerator.
+With a compatible GPU and sufficient memory, large frames use the exact
+Lanczos4 OpenCL warp: 8-bit and 16-bit images during ECC and homography
+registration, and in any render with GPU acceleration when it resolves
+deferred frames of any fusion method, as whole images or tiles, including
+direct-mapped RGB TIFF sources. The warp reproduces OpenCV Lanczos4 pixel
+for pixel with a device workspace under 64 MiB, and the device proves this
+on a small sample before it is used. Unsupported frames, unavailable
+devices and failed GPU operations use the CPU. Turn off **GPU
+Acceleration** in the desktop or pass `--cpu` to use the CPU for both
+stages. The log events `registration_ecc_resize`, `registration_warp` and
+`deferred_ecc_warp` record the work completed on the accelerator.
+The desktop reports warp devices separately when the two steps of a combined
+registration ran on different devices.
 
 StackMFF V1, V2 and V3 ship with dynamic ONNX models. **Settings → AI acceleration
 components** checks the hardware and offers a compatible optional pack once

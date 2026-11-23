@@ -1269,8 +1269,9 @@ class RenderWorker(QThread):
         if self.registration_details is not None and fusion.ecc_warp_device:
             details = self.registration_details
             if self.alignment_computed:
-                dispatch = tuple(replace(stage, warp=fusion.ecc_warp_device)
-                                 if stage.method == 'ecc' else stage
+                devices = fusion.registration_warp_devices
+                dispatch = tuple(replace(stage, warp=devices[stage.method])
+                                 if stage.method in devices else stage
                                  for stage in details.dispatch)
                 self.registration_details = replace(details, dispatch=dispatch)
             elif details.reuse == 'disk_plan':
