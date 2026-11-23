@@ -21,6 +21,8 @@ _storage_notice_lock = threading.Lock()
 _storage_notice_path = None
 _storage_fallback_notifier = None
 _scratch = contextvars.ContextVar('openfocus_scratch', default=None)
+# Bound both the write size and the packing buffer for strided frames.
+_WRITE_CHUNK_BYTES = 8 << 20
 
 # Shared across jobs and copied producer contexts. Views keep their allocating
 # ndarray alive, so its finalizer releases the reservation after the last view.
@@ -832,6 +834,27 @@ def create_frame(shape, dtype, *, directory=None):
         raise
 
 
+def write_frame(fd, image):
+    """Write ``image`` to an open binary descriptor in C order."""
+    array = np.asarray(image)
+    if array.dtype.hasobject:
+        raise OSError('cannot write object arrays to a file in binary mode')
+    if not array.nbytes:
+        return
+    # Treat each element as raw bytes so packing preserves byte order and
+    # padding. Contiguous inputs are borrowed directly by the iterator.
+    with np.nditer(array.view(np.void), flags=['external_loop', 'buffered'],
+                   op_flags=['readonly', 'contig'], order='C',
+                   buffersize=max(1, _WRITE_CHUNK_BYTES // array.itemsize)) as blocks:
+        for block in blocks:
+            view = memoryview(block).cast('B')
+            while view:
+                written = os.write(fd, view[:_WRITE_CHUNK_BYTES])
+                if written <= 0:
+                    raise OSError(errno.EIO, 'Frame write made no progress')
+                view = view[written:]
+
+
 def store_frame(image, *, prefer_ram=True):
     """Copy a frame independently, preserving dtype and shape.
 
@@ -852,9 +875,9 @@ def store_frame(image, *, prefer_ram=True):
         # Write through the file descriptor before mapping it. Filling a writable
         # mapping faults every source-stack page into this process even though
         # the caller only needs one frame/strip at a time afterward.
-        with os.fdopen(fd, "wb") as stream:
+        with os.fdopen(fd, 'wb', buffering=0) as stream:
             fd = None
-            np.asarray(image).tofile(stream)
+            write_frame(stream.fileno(), image)
         mapped = np.memmap(path, dtype=image.dtype, mode="r+", shape=image.shape)
         state = _scratch.get()
         state = state if state is not None and state.directory == directory else None

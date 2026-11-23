@@ -32,6 +32,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   during ECC and homography registration and whenever a GPU render resolves
   deferred frames, in whole images or tiles. Report the device for each step
   of a combined registration.
+- Write disk-backed frames, preview pixels and imported video frames to scratch
+  in chunks up to 8 MiB, with bounded packing of strided images and exact pixel
+  bytes in C order.
 - Compute deferred perspective, OpenFocus alignment, and OpenFocus translation
   crops directly over the requested ROI or tile, reuse direct-mapped RGB TIFF
   digests within a render scope, reuse adjacent-pair pyramids, and fuse

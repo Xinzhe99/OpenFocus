@@ -45,7 +45,7 @@ def _decode_video_child(video_path, scale, pixels_path, result_path):
         with pixels_path.open('wb', buffering=0) as stream:
             def append_frame(frame):
                 frame_storage.require_disk_space(frame.nbytes, pixels_path.parent)
-                frame.tofile(stream)
+                frame_storage.write_frame(stream.fileno(), frame)
                 layouts.append((frame.shape, frame.dtype.str))
 
             ok, message = ImageStackLoader()._decode_video(video_path, scale, append_frame)
@@ -83,7 +83,7 @@ def load_video(video_path, scale, should_cancel):
         for shape, dtype in layouts:
             if should_cancel():
                 return False, 'CANCELLED', []
-            # ndarray.tofile writes C-order pixels regardless of input strides.
+            # The scratch writer stores each frame in C order.
             strides = [0] * len(shape)
             frame_size = np.dtype(dtype).itemsize
             for axis in range(len(shape) - 1, -1, -1):

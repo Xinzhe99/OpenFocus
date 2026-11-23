@@ -170,8 +170,9 @@ def _admit_source_decode(required, should_cancel=None):
 class PreviewPixels:
     """A preview's disk lifetime without pinning its pixel allocation."""
     def __init__(self, image):
-        from core.frame_storage import (scratch_directory, select_scratch,
-                                        track_temp_file, _storage_error, _frame_file)
+        from core.frame_storage import (scratch_directory, select_scratch, track_temp_file,
+                                        write_frame, _file_key, _frame_file,
+                                        _release_file_owner, _storage_error)
         with scratch_directory():
             directory = select_scratch(image.nbytes)
             try:
@@ -180,13 +181,12 @@ class PreviewPixels:
                 raise _storage_error(directory, image.nbytes, exc) from exc
             self.shape, self.dtype = image.shape, image.dtype
             try:
-                with os.fdopen(fd, 'wb') as stream:
-                    image.tofile(stream)
-            except OSError as exc:
-                os.unlink(self.path)
-                raise _storage_error(directory, image.nbytes, exc) from exc
-            except BaseException:
-                os.unlink(self.path)
+                with os.fdopen(fd, 'wb', buffering=0) as stream:
+                    write_frame(stream.fileno(), image)
+            except BaseException as exc:
+                _release_file_owner(_file_key(self.path))
+                if isinstance(exc, OSError):
+                    raise _storage_error(directory, image.nbytes, exc) from exc
                 raise
             track_temp_file(self, self.path)
 
