@@ -33,10 +33,14 @@ def test_excluding_last_frame_is_allowed_and_invalidates_alignment(qapp):
     assert window.source_revision == 2
 
 
-def test_delete_remaps_excluded_frames_without_reincluding_them():
-    window = SimpleNamespace(excluded_frames={0, 2, 4})
-    SourceManager(window)._remap_exclusions_after_delete([0, 3])
-    assert window.excluded_frames == {1, 2}
+@pytest.mark.parametrize('excluded,removed,remaining', [
+    ({0, 2, 4}, [3, 0, 3], {1, 2}),
+    (set(range(2400)), list(range(1, 2400, 3)), set(range(1600))),
+])
+def test_delete_remaps_excluded_frames_without_reincluding_them(excluded, removed, remaining):
+    window = SimpleNamespace(excluded_frames=excluded)
+    SourceManager(window)._remap_exclusions_after_delete(removed)
+    assert window.excluded_frames == remaining
 
 
 def test_append_preserves_labels_exclusions_and_base_resolution(qapp):

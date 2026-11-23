@@ -71,6 +71,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Reduce CPU DTCWT processing time and peak memory with native transform
   kernels and sparse coefficient selection.
 - Group desktop fusion choices under OpenFocus, StackMFF, and Other.
+- Update the remaining frames' exclusion markers more quickly after removing
+  large selections from the source list.
 - Preselect NVIDIA acceleration review on Windows PCs with an NVIDIA driver,
   including when upgrading from 2.0.0.
 - Stream background replacement focus protection and CPU focus measures in
