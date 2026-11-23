@@ -28,8 +28,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 - Use OpenCL for eligible large integer ECC reductions, including 8×8 area
-  downsizing. Apply exact Lanczos4 warps for large 8-bit color stacks during
-  registration and streamed OpenFocus B fusion. Report actual device use.
+  downsizing. Apply exact Lanczos4 warps for large 8-bit and 16-bit frames
+  during ECC and homography registration and whenever a GPU render resolves
+  deferred frames, in whole images or tiles. Report actual device use.
 - Compute deferred perspective, OpenFocus alignment, and OpenFocus translation
   crops directly over the requested ROI or tile, reuse direct-mapped RGB TIFF
   digests within a render scope, reuse adjacent-pair pyramids, and fuse

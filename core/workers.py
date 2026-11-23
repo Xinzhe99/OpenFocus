@@ -1270,7 +1270,7 @@ class RenderWorker(QThread):
             details = self.registration_details
             if self.alignment_computed:
                 dispatch = tuple(replace(stage, warp=fusion.ecc_warp_device)
-                                 if stage.method == 'ecc' else stage
+                                 if stage.method in ('ecc', 'homography') else stage
                                  for stage in details.dispatch)
                 self.registration_details = replace(details, dispatch=dispatch)
             elif details.reuse == 'disk_plan':

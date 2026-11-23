@@ -675,8 +675,8 @@ class MultiFocusFusion:
             self._fallback_reasons = ()
             self.ecc_warp_device = None
             try:
-                with deferred_ecc_warp_accelerator(
-                        self.use_gpu and self.algorithm == 'openfocus_b') as warp:
+                # Every method resolves deferred frames here, in whole images or tiles.
+                with deferred_ecc_warp_accelerator(self.use_gpu) as warp:
                     result = self._fuse_under_lease(
                         input_source, img_resize, should_cancel, progress_callback, ecc_warp=warp, **kwargs)
             except RegistrationCancelled:
@@ -1912,7 +1912,7 @@ class MultiFocusFusion:
         # tile-coordinate order — the same order a single-worker run uses, so
         # the accumulation is reproducible while the pool still overlaps work.
         from collections import deque
-        from core.registration import RegistrationCancelled
+        from core.registration import RegistrationCancelled, carry_warp_accelerator
 
         def _check_cancel():
             if should_cancel is not None and should_cancel():
@@ -1940,7 +1940,8 @@ class MultiFocusFusion:
                 while (next_to_submit < total_tiles
                        and len(window) < optimal_threads):
                     window.append(executor.submit(
-                        run_with_scratch, scratch, process_single_tile, tile_coords[next_to_submit]))
+                        run_with_scratch, scratch, carry_warp_accelerator(process_single_tile),
+                        tile_coords[next_to_submit]))
                     next_to_submit += 1
                 with profile.stage('wait_for_tile'):
                     result = window.popleft().result()
