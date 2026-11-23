@@ -800,7 +800,7 @@ def _iter_records(window):
             yield record
 
 
-def apply_to_records(window, config: WatermarkConfig,
+def apply_to_records(window, config: Optional[WatermarkConfig],
                      targets: Sequence[str], selected_record=None,
                      clear_targets: Sequence[str] = ()) -> int:
     """Update/clear record snapshots owned by the current stack.

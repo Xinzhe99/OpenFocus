@@ -127,6 +127,28 @@ def preservation_scene():
             fused[::2, ::2, :][:, ::-1], subject[::2, ::2][:, ::-1])
 
 
+def test_deep_stack_keeps_pixels_and_diagnostics_with_disk_backed_focus(preservation_scene, tmp_path):
+    from core.frame_storage import scratch_directory
+    from core.resource_policy import ProcessBudget, process_budget
+
+    frames, fused, _ = preservation_scene
+    frames = [frame for frame in frames for _ in range(10)]
+    expected = bf.replace_background(frames, fused)
+    # Enough headroom for the colour passes, but not for holding those
+    # passes and the 70-frame focus analysis entirely in memory.
+    limit = 14 * 1024**2
+    with process_budget(ProcessBudget(comfortable_ram=limit, maximum_ram=limit)):
+        with scratch_directory(separate=True, explicit_directory=str(tmp_path)):
+            actual = bf.replace_background(frames, fused)
+
+    assert actual.changed and actual.background_frame == expected.background_frame
+    np.testing.assert_array_equal(actual.image, expected.image)
+    for (_, actual_mask, _), (_, expected_mask, _) in zip(
+            actual.missing.layers(), expected.missing.layers(), strict=True):
+        np.testing.assert_array_equal(actual_mask, expected_mask)
+    assert not list(tmp_path.glob('openfocus-frame-*.bin'))
+
+
 def _source_layout(image, dtype, layout):
     color = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if layout == "gray" else image
     values = color.astype(dtype)

@@ -31,7 +31,7 @@ from utils.sorting import natural_sort_key
 from utils.path_identity import file_identity, path_key
 from utils.output_sharpen import (DEFAULT_SHARPEN_STRENGTH, MAX_SHARPEN_STRENGTH,
                                   validate_sharpen_strength)
-from core.resource_policy import heavy_job, require_memory
+from core.resource_policy import heavy_job
 from core.frame_storage import scratch_directory
 
 from core.algorithms import (FUSION_DEFAULT, fusion_algorithms, registration_algorithms, get_fusion,
@@ -1230,8 +1230,8 @@ def _auto_background(args, fused):
 
     Uses the registered frames the fusion consumed, cropped to the result
     like the GUI's render context.  Returns the `BackgroundFillResult`."""
-    from core.background_fill import background_working_set_bytes, replace_background
-    from core.render_context import _alignment_valid_mask
+    from core.background_fill import replace_background
+    from core.source_frames import crop_frame
 
     frames = getattr(args, "_depth_frames", None)
     if not frames:
@@ -1241,36 +1241,20 @@ def _auto_background(args, fused):
     h, w = fused.shape[:2]
     if any(f.shape[0] < h or f.shape[1] < w for f in frames):
         raise RuntimeError("--auto-background: the aligned frames are smaller than the result")
-    frames = [f[:h, :w] for f in frames]
-    # Admit the analysis before building anything: one mask byte per pixel
-    # per aligned frame plus the mask construction's scratch, as in Retouch.
-    aligned = args.align != "none"
-    mask_bytes = h * w * len(frames) if aligned else 0
-    mask_scratch = h * w * 16 if aligned else 0
-    require_memory(background_working_set_bytes(h, w, len(frames)) + mask_bytes + mask_scratch)
+    frames = [frame if frame.shape[:2] == (h, w) else crop_frame(frame, 0, 0, w, h)
+              for frame in frames]
     cancelled = getattr(args, "_should_cancel", None)
     progress = None
     if getattr(args, "json_progress", False):
         def progress(fraction, message):
             args._progress(event="background", stage=message, fraction=round(fraction, 3))
     t0 = time.time()
-    valid = None
-    if aligned:
-        valid = []
-        for i, frame in enumerate(frames):
-            valid.append(_alignment_valid_mask(frame, should_cancel=cancelled))
-            if progress is not None:
-                progress(0.1 * (i + 1) / len(frames), 'checking aligned frames')
-    try:
-        result = replace_background(
-            frames, fused, preset=args.auto_background,
-            clean=args.background_mode == "clean",
-            keep_soft_parts=bool(getattr(args, "keep_soft_parts", False)),
-            valid_masks=valid, cancelled=cancelled, use_gpu=not getattr(args, 'cpu', False),
-            progress=(progress if progress is None or not aligned else
-                      lambda f, msg: progress(0.1 + 0.9 * f, msg)))
-    finally:
-        del frames, valid
+    result = replace_background(
+        frames, fused, preset=args.auto_background,
+        clean=args.background_mode == "clean",
+        keep_soft_parts=bool(getattr(args, "keep_soft_parts", False)),
+        aligned=args.align != "none", cancelled=cancelled,
+        use_gpu=not getattr(args, 'cpu', False), progress=progress)
     if result.changed:
         _say(f"Auto background ({args.auto_background} -> {result.preset_used}, "
              f"{args.background_mode}): frame {result.background_frame + 1} of "

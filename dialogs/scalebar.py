@@ -70,6 +70,9 @@ class ScaleBarDialog(QDialog):
         self._closing = False
         self._accept_pending = False
         self._displayed_record = None
+        self._registered_record = None
+        self._enable_drafts = {}
+        self._enable_owner = None
         self._preview_timer = QTimer(self)
         self._preview_timer.setSingleShot(True)
         self._preview_timer.setInterval(30)
@@ -210,24 +213,40 @@ class ScaleBarDialog(QDialog):
         if manager is not None and outputs is not None:
             for index in range(outputs.count()):
                 record = manager.record_for_row(index)
-                if (record is not None and record.kind != "aligned"
-                        and getattr(record, "image", None) is not None):
-                    suffix = (" · " + trans.t("scalebar_baked_marker")
-                              if getattr(record, "annotations_baked", False) else "")
-                    self.output_combo.addItem(record.label + suffix, record)
+                if (record is None or record.kind == "aligned" or (
+                        getattr(record, "image", None) is None
+                        and not getattr(record, "scale_bar_initialized", False)
+                        and not getattr(record, "scale_bar_config", None))):
+                    continue
+                suffix = (" · " + trans.t("scalebar_baked_marker")
+                          if getattr(record, "annotations_baked", False) else "")
+                self.output_combo.addItem(record.label + suffix, record)
             current = manager.record_for_item(outputs.currentItem())
-            for index in range(self.output_combo.count()):
-                if self.output_combo.itemData(index) is current:
-                    self.output_combo.setCurrentIndex(index)
-                    break
+            if getattr(current, "kind", None) == "aligned":
+                self._registered_record = current
+                self.output_combo.setCurrentIndex(-1)
+            else:
+                for index in range(self.output_combo.count()):
+                    if self.output_combo.itemData(index) is current:
+                        self.output_combo.setCurrentIndex(index)
+                        break
 
-        # A target with no frames in this session used to leave the preview
-        # blank and OK disabled with no explanation. Grey it out (the label
-        # manager already does this for "registered") and fall back to a
-        # target that can actually be previewed when the saved one cannot.
+        stored = getattr(window, "scale_bar_target", "all") or "all"
+        if "," in stored:
+            labels = {"source": trans.t("label_target_input"),
+                      "registered": trans.t("label_target_registered"),
+                      "output": trans.t("label_target_output")}
+            scopes = stored.split(",")
+            if all(scope in labels for scope in scopes):
+                self.target_combo.addItem(" + ".join(labels[scope] for scope in scopes), stored)
+
+        # A committed scope can still be removed without a preview frame.
         registration = getattr(window, "registration_results", None) or []
-        for code, missing in (("registered", not registration),
-                              ("output", self.output_combo.count() == 0)):
+        registered_removable = (self._live_applies_to("registered")
+                                or bool(getattr(self._registered_record, "scale_bar_config", None)))
+        for code, missing in (("registered", not registration and not registered_removable),
+                              ("output", self.output_combo.count() == 0
+                               and not self._live_applies_to("output"))):
             if missing:
                 item = self.target_combo.model().item(
                     self.target_combo.findData(code))
@@ -239,7 +258,6 @@ class ScaleBarDialog(QDialog):
             return (index >= 0
                     and self.target_combo.model().item(index).isEnabled())
 
-        stored = getattr(window, "scale_bar_target", "all") or "all"
         if not available(stored):
             order = (("source", "registered", "output", "all")
                      if (getattr(window, "raw_images", None) or [])
@@ -248,8 +266,10 @@ class ScaleBarDialog(QDialog):
         self.target_combo.setCurrentIndex(
             max(0, self.target_combo.findData(stored)))
 
+        self.enable_chk = QCheckBox(trans.t("scalebar_show_on_target"))
         self._target_form.addRow(self.target_combo)
         self._target_form.addRow(trans.t("label_target_output"), self.output_combo)
+        self._target_form.addRow(self.enable_chk)
         form_col.addStretch()
 
         # ---- right: preview ---------------------------------------------
@@ -330,7 +350,8 @@ class ScaleBarDialog(QDialog):
         root.addWidget(buttons)
 
         self.setTabOrder(self.target_combo, self.output_combo)
-        self.setTabOrder(self.output_combo, self.mode_combo)
+        self.setTabOrder(self.output_combo, self.enable_chk)
+        self.setTabOrder(self.enable_chk, self.mode_combo)
         self.mode_combo.currentIndexChanged.connect(self._sync_conditional_fields)
         self.target_combo.setFocus()
         self.pos_combo.currentIndexChanged.connect(self._sync_conditional_fields)
@@ -343,6 +364,8 @@ class ScaleBarDialog(QDialog):
                        self.bold_chk.toggled,
                        self.align_combo.currentIndexChanged,
                        self.target_combo.currentIndexChanged,
+                       self.output_combo.currentIndexChanged,
+                       self.enable_chk.toggled,
                        self.custom_x.valueChanged,
                        self.custom_y.valueChanged):
             signal.connect(self._schedule_preview)
@@ -479,9 +502,45 @@ class ScaleBarDialog(QDialog):
     # Preview
     # ------------------------------------------------------------------
     def _target_record(self):
-        if self.target_combo.currentData() in ("all", "output"):
+        if scalebar.applies_to(self.target_combo.currentData(), "output"):
             return self.output_combo.currentData()
         return None
+
+    def _stack_target(self):
+        target = self.target_combo.currentData()
+        if (scalebar.applies_to(target, "registered")
+                and not scalebar.applies_to(target, "source")):
+            return "registered"
+        return "source"
+
+    def _live_applies_to(self, target):
+        window = self.parent()
+        scope = getattr(window, "scale_bar_target", "all") or "all"
+        return getattr(window, "scale_bar_enabled", False) and scalebar.applies_to(scope, target)
+
+    def _initial_enabled(self, target, record):
+        window = self.parent()
+        active = getattr(window, "scale_bar_enabled", False)
+        stack_active = any(scalebar.applies_to(target, code) and self._live_applies_to(code)
+                           for code in ("source", "registered"))
+        registered = self._registered_record if scalebar.applies_to(target, "registered") else None
+        records = (record, registered)
+        if stack_active or any(getattr(item, "scale_bar_config", None) for item in records):
+            return True
+        if target == "output" and getattr(record, "scale_bar_initialized", False):
+            return False
+        # With no live bar, opening Add/Edit is a new stack insertion.
+        return not active or target == "output"
+
+    def _can_remove(self):
+        if self.enable_chk.isChecked():
+            return False
+        if self.target_combo.currentData() != "output":
+            return True
+        record = self._target_record()
+        if record is None:
+            return self._live_applies_to("output")
+        return not getattr(record, "annotations_baked", False)
 
     def _preview_metadata(self, frame):
         """Linear calibration for the preview pixels, owned by their source.
@@ -516,6 +575,16 @@ class ScaleBarDialog(QDialog):
             self._drafts[self._draft_owner] = self._draft_values()
         record = self._target_record()
         owner = ("output", record.output_id) if record is not None else "stack"
+        target = self.target_combo.currentData()
+        if self._enable_owner is not None:
+            self._enable_drafts[self._enable_owner] = self.enable_chk.isChecked()
+        self._enable_owner = (target, owner)
+        if self._enable_owner not in self._enable_drafts:
+            self._enable_drafts[self._enable_owner] = self._initial_enabled(target, record)
+        with QSignalBlocker(self.enable_chk):
+            self.enable_chk.setChecked(self._enable_drafts[self._enable_owner])
+        self.enable_chk.setEnabled(target != "output"
+                                   or not getattr(record, "annotations_baked", False))
         if owner not in self._drafts:
             context = getattr(record, "context", None)
             detected = getattr(context, "source_px_um", None)
@@ -545,8 +614,9 @@ class ScaleBarDialog(QDialog):
         self.size_spin.setValue(cfg.get("font_size", 0.0))
         self.bold_chk.setChecked(cfg.get("font_bold", False))
         self.align_combo.setCurrentIndex(self.align_combo.findData(cfg.get("text_align", "auto")))
-        x_percent = round(cfg.get("custom_x", 0.95) * 100)
-        y_percent = round(cfg.get("custom_y", 0.95) * 100)
+        custom_x, custom_y = cfg.get("custom_x"), cfg.get("custom_y")
+        x_percent = round((0.95 if custom_x is None else custom_x) * 100)
+        y_percent = round((0.95 if custom_y is None else custom_y) * 100)
         self.custom_x.setValue(x_percent)
         self.custom_y.setValue(y_percent)
         # The sliders are signal-blocked while loading an owner's draft.
@@ -557,8 +627,8 @@ class ScaleBarDialog(QDialog):
         self._target_form.setRowVisible(
             self.output_combo,
             self.output_combo.count() > 0
-            and self.target_combo.currentData() in ("all", "output"))
-        registered = self.target_combo.currentData() == "registered"
+            and scalebar.applies_to(target, "output"))
+        registered = self._stack_target() == "registered"
         frames = getattr(self.parent(), "registration_results" if registered else "raw_images", ()) or ()
         index_attr = "current_result_index" if registered else "current_display_index"
         selected_index = int(getattr(self.parent(), index_attr, 0) or 0)
@@ -578,7 +648,7 @@ class ScaleBarDialog(QDialog):
             return record.image
         if target == "output":
             return None
-        attr = "registration_results" if target == "registered" else "raw_images"
+        attr = "registration_results" if self._stack_target() == "registered" else "raw_images"
         frames = getattr(self.parent(), attr, None) or []
         self.frame_index.blockSignals(True)
         self.frame_index.setRange(1, max(1, len(frames)))
@@ -597,7 +667,8 @@ class ScaleBarDialog(QDialog):
                     custom_y=self.custom_y.value() / 100.0)
 
     def _stack_draft_error(self):
-        frames = getattr(self.parent(), "raw_images", ()) or ()
+        attr = "registration_results" if self._stack_target() == "registered" else "raw_images"
+        frames = getattr(self.parent(), attr, ()) or ()
         if not frames:
             return trans.t("label_preview_no_target")
         # "All" applies the visible calibration choice to both scopes, but
@@ -625,7 +696,7 @@ class ScaleBarDialog(QDialog):
         if self._region_worker is not None:
             self._region_worker.request_cancel()
         self._region_pending.clear()
-        self._ok_button.setEnabled(False)
+        self._ok_button.setEnabled(self._can_remove())
         self._preview_timer.start()
 
     def _start_pixels(self, image, metadata, key):
@@ -674,7 +745,7 @@ class ScaleBarDialog(QDialog):
         from core.source_previews import SourceRegionWorker
         record = self._target_record()
         baked = bool(record is not None and getattr(record, "annotations_baked", False))
-        cfg = None if baked else self._draw_config()
+        cfg = self._draw_config() if self.enable_chk.isChecked() and not baked else None
         worker = SourceRegionWorker(image, key, scale_cfg=cfg,
                                     metadata=self._preview_metadata(image), develop=not baked)
         self._region_worker = worker
@@ -740,10 +811,13 @@ class ScaleBarDialog(QDialog):
         if self._closing:
             return
         self._preview_timer.stop()
+        enabled = self.enable_chk.isChecked()
+        target = self.target_combo.currentData()
+        record = self._target_record()
+        baked = bool(record is not None and getattr(record, "annotations_baked", False))
+        check_stack = target == "all" or (target != "output" and record is not None)
         image = self._preview_image()
-        px_um = self.effective_px_um()
-        has_stack = (image is not None and self._target_record() is None
-                     and self.target_combo.currentData() != "output")
+        has_stack = image is not None and record is None and target != "output"
         for control in (self.frame_index, self.prev_button, self.next_button):
             control.setVisible(has_stack)
         self.prev_button.setEnabled(self.frame_index.value() > 1)
@@ -753,19 +827,19 @@ class ScaleBarDialog(QDialog):
         self.preview_meta.clear()
         auto_text = trans.t("scalebar_align_auto")
         self.size_spin.setSpecialValueText(auto_text)
-        self._ok_button.setEnabled(False)
+        self._ok_button.setEnabled(self._can_remove())
         if image is None:
             self._pixel_key = None
             if self._pixel_worker is not None:
                 self._pixel_worker.requestInterruption()
             self.preview_lbl.set_display_pixmap(None)
-            self._error.setText(trans.t("label_preview_no_target"))
+            self._error.setText(trans.t("scalebar_baked_notice") if baked
+                                else trans.t("label_preview_no_target"))
             return
         self._error.clear()
         height, width = image.shape[:2]
         metadata = self._preview_metadata(image)
-        key = (self.target_combo.currentData(), id(image),
-               getattr(self._target_record(), "output_id", None), id(metadata))
+        key = (target, id(image), getattr(record, "output_id", None), id(metadata))
         if self._preview_cache is None or self._preview_cache[0] != key:
             label = self.preview_lbl
             held = label._magnifier_active
@@ -784,15 +858,13 @@ class ScaleBarDialog(QDialog):
             return
         native_image = image
         image = display
-        name = self._target_record().label if self._target_record() else self.target_combo.currentText()
+        name = record.label if record is not None else self.target_combo.currentText()
         self.header.setText(name + " · " + trans.t("scalebar_header").format(
             frames=len(getattr(self.parent(), "raw_images", ()) or ()),
             outputs=self.output_combo.count(), width=width, height=height,
             depth=native_image.dtype.itemsize * 8, scale=f"{self._work_scale * 100:g}"))
-        record = self._target_record()
-        self._displayed_record = (record, bool(record is not None and
-                                                getattr(record, "annotations_baked", False)))
-        if record is not None and getattr(record, "annotations_baked", False):
+        self._displayed_record = (record, baked)
+        if baked:
             pixmap = cv2_to_pixmap(image)
             if pixmap.isNull():
                 self._error.setText(trans.t("msg_save_failed_text"))
@@ -800,7 +872,7 @@ class ScaleBarDialog(QDialog):
             self.preview_lbl.set_display_pixmap(pixmap, source_size=(width, height),
                 source_key=(self.target_combo.currentData(), id(native_image), self._preview_revision))
             self._error.setText(trans.t("scalebar_baked_notice"))
-            if self.target_combo.currentData() == "all":
+            if enabled and check_stack:
                 try:
                     error = self._stack_draft_error()
                     self._ok_button.setEnabled(not error)
@@ -810,9 +882,10 @@ class ScaleBarDialog(QDialog):
                     self._error.setText(str(exc))
             return
         drawn = image
-        if px_um is None:
+        px_um = self.effective_px_um() if enabled else None
+        if enabled and px_um is None:
             self._error.setText(trans.t("scalebar_not_calibrated"))
-        else:
+        elif enabled:
             scale = image.shape[1] / width
             def preview_mean(rect):
                 x, y, w, h = rect
@@ -826,7 +899,7 @@ class ScaleBarDialog(QDialog):
                 self._error.setText(str(exc))
                 return
             error = "" if not info["too_small"] and info["bar_px"] is not None else trans.t("scalebar_too_small")
-            if not error and self.target_combo.currentData() == "all":
+            if not error and check_stack:
                 try:
                     error = self._stack_draft_error()
                 except Exception as exc:
@@ -844,7 +917,7 @@ class ScaleBarDialog(QDialog):
                     length=scalebar.format_length(info["bar_um"]), px=info["bar_px"]))
         pixmap = cv2_to_pixmap(drawn)
         if pixmap.isNull():
-            self._ok_button.setEnabled(False)
+            self._ok_button.setEnabled(self._can_remove())
             self._error.setText(trans.t("msg_save_failed_text"))
             return
         self.preview_lbl.set_display_pixmap(pixmap, source_size=(width, height),
@@ -871,28 +944,36 @@ class ScaleBarDialog(QDialog):
         if parent is None:
             self.accept()
             return
-        current = self._target_record()
-        if (self._displayed_record is not None and current is self._displayed_record[0]
-                and not self._displayed_record[1] and current is not None
-                and getattr(current, "annotations_baked", False)):
-            self._error.setText(trans.t("scalebar_baked_notice"))
-            return
-        self._refresh_preview()
-        if not self._ok_button.isEnabled():
-            return
         target = self.target_combo.currentData()
         record = self._target_record()
+        enabled = self.enable_chk.isChecked()
         baked = bool(record is not None and getattr(record, "annotations_baked", False))
-        if target == "output" and (record is None or baked):
+        if (enabled and baked and self._displayed_record is not None
+                and record is self._displayed_record[0] and not self._displayed_record[1]):
             self._error.setText(trans.t("scalebar_baked_notice"))
             return
-        if record is not None:
+        if enabled:
+            self._refresh_preview()
+            if not self._ok_button.isEnabled():
+                return
+        if target == "output" and (baked or (record is None and not self._can_remove())):
+            self._error.setText(trans.t("scalebar_baked_notice") if baked
+                                else trans.t("label_preview_no_target"))
+            return
+        registered = None
+        if not enabled and scalebar.applies_to(target, "registered"):
+            registered = self._registered_record
+        if record is not None or registered is not None:
             manager = getattr(parent, "output_manager", None)
             outputs = getattr(parent, "output_list", None)
-            if (manager is None or outputs is None or not any(
-                    manager.record_for_row(row) is record for row in range(outputs.count()))):
+            records = ()
+            if manager is not None and outputs is not None:
+                records = tuple(manager.record_for_row(row) for row in range(outputs.count()))
+            if record is not None and not any(item is record for item in records):
                 self._error.setText(trans.t("label_preview_no_target"))
                 return
+            if registered is not None and not any(item is registered for item in records):
+                registered = None
         self._drafts[self._draft_owner] = self._draft_values()
         stack = self._drafts["stack"]
         try:
@@ -900,8 +981,8 @@ class ScaleBarDialog(QDialog):
             candidate = dict(previous)
             if "outputs" in previous:
                 candidate["outputs"] = dict(previous["outputs"])
-            if target != "output":
-                calibration = self._draft_values() if target == "all" else stack
+            if enabled and target != "output":
+                calibration = self._draft_values() if (target == "all" or record is not None) else stack
                 manual = calibration["manual"] if calibration["mode"] == CALIBRATION_MANUAL else 0.0
                 candidate.update(enabled=True, manual=manual,
                                  position=self.pos_combo.currentData(),
@@ -912,10 +993,16 @@ class ScaleBarDialog(QDialog):
                                  text_align=self.align_combo.currentData(), target=target,
                                  custom_x=self.custom_x.value() / 100.0,
                                  custom_y=self.custom_y.value() / 100.0)
-            if target in ("output", "all") and record is not None and not baked:
-                cfg = self._draw_config()
-                cfg.update(mode=self.calibration_mode(), manual=self.manual_value())
-                candidate.setdefault("outputs", {})[record.output_id] = {"config": cfg, "initialized": True}
+            elif not enabled and (target != "output" or record is None):
+                scalebar.remove_live_target(candidate, target)
+            if record is not None and not baked:
+                cfg = None
+                if enabled:
+                    cfg = self._draw_config()
+                    cfg.update(mode=self.calibration_mode(), manual=self.manual_value())
+                candidate["outputs"][record.output_id] = {"config": cfg, "initialized": True}
+            if registered is not None and not getattr(registered, "annotations_baked", False):
+                candidate["outputs"][registered.output_id] = {"config": None, "initialized": True}
             if candidate == previous:
                 self.accept()
                 return

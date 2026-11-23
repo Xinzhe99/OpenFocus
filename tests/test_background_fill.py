@@ -276,7 +276,7 @@ def test_cancel_during_source_checks_keeps_previous_edit(scene):
     outcome = doc.auto_background(
         'soft', cancelled=lambda: 'checking aligned frames' in stages,
         progress=lambda _, stage: stages.append(stage))
-    assert outcome == 'cancelled' and 'analysing focus' not in stages
+    assert outcome == 'cancelled' and 'compositing' not in stages
     np.testing.assert_array_equal(doc.working, edited)
     assert doc.background_fill is None and doc.undo()
     np.testing.assert_array_equal(doc.working, doc.base)
