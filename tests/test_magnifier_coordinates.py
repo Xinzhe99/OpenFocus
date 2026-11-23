@@ -114,6 +114,35 @@ def test_wheel_rebuilds_composite_after_anchor_pan(view, qapp):
     assert_color(pixel(view.pixmap(), pos), before)
 
 
+@pytest.mark.parametrize('dpr', [1.0, 1.25, 2.0])
+def test_wheel_requests_native_detail_for_final_anchored_view(view, qapp, dpr):
+    view.devicePixelRatioF = lambda: dpr
+    preview = QPixmap(100, 75)
+    preview.fill(QColor('magenta'))
+    view.set_display_pixmap(preview, source_size=(4000, 3000), source_key='frame')
+    view.zoom_view(True)
+    view.zoom_view(True)
+    previous = view._region_requests['view']
+    requests = []
+    view.sourceRegionRequested.connect(lambda key, request: requests.append((key, request)))
+
+    pos = QPointF(419.25, 271.5)
+    anchor = view._map_to_base(pos)
+    wheel(view, pos)
+    mapped = view._map_to_base(pos)
+    assert (mapped.x(), mapped.y()) == pytest.approx((anchor.x(), anchor.y()))
+
+    [(key, request)] = requests
+    assert key == 'frame' and request[0] == 'view'
+    origin = view._map_to_base(QPointF())
+    end = view._map_to_base(QPointF(view.width(), view.height()))
+    assert request[2] == pytest.approx((origin.x(), origin.y(),
+                                       end.x() - origin.x(), end.y() - origin.y()))
+    assert request[3] == (round(view.width() * dpr), round(view.height() * dpr))
+    assert not view.set_source_region(preview, previous[2], source_key=key, request=previous)
+    assert view.set_source_region(preview, request[2], source_key=key, request=request)
+
+
 def test_move_and_wheel_keep_cursor_as_loupe_centre(view, qapp):
     view.set_display_pixmap(coordinate_grid())
     start = QPointF(190, 140)
