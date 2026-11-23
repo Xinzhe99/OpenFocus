@@ -898,6 +898,54 @@ def test_thumbnail_queue_is_bounded_and_delete_is_disabled_while_busy(qapp, tmp_
         dialog.close()
 
 
+def test_thumbnail_queue_keeps_fifo_order_after_mixed_removal(qapp, converter_dialog, tmp_path):
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtGui import QImage
+    from PyQt6.QtTest import QTest
+    from locales import trans
+
+    dialog = converter_dialog
+    sources = [str(tmp_path / f'frame{index}.jpg') for index in range(40)]
+    for source in sources:
+        Path(source).touch()
+    dialog._append(reversed(sources))
+    worker = dialog.thumbnail_worker
+    assert [path for _, path in worker._queue] == sources[:worker.capacity]
+
+    image = QImage(48, 32, QImage.Format.Format_RGB888)
+    image.fill(Qt.GlobalColor.red)
+    for source in sources[:3]:
+        token, path = worker._queue.popleft()
+        assert path == source
+        dialog._thumbnail_ready(token, image, '', '')
+    in_flight, path = worker._queue.popleft()
+    assert path == sources[3]
+
+    # Remove one completed, one running, one queued, and one unissued row.
+    removed = {1, 3, 5, 25}
+    for row in removed:
+        dialog.list.item(row).setSelected(True)
+    dialog.list.setFocus()
+    qapp.processEvents()
+    QTest.keyClick(dialog.list, Qt.Key.Key_Delete)
+    remaining = [source for row, source in enumerate(sources) if row not in removed]
+    expected_thumbnails = [source for row, source in enumerate(sources[4:], 4) if row not in removed]
+    assert dialog.sources == remaining
+    assert dialog.list.count() == len(remaining)
+    assert not dialog.list.selectedItems()
+    assert not dialog.summary.text()
+    assert dialog.queue_count.text() == trans.t('converter_queue_count').format(count=len(remaining))
+    assert [path for _, path in worker._queue] == expected_thumbnails[:worker.capacity]
+
+    dialog._thumbnail_ready(in_flight, image, 'removed preview', '.dng')
+    for index, source in enumerate(expected_thumbnails):
+        assert len(worker._queue) == min(worker.capacity, len(expected_thumbnails) - index)
+        token, path = worker._queue.popleft()
+        assert path == source
+        dialog._thumbnail_ready(token, image, '', '')
+    assert not worker._queue
+
+
 def test_multipage_partial_failure_retains_successful_pages(tmp_path, monkeypatch):
     from types import SimpleNamespace
     source = tmp_path / 'partial.tif'
