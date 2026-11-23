@@ -62,6 +62,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   before releasing buffers after cancellation or error.
 - Reuse the NVML session for VRAM queries and repeat device enumeration after
   a query fails to avoid using memory information from the wrong adapter.
+- Repaint the region-of-interest overlay only when pointer movement changes
+  its delete highlight. Keep move and resize previews responsive.
 - Accelerate OpenFocus alignment candidate scoring, similarity warping,
   uint8 translation warping, pyramid downsizing, and validity mask generation
   with single-threaded native CPU kernels while preserving bit-exact results
