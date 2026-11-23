@@ -152,7 +152,7 @@ def test_remove_scale_bar_from_one_canvas_narrows_the_scope():
     window = _ScaleWindow()
     _remove(window, "source")
     assert window.scale_bar_enabled is True
-    assert window.scale_bar_target == "output"
+    assert window.scale_bar_target == "registered,output"
 
     window.scale_bar_target = "all"
     _remove(window, "output")

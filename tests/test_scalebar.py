@@ -382,7 +382,11 @@ def test_baked_output_is_read_only(qapp):
     dialog = ScaleBarDialog(host)
     _preview_scale(qapp, dialog)
     assert not dialog._ok_button.isEnabled()
+    assert not dialog.enable_chk.isEnabled()
     np.testing.assert_array_equal(pixmap_to_cv2(dialog.preview_lbl._base_pixmap), image)
+    dialog._save_and_accept()
+    assert record.scale_bar_config == cfg
+    dialog.enable_chk.setChecked(False)
     dialog._save_and_accept()
     assert record.scale_bar_config == cfg
     _close_scale(qapp, dialog)
@@ -480,7 +484,7 @@ def test_all_target_applies_calibration_in_each_scope(
     record = SimpleNamespace(
         kind="fusion", label="result", image=image, output_id="result",
         context=SimpleNamespace(source_px_um=output_metadata, source_scale_factor=0.25),
-        scale_bar_config=None, scale_bar_initialized=False, annotations_baked=False)
+        scale_bar_config=None, scale_bar_initialized=True, annotations_baked=False)
     host = _scale_dialog_host(image)
     host.scale_bar_target = "all"
     host.scale_um_per_px_manual = 0.0
@@ -499,6 +503,7 @@ def test_all_target_applies_calibration_in_each_scope(
 
     monkeypatch.setattr(scalebar, "draw_scale_bar_ex", capture_stack)
     dialog = ScaleBarDialog(host)
+    assert dialog.enable_chk.isChecked()
     dialog.mode_combo.setCurrentIndex(dialog.mode_combo.findData(mode))
     if mode == "manual":
         dialog.px_spin.setValue(0.5)
@@ -780,6 +785,154 @@ def test_scale_draft_cancel_leaves_calibration_and_position(qapp):
     _close_scale(qapp, dialog)
     assert host.scale_um_per_px_manual == 0.5
     assert host.scale_bar_custom_x == 0.0
+    host.deleteLater()
+
+
+@pytest.mark.parametrize("target, remaining", [
+    ("source", "registered,output"),
+    ("registered", "source,output"),
+    ("output", "all"),
+    ("all", None),
+])
+def test_unchecking_scale_removes_only_chosen_scope_without_preview(
+        qapp, monkeypatch, target, remaining):
+    from types import SimpleNamespace
+    from PyQt6.QtWidgets import QDialog
+    from dialogs.scalebar import ScaleBarDialog
+    from utils import recovery, scalebar
+
+    host = _scale_dialog_host(None)
+    host.scale_bar_enabled = True
+    host.scale_bar_target = "all"
+    image = np.full((240, 400, 3), 90, np.uint8)
+    config = scalebar.export_cfg(host)
+    records = [SimpleNamespace(
+        kind="fusion", label=key, output_id=key, image=None, context=None,
+        scale_bar_initialized=True, scale_bar_config=dict(config), annotations_baked=baked)
+        for key, baked in (("selected", False), ("other", False), ("baked", True))]
+    selected, other, frozen = records
+    if target == "output":
+        selected.scale_bar_initialized = False
+    host.output_list = SimpleNamespace(count=lambda: len(records), currentItem=lambda: object())
+    host.output_manager = SimpleNamespace(record_for_row=records.__getitem__,
+                                          record_for_item=lambda _: selected)
+    undo = []
+    events = []
+    host.push_scalebar_undo = undo.append
+    host.persist_settings = lambda: events.append("persist")
+    host.refresh_annotation_views = lambda: events.append("refresh")
+    monkeypatch.setattr(recovery, "write_snapshot", lambda _: events.append("snapshot"))
+    previous = scalebar.capture_state(host)
+
+    dialog = ScaleBarDialog(host)
+    dialog.target_combo.setCurrentIndex(dialog.target_combo.findData(target))
+    assert dialog.enable_chk.isChecked()
+    assert not dialog._ok_button.isEnabled()
+    dialog.mode_combo.setCurrentIndex(dialog.mode_combo.findData("manual"))
+    dialog.px_spin.setValue(0.0)
+    dialog.enable_chk.setChecked(False)
+    assert dialog.effective_px_um() is None
+    assert dialog._ok_button.isEnabled()
+    dialog._ok_button.click()
+    assert dialog.result() == QDialog.DialogCode.Accepted
+
+    assert host.scale_bar_enabled == (remaining is not None)
+    if remaining is not None:
+        assert host.scale_bar_target == remaining
+    assert host.scale_um_per_px_manual == .5
+    removed_live = {"source", "registered", "output"} if target == "all" else {target} - {"output"}
+    for scope in ("source", "registered", "output"):
+        assert (scalebar.export_cfg(host, scope) is None) == (scope in removed_live)
+    expected = None if target in ("all", "output") else config
+    assert selected.scale_bar_initialized
+    assert scalebar.export_cfg(host, record=selected) == expected
+    rendered = scalebar.burn(image, scalebar.export_cfg(host, record=selected))
+    assert np.array_equal(rendered, image) == (expected is None)
+    assert scalebar.export_cfg(host, record=other) == config
+    assert frozen.annotations_baked and frozen.scale_bar_config == config
+    assert undo == [previous]
+    assert events == ["persist", "snapshot", "refresh"]
+
+    host.raw_images = [image]
+    host.registration_results = [image]
+    selected.image = image
+    reopened = ScaleBarDialog(host)
+    if remaining and "," in remaining:
+        assert reopened.target_combo.currentData() == remaining
+        _preview_scale(qapp, reopened)
+        assert reopened._ok_button.isEnabled()
+        reopened._ok_button.click()
+        assert reopened.result() == QDialog.DialogCode.Accepted
+        assert host.scale_bar_target == remaining
+        assert scalebar.export_cfg(host, target) is None
+        reopened = ScaleBarDialog(host)
+    reopened.target_combo.setCurrentIndex(reopened.target_combo.findData(target))
+    assert reopened.enable_chk.isChecked() == (target == "all")
+    _close_scale(qapp, reopened)
+    scalebar.restore_state(host, undo[0])
+    assert scalebar.capture_state(host) == previous
+    host.deleteLater()
+
+
+def test_remove_scale_from_selected_registered_snapshot(qapp, monkeypatch):
+    from types import SimpleNamespace
+    from PyQt6.QtWidgets import QDialog
+    from dialogs.scalebar import ScaleBarDialog
+    from utils import recovery, scalebar
+
+    host = _scale_dialog_host(None)
+    host.scale_bar_enabled = False
+    host.scale_bar_target = "registered"
+    records = [SimpleNamespace(
+        kind="aligned", label=key, output_id=key, image=None,
+        scale_bar_initialized=True, scale_bar_config={"px_um": .5}, annotations_baked=baked)
+        for key, baked in (("selected", False), ("other", False), ("baked", True))]
+    current = records[0]
+    host.output_list = SimpleNamespace(count=lambda: len(records), currentItem=lambda: current)
+    host.output_manager = SimpleNamespace(record_for_row=records.__getitem__,
+                                          record_for_item=lambda item: item)
+    monkeypatch.setattr(recovery, "write_snapshot", lambda _: None)
+
+    dialog = ScaleBarDialog(host)
+    assert dialog.target_combo.currentData() == "registered"
+    assert dialog.enable_chk.isChecked()
+    dialog.enable_chk.click()
+    dialog._ok_button.click()
+    assert dialog.result() == QDialog.DialogCode.Accepted
+    assert scalebar.export_cfg(host, "registered", record=current) is None
+    assert scalebar.export_cfg(host, "registered", record=records[1]) == {"px_um": .5}
+    assert records[2].annotations_baked and records[2].scale_bar_config == {"px_um": .5}
+    host.deleteLater()
+
+
+@pytest.mark.parametrize("cancel_with_escape", [False, True])
+def test_cancel_keeps_scale_bar_and_removed_preview_local(qapp, cancel_with_escape):
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtTest import QTest
+    from PyQt6.QtWidgets import QDialog, QDialogButtonBox
+    from dialogs.scalebar import ScaleBarDialog
+    from utils.image_utils import pixmap_to_cv2
+    from utils.scalebar import capture_state, export_cfg
+
+    image = np.full((240, 400, 3), 90, np.uint8)
+    host = _scale_dialog_host(image)
+    host.scale_bar_enabled = True
+    previous = capture_state(host)
+    dialog = ScaleBarDialog(host)
+    dialog.show()
+    _preview_scale(qapp, dialog)
+    assert dialog.enable_chk.isChecked()
+    assert not np.array_equal(pixmap_to_cv2(dialog.preview_lbl._base_pixmap), image)
+    dialog.enable_chk.click()
+    _preview_scale(qapp, dialog)
+    np.testing.assert_array_equal(pixmap_to_cv2(dialog.preview_lbl._base_pixmap), image)
+    assert export_cfg(host, "source") is not None
+    if cancel_with_escape:
+        QTest.keyClick(dialog, Qt.Key.Key_Escape)
+    else:
+        dialog.findChild(QDialogButtonBox).button(QDialogButtonBox.StandardButton.Cancel).click()
+    assert dialog.result() == QDialog.DialogCode.Rejected and not dialog.isVisible()
+    assert capture_state(host) == previous
     host.deleteLater()
 
 

@@ -511,6 +511,27 @@ _STATE_FIELDS = {
     "custom_y": ("scale_bar_custom_y", 0.95),
 }
 
+_TARGETS = ("source", "registered", "output")
+
+
+def applies_to(scope: str, target: str) -> bool:
+    return scope == "all" or (isinstance(scope, str) and target in scope.split(","))
+
+
+def remove_live_target(state: dict, target: str) -> None:
+    """Subtract the requested scope from the live stack configuration."""
+    if not state["enabled"]:
+        return
+    scope = state["target"] or "all"
+    active = [kind for kind in _TARGETS if applies_to(scope, kind)]
+    remaining = [kind for kind in active if not applies_to(target, kind)]
+    if remaining == active:
+        return
+    if remaining:
+        state["target"] = ",".join(remaining)
+    else:
+        state["enabled"] = False
+
 
 def capture_state(window) -> dict:
     state = {key: getattr(window, attr, default)
@@ -611,7 +632,7 @@ def export_cfg(window, target: str = "output", *, record=None) -> Optional[dict]
     if not getattr(window, "scale_bar_enabled", False):
         return None
     where = getattr(window, "scale_bar_target", "all") or "all"
-    if where != "all" and where != target:
+    if not applies_to(where, target):
         return None
     px_um = effective_px_um(window)
     if record is not None and record.context is not None:
