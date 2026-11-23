@@ -891,6 +891,7 @@ class LabelManager:
             return
         label_id = item.data(Qt.ItemDataRole.UserRole)
         self._new_label_anchors.pop(label_id, None)
+        self._labels_to_remove.discard(label_id)
         self._editing_id = ""
         self._draft.remove(label_id)
         self._reload_dialog_list()
@@ -977,8 +978,9 @@ class LabelManager:
             self._editing_id = ''
             self._loading_editor = False
             self._show_no_label()
-            self._set_dialog_error('Label coordinates or font size cannot be represented.')
-            self._ok_button.setEnabled(False)
+            error = 'Label coordinates or font size cannot be represented.' if label.enabled else ''
+            self._set_dialog_error(error)
+            self._update_apply_button(label, error)
             return
         widgets = (self.target_stack_combo, self.format_edit,
                    self.range_edit, self.starting_value_spin,
@@ -1033,6 +1035,7 @@ class LabelManager:
         for combo in (self.target_stack_combo, self._output_scope, self._range_mode,
                       self.font_family_combo):
             combo.setToolTip(combo.currentText())
+        self._saved_editor_config = self._dialog_config()
         self._on_target_changed()
         self._sync_background_color_control()
 
@@ -1212,9 +1215,18 @@ class LabelManager:
 
     def _on_label_enabled(self, item) -> None:
         label = self._draft.get(item.data(Qt.ItemDataRole.UserRole))
-        if label is not None:
-            label.enabled = item.checkState() == Qt.CheckState.Checked
+        checked = item.checkState() == Qt.CheckState.Checked
+        if label is None or checked == label.enabled:
+            return
+        label.enabled = checked
+        if checked:
+            self._labels_to_remove.discard(label.label_id)
+        else:
+            self._labels_to_remove.add(label.label_id)
+        if self._editing_id:
             self._refresh_preview()
+        elif item is self._dialog_list.currentItem():
+            self._load_selected_label(self._dialog_list.currentRow())
 
     def _save_editor_to_draft(self) -> None:
         if self._draft is None or self._loading_editor or not self._editing_id:
@@ -1222,7 +1234,11 @@ class LabelManager:
         label = self._draft.get(self._editing_id)
         if label is None:
             return
-        label.config.update_config(self._dialog_config())
+        config = self._dialog_config()
+        if config == self._saved_editor_config:
+            return
+        self._saved_editor_config = config
+        label.config.update_config(config)
         label.config.target_stack = 0 if label.target == "input" else 1
         item = self._dialog_list.currentItem()
         if item is not None and item.data(Qt.ItemDataRole.UserRole) == label.label_id:
@@ -1349,12 +1365,14 @@ class LabelManager:
         self._range_status.setText(trans.t('label_range_matches').format(
             n=len(indices), total=len(images)))
         self._set_dialog_error(error)
-        self._ok_button.setEnabled(not error)
+        self._update_apply_button(label, error)
         self._preview_prev.setEnabled(index > 0)
         self._preview_next.setEnabled(index + 1 < len(images))
         self._first_applicable.setVisible(bool(indices) and index not in indices)
         if error:
             status = ""
+        elif label.label_id in self._labels_to_remove:
+            status = trans.t('label_preview_remove_on_apply')
         elif not label.enabled:
             status = trans.t('label_preview_disabled')
         elif index not in indices:
@@ -1366,6 +1384,12 @@ class LabelManager:
                 n=build_label_text(config["format"], "",
                                    config["starting_value"] + index * config["interval"]))
         self._set_preview_caption(self.preview_status, status)
+
+    def _update_apply_button(self, label: Label, error: str) -> None:
+        # Existing entries that were not edited do not need to pass validation.
+        original = self._labels.get(label.label_id) if error else None
+        unchanged = original is not None and original.to_dict() == label.to_dict()
+        self._ok_button.setEnabled(not error or unchanged)
 
     def _replace_labels(self, draft) -> bool:
         if draft.to_dict() == self._labels.to_dict():
@@ -1381,13 +1405,14 @@ class LabelManager:
         return True
 
     def _commit_dialog(self) -> bool:
-        """Validate every draft label before committing or closing the dialog."""
+        """Validate retained draft labels before applying edits and removals."""
         for spin in (self.starting_value_spin, self.interval_spin, self.font_size_spin,
                      self.x_location_spin, self.y_location_spin):
             if isinstance(spin, StepperSpinBox):
                 spin.interpretText()
         self._save_editor_to_draft()
-        for label in self._draft:
+        retained = [label for label in self._draft if label.label_id not in self._labels_to_remove]
+        for label in retained:
             original = self._labels.get(label.label_id)
             if original is not None and original.to_dict() == label.to_dict():
                 continue
@@ -1396,7 +1421,7 @@ class LabelManager:
                 self._reload_dialog_list(label.label_id)
                 self._set_dialog_error(error)
                 return False
-        return self._replace_labels(self._draft)
+        return self._replace_labels(LabelSet(retained))
 
     def _refresh_canvases(self) -> None:
         window = self.window
@@ -1494,6 +1519,8 @@ class LabelManager:
             release()
         self._loading_editor = False
         self._editing_id = ""
+        self._labels_to_remove: set[str] = set()
+        self._saved_editor_config = None
         self._new_label_anchors = {}
         self._dialog_frames = {}
         self._dialog_target = ""

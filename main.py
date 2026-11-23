@@ -2485,25 +2485,18 @@ class OpenFocus(QMainWindow):
         worker.start()
 
     def remove_scale_bar(self, where: str) -> None:
-        """Remove the bar from one canvas, or from everywhere.
+        """Remove the bar from the requested canvas or everywhere."""
+        from utils import scalebar
 
-        "Apply to" is a scope, so removing one canvas leaves the bar on the
-        other; removing the last canvas (or choosing "everywhere") turns the
-        bar off. The old handler only rewrote the scope, so "remove
-        everywhere" set it back to `all` and the bar stayed visible.
-        """
         previous = self._capture_scalebar_state()
-        scope = getattr(self, "scale_bar_target", "all") or "all"
-        if getattr(self, "scale_bar_enabled", False):
-            if where == "all" or scope == where or (
-                    where == "output" and scope == "registered"):
-                self.scale_bar_enabled = False
-            elif scope == "all":
-                self.scale_bar_target = "output" if where == "source" else "source"
+        candidate = dict(previous)
+        scalebar.remove_live_target(candidate, "registered,output" if where == "output" else where)
+        self.scale_bar_enabled = candidate["enabled"]
+        self.scale_bar_target = candidate["target"]
         if where in ("all", "output"):
             for row in range(self.output_list.count()):
                 record = self.output_manager.record_for_row(row)
-                if record is not None:
+                if record is not None and not record.annotations_baked:
                     record.scale_bar_config = None
                     record.scale_bar_initialized = True
         if self._capture_scalebar_state() == previous:

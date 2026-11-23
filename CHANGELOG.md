@@ -136,6 +136,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and preserve their output order.
 
 ### Fixed
+- Default new watermarks to fusion results. Apply removes unchecked watermark
+  scopes, scale bars on the selected target, and unchecked labels.
 - Retain OpenFocus B's prepared images when switching fusion methods with
   compatible source and registration settings.
 - Keep the desktop control connection responsive while Retouch asks whether

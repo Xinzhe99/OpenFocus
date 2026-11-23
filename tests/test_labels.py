@@ -3,9 +3,11 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QDialog, QWidget
 
 from controllers.label_manager import LabelManager
+from locales import trans
 from utils.label_model import Label, LabelSet
 from utils.validators import LabelAdder, LabelConfig, parse_label_range
 
@@ -151,6 +153,61 @@ def test_deleting_last_label_commits_empty_set(manager, monkeypatch):
     edit_dialog(monkeypatch, manager, edit)
     assert len(manager.labels) == 0
     assert len(manager.window.undo) == 1
+
+
+@pytest.mark.parametrize('keep_other_labels', [False, True])
+def test_unchecking_label_removes_it_on_apply(manager, monkeypatch, keep_other_labels):
+    removed = caption(text='remove')
+    manager.labels.add(removed)
+    if keep_other_labels:
+        # No registered images are available, but this existing label needs no edit.
+        kept = caption(target='registered', text='keep')
+        legacy = caption(text='legacy')
+        legacy.enabled = False
+        legacy.config.text = 'legacy text'
+        legacy.config.format = ''
+        manager.labels.add(kept)
+        manager.labels.add(legacy)
+    before = manager.export_state()
+
+    def edit(dialog):
+        item = manager._dialog_list.item(0)
+        item.setCheckState(Qt.CheckState.Unchecked)
+        assert not manager._draft.get(removed.label_id).enabled
+        assert manager.preview_status.text() == trans.t('label_preview_remove_on_apply')
+        assert manager.export_state() == before
+        if keep_other_labels:
+            manager._dialog_list.setCurrentRow(2)
+            manager._dialog_list.setCurrentRow(1)
+        assert manager._ok_button.isEnabled()
+        manager._ok_button.click()
+        assert dialog.result() == QDialog.DialogCode.Accepted
+
+    edit_dialog(monkeypatch, manager, edit)
+    assert manager.labels.to_dict() == before['labels_v2'][1:]
+    assert manager.window.undo == [before]
+    assert manager.window.dirty == manager.window.refreshes == 1
+
+
+@pytest.mark.parametrize('apply', [False, True])
+def test_label_uncheck_can_be_discarded(manager, monkeypatch, apply):
+    manager.labels.add(caption())
+    before = manager.export_state()
+
+    def edit(dialog):
+        item = manager._dialog_list.item(0)
+        item.setCheckState(Qt.CheckState.Unchecked)
+        if apply:
+            item.setCheckState(Qt.CheckState.Checked)
+            manager._ok_button.click()
+            assert dialog.result() == QDialog.DialogCode.Accepted
+        else:
+            dialog.reject()
+
+    edit_dialog(monkeypatch, manager, edit)
+    assert manager.export_state() == before
+    assert manager.window.undo == []
+    assert manager.window.dirty == manager.window.refreshes == 0
 
 
 @pytest.mark.parametrize("invalid", ["1-2,x", "0", "4", "2-8"])
