@@ -406,6 +406,7 @@ def test_cpu_fusion_fallback_borrows_warp_accelerator_in_frame_workers(
         tmp_path, monkeypatch, algorithm, module, name):
     from importlib import import_module
     from threading import current_thread
+    from core import resource_policy
     from fusion_methods._openfocus_gpu import GpuError
 
     class RecordThreads(_Recorder):
@@ -417,6 +418,8 @@ def test_cpu_fusion_fallback_borrows_warp_accelerator_in_frame_workers(
         raise GpuError('fusion backend unavailable')
 
     frames = _deferred_frames(tmp_path)
+    # Exercise the parallel path even on runners that admit one balanced worker.
+    monkeypatch.setattr(resource_policy, 'cpu_capacity', lambda snapshot, preference: 2)
     options = dict(algorithm=algorithm, tile_enabled=False, exposure_match=False)
     expected = MultiFocusFusion(**options, use_gpu=False).fuse(frames, thread_count=2)
     threads = set()
