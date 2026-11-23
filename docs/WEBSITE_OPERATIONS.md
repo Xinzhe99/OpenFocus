@@ -112,6 +112,10 @@ the static binding. Every page and asset request counts as a Worker invocation.
   object. The route supports ranges and validators; missing assets return `503`
   and never redirect to GitHub. Stable objects can be pruned after a new stable
   release; beta objects are retained for cached and version-pinned requests.
+- `/download/releases/<tag>/delta/<from>/<platform>` streams the patch for an
+  exact version and platform. The `deltas` array in `/api/updates` lists
+  verified patch sizes and SHA-256 digests. Update the Worker before mirroring
+  the first release that advertises these URLs.
 - `www.openfocus.top` — every path returns a `301` to `https://openfocus.top/`
   with the path preserved (for example `/zh/?x=1`).
 - Everything else — `site/dist` with `html_handling: auto-trailing-slash`,

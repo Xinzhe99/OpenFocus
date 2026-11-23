@@ -8,6 +8,7 @@ import re
 import sys
 import threading
 import urllib.request
+from dataclasses import dataclass
 from typing import Callable, Optional, Tuple
 from utils.release_notes import LANGUAGES, RELEASE_NOTES, localized_bodies
 
@@ -20,10 +21,71 @@ _ASSET_SUFFIXES = {
     "windows-zip": "windows-x64.zip",
     "macos-dmg": "macos.dmg",
     "macos-zip": "macos-arm64.zip",
+    "linux-desktop": "linux-x86_64.tar.gz",
 }
+_PACKAGE_KINDS = {"windows-x64": "windows-zip", "macos-arm64": "macos-zip",
+                  "linux-x86_64": "linux-desktop"}
+_INSTALLER_KINDS = {"windows-x64": "windows-setup", "macos-arm64": "macos-dmg"}
+_OFFICIAL_TAG = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+(?:-beta\.[1-9][0-9]*)?")
 REQUEST_TIMEOUT_S = 10
 # The mirror retains 30 stable releases and, when selected, the latest beta.
 _MAX_RELEASE_NOTES = 31
+
+
+@dataclass(frozen=True)
+class DeltaOffer:
+    name: str
+    url: str
+    size: int
+    digest: str
+    base_tag: str
+    platform: str
+
+
+@dataclass(frozen=True)
+class UpdateOffer:
+    tag: str
+    url: str
+    digest: str = ""
+    size: int = 0
+    delta: Optional[DeltaOffer] = None
+
+
+def platform_asset_kinds() -> Tuple[str, str]:
+    from utils.release_delta import platform_key
+    # The Windows x64 package also runs under Windows-on-ARM emulation.
+    if sys.platform == "win32":
+        return "windows-zip", "windows-setup"
+    platform = platform_key()
+    return _PACKAGE_KINDS.get(platform, ""), _INSTALLER_KINDS.get(platform, "")
+
+
+def select_delta_asset(deltas, *, target_tag: str, current_version: str,
+                       full_size: int, full_digest: str) -> Optional[DeltaOffer]:
+    """Accept at most one exact-base patch from the version-pinned mirror."""
+    from utils.release_delta import delta_name, platform_key
+
+    platform = platform_key()
+    if not platform or not isinstance(current_version, str) or not isinstance(target_tag, str):
+        return None
+    base_tag = "v" + current_version.removeprefix("v")
+    if (not isinstance(deltas, list) or max(len(base_tag), len(target_tag)) > 32
+            or not _OFFICIAL_TAG.fullmatch(base_tag) or not _OFFICIAL_TAG.fullmatch(target_tag)
+            or not is_newer(target_tag, base_tag) or type(full_size) is not int or full_size <= 0
+            or not isinstance(full_digest, str) or not SHA256_DIGEST_RE.fullmatch(full_digest)):
+        return None
+    name = delta_name(target_tag, base_tag, platform)
+    matching = [item for item in deltas if isinstance(item, dict)
+                and item.get("from") == base_tag and item.get("platform") == platform]
+    if len(matching) != 1:
+        return None
+    item = matching[0]
+    size, digest = item.get("size"), item.get("digest")
+    if (item.get("name") != name or type(size) is not int or not 0 < size < full_size
+            or not isinstance(digest, str) or not SHA256_DIGEST_RE.fullmatch(digest)):
+        return None
+    return DeltaOffer(name, f"{RELEASE_DOWNLOAD_URL}/{target_tag}/delta/{base_tag}/{platform}",
+                      size, digest, base_tag, platform)
 
 
 def parse_version(tag: str) -> Optional[Tuple[int, ...]]:
@@ -101,35 +163,23 @@ def _mirror_asset(release: dict, kind: str) -> Optional[dict]:
     digest = str(asset.get("digest") or "")
     # Never downgrade self-update integrity when an old or incomplete mirror
     # manifest lacks the SHA-256 supplied by the release workflow.
-    if (kind.endswith("-zip") or digest) and not SHA256_DIGEST_RE.fullmatch(digest):
+    if (kind in _PACKAGE_KINDS.values() or digest) and not SHA256_DIGEST_RE.fullmatch(digest):
         return None
     return {"name": name, "url": f"{RELEASE_DOWNLOAD_URL}/{actual_tag}/{kind}",
             "size": size, "digest": digest}
 
 
 def find_portable_zip_asset(release: dict) -> Optional[dict]:
-    """Platform portable zip used by the in-app one-click update flow."""
-    if sys.platform == "win32":
-        return _mirror_asset(release, "windows-zip")
-    if sys.platform == "darwin":
-        import platform
-        if platform.machine().lower() in ("arm64", "aarch64"):
-            return _mirror_asset(release, "macos-zip")
-    return None
+    """Platform archive used by the in-app one-click update flow."""
+    return _mirror_asset(release, platform_asset_kinds()[0])
 
 
 def find_installer_asset(release: dict) -> Optional[dict]:
     """Pick the installer for this platform from mirrored release metadata."""
-    if sys.platform == "win32":
-        return _mirror_asset(release, "windows-setup")
-    if sys.platform == "darwin":
-        import platform
-        if platform.machine().lower() in ("arm64", "aarch64"):
-            return _mirror_asset(release, "macos-dmg")
-    return None
+    return _mirror_asset(release, platform_asset_kinds()[1])
 
 
-def fetch_latest_release(include_beta: bool = False) -> Tuple[bool, str, str, Optional[dict], Optional[dict], list]:
+def fetch_latest_release(include_beta: bool = False, *, current_version: str = "") -> Tuple[bool, str, str, Optional[dict], Optional[dict], list]:
     """Return the selected release, platform assets, and notes."""
     channel = "beta" if include_beta else "stable"
     data = _api_get(f"{RELEASES_API_URL}?channel={channel}")
@@ -145,8 +195,12 @@ def fetch_latest_release(include_beta: bool = False) -> Tuple[bool, str, str, Op
     if not include_beta:
         releases = [item for item in releases if isinstance(item, dict)
                     and not is_beta(item.get("tag_name", ""))]
-    return (True, tag, RELEASES_PAGE_URL, find_installer_asset(data),
-            find_portable_zip_asset(data), releases)
+    package = find_portable_zip_asset(data)
+    if package and current_version:
+        package["delta"] = select_delta_asset(
+            data.get("deltas"), target_tag=tag, current_version=current_version,
+            full_size=package["size"], full_digest=package["digest"])
+    return True, tag, RELEASES_PAGE_URL, find_installer_asset(data), package, releases
 
 
 def _md_to_plain(md: str) -> str:
@@ -404,7 +458,7 @@ def download_async(url: str, dest_path: str,
 
 
 def check_async(current_version: str, on_result: Callable[..., None], quiet: bool = False,
-                include_beta: bool = False) -> None:
+                include_beta: bool = False, *, with_offer: bool = False) -> None:
     """Check for updates off-thread.
 
     on_result receives (state, tag, download_url) where state is:
@@ -416,13 +470,15 @@ def check_async(current_version: str, on_result: Callable[..., None], quiet: boo
     for the automatic startup check, which must stay silent unless there is
     something to install).
 
-    For an update the callback also receives the mirror ZIP and installer
-    URLs, the ZIP's SHA-256 digest, and language-neutral release-note entries.
+    For an update the callback also receives the mirror package and installer
+    URLs, the package SHA-256 digest, and language-neutral release-note entries.
+    With with_offer=True it receives an additional immutable download offer.
     """
 
     def worker():
         try:
-            ok, tag, url, asset, portable_zip, releases = fetch_latest_release(include_beta)
+            options = {"current_version": current_version} if with_offer else {}
+            ok, tag, url, asset, portable_zip, releases = fetch_latest_release(include_beta, **options)
             if not ok:
                 raise ValueError("Invalid update metadata")
             setup_url = (asset or {}).get("url", "")
@@ -430,8 +486,13 @@ def check_async(current_version: str, on_result: Callable[..., None], quiet: boo
             zip_digest = (portable_zip or {}).get("digest", "")
             if ok and is_newer(tag, current_version):
                 notes = release_note_entries(current_version, tag, releases)
-                on_result("update", tag, url, zip_url, setup_url, zip_digest,
-                          notes)
+                args = ("update", tag, url, zip_url, setup_url, zip_digest, notes)
+                if with_offer:
+                    offer = UpdateOffer(tag, zip_url, zip_digest, portable_zip["size"],
+                                        portable_zip.get("delta")) if portable_zip else None
+                    on_result(*args, offer)
+                else:
+                    on_result(*args)
             elif not quiet:
                 on_result("latest", tag or "", url)
         except Exception:

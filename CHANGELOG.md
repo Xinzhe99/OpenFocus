@@ -6,6 +6,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Download smaller desktop updates for matching installations on Windows,
+  Apple Silicon macOS, and Linux x86-64. Publish a patch helper for the
+  official 2.0.0 desktop builds when the patch is smaller than the full package.
 - Offer PyTorch CUDA on supported NVIDIA Linux systems and PyTorch MPS on
   Apple Silicon. The optional packs use the same installer and verify all
   three StackMFF models before activation.

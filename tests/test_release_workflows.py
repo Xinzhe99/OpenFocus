@@ -157,6 +157,30 @@ def test_packaged_platforms_embed_identity_before_build():
         assert '--write-build-identity build_identity.py' in steps[marker]['run']
 
 
+@pytest.mark.parametrize(('job', 'platform', 'archive_step'), [
+    ('windows', 'windows-x64', 'Package zip (portable)'),
+    ('macos', 'macos-arm64', 'Package zip (portable)'),
+    ('linux', 'linux-x86_64', 'Verify extracted desktop on native Wayland'),
+])
+def test_native_delta_generation_follows_final_portable_archive(job, platform, archive_step):
+    steps = workflow('release.yml')['jobs'][f'build-{job}']['steps']
+    final_archive = next(i for i, step in enumerate(steps) if step.get('name') == archive_step)
+    index = next(i for i, step in enumerate(steps) if '--build-deltas' in step.get('run', ''))
+    upload = next(i for i, step in enumerate(steps) if step.get('with', {}).get('name') == f'OpenFocus-{job}')
+    assert final_archive < index < upload
+    assert 'if' not in steps[index]  # Branch previews exercise the same native pipeline.
+    assert f'--platform {platform}' in steps[index]['run']
+    assert steps[index]['env']['GH_TOKEN'] == '${{ github.token }}'
+    if job == 'windows':
+        stage = next(i for i, step in enumerate(steps) if 'stage-windows' in step.get('run', ''))
+        assert index < stage < upload
+        assert '--directory dist/release-windows' in steps[index]['run']
+    else:
+        patterns = steps[upload]['with']['path']
+        assert f'OpenFocus-*-{platform}-from-*.ofdelta.zip' in patterns
+        assert f'OpenFocus-*-{platform}-patch-from-v2.0.0.zip' in patterns
+
+
 def test_only_stable_releases_publish_to_pypi():
     pypi = workflow('pypi.yml')
     for channel in ('release', 'beta', 'preview'):

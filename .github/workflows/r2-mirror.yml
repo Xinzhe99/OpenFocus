@@ -149,6 +149,12 @@ jobs:
             echo "::error::A part file leaked into the complete-asset directory."
             exit 1
           fi
+          python tools/release_archives.py list-mirror-deltas --tag "$tag" \
+            --release-json release.json > "$RUNNER_TEMP/delta-downloads.txt"
+          while IFS= read -r name; do
+            gh release download "$tag" -R "$GITHUB_REPOSITORY" \
+              --pattern "$name" --dir assets
+          done < "$RUNNER_TEMP/delta-downloads.txt"
           ls -lh assets
 
       - name: Verify all assets before writing to R2
@@ -200,7 +206,7 @@ jobs:
             aws s3 cp "assets/$name" "s3://openfocus-downloads/$name" \
               --endpoint-url "$endpoint" --content-type "application/octet-stream" \
               --cache-control "public, max-age=86400" --only-show-errors --no-progress
-          done < <(jq -r '.assets[].name' "$manifest")
+          done < <(jq -r '(.assets[], .deltas[]?) | .name' "$manifest")
           while IFS= read -r name; do
             remote="$(aws s3api head-object --bucket openfocus-downloads \
               --key "$name" --endpoint-url "$endpoint" \
@@ -210,14 +216,14 @@ jobs:
               echo "::error::R2 upload size mismatch for $name: $remote != $local"
               exit 1
             fi
-            expected="$(jq -r --arg name "$name" '.assets[] | select(.name == $name) | .digest' "$manifest")"
+            expected="$(jq -r --arg name "$name" '(.assets[], .deltas[]?) | select(.name == $name) | .digest' "$manifest")"
             actual="sha256:$(aws s3 cp "s3://openfocus-downloads/$name" - \
               --endpoint-url "$endpoint" --only-show-errors --no-progress | sha256sum | cut -d' ' -f1)"
             if [ "$actual" != "$expected" ]; then
               echo "::error::R2 upload SHA-256 mismatch for $name"
               exit 1
             fi
-          done < <(jq -r '.assets[].name' "$manifest")
+          done < <(jq -r '(.assets[], .deltas[]?) | .name' "$manifest")
 
       - name: Publish latest mirrored release metadata
         run: |
@@ -281,6 +287,11 @@ jobs:
             # Preserve all beta objects, including older versions that may still
             # be referenced by cached website or desktop update responses.
             if [[ "$key" =~ ^OpenFocus-v[0-9]+(\.[0-9]+)*-beta\.[1-9][0-9]*- ]]; then
+              continue
+            fi
+            if [[ "$key" =~ ^OpenFocus-v[0-9]+\.[0-9]+\.[0-9]+-(windows-x64|macos-arm64|linux-x86_64)-from-v[0-9]+\.[0-9]+\.[0-9]+(-beta\.[1-9][0-9]*)?\.ofdelta\.zip$ && "$key" != "OpenFocus-${tag}-"* ]]; then
+              echo "Deleting $key"
+              aws s3 rm "s3://openfocus-downloads/$key" --endpoint-url "$endpoint" --only-show-errors
               continue
             fi
             case "$key" in

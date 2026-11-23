@@ -53,6 +53,8 @@ def test_windows_transaction_keeps_complete_install_and_portable_data(tmp_path, 
     (app / "obsolete").write_bytes(b"obsolete")
     (app / "OpenFocus.portable").write_bytes(b"portable")
     (app / "OpenFocusData" / "workspace").write_bytes(b"user-data")
+    (app / "unins000.exe").write_bytes(b"existing uninstaller")
+    (app / "unins000.dat").write_bytes(b"existing uninstall log")
     (staged_app / "OpenFocus.exe").write_bytes(b"new-exe")
     (staged_app / "_internal" / "library").write_bytes(b"new-library")
     monkeypatch.setattr(self_update.tempfile, "gettempdir", lambda: str(root))
@@ -109,8 +111,110 @@ function Start-Process {
     assert (app / "obsolete").exists() is bool(failure)
     assert (app / "OpenFocus.portable").read_bytes() == b"portable"
     assert (app / "OpenFocusData" / "workspace").read_bytes() == b"user-data"
+    assert (app / "unins000.exe").read_bytes() == b"existing uninstaller"
+    assert (app / "unins000.dat").read_bytes() == b"existing uninstall log"
+    if not failure:
+        saved = result.partition("\n")[2].strip()
+        assert (type(root)(saved) / "obsolete").read_bytes() == b"obsolete"
     assert result.startswith("failed" if failure else "ok")
     assert launches.read_text(encoding="utf-8").strip() == str(app / "OpenFocus.exe")
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="uses the Linux detached helper")
+@pytest.mark.parametrize("failure", ["", "switch", "rollback"])
+def test_linux_handoff_swaps_or_recovers_portable_bundle(tmp_path, monkeypatch, failure):
+    root = tmp_path / "work 'copy'"
+    app, stage = root / "Installed OpenFocus", root / "stage"
+    candidate = stage / "OpenFocus"
+    for directory, content in ((app, b"old"), (candidate, b"new")):
+        (directory / "_internal").mkdir(parents=True)
+        (directory / "OpenFocus").write_bytes(content)
+        (directory / "OpenFocus").chmod(0o755)
+    (app / "OpenFocusData").mkdir()
+    (app / "OpenFocusData" / "settings.ini").write_bytes(b"settings")
+    (app / "OpenFocus.portable").touch()
+    (app / "personal-file.txt").write_bytes(b"project")
+    (candidate / "_internal" / "library").write_bytes(b"library")
+    (candidate / "_internal" / "linked").symlink_to("library")
+    package = root / "package.tar.gz"
+    package.touch()
+    monkeypatch.setattr(self_update.tempfile, "gettempdir", lambda: str(root))
+    if failure:
+        commands = root / "command overrides"
+        commands.mkdir()
+        mv = commands / "mv"
+        mv.write_text('''#!/bin/sh
+case "$2" in
+    */new) exit 1 ;;
+    */previous) [ "$OPENFOCUS_TEST_FAIL_ROLLBACK" != 1 ] || exit 1 ;;
+esac
+exec /bin/mv "$@"
+''', encoding="utf-8")
+        mv.chmod(0o755)
+        monkeypatch.setenv("PATH", str(commands) + os.pathsep + os.environ["PATH"])
+        monkeypatch.setenv("OPENFOCUS_TEST_FAIL_ROLLBACK", str(int(failure == "rollback")))
+
+    helper = self_update.handoff_update(str(app), str(candidate), "v2.0.1",
+                                       staging_root=str(stage), package_path=str(package), restart=False)
+    assert helper.wait(timeout=15) == {"": 0, "switch": 1, "rollback": 2}[failure]
+    [(tag, ok, detail)] = self_update.consume_results()
+    assert tag == "v2.0.1" and ok is (not failure)
+    if failure == "rollback":
+        assert not app.exists()
+        backup = type(root)(detail.removeprefix("rollback failed; backup: "))
+        assert (backup / "OpenFocus").read_bytes() == b"old"
+        assert (backup / "OpenFocusData" / "settings.ini").read_bytes() == b"settings"
+    else:
+        assert (app / "OpenFocus").read_bytes() == (b"old" if failure else b"new")
+        assert (app / "OpenFocusData" / "settings.ini").read_bytes() == b"settings"
+        assert (app / "OpenFocus.portable").exists()
+        if not failure:
+            assert (app / "_internal" / "linked").is_symlink()
+            assert (app / "_internal" / "linked").read_bytes() == b"library"
+            assert (type(root)(detail) / "personal-file.txt").read_bytes() == b"project"
+    assert stage.exists() is bool(failure)
+    assert package.exists() is bool(failure)
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="checks Linux modes and hardlinks")
+def test_linux_full_archive_stages_from_official_layout(tmp_path):
+    import hashlib
+    import io
+    import tarfile
+    from controllers.update_manager import _StageThread
+
+    archive = tmp_path / "OpenFocus-v2.0.1-linux-x86_64.tar.gz"
+    root = tmp_path / "stage"
+    with tarfile.open(archive, "w:gz") as stream:
+        executable = tarfile.TarInfo("OpenFocus/OpenFocus")
+        executable.mode, executable.size = 0o755, 3
+        stream.addfile(executable, io.BytesIO(b"ELF"))
+        runtime = tarfile.TarInfo("OpenFocus/_internal/lib.so.1")
+        runtime.mode, runtime.size = 0o644, 4
+        stream.addfile(runtime, io.BytesIO(b"test"))
+        alias = tarfile.TarInfo("OpenFocus/_internal/lib.so")
+        alias.type, alias.linkname = tarfile.SYMTYPE, "lib.so.1"
+        stream.addfile(alias)
+        hardlink = tarfile.TarInfo("OpenFocus/_internal/lib-copy.so")
+        hardlink.type, hardlink.linkname = tarfile.LNKTYPE, "OpenFocus/_internal/lib.so.1"
+        stream.addfile(hardlink)
+
+    digest = "sha256:" + hashlib.sha256(archive.read_bytes()).hexdigest()
+    worker = _StageThread(str(archive), str(root), digest, size=archive.stat().st_size)
+    outcomes = []
+    worker.done.connect(lambda *args: outcomes.append(args))
+    worker.run()
+    assert outcomes == [(True, str(root))]
+    internal = root / "OpenFocus" / "_internal"
+    assert (internal / "lib.so").read_bytes() == b"test"
+    assert (internal / "lib-copy.so").samefile(internal / "lib.so.1")
+
+    with tarfile.open(archive, "w:gz") as stream:
+        escape = tarfile.TarInfo("OpenFocus/outside")
+        escape.type, escape.linkname = tarfile.SYMTYPE, "../../outside"
+        stream.addfile(escape)
+    with pytest.raises(ValueError, match="escapes"):
+        self_update.extract_linux_tar(str(archive), str(tmp_path / "other-stage"))
 
 
 class TestDetachedLauncher:

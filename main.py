@@ -5067,8 +5067,10 @@ if __name__ == "__main__":
     for tag_res, ok_res, detail_res in _update_results:
         if ok_res:
             _log.info("in-place update to %s succeeded", tag_res)
-            QTimer.singleShot(900, lambda t=tag_res: window._show_status_message(
-                trans.t('update_applied').format(version=t), 10000))
+            if detail_res:
+                _log.info("previous installation and local files saved at %s", detail_res)
+            QTimer.singleShot(900, lambda t=tag_res, path=detail_res: window._show_status_message(
+                trans.t('update_applied').format(version=t) + (f"  {path}" if path else ""), 10000))
         else:
             _log.warning("in-place update to %s failed: %s", tag_res, detail_res)
             show_warning_box(window, trans.t('update_check_failed_title'),

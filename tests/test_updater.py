@@ -222,6 +222,47 @@ class TestPortableZipAsset:
         assert find_portable_zip_asset(rel) is None
 
 
+def test_linux_full_asset_is_official_and_verified(monkeypatch):
+    from utils import release_delta, updater
+
+    monkeypatch.setattr(release_delta, "platform_key", lambda: "linux-x86_64")
+    monkeypatch.setattr(sys, "platform", "linux")
+    asset = {"name": "OpenFocus-v2.0.1-linux-x86_64.tar.gz", "size": 200,
+             "digest": "sha256:" + "a" * 64, "url": "https://invalid.test/full.tar.gz"}
+    release = {"tag": "v2.0.1", "assets": {"linux-desktop": asset}}
+    full = find_portable_zip_asset(release)
+    assert full["url"] == f"{updater.RELEASE_DOWNLOAD_URL}/v2.0.1/linux-desktop"
+    assert full["size"] == 200 and full["digest"] == asset["digest"]
+    asset["digest"] = ""
+    assert find_portable_zip_asset(release) is None
+
+
+def test_patch_metadata_matches_only_exact_installed_beta_and_platform(monkeypatch):
+    from utils import release_delta, updater
+
+    platform = "macos-arm64"
+    target, base = "v2.0.1", "v2.0.1-beta.3"
+    monkeypatch.setattr(release_delta, "platform_key", lambda: platform)
+    digest = "sha256:" + "a" * 64
+    entry = {"platform": platform, "from": base, "size": 10, "digest": digest,
+             "name": release_delta.delta_name(target, base, platform), "url": "https://invalid.test/patch"}
+
+    def select(entries, **overrides):
+        return updater.select_delta_asset(entries, **{
+            "target_tag": target, "current_version": base[1:],
+            "full_size": 100, "full_digest": digest, **overrides,
+        })
+
+    assert select([entry]).url == f"{updater.RELEASE_DOWNLOAD_URL}/{target}/delta/{base}/{platform}"
+    assert select([entry], current_version="2.0.1-beta.2") is None
+    assert select([entry], full_digest="") is None
+    assert select([entry], full_size=True) is None
+    assert select([entry, entry]) is None
+    for bad in ({"platform": "windows-x64"}, {"name": "malformed"}, {"size": True},
+                {"size": 100}, {"size": 101}, {"size": 0}, {"digest": ""}):
+        assert select([{**entry, **bad}]) is None
+
+
 def test_fetch_latest_release_uses_website_and_ignores_remote_asset_urls(monkeypatch):
     import io
     import json

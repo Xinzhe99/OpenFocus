@@ -382,10 +382,12 @@ def run(executable: Path, resources: Path | None = None, *, headless_wayland: bo
         raise FileNotFoundError(executable)
     marker = executable.parent / "OpenFocus.portable"
     data_dir = executable.parent / "OpenFocusData"
-    if marker.exists() or data_dir.exists():
-        raise RuntimeError("The smoke test requires a clean build directory")
+    if data_dir.exists():
+        raise RuntimeError("The smoke test requires an installation without existing portable data")
 
-    marker.touch()
+    created_marker = not marker.exists()
+    if created_marker:
+        marker.touch()
     process = None
     sessions = ExitStack()
     try:
@@ -500,7 +502,8 @@ def run(executable: Path, resources: Path | None = None, *, headless_wayland: bo
             finally:
                 if data_dir.exists():
                     shutil.rmtree(data_dir)
-                marker.unlink()
+                if created_marker:
+                    marker.unlink(missing_ok=True)
 
 
 def run_installed_startup(executable: Path) -> None:
