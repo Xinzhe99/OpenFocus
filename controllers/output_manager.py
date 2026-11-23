@@ -251,7 +251,10 @@ def registration_tooltip_lines(details):
         return []
     lines = []
     if details.reuse is not None:
-        lines.append(trans.t(f'output_registration_reuse_{details.reuse}'))
+        reuse = trans.t(f'output_registration_reuse_{details.reuse}')
+        if details.reuse == 'disk_plan':
+            reuse = reuse.format(device=details.applied_warp or 'CPU')
+        lines.append(reuse)
     device_key = 'output_registration_original_device' if details.reuse else 'output_registration_device'
     if not details.dispatch:
         lines.append(trans.t(device_key).format(trans.t('output_registration_device_unknown')))

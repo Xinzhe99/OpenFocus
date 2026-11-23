@@ -1316,7 +1316,7 @@ EN = {
     "output_registration_resize_fallback": "ECC Resize: CPU fallback used",
     "output_registration_reuse_session": "Registration: reused session alignment",
     "output_registration_reuse_roi": "Registration: reused ROI alignment",
-    "output_registration_reuse_disk_plan": "Registration: reused cached transforms (applied on CPU)",
+    "output_registration_reuse_disk_plan": "Registration: reused cached transforms (applied on {device})",
     "output_registration_reuse_disk_pixels": "Registration: reused cached aligned frames",
     "info_total_time": "Total Time: {:.2f}s",
     "info_preview_quality": "Quality: Preview (quick draft — not saved to history)",

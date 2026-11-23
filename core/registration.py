@@ -82,6 +82,7 @@ alignment_report = ContextVar('alignment_report', default=None)
 # lock; the owner budget is local to the source-producing context.
 _warp_threads_lock = threading.Lock()
 _deferred_warp_threads = ContextVar('deferred_warp_threads', default=None)
+_deferred_ecc_gpu = ContextVar('deferred_ecc_gpu', default=None)
 
 
 @contextmanager
@@ -91,6 +92,23 @@ def deferred_warp_threads(threads):
         yield
     finally:
         _deferred_warp_threads.reset(token)
+
+
+@contextmanager
+def deferred_ecc_warp_accelerator(enabled):
+    """Share one admitted OpenCL workspace across a prepared stack."""
+    if not enabled:
+        yield None
+        return
+    from core._perspective_gpu import ExactPerspectiveGpu
+
+    backend = ExactPerspectiveGpu()
+    token = _deferred_ecc_gpu.set(backend)
+    try:
+        yield backend
+    finally:
+        _deferred_ecc_gpu.reset(token)
+        backend.close()
 
 
 def exchange_opencv_threads(threads):
@@ -567,6 +585,7 @@ class PerspectiveWarp:
     matrix_dtype: str
     dsize: tuple
     should_cancel: object = None
+    method: str = ''
 
     def _is_integer_crop(self, src_shape, src_dtype):
         a, b, tx, c, d, ty, p, q, r = self.matrix
@@ -619,6 +638,12 @@ class PerspectiveWarp:
             # A resolved warp owns its pixels even without a render cache.
             return crop.copy(order='C')
         matrix = np.asarray(self.matrix, dtype=self.matrix_dtype).reshape(3, 3)
+        backend = _deferred_ecc_gpu.get() if self.method == 'ecc' else None
+        if backend is not None:
+            result = backend.warp(image, matrix, self.dsize, cancel_fn)
+            if result is not None:
+                return result
+            backend.note_cpu_warp()
         bgr_rev = _is_bgr_rev(image) and _native_kernels.available()
         src = image[..., ::-1] if bgr_rev else image
         threads = _warp_thread_budget()
@@ -877,7 +902,8 @@ class PerspectiveStage:
     def apply(self, images, *, defer_warps, should_cancel=None, workers=1):
         from core.source_frames import process_frame, resolve_frame
         self.validate_sources(images, should_cancel=should_cancel)
-        frames = [process_frame(image, PerspectiveWarp(source, matrix, dtype, self.dsize, should_cancel),
+        frames = [process_frame(image, PerspectiveWarp(source, matrix, dtype, self.dsize,
+                                                       should_cancel, method=self.method),
                     shape=_perspective_output_shape(image.shape, self.dsize), should_cancel=should_cancel)
                   for image, source, matrix, dtype in
                   zip(images, self.sources, self.matrices, self.matrix_dtypes)]
@@ -1719,12 +1745,16 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
             print("    [Info] Explicit CuPy alignment uses linear interpolation.")
         except ImportError as error:
             raise RuntimeError("Explicit CuPy alignment backend is unavailable") from error
+    if defer_warps:
+        log_action('registration_warp_deferred', method='ecc', frames=len(images),
+                   shape=(target_h, target_w))
     else:
-        print("    [Info] GPU warping disabled. Using CPU for warping.")
-    log_action('registration_warp', method='ecc',
-               provider='CuPy' if HAS_CUPY else 'OpenCV',
-               device='CUDA' if HAS_CUPY else 'CPU', shape=(target_h, target_w),
-               frames=len(images), gpu_requested=use_gpu)
+        if not HAS_CUPY:
+            print("    [Info] GPU warping disabled. Using CPU for warping.")
+        log_action('registration_warp', method='ecc',
+                   provider='CuPy' if HAS_CUPY else 'OpenCV',
+                   device='CUDA' if HAS_CUPY else 'CPU', shape=(target_h, target_w),
+                   frames=len(images), gpu_requested=use_gpu)
 
     if not HAS_CUPY:
         aligned_images = _apply_perspective_warps(

@@ -2888,18 +2888,79 @@ def test_retouch_reports_busy_while_loading_source(server, qapp, monkeypatch):
         dialog.close()
 
 
+@pytest.mark.parametrize(('command', 'result_key'), [
+    ('dialog.reject', 'rejected'), ('dialog.close', 'closed'),
+])
+def test_dirty_retouch_confirmation_replies_on_same_socket(server, qapp, command, result_key):
+    from PyQt6 import sip
+    from PyQt6.QtCore import QTimer
+    from PyQt6.QtNetwork import QLocalSocket
+    from locales import trans
+    from tests.test_retouch import _dialog
+
+    dialog, published = _dialog(qapp)
+    assert dialog.begin_stroke(60, 48)
+    dialog.end_stroke()
+    assert dialog.doc.is_dirty
+    socket = QLocalSocket()
+    socket.connectToServer(server.socket_name)
+    assert socket.waitForConnected(5000)
+
+    def request(cmd, **args):
+        socket.write(encode({'id': cmd, 'cmd': cmd, 'token': server.token, 'args': args}))
+        socket.flush()
+        assert wait_until(socket.canReadLine)
+        reply = decode(bytes(socket.readLine()))
+        assert reply['id'] == cmd and reply['ok'], reply
+        return reply['result']
+
+    # Unwind a regression's nested exec() before the test can time out.
+    escape = QTimer()
+    escape.setSingleShot(True)
+    escape.timeout.connect(lambda: dialog._confirm_box.reject() if dialog._confirm_box else None)
+    escape.start(4000)
+    try:
+        title = dialog.windowTitle()
+        assert request(command, title=title)[result_key] is False
+        escape.stop()
+        entries = request('dialog.list')['dialogs']
+        boxes = [item for item in entries if item['class'] == 'QMessageBox']
+        assert len(boxes) == 1 and boxes[0]['modal']
+        assert boxes[0]['title'] == trans.t('retouch_close_title')
+        assert request(command, title=title)[result_key] is False
+        assert [item['root'] for item in request('dialog.list')['dialogs']
+                if item['class'] == 'QMessageBox'] == [boxes[0]['root']]
+
+        def click(label, root):
+            buttons = request('ui.find', window=root, **{'class': 'QPushButton'})['matches']
+            button = next(item for item in buttons if item['text'] == trans.t(label))
+            request('ui.click', path=button['path'])
+
+        click('btn_continue', boxes[0]['root'])
+        assert dialog.isVisible() and dialog.doc.is_dirty and not published
+        assert request(command, title=title)[result_key] is False
+        box = next(item for item in request('dialog.list')['dialogs']
+                   if item['class'] == 'QMessageBox')
+        click('btn_discard_changes', box['root'])
+        assert all(item['class'] not in ('RetouchDialog', 'QMessageBox')
+                   for item in request('dialog.list')['dialogs'])
+        assert request('ping')['pong'] and not published
+    finally:
+        escape.stop()
+        socket.abort()
+        if not sip.isdeleted(dialog):
+            dialog._allow_close = True
+            dialog.close()
+
+
 def test_retouch_managed_dialog_can_reopen_after_deletion(server, qapp, monkeypatch):
     from PyQt6 import sip
     from PyQt6.QtCore import QCoreApplication, QEvent
     from tests.test_retouch import _dialog
-    def create():
-        dialog, _ = _dialog(qapp)
-        monkeypatch.setattr(dialog, '_confirm_close', lambda: True)
-        return dialog
-    monkeypatch.setattr(server, '_retouch_dialog', create)
+    monkeypatch.setattr(server, '_retouch_dialog', lambda: _dialog(qapp)[0])
     assert call(server, 'dialog.open', name='retouch')['result']['opened']
     first = server._dialogs['retouch']
-    first.reject()
+    assert call(server, 'dialog.reject', title=first.windowTitle())['result']['rejected']
     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     assert sip.isdeleted(first)
     assert call(server, 'dialog.open', name='retouch')['result']['opened']

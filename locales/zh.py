@@ -1317,7 +1317,7 @@ ZH = {
     "output_registration_resize_fallback": "ECC 缩放: 已使用 CPU 回退路径",
     "output_registration_reuse_session": "配准: 复用会话中的配准结果",
     "output_registration_reuse_roi": "配准: 复用 ROI 配准结果",
-    "output_registration_reuse_disk_plan": "配准: 复用缓存变换（由 CPU 应用）",
+    "output_registration_reuse_disk_plan": "配准: 复用缓存变换（由 {device} 应用）",
     "output_registration_reuse_disk_pixels": "配准: 复用缓存的已配准图像",
     "info_total_time": "总耗时: {:.2f}s",
     "info_preview_quality": "质量: 预览（快速草稿——不保存到历史）",

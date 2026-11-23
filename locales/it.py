@@ -1304,7 +1304,7 @@ PACK = {
     "output_registration_resize_fallback": "Riduzione per ECC: passaggio alla CPU",
     "output_registration_reuse_session": "Allineamento: riutilizzato il risultato della sessione",
     "output_registration_reuse_roi": "Allineamento: riutilizzato il risultato della ROI",
-    "output_registration_reuse_disk_plan": "Allineamento: trasformazioni in cache applicate sulla CPU",
+    "output_registration_reuse_disk_plan": "Allineamento: trasformazioni in cache applicate su {device}",
     "output_registration_reuse_disk_pixels": "Allineamento: riutilizzate le immagini allineate in cache",
     "info_total_time": "Tempo totale: {:.2f}s",
     "info_preview_quality": "Qualità: Anteprima (bozza rapida — non salvata nella cronologia)",

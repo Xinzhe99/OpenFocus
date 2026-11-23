@@ -1304,7 +1304,7 @@ PACK = {
     "output_registration_resize_fallback": "Уменьшение для ECC: переход на ЦП",
     "output_registration_reuse_session": "Выравнивание: использован результат текущего сеанса",
     "output_registration_reuse_roi": "Выравнивание: использован результат для области интереса",
-    "output_registration_reuse_disk_plan": "Выравнивание: сохранённые преобразования применены на ЦП",
+    "output_registration_reuse_disk_plan": "Выравнивание: сохранённые преобразования применены на {device}",
     "output_registration_reuse_disk_pixels": "Выравнивание: использованы сохранённые выровненные кадры",
     "info_total_time": "Общее время: {:.2f} с",
     "info_preview_quality": "Качество: предпросмотр (быстрый черновик — не сохраняется в историю)",

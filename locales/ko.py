@@ -1304,7 +1304,7 @@ PACK = {
     "output_registration_resize_fallback": "ECC 축소: CPU로 전환함",
     "output_registration_reuse_session": "정렬: 현재 세션의 정렬 결과 재사용",
     "output_registration_reuse_roi": "정렬: 관심 영역의 정렬 결과 재사용",
-    "output_registration_reuse_disk_plan": "정렬: 캐시된 변환을 CPU로 적용",
+    "output_registration_reuse_disk_plan": "정렬: 캐시된 변환을 {device}에서 적용",
     "output_registration_reuse_disk_pixels": "정렬: 캐시된 정렬 이미지 재사용",
     "info_total_time": "총 시간: {:.2f}초",
     "info_preview_quality": "품질: 미리보기 (빠른 초안 — 기록에 저장되지 않음)",

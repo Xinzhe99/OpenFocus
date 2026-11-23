@@ -43,7 +43,7 @@ _RENDER_SOURCE_FILES = tuple(Path(__file__).with_name(f'{name}.py') for name in 
     'render_process', 'frame_transport', 'source_frames', 'frame_storage',
     'frame_resolution_cache', 'workers', 'registration', 'resource_policy',
     'algorithms', 'multi_focus_fusion', 'render_context',
-    'fusion_live_preview',
+    'fusion_live_preview', '_perspective_gpu',
 ))
 
 

@@ -1512,8 +1512,7 @@ class ControlServer(QObject):
 
     def _cmd_dialog_close(self, args):
         dialog = self._find_dialog(args)
-        dialog.close()
-        return {"closed": True}
+        return {"closed": dialog.close()}
 
     def _cmd_dialog_accept(self, args):
         from PyQt6.QtWidgets import QDialogButtonBox, QPushButton
@@ -1567,8 +1566,9 @@ class ControlServer(QObject):
         if not hasattr(dialog, "reject"):
             raise ControlError("unsupported",
                                f"{type(dialog).__name__} has no reject()")
+        title = dialog.windowTitle()
         dialog.reject()
-        return {"rejected": True, "title": dialog.windowTitle()}
+        return {"rejected": sip.isdeleted(dialog) or not dialog.isVisible(), "title": title}
 
     def _cmd_dialog_color(self, args):
         value = _string(args, "color")

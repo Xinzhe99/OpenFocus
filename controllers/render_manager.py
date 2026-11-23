@@ -1465,15 +1465,15 @@ class RenderManager:
         all_source_paths = list(getattr(window, "image_source_paths", None) or [])
         source_paths = ([all_source_paths[i] for i in included_idx]
                         if len(all_source_paths) == len(window.raw_images) else [])
-        # B can reuse its disk-backed merge inputs. The neural methods share
-        # a separate identity for compatible tiled inputs.
+        # Retain one prepared stack. Methods that do not build snapshots can
+        # leave it in place as long as the full-resolution alignment is valid.
         from core.source_frames import SourceFrame
         descriptor = get_fusion(method) if need_fusion else None
         native_preparation = method == 'openfocus_b'
-        preparation_key = alignment_key
+        preparation_key = (alignment_key,)
         if native_preparation:
             from core.frame_storage import storage_directory
-            preparation_key = (alignment_key, method, storage_override or storage_directory())
+            preparation_key += (method, storage_override or storage_directory())
         retain_preparation = bool(
             descriptor and descriptor.streaming_sources
             and (native_preparation or (
@@ -1484,9 +1484,14 @@ class RenderManager:
             and all(isinstance(frame, SourceFrame) and
                     not (frame.ndim == 3 and frame.shape[2] == 4)
                     for frame in stack_images))
-        if (self._prepared_cache_source is not source_ref
-                or self._prepared_cache_key != preparation_key
-                or (requested_steps and (not reusable or collect_report))):
+        replaces_alignment = (requested_steps and not self._preview_mode
+                              and roi_rect is None and not use_roi_aligned_images
+                              and (not reusable or collect_report))
+        if self._prepared_cache is not None and (
+                self._prepared_cache_source is not source_ref
+                or self._prepared_cache_key[0] != alignment_key
+                or replaces_alignment
+                or (retain_preparation and self._prepared_cache_key != preparation_key)):
             self.clear_prepared_cache()
         prepared_cache = self._prepared_cache if retain_preparation else None
         self._render_context['preparation_key'] = preparation_key if retain_preparation else None

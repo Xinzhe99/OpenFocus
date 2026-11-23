@@ -532,8 +532,10 @@ def test_gpu_c_logs_fallback_in_application_namespace(monkeypatch, caplog):
 
     np.testing.assert_array_equal(actual, expected)
     assert devices == ['CPU']
-    [warning] = [record.getMessage() for record in caplog.records
-                 if record.name == 'openfocus.fusion_methods.openfocus_bc']
+    # The test runner can capture the same propagated LogRecord twice.
+    record, = {entry for entry in caplog.records
+               if entry.name == 'openfocus.fusion_methods.openfocus_bc'}
+    warning = record.getMessage()
     assert 'GPU fallback to CPU' in warning
     assert 'shape=(23, 31, 3) device=OpenCL: test device' in warning
     assert 'need 400 bytes, limit 300 bytes' in warning

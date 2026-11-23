@@ -11,7 +11,7 @@ from fusion_methods.stackmffv3 import _stackmffv3_impl, normalize_mode
 from fusion_methods.dtcwt import _dtcwt_impl
 from utils import memory, resource_path
 from utils.image_utils import apply_exposure_gain, normalize_fuse_input
-from utils.logging_setup import log_debug
+from utils.logging_setup import log_action, log_debug
 from utils.performance_profile import current as _profile
 from utils.sorting import natural_sort_key
 from core.algorithms import (FUSION_DEFAULT, _NEURAL_TILE_RUNNERS, get_fusion,
@@ -325,6 +325,7 @@ class MultiFocusFusion:
         self.exposure_match = bool(exposure_match)
         self.retain_aligned_pixels = False
         self.prepared_cache = None
+        self.ecc_warp_device = None
         self.retain_preparation = False
         # 资源偏好（'balanced' | 'responsive' | 'maximum'）：只影响并发、
         # 预取和预算，不改变任何输出几何或数值路径。
@@ -658,7 +659,7 @@ class MultiFocusFusion:
         from core.resource_policy import heavy_job
         from core.registration import RegistrationCancelled
         from core.frame_storage import scratch_directory
-        from utils.logging_setup import log_operation, log_action, image_result_details
+        from utils.logging_setup import log_operation, image_result_details
         from contextlib import nullcontext
 
         self.fusion_details = None
@@ -672,6 +673,7 @@ class MultiFocusFusion:
                 use_gpu=self.use_gpu, tile_enabled=self.tile_enabled) as operation:
             self._actual_device = None
             self._fallback_reasons = ()
+            self.ecc_warp_device = None
             try:
                 result = self._fuse_under_lease(
                     input_source, img_resize, should_cancel, progress_callback, **kwargs)
@@ -875,6 +877,7 @@ class MultiFocusFusion:
                 cached_preparation = self.prepared_cache = None
             else:
                 cached_preparation = cached_preparation.frames
+                log_action('fusion_b_preparation_reused', frames=len(cached_preparation))
         elif isinstance(cached_preparation, TileExposureCache) != tile_raw_exposure:
             cached_preparation = self.prepared_cache = None
         elif tile_raw_exposure:
@@ -1018,6 +1021,7 @@ class MultiFocusFusion:
             from contextlib import nullcontext
             from core.frame_resolution_cache import ScopedCache, current
             from core.frame_storage import ScratchSpaceError
+            from core.registration import deferred_ecc_warp_accelerator
             from core.source_frames import (PreparedFrame, ProcessedFrame, SOURCE_CACHE, SourceFrame,
                                             frame_resolution_bytes, is_direct_rgb_tiff,
                                             materialize_for_repeated_access, source_cache_growth_bytes,
@@ -1052,13 +1056,21 @@ class MultiFocusFusion:
                 try:
                     # The snapshot supplies both passes. Borrow ECC's decoded
                     # frames without writing one-use intermediates.
-                    with cache_access, without_source_cache_growth(), _profile().stage('snapshot_openfocus_b'):
+                    with (cache_access, without_source_cache_growth(),
+                          _profile().stage('snapshot_openfocus_b'),
+                          deferred_ecc_warp_accelerator(self.use_gpu) as warp):
                         prepared = materialize_for_repeated_access(
                             sources, should_cancel, thread_count=kwargs.get('thread_count', 0),
                             resource_preference=self.resource_preference,
                             progress_callback=getattr(progress_callback, 'preparation', None),
                             required=required, staging_bytes=height * width * 48,
                             parallel_processed=True)
+                    if warp is not None and warp.gpu_warps:
+                        self.ecc_warp_device = ('CPU / ' if warp.cpu_warps else '') + warp.device_name
+                        _profile().set('ecc_warp', device=self.ecc_warp_device,
+                                       accelerated=warp.gpu_warps, cpu=warp.cpu_warps)
+                        log_action('deferred_ecc_warp', device=self.ecc_warp_device,
+                                   accelerated=warp.gpu_warps, cpu=warp.cpu_warps)
                 except ScratchSpaceError:
                     if required:
                         raise

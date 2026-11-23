@@ -1304,7 +1304,7 @@ PACK = {
     "output_registration_resize_fallback": "ECC-Verkleinerung: auf CPU gewechselt",
     "output_registration_reuse_session": "Ausrichtung: Ergebnis aus dieser Sitzung wiederverwendet",
     "output_registration_reuse_roi": "Ausrichtung: ROI-Ergebnis wiederverwendet",
-    "output_registration_reuse_disk_plan": "Ausrichtung: gespeicherte Transformationen auf der CPU angewendet",
+    "output_registration_reuse_disk_plan": "Ausrichtung: gespeicherte Transformationen auf {device} angewendet",
     "output_registration_reuse_disk_pixels": "Ausrichtung: gespeicherte ausgerichtete Bilder wiederverwendet",
     "info_total_time": "Gesamtzeit: {:.2f}s",
     "info_preview_quality": "Qualität: Vorschau (schneller Entwurf – nicht im Verlauf gespeichert)",

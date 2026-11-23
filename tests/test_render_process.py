@@ -630,6 +630,64 @@ def test_successful_render_adopts_prepared_cache(qapp, tmp_path, scratch, monkey
     assert not path.exists()
 
 
+def test_openfocus_b_reuses_prepared_images_after_a_and_c(qapp, tmp_path, monkeypatch):
+    from controllers import render_manager
+    from core import frame_storage, multi_focus_fusion, source_frames
+    from core.workers import RenderWorker
+    from tests.test_control_channel import _destroy_main_window, _new_main_window, wait_until
+
+    # Exercise real snapshots with small files that have the estimated cost
+    # of decoding large photos. Keep the worker in-process for these estimates.
+    MiB = 1024 ** 2
+    estimate = source_frames.frame_resolution_bytes
+
+    def expensive_decode(frame, **kwargs):
+        actual = estimate(frame, **kwargs)
+        return max(160 * MiB, actual) if isinstance(frame, source_frames.SourceFrame) else actual
+
+    monkeypatch.setattr(render_manager, 'RenderProcessWorker', RenderWorker)
+    monkeypatch.setattr(multi_focus_fusion, 'memory_budget_bytes', lambda: 512 * MiB)
+    monkeypatch.setattr(source_frames, 'frame_resolution_bytes', expensive_decode)
+
+    frames = _sources(tmp_path)
+    window = _new_main_window(qapp, tmp_path, monkeypatch, use_gpu=False)
+    try:
+        window.set_alignment_method('none')
+        window.align_cache_enabled = False
+        window.thread_count = 1
+        frame_storage_path = tmp_path / 'scratch'
+        frame_storage_path.mkdir()
+        monkeypatch.setattr(frame_storage, '_storage_directory', str(frame_storage_path))
+        monkeypatch.setattr(frame_storage, 'automatic_preflight_may_block', lambda: False)
+        window.profile_performance = True
+        window.source_manager._start_load_worker(filepaths=[frame.path for frame in frames])
+        assert wait_until(lambda: window.source_manager._load_worker is None, timeout=30)
+        assert len(window.raw_images) == len(frames)
+        manager = window.render_manager
+
+        def render(method):
+            window.set_fusion_method(method)
+            assert manager.start_render(interactive=False, confirmed=True) == 'started'
+            assert manager.worker.wait(40_000)
+            assert wait_until(lambda: manager.worker is None, timeout=40)
+            assert manager.last_state == 'done', manager.last_error
+            return manager.performance_report
+
+        snapshot = 'render/fusion/fuse/snapshot_openfocus_b'
+        first = render('openfocus_b')
+        assert snapshot in first['stages']
+        expected = window.fusion_result.copy()
+        render('openfocus_a')
+        render('openfocus_c')
+        second = render('openfocus_b')
+        assert snapshot not in second['stages']
+        assert 'source_decode' not in second['concurrent']
+        assert not any(name.endswith('/source_decode') for name in second['stages'])
+        np.testing.assert_array_equal(window.fusion_result, expected)
+    finally:
+        _destroy_main_window(qapp, window)
+
+
 def test_spawned_tiled_fusion_publishes_frozen_tooltip_details(qapp, tmp_path, scratch, monkeypatch):
     from types import SimpleNamespace
     from PyQt6.QtWidgets import QLabel, QListWidget
@@ -715,6 +773,12 @@ def test_output_tooltip_discloses_registration_accelerator_and_reuse(qapp, monke
     assert 'Registration: reused cached transforms (applied on CPU)' in tooltip
     assert 'Original Registration Device: unavailable' in tooltip
     assert 'Original Registration Device: CPU' not in tooltip
+
+    replayed = OutputRecord.create(image, 'replayed', kind=kind,
+        registration_details=RegistrationDetails((dispatch,), 'disk_plan', 'OpenCL: Test GPU'))
+    tooltip = manager._insert_output(image, 'replayed', replayed).toolTip().splitlines()
+    assert 'Registration: reused cached transforms (applied on OpenCL: Test GPU)' in tooltip
+    assert 'Original Registration Device: CPU' in tooltip
 
 
 @pytest.mark.parametrize('alignment', ['none', 'openfocus'])

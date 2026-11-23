@@ -1266,6 +1266,15 @@ class RenderWorker(QThread):
             raise RegistrationCancelled()
         self.stage_signal.emit('finalize')
         self.prepared_cache = fusion.prepared_cache
+        if self.registration_details is not None and fusion.ecc_warp_device:
+            details = self.registration_details
+            if self.alignment_computed:
+                dispatch = tuple(replace(stage, warp=fusion.ecc_warp_device)
+                                 if stage.method == 'ecc' else stage
+                                 for stage in details.dispatch)
+                self.registration_details = replace(details, dispatch=dispatch)
+            elif details.reuse == 'disk_plan':
+                self.registration_details = replace(details, applied_warp=fusion.ecc_warp_device)
         if self.sharpen_output and result is not None:
             from utils.output_sharpen import sharpen_output
             with profile.stage('sharpen'):

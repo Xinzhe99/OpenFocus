@@ -206,6 +206,7 @@ class RegistrationDetails:
 
     dispatch: Tuple[RegistrationDispatch, ...] = ()
     reuse: Optional[str] = None
+    applied_warp: Optional[str] = None
 
 
 @dataclass(frozen=True)

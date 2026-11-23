@@ -1304,7 +1304,7 @@ PACK = {
     "output_registration_resize_fallback": "ECC-verkleining: teruggevallen op de CPU",
     "output_registration_reuse_session": "Uitlijning: resultaat uit deze sessie hergebruikt",
     "output_registration_reuse_roi": "Uitlijning: resultaat van het interessegebied hergebruikt",
-    "output_registration_reuse_disk_plan": "Uitlijning: opgeslagen transformaties op de CPU toegepast",
+    "output_registration_reuse_disk_plan": "Uitlijning: opgeslagen transformaties toegepast op {device}",
     "output_registration_reuse_disk_pixels": "Uitlijning: opgeslagen uitgelijnde beelden hergebruikt",
     "info_total_time": "Totale tijd: {:.2f}s",
     "info_preview_quality": "Kwaliteit: voorbeeld (snel concept — niet in geschiedenis opgeslagen)",

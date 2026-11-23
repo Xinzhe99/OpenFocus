@@ -19,6 +19,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   ECC resize acceleration and where reused registration came from.
 
 ### Changed
+- Apply deferred ECC warps for large 8-bit color stacks on supported OpenCL
+  GPUs while preparing OpenFocus B inputs. Preserve OpenCV Lanczos4 pixels and
+  report the actual warp device in the result details.
 - Compute deferred perspective, OpenFocus alignment, and OpenFocus translation
   crops directly over the requested ROI or tile, reuse direct-mapped RGB TIFF
   digests within a render scope, reuse adjacent-pair pyramids, and fuse
@@ -114,6 +117,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and preserve their output order.
 
 ### Fixed
+- Retain OpenFocus B's prepared images when switching fusion methods with
+  compatible source and registration settings.
+- Keep the desktop control connection responsive while Retouch asks whether
+  to apply or discard edits.
 - Show live focus layers on new full renders started from an earlier output,
   including when output history is browsed during alignment or preparation.
 - Keep the source loupe visible during a render, then replace its preview

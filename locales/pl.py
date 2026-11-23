@@ -1304,7 +1304,7 @@ PACK = {
     "output_registration_resize_fallback": "Skalowanie dla ECC: przełączono na CPU",
     "output_registration_reuse_session": "Wyrównywanie: użyto wyniku z bieżącej sesji",
     "output_registration_reuse_roi": "Wyrównywanie: użyto wyniku dla obszaru zainteresowania",
-    "output_registration_reuse_disk_plan": "Wyrównywanie: zapisane transformacje zastosowano na CPU",
+    "output_registration_reuse_disk_plan": "Wyrównywanie: zapisane transformacje zastosowano na {device}",
     "output_registration_reuse_disk_pixels": "Wyrównywanie: użyto zapisanych wyrównanych obrazów",
     "info_total_time": "Czas całkowity: {:.2f}s",
     "info_preview_quality": "Jakość: Podgląd (szybki szkic — niezapisywany w historii)",
