@@ -1,4 +1,4 @@
-"""Optional job-local OpenCL implementation of the fractional CPU INTER_AREA path."""
+"""Optional job-local OpenCL implementation of audited CPU INTER_AREA paths."""
 import ctypes
 import logging
 import math
@@ -13,7 +13,8 @@ import numpy as np
 # OpenCV 5.0.0 modules/imgproc/src/resize.cpp, computeResizeAreaTab and
 # ResizeArea_Invoker: ordered binary32 products and sums on the MSVC SSE
 # baseline, followed by saturate_cast (nearest even for integer pixels).
-# Integral scale factors dispatch to a different CPU implementation.
+# Whole blocks use resizeAreaFast_Invoker's sum followed by one binary32
+# reciprocal multiplication. ResizeAreaFastVec's special 2x2 stays on CPU.
 _MAX_SCALE = 8
 _TAPS = _MAX_SCALE + 1
 _AXIS = np.dtype([('start', '<i4'), ('count', '<i4'), ('weight', '<f4', _TAPS)])
@@ -21,10 +22,14 @@ _TILE_ROWS = 128
 _MIN_SOURCE_BYTES = 8 * 1024**2
 _MAX_SIDE = 32768
 _KERNEL_NAMES = (
-    (1, False, 'area8'),
-    (2, False, 'area16'),
-    (1, True, 'area8_bgr_rev'),
-    (2, True, 'area16_bgr_rev'),
+    (1, False, False, 'area8'),
+    (2, False, False, 'area16'),
+    (1, True, False, 'area8_bgr_rev'),
+    (2, True, False, 'area16_bgr_rev'),
+    (1, False, True, 'block8'),
+    (2, False, True, 'block16'),
+    (1, True, True, 'block8_bgr_rev'),
+    (2, True, True, 'block16_bgr_rev'),
 )
 
 _cache_lock = Lock()
@@ -48,7 +53,8 @@ def _get_or_build_program(cl, device):
         context = cl.Context([device])
         queue = cl.CommandQueue(context, device=device)
         program = cl.Program(context, _KERNEL).build()
-        kernels = {(size, rev): cl.Kernel(program, name) for size, rev, name in _KERNEL_NAMES}
+        kernels = {(size, rev, block): cl.Kernel(program, name)
+                   for size, rev, block, name in _KERNEL_NAMES}
         _PROGRAM_CACHE = (key, context, queue, kernels)
         return context, queue, kernels
 
@@ -86,6 +92,25 @@ AREA(area8, uchar, convert_uchar_sat_rte, 0)
 AREA(area16, ushort, convert_ushort_sat_rte, 0)
 AREA(area8_bgr_rev, uchar, convert_uchar_sat_rte, 1)
 AREA(area16_bgr_rev, ushort, convert_ushort_sat_rte, 1)
+
+#define BLOCK(NAME, TYPE, STORE, REVERSE) \
+__kernel void NAME(__global const TYPE *src, __global TYPE *dst, \
+                   int channels, int src_stride, int sx, int sy, float scale) \
+{ \
+    int k = get_global_id(0), y = get_global_id(1); \
+    int c = k % channels; \
+    int i = y * sy * src_stride + (k - c) * sx + (REVERSE ? 2 - c : c); \
+    uint sum = 0; \
+    for (int dy = 0; dy < sy; ++dy, i += src_stride) { \
+        for (int dx = 0; dx < sx; ++dx) \
+            sum += src[i + dx * channels]; \
+    } \
+    dst[y * get_global_size(0) + k] = STORE((float)sum * scale); \
+}
+BLOCK(block8, uchar, convert_uchar_sat_rte, 0)
+BLOCK(block16, ushort, convert_ushort_sat_rte, 0)
+BLOCK(block8_bgr_rev, uchar, convert_uchar_sat_rte, 1)
+BLOCK(block16_bgr_rev, ushort, convert_ushort_sat_rte, 1)
 '''
 
 
@@ -163,7 +188,7 @@ class ExactAreaGpu:
         self._cl = cl
         return True
 
-    def _workspace(self, image, width, height, channels):
+    def _workspace(self, image, width, height, channels, block):
         from core import resource_policy as policy
         from fusion_methods._openfocus_gpu import _free_vram
 
@@ -173,9 +198,11 @@ class ExactAreaGpu:
         # Preserve the source-stripe row bound of the fourfold path. At
         # larger ratios this reduces transfer staging and device residency.
         rows = min(_TILE_ROWS, height, _TILE_ROWS * 4 * height // source_h)
-        src_bytes = min(source_h, math.ceil(rows * source_h / height) + 2) * source_w * channels * itemsize
+        source_rows = (rows * block[1] if block else
+                       min(source_h, math.ceil(rows * source_h / height) + 2))
+        src_bytes = source_rows * source_w * channels * itemsize
         dst_bytes = rows * width * channels * itemsize
-        table_bytes = (width + height) * _AXIS.itemsize
+        table_bytes = 0 if block else (width + height) * _AXIS.itemsize
         workspace = src_bytes + dst_bytes + table_bytes
         memory = _free_vram(self._device)
         if memory is None:
@@ -190,14 +217,15 @@ class ExactAreaGpu:
             self._context, self._queue, self._kernels = _get_or_build_program(
                 self._cl, self._device,
             )
-        xs, ys = _axis_table(source_w, width), _axis_table(source_h, height)
         cl, context = self._cl, self._context
         flags = cl.mem_flags
         self._buffers = (cl.Buffer(context, flags.READ_ONLY, src_bytes),
-                         cl.Buffer(context, flags.WRITE_ONLY, dst_bytes),
-                         cl.Buffer(context, flags.READ_ONLY | flags.COPY_HOST_PTR, hostbuf=xs),
-                         cl.Buffer(context, flags.READ_ONLY | flags.COPY_HOST_PTR, hostbuf=ys))
-        self._ys = ys
+                         cl.Buffer(context, flags.WRITE_ONLY, dst_bytes))
+        if not block:
+            xs, ys = _axis_table(source_w, width), _axis_table(source_h, height)
+            self._buffers += (cl.Buffer(context, flags.READ_ONLY | flags.COPY_HOST_PTR, hostbuf=xs),
+                              cl.Buffer(context, flags.READ_ONLY | flags.COPY_HOST_PTR, hostbuf=ys))
+            self._ys = ys
         self._rows = rows
         self._shape = image.shape, image.dtype, width, height
         return True
@@ -207,8 +235,7 @@ class ExactAreaGpu:
 
         dsize is explicit (OpenCV may use different coefficients with fx/fy).
         Large contiguous uint8/uint16 gray, BGR, BGRA and bgr_rev images are eligible.
-        Both axes must shrink by at most eight, with a fractional factor on
-        at least one axis. Integer fast paths remain ordinary CPU operations.
+        Both axes must shrink by at most eight. The special 2x2 path stays on CPU.
         """
         bgr_rev = _is_bgr_rev(image)
         if (self._disabled or image.dtype not in (np.uint8, np.uint16)
@@ -220,8 +247,12 @@ class ExactAreaGpu:
         channels = image.shape[2] if image.ndim == 3 else 1
         if (channels not in (1, 3, 4) or max(h, w) > _MAX_SIDE
                 or not (0 < width < w <= _MAX_SCALE * width
-                        and 0 < height < h <= _MAX_SCALE * height)
-                or (w % width == 0 and h % height == 0)):
+                        and 0 < height < h <= _MAX_SCALE * height)):
+            return None
+        block = None
+        if w % width == 0 and h % height == 0:
+            block = (w // width, h // height)
+        if block == (2, 2):
             return None
         from core.registration import RegistrationCancelled, _check_cancel
 
@@ -239,26 +270,38 @@ class ExactAreaGpu:
                     self.fell_back = True
                     return None
                 if self._shape != (image.shape, image.dtype, width, height):
-                    if not self._workspace(image, width, height, channels):
+                    if not self._workspace(image, width, height, channels, block):
                         self._disabled = True
                         self.fell_back = True
                         return None
                 shape = (height, width) if channels == 1 else (height, width, channels)
                 output = np.empty(shape, image.dtype)
-                src, dst, xs, ys = self._buffers
-                kernel = self._kernels[(image.itemsize, bgr_rev)]
+                src, dst = self._buffers[:2]
+                kernel = self._kernels[(image.itemsize, bgr_rev, block is not None)]
+                layout = (np.int32(channels), np.int32(w * channels))
+                if block:
+                    sx, sy = block
+                    # Even uint16 block sums are below 2**24, so float32
+                    # accumulation on the CPU is exact before the multiply.
+                    args = (*layout, np.int32(sx), np.int32(sy), np.float32(1.0 / (sx * sy)))
+                else:
+                    args = (*self._buffers[2:], *layout)
+                    starts, counts = self._ys['start'], self._ys['count']
                 source_view = image[..., ::-1] if bgr_rev else image
-                starts, counts = self._ys['start'], self._ys['count']
                 for row in range(0, height, self._rows):
                     _check_cancel(should_cancel)
                     stop = min(row + self._rows, height)
-                    first = starts[row]
-                    last = starts[stop - 1] + counts[stop - 1]
+                    if block:
+                        first, last = row * sy, stop * sy
+                        stripe_args = args
+                    else:
+                        first = starts[row]
+                        last = starts[stop - 1] + counts[stop - 1]
+                        stripe_args = (*args, first, np.int32(row))
                     band = source_view[first:last]
                     # Keep the host buffer export alive through the blocking readback.
                     upload = self._cl.enqueue_copy(self._queue, src, band, is_blocking=False)
-                    kernel(self._queue, (width * channels, stop - row), None, src, dst, xs, ys,
-                           np.int32(channels), np.int32(w * channels), first, np.int32(row))
+                    kernel(self._queue, (width * channels, stop - row), None, src, dst, *stripe_args)
                     self._cl.enqueue_copy(self._queue, output[row:stop], dst, is_blocking=True)
                     del upload
                 _check_cancel(should_cancel)

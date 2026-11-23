@@ -987,6 +987,7 @@ def _bounded_registration_map(function, values, workers, should_cancel=None, *,
     pending = deque()
     source = iter(values)
     scratch = capture_scratch()
+    ecc_gpu = _deferred_ecc_gpu.get()
 
     def submit_one():
         _check_cancel(should_cancel)
@@ -1004,14 +1005,19 @@ def _bounded_registration_map(function, values, workers, should_cancel=None, *,
         pending.append(pool.submit(run_with_scratch, scratch, run, value))
 
     def run(value):
-        _check_cancel(should_cancel)
-        if stage is not None and profile.enabled:
-            with profile.stage(stage):
+        token = _deferred_ecc_gpu.set(ecc_gpu) if ecc_gpu is not None else None
+        try:
+            _check_cancel(should_cancel)
+            if stage is not None and profile.enabled:
+                with profile.stage(stage):
+                    result = function(value)
+            else:
                 result = function(value)
-        else:
-            result = function(value)
-        _check_cancel(should_cancel)
-        return result
+            _check_cancel(should_cancel)
+            return result
+        finally:
+            if token is not None:
+                _deferred_ecc_gpu.reset(token)
 
     def consume():
         for _ in range(in_flight):
@@ -1748,22 +1754,29 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
     if defer_warps:
         log_action('registration_warp_deferred', method='ecc', frames=len(images),
                    shape=(target_h, target_w))
-    else:
-        if not HAS_CUPY:
-            print("    [Info] GPU warping disabled. Using CPU for warping.")
+    elif HAS_CUPY:
         log_action('registration_warp', method='ecc',
-                   provider='CuPy' if HAS_CUPY else 'OpenCV',
-                   device='CUDA' if HAS_CUPY else 'CPU', shape=(target_h, target_w),
-                   frames=len(images), gpu_requested=use_gpu)
+                   provider='CuPy', device='CUDA', shape=(target_h, target_w),
+                   frames=len(images), gpu_requested=True)
 
     if not HAS_CUPY:
-        aligned_images = _apply_perspective_warps(
-            images, H_matrices, T_crop if do_crop else None, (target_w, target_h),
-            max_workers, should_cancel, defer_warps, method='ecc', sources=source_identities,
-            bounds=(top, bottom, left, right), plan_callback=plan_callback)
-        _save_registration(aligned_images, output_path, img_filenames, should_cancel)
+        with deferred_ecc_warp_accelerator(accelerate_ecc and
+                                           (not defer_warps or output_path)) as warp:
+            aligned_images = _apply_perspective_warps(
+                images, H_matrices, T_crop if do_crop else None, (target_w, target_h),
+                max_workers, should_cancel, defer_warps, method='ecc', sources=source_identities,
+                bounds=(top, bottom, left, right), plan_callback=plan_callback)
+            _save_registration(aligned_images, output_path, img_filenames, should_cancel)
+        warp_device = 'CPU'
+        if warp is not None and warp.gpu_warps:
+            warp_device = ('CPU / ' if warp.cpu_warps else '') + warp.device_name
+        if not defer_warps or output_path:
+            log_action('registration_warp', method='ecc', device=warp_device,
+                       provider='OpenCL' if warp_device != 'CPU' else 'OpenCV',
+                       shape=(target_h, target_w), frames=len(images), gpu_requested=accelerate_ecc,
+                       gpu_warps=warp.gpu_warps if warp is not None else 0)
         if dispatch_callback is not None:
-            dispatch_callback('ecc', estimation='CPU', warp='CPU',
+            dispatch_callback('ecc', estimation='CPU', warp=warp_device,
                 resize_accelerator=area_gpu.device_name if area_gpu and area_gpu.frames_resized else None,
                 resize_fallback=bool(area_gpu and area_gpu.fell_back))
         return aligned_images
@@ -1964,8 +1977,8 @@ class ImageRegistration:
         self.downscale_width = int(downscale_width) if downscale_width is not None else 1024
         self.brightness_reference = brightness_reference if brightness_reference in ('first', 'last') else 'first'
         self.use_gpu = bool(use_gpu)
-        # use_gpu explicitly selects the CuPy warp. The application switch
-        # only admits exact resize work and keeps the Lanczos warp contract.
+        # use_gpu explicitly selects the legacy CuPy warp. The application
+        # preference admits only pixel-equivalent OpenCL resize and warp work.
         self.accelerate_ecc = bool(accelerate_ecc)
         self.defer_warps = bool(defer_warps)
         self.alignment_plan = None

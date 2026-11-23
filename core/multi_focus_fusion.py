@@ -657,7 +657,7 @@ class MultiFocusFusion:
         """Fuse under one cancellable lease, including preparation and publication."""
         # A focus callback receives the merger's 2D positions and their scale.
         from core.resource_policy import heavy_job
-        from core.registration import RegistrationCancelled
+        from core.registration import RegistrationCancelled, deferred_ecc_warp_accelerator
         from core.frame_storage import scratch_directory
         from utils.logging_setup import log_operation, image_result_details
         from contextlib import nullcontext
@@ -675,11 +675,19 @@ class MultiFocusFusion:
             self._fallback_reasons = ()
             self.ecc_warp_device = None
             try:
-                result = self._fuse_under_lease(
-                    input_source, img_resize, should_cancel, progress_callback, **kwargs)
+                with deferred_ecc_warp_accelerator(
+                        self.use_gpu and self.algorithm == 'openfocus_b') as warp:
+                    result = self._fuse_under_lease(
+                        input_source, img_resize, should_cancel, progress_callback, ecc_warp=warp, **kwargs)
             except RegistrationCancelled:
                 operation.cancel()
                 raise
+            if warp is not None and warp.gpu_warps:
+                self.ecc_warp_device = ('CPU / ' if warp.cpu_warps else '') + warp.device_name
+                _profile().set('ecc_warp', device=self.ecc_warp_device,
+                               accelerated=warp.gpu_warps, cpu=warp.cpu_warps)
+                log_action('deferred_ecc_warp', device=self.ecc_warp_device,
+                           accelerated=warp.gpu_warps, cpu=warp.cpu_warps)
             if self.descriptor.neural:
                 self._actual_device = neural_runtime.actual_device_report()
                 self._fallback_reasons = neural_runtime.device_diagnostics()['fallback_reasons']
@@ -689,7 +697,7 @@ class MultiFocusFusion:
             return result
 
     def _fuse_under_lease(self, input_source, img_resize, should_cancel,
-                          progress_callback, **kwargs):
+                          progress_callback, *, ecc_warp=None, **kwargs):
         from core import resource_policy as policy
         from core.registration import RegistrationCancelled
 
@@ -1021,7 +1029,6 @@ class MultiFocusFusion:
             from contextlib import nullcontext
             from core.frame_resolution_cache import ScopedCache, current
             from core.frame_storage import ScratchSpaceError
-            from core.registration import deferred_ecc_warp_accelerator
             from core.source_frames import (PreparedFrame, ProcessedFrame, SOURCE_CACHE, SourceFrame,
                                             frame_resolution_bytes, is_direct_rgb_tiff,
                                             materialize_for_repeated_access, source_cache_growth_bytes,
@@ -1057,26 +1064,22 @@ class MultiFocusFusion:
                     # The snapshot supplies both passes. Borrow ECC's decoded
                     # frames without writing one-use intermediates.
                     with (cache_access, without_source_cache_growth(),
-                          _profile().stage('snapshot_openfocus_b'),
-                          deferred_ecc_warp_accelerator(self.use_gpu) as warp):
+                          _profile().stage('snapshot_openfocus_b')):
                         prepared = materialize_for_repeated_access(
                             sources, should_cancel, thread_count=kwargs.get('thread_count', 0),
                             resource_preference=self.resource_preference,
                             progress_callback=getattr(progress_callback, 'preparation', None),
                             required=required, staging_bytes=height * width * 48,
                             parallel_processed=True)
-                    if warp is not None and warp.gpu_warps:
-                        self.ecc_warp_device = ('CPU / ' if warp.cpu_warps else '') + warp.device_name
-                        _profile().set('ecc_warp', device=self.ecc_warp_device,
-                                       accelerated=warp.gpu_warps, cpu=warp.cpu_warps)
-                        log_action('deferred_ecc_warp', device=self.ecc_warp_device,
-                                   accelerated=warp.gpu_warps, cpu=warp.cpu_warps)
                 except ScratchSpaceError:
                     if required:
                         raise
                     log_debug('fusion_b_snapshots_skipped', reason='scratch write failed')
                     prepared = sources
                 if prepared is not sources:
+                    if ecc_warp is not None:
+                        # Release the staging workspace before admitting fusion's GPU planes.
+                        ecc_warp.close()
                     input_source = list(input_source)
                     for index, frame in zip(indices, prepared):
                         input_source[index] = frame

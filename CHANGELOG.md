@@ -27,9 +27,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   your phone or computer to sign in automatically on the desktop.
 
 ### Changed
-- Apply deferred ECC warps for large 8-bit color stacks on supported OpenCL
-  GPUs while preparing OpenFocus B inputs. Preserve OpenCV Lanczos4 pixels and
-  report the actual warp device in the result details.
+- Use OpenCL for eligible large integer ECC reductions, including 8×8 area
+  downsizing. Apply exact Lanczos4 warps for large 8-bit color stacks during
+  registration and streamed OpenFocus B fusion. Report actual device use.
 - Compute deferred perspective, OpenFocus alignment, and OpenFocus translation
   crops directly over the requested ROI or tile, reuse direct-mapped RGB TIFF
   digests within a render scope, reuse adjacent-pair pyramids, and fuse

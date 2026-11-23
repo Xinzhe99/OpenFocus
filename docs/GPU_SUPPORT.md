@@ -15,7 +15,17 @@ Retouch’s **Auto background** and the CLI `--auto-background` can use OpenCL t
 
 Windows, macOS and Linux desktop builds include PyOpenCL. The separate Linux CLI wheel declares it as a dependency. The PyOpenCL wheels include an ICD loader on Linux, but a compatible GPU driver and its OpenCL ICD must be installed separately (normally registered in `/etc/OpenCL/vendors`). Windows needs the GPU vendor's OpenCL driver. macOS supplies OpenCL through the system, but Apple has deprecated OpenCL and device and compiler availability depend on the macOS version and hardware. The presence of PyOpenCL or an OpenCL loader alone does not establish GPU support; platforms without a compatible PyOpenCL wheel may need a source build and OpenCL development libraries. See [PyOpenCL installation](https://documen.tician.de/pyopencl/misc.html).
 
-ECC registration can use OpenCL to downsample large source and working images. The GPU path matches the area filter and rounding of the supported Windows x64 OpenCV 5.0.0 build. It accepts contiguous 8-bit and 16-bit images and fractional reductions up to 4× on each axis. Other builds, unsupported dimensions and insufficient memory use the CPU resize. ECC estimates the transforms on the CPU and applies them with the same Lanczos interpolation. The desktop GPU Acceleration switch and CLI `--cpu` control this preparation step. The `registration_ecc_resize` log event gives the device and completed GPU resize count for the stack.
+ECC uses compatible OpenCL GPUs by default. On the supported Windows x64
+OpenCV 5.0.0 build, large 8-bit and 16-bit images can use GPU `INTER_AREA`
+for whole-block and fractional reductions up to 8× on each axis. OpenCV
+handles the special 2×2 reduction. ECC estimates the transforms on the CPU.
+With a compatible GPU and sufficient memory, large 8-bit color frames use
+the exact Lanczos4 OpenCL warp during registration or OpenFocus B input
+resolution. Unsupported frames, unavailable devices and failed GPU
+operations use the CPU. Turn off **GPU Acceleration** in the desktop or
+pass `--cpu` to use the CPU for both stages. The log events
+`registration_ecc_resize`, `registration_warp` and `deferred_ecc_warp`
+record the work completed on the accelerator.
 
 StackMFF V1, V2 and V3 ship with dynamic ONNX models. **Settings → AI acceleration
 components** checks the hardware and offers a compatible optional pack once

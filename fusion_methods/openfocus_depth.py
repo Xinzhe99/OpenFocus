@@ -202,6 +202,7 @@ def _filter(src, radius, cancel, guide=None, low=None, *, allocate=None, overwri
 def _activity_frames(frames, img_resize, kernel_size, thread_count, should_cancel,
                      *, half_resolution=False, preserve_detail=False, gpu=None):
     """Return ordered activity planes from the admitted source window."""
+    from core.registration import _deferred_ecc_gpu
     from core.source_frames import resolve_frame, without_source_cache_growth
     from fusion_methods.openfocus_ab import (
         _check_cancel, _frame_pass_workers, _ordered_frame_results)
@@ -214,6 +215,7 @@ def _activity_frames(frames, img_resize, kernel_size, thread_count, should_cance
                                   activity_only=True)
     if gpu is not None and not gpu.failed:
         workers = 1
+    warp = _deferred_ecc_gpu.get()
     shape = (frames[0].shape[:2] if img_resize is None
              else (int(img_resize[1]), int(img_resize[0])))
     axes = None
@@ -229,8 +231,14 @@ def _activity_frames(frames, img_resize, kernel_size, thread_count, should_cance
         def cancel():
             _check_cancel(cancelled)
 
+        # Activity workers inherit scratch alone. Lend the accelerator without
+        # lending the owning job's native threads or its row executor.
         with without_source_cache_growth():
-            pixels = resolve_frame(frames[index], should_cancel=cancelled)
+            token = _deferred_ecc_gpu.set(warp)
+            try:
+                pixels = resolve_frame(frames[index], should_cancel=cancelled)
+            finally:
+                _deferred_ecc_gpu.reset(token)
         gray = frame_gray_codes(pixels, img_resize, cancelled, depth_color=True)
         del pixels
         if gray.shape != shape:
