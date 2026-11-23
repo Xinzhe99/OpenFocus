@@ -45,7 +45,7 @@ def _decode_video_child(video_path, scale, pixels_path, result_path):
         with pixels_path.open('wb', buffering=0) as stream:
             def append_frame(frame):
                 frame_storage.require_disk_space(frame.nbytes, pixels_path.parent)
-                frame.tofile(stream)
+                frame_storage.write_frame(stream.fileno(), frame)
                 layouts.append((frame.shape, frame.dtype.str))
 
             ok, message = ImageStackLoader()._decode_video(video_path, scale, append_frame)
