@@ -142,6 +142,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   compatible source and registration settings.
 - Keep the desktop control connection responsive while Retouch asks whether
   to apply or discard edits.
+- Process large Auto Background stacks at full resolution by moving focus
+  tables to scratch storage when RAM is limited and reading aligned frames and
+  validity masks one at a time.
 - Show live focus layers on new full renders started from an earlier output,
   including when output history is browsed during alignment or preparation.
 - Keep the source loupe visible during a render, then replace its preview

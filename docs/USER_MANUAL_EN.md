@@ -1291,8 +1291,10 @@ Background replacement works best for isolated macro or microscope subjects agai
    sit just outside the depth of field, such as the knob at the end of a spine.
    It can also keep background objects next to the subject as stacked, so check
    the result.
-5. Click **Replace background** to see the current processing stage. A 20-megapixel stack of 15 frames takes about
-   a minute and needs about 3.5 GB of free memory. **Cancel** stops the operation and keeps your current edits.
+5. Click **Replace background** to see the current processing stage. Large stacks
+   can use the configured scratch directory for focus analysis tables and aligned
+   frames while processing at the result's full resolution. **Cancel** stops the
+   operation and keeps your current edits.
 
 The change is one undoable step, and strokes you painted on the subject before
 are kept. Use the **Restore Brush** to bring back stacked pixels wherever you
