@@ -70,6 +70,25 @@ def test_display_orders_label_scale_and_watermark(manager, transparent):
     assert np.array_equal(actual, expected)
 
 
+@pytest.mark.parametrize('alpha,dpr', [(False, 1.0), (True, 1.0), (False, 2.0)])
+def test_unannotated_source_preview_preserves_pixel_geometry(manager, alpha, dpr):
+    from PyQt6.QtGui import QColor, QImage, QPixmap
+    from utils.image_utils import cv2_to_pixmap, pixmap_to_cv2
+
+    if alpha:
+        pixmap = QPixmap(37, 19)
+        pixmap.fill(QColor(32, 84, 165, 128))
+    else:
+        image = np.arange(19 * 37 * 3, dtype=np.uint8).reshape(19, 37, 3)
+        pixmap = cv2_to_pixmap(image)
+    pixmap.setDevicePixelRatio(dpr)
+    expected = cv2_to_pixmap(pixmap_to_cv2(pixmap))
+    actual = manager.apply_labels_to_source_pixmap(pixmap, 0)
+    assert actual.deviceIndependentSize() == expected.deviceIndependentSize()
+    fmt = QImage.Format.Format_RGBA8888
+    assert actual.toImage().convertToFormat(fmt) == expected.toImage().convertToFormat(fmt)
+
+
 
 def edit_dialog(monkeypatch, manager, callback):
     def execute(dialog):
