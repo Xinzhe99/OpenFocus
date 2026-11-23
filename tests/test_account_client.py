@@ -1152,6 +1152,7 @@ def test_browser_login_exchanges_pkce_and_persists_terms(monkeypatch, caplog):
     query = parse_qs(parts.query)
     assert (parts.scheme, parts.netloc, parts.path) == ("https", "account.openfocus.top", "/v1/auth/browser/start")
     assert query["redirect_uri"] == ["http://127.0.0.1:41234/callback"]
+    assert query["interactive"] == ["1"]
     assert query["lang"] == ["zh"] and len(query["state"][0]) >= 32
     assert len(calls) == 1 and calls[0][0:2] == ("POST", account.BASE_URL + "/v1/auth/exchange")
     body = calls[0][2]

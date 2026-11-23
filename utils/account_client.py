@@ -880,10 +880,10 @@ class AccountClient:
                 raise
             return self.current_user()
 
-    def login_with_browser(self, *, cancel=None, on_started=None, timeout=300, language=None):
-        """Sign in using an existing browser session; call from a worker.
+    def login_with_browser(self, *, cancel=None, on_started=None, timeout=900, language=None):
+        """Complete sign-in in the browser and return the local user snapshot.
 
-        Returns the local user snapshot. An anonymous browser raises
+        Older servers require an existing browser session and may return
         AccountError("not_signed_in"); cancel is a threading.Event.
         """
         _sign_in_stage.set("browser_callback")
@@ -908,7 +908,7 @@ class AccountClient:
             server.timeout = 0.2
             parameters = {"code_challenge": challenge,
                           "redirect_uri": "http://127.0.0.1:%d/callback" % server.server_port,
-                          "state": state}
+                          "state": state, "interactive": "1"}
             if language is not None:
                 parameters["lang"] = language
             self._check_login(generation, cancel)

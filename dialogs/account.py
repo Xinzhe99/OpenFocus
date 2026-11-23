@@ -306,7 +306,7 @@ class AccountDialog(QDialog):
         client = self.client
         language = 'zh' if trans.current_lang == 'zh' else 'en'
         self._start('browser', lambda started: client.login_with_browser(
-            cancel=cancel, on_started=started, timeout=30, language=language))
+            cancel=cancel, on_started=started, language=language))
 
     def _open_agreement(self, link):
         if link == 'terms':
@@ -445,7 +445,8 @@ class AccountDialog(QDialog):
         if error is not None and error.category in ('terms_required', 'invalid_terms_version'):
             self.terms.setChecked(False)
         if error is not None:
-            if operation == 'web_center' and error.category == 'timeout':
+            if ((operation == 'web_center' and error.category == 'timeout')
+                    or (operation == 'browser' and error.category == 'sign_in_cancelled')):
                 self._refresh_controls()
                 return
             self._refresh_controls()

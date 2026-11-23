@@ -64,7 +64,7 @@ PACK = {
     "account_email_send": "Anmeldelink per E-Mail senden",
     "account_github": "Mit GitHub fortfahren",
     "account_google": "Mit Google fortfahren",
-    "account_browser_login": "Mit Browserkonto fortfahren",
+    "account_browser_login": "Im Browser anmelden",
 
     "account_continue": "Weiter",
     "account_wait_email": "Prüfen Sie Ihre E-Mails und öffnen Sie den Anmeldelink auf diesem Computer.",

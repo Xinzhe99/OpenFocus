@@ -68,7 +68,7 @@ ZH = {
     "account_email_send": "发送邮箱登录链接",
     "account_github": "使用 GitHub 继续",
     "account_google": "使用 Google 继续",
-    "account_browser_login": "使用浏览器中已登录的账号",
+    "account_browser_login": "在浏览器中登录",
 
     "account_continue": "继续使用",
     "account_wait_email": "请在此电脑上打开邮箱中的登录链接。",
