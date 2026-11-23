@@ -272,7 +272,7 @@ def draw_scale_bar(img: np.ndarray, px_um: float,
         # 只把被改动的像素抬回原位深——条和文字都是纯色/抗锯齿灰阶，
         # 乘 257 恰好是精确映射（255*257=65535）。
         if img.dtype == np.uint16:
-            img8 = (img.astype(np.float32) * (255.0 / 65535.0)).round().astype(np.uint8)
+            img8 = cv2.convertScaleAbs(img, alpha=255.0 / 65535.0)
         else:
             img8 = np.clip(img, 0, 255).astype(np.uint8)
         drawn = draw_scale_bar(
@@ -287,7 +287,7 @@ def draw_scale_bar(img: np.ndarray, px_um: float,
         mask = drawn != img8 if img.ndim == 2 else np.any(drawn != img8, axis=2)
         out = img.copy()
         if img.dtype == np.uint16:
-            out[mask] = (drawn[mask].astype(np.float64) * 257.0).round().astype(np.uint16)
+            out[mask] = drawn[mask].astype(np.uint16) * 257
         else:
             out[mask] = drawn[mask].astype(img.dtype)
         return out
@@ -304,7 +304,11 @@ def draw_scale_bar(img: np.ndarray, px_um: float,
     from PIL import Image, ImageDraw
     from utils.fonts import load_font_for_text
     gray = img.ndim == 2
-    pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_GRAY2RGB if gray else cv2.COLOR_BGR2RGB))
+    bgr = img.ndim == 3 and img.shape[2] == 3
+    # The caption, bar and outline use neutral colors, so the RGB rasterizer
+    # can blend the three channels in their existing order.
+    canvas = img if bgr else cv2.cvtColor(img, cv2.COLOR_GRAY2RGB if gray else cv2.COLOR_BGR2RGB)
+    pil = Image.fromarray(canvas)
     draw = ImageDraw.Draw(pil)
     if color == "auto":
         if region_mean is not None:
@@ -352,7 +356,9 @@ def draw_scale_bar(img: np.ndarray, px_um: float,
     if draw_caption and font is not None:
         draw.text((text_x - left, text_y - top), label, font=font, fill=bar_rgb,
                   stroke_width=stroke_w, stroke_fill=edge_rgb)
-    out = cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
+    out = np.array(pil)
+    if not bgr:
+        out = cv2.cvtColor(out, cv2.COLOR_RGB2BGR)
     if draw_caption and font is None:
         cv2.putText(out, label, (text_x, text_y + text_h),
                     cv2.FONT_HERSHEY_SIMPLEX, font_size / 30.0, bar_rgb,
