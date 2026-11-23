@@ -98,6 +98,17 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   reconstruction allocations, size V2 tiles from frame metadata, skip V2 weight
   maps when tiles cover each pixel once, and bound V3 hard-choice scratch by
   the stack depth.
+- Accelerate StackMFF V1, V2, and V3 staging, probability post-processing,
+  and frame reconstruction on CPU and DirectML workflows while preserving
+  bit-exact outputs and existing resource admission budgets. Reuse a persistent
+  bounded neural thread pool across upsampling, resizing, smoothing, softmax,
+  and direct RGB TIFF chunk staging, add L2-blocked softmax and native row
+  normalization/weighted-luma/YCbCr/argmax/scatter kernels supporting both
+  contiguous BGR and direct RGB TIFF views, keep StackMFF V3 hard-mode
+  selection indices in transient scratch storage, and skip redundant small-tile
+  pool synchronization. Validate source dimensions and isolate row staging
+  buffers. Release source views and rejected native buffers promptly, resume
+  V3 fallback at unfinished rows, and check cancellation between source frames.
 - On large stacks, read plain RGB TIFF pixels from the source file and retain
   native bit depth in StackMFF tile snapshots. Prepare a warped or compressed
   frame once when temporary storage can hold the prepared stack.
