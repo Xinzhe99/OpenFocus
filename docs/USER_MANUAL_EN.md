@@ -468,6 +468,8 @@ The preview draws at the target's native pixel geometry before fitting it to
 the viewport. Fit, 100%, pan and frame navigation change only the view. Apply
 commits one undoable edit; Cancel preserves the previous calibration. Historical
 outputs retain their own calibration and style when another source stack loads.
+Choose a target, uncheck **Show scale bar on this target**, and apply to remove
+its editable scale bar.
 
 Remove it again from **Tools → Scale Bar → Remove scale bar**: *From the
 source stack* and *From the result* narrow the dialog's "Apply to" scope to
@@ -491,11 +493,11 @@ For a new watermark, **Add ©** is selected and places the symbol before the
 text. Turn it off or choose the position after the text. Existing watermarks
 retain their original text and appearance.
 
-Scope is independent per target: source frames, registered frames and
-fusion results (defaults: source + result), each keeping its own text and
-style. Editing one scope never rewrites another; checking several applies
-the same draft to each checked scope. The text is stored only in an explicitly
-saved project or the local recovery snapshot, never in global preferences.
+On first use, only **Fusion result** is checked. The source, registered and
+fusion scopes each store their own style. Apply saves the draft style for
+the checked scopes and removes watermarks from scopes you unchecked. You can
+uncheck every scope to remove the editable watermarks. The text is stored
+only in an explicitly saved project or the local recovery snapshot.
 The editor previews the real
 selected frame or output and shows its pixel size and bit depth; switching
 the preview does not change the scope. Apply commits one undoable edit;

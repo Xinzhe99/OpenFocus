@@ -231,6 +231,7 @@ def test_copyright_controls_update_preview_and_commit(qapp):
     expected = wm.burn(image, wm.normalize_config({"text": "Creator ©"}))
     assert np.array_equal(suffix, expected)
     assert dialog.text_edit.text() == "Creator"
+    dialog.target_checks["source"].setChecked(True)
     dialog._save_and_accept()
     cfg = wm.config_for_target(window, "source")
     assert cfg.text == "Creator"
@@ -309,6 +310,7 @@ def test_dialog_apply_commits_scope_and_one_undo_step(qapp):
     record = _Record(image, context=_Context(image))
     window = _DialogHost([record], source=image)
     dialog = WatermarkDialog(window)
+    assert [key for key, check in dialog.target_checks.items() if check.isChecked()] == ["output"]
     dialog.text_edit.setText("© Creator")
     dialog.target_checks["source"].setChecked(True)
     dialog.target_checks["registered"].setChecked(False)
@@ -369,7 +371,7 @@ def test_dialog_frame_browsing_survives_style_edits(qapp):
     assert dialog.frame_index.value() == 2
 
 
-def test_dialog_output_edit_does_not_overwrite_source(qapp):
+def test_dialog_unchecking_removes_source_and_leaves_checked_output(qapp):
     from dialogs.watermark import WatermarkDialog
 
     window = _DialogHost(source=_image())
@@ -384,9 +386,65 @@ def test_dialog_output_edit_does_not_overwrite_source(qapp):
     dialog.target_checks["output"].setChecked(True)
     dialog.text_edit.setText("OUTPUT 2")
     dialog._save_and_accept()
-    assert wm.config_for_target(window, "source").text == "SOURCE"
+    assert wm.export_cfg(window, "source") is None
     assert wm.config_for_target(window, "output").text == "OUTPUT 2"
-    assert window.watermark_source_enabled is True
+    assert not window.watermark_source_enabled
+    assert len(window.undone) == 1
+
+
+def test_dialog_all_unchecked_can_remove_without_valid_text(qapp):
+    from dialogs.watermark import WatermarkDialog
+
+    image = _image()
+    record = _Record(image, context=_Context(image))
+    window = _DialogHost([record], source=image)
+    dialog = WatermarkDialog(window)
+    dialog.text_edit.setText("Creator")
+    dialog._save_and_accept()
+    assert wm.export_cfg(window, "source") is None
+    assert wm.export_cfg(window, "output", record)["text"] == "Creator"
+
+    dialog = WatermarkDialog(window)
+    assert dialog.target_checks["output"].isChecked()
+    dialog.target_checks["output"].setChecked(False)
+    dialog.reject()
+    assert wm.export_cfg(window, "output", record)["text"] == "Creator"
+
+    dialog = WatermarkDialog(window)
+    dialog.target_checks["output"].setChecked(False)
+    dialog.text_edit.clear()
+    dialog._refresh_preview()
+    assert dialog._ok_button.isEnabled()
+    dialog._ok_button.click()
+    assert dialog.result() == QDialog.DialogCode.Accepted
+    assert wm.export_cfg(window, "output", record) is None
+    assert wm.export_cfg(window, "output") is None
+    assert len(window.undone) == 2
+    reopened = WatermarkDialog(window)
+    assert not any(check.isChecked() for check in reopened.target_checks.values())
+    reopened.reject()
+    wm.restore_state(window, window.undone[-1])
+    assert wm.export_cfg(window, "output", record)["text"] == "Creator"
+
+
+def test_unchecking_historical_watermark_leaves_current_outputs(qapp):
+    from dialogs.watermark import WatermarkDialog
+
+    image = _image()
+    selected = _Record(_image())
+    current = _Record(image, context=_Context(image))
+    window = _DialogHost([selected, current], source=image)
+    wm.set_target_config(window, "output", wm.WatermarkConfig(text="Current"))
+    wm.set_record_config(current, wm.WatermarkConfig(text="Current result"))
+    wm.set_record_config(selected, wm.WatermarkConfig(text="Historical"))
+    dialog = WatermarkDialog(window)
+    assert dialog.target_checks["output"].isChecked()
+    dialog.target_checks["output"].setChecked(False)
+    dialog._save_and_accept()
+    assert dialog.result() == QDialog.DialogCode.Accepted
+    assert wm.export_cfg(window, "output", selected) is None
+    assert wm.export_cfg(window, "output", current)["text"] == "Current result"
+    assert wm.export_cfg(window, "output")["text"] == "Current"
 
 
 def test_historical_output_applies_even_when_preview_stays_on_source(qapp):

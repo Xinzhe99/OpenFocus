@@ -288,6 +288,12 @@ class WatermarkDialog(QDialog):
         self._apply_record = (manager.record_for_item(items.currentItem())
                               if manager is not None and items is not None and items.currentItem()
                               else None)
+        record = self._apply_record
+        self._record_target = None
+        if record is not None:
+            self._record_target = "registered" if record.kind == "aligned" else "output"
+        self._historical_output = (self._record_target == "output"
+                                   and not watermark.record_belongs_to_current_stack(window, record))
         self._populate_from_window()
         self._setup_preview_targets()
 
@@ -419,23 +425,17 @@ class WatermarkDialog(QDialog):
 
     def _populate_from_window(self) -> None:
         window = self._window
-        targets = watermark.active_targets(window)
-        cfg = (watermark.config_for_target(window, "source")
+        self._committed_targets = set(watermark.active_targets(window))
+        if self._historical_output:
+            self._committed_targets.discard("output")
+        record_cfg = watermark.safe_config(watermark.record_export_cfg(self._apply_record))
+        if record_cfg is not None:
+            self._committed_targets.add(self._record_target)
+        cfg = (watermark.config_for_target(window, "source") or record_cfg
                or watermark.config_from_window(window))
-        initial_record = self._apply_record
-        if not getattr(window, "raw_images", ()) and initial_record is not None:
-            record_cfg = watermark.safe_config(
-                getattr(initial_record, "watermark_config", None))
-            if getattr(initial_record, "watermark_initialized", False) and record_cfg:
-                cfg = record_cfg
-        if not targets:
-            # First use (or everything was removed): the dialog defaults to
-            # source + result, but nothing becomes active until Apply.
-            targets = ("source", "output")
-        if (self._apply_record is not None
-                and getattr(self._apply_record, "kind", "") == "aligned"
-                and "registered" not in targets):
-            targets = tuple(targets) + ("registered",)
+        targets = self._committed_targets
+        if not targets and cfg is None:
+            targets = ("output",)
         if cfg is None:
             cfg = watermark.WatermarkConfig(text="", copyright_enabled=True)
         self._load_style(cfg)
@@ -499,9 +499,11 @@ class WatermarkDialog(QDialog):
                 and self._apply_record is not None
                 and getattr(self._apply_record, "watermark_baked", False)):
             baked = True
-        self.target_checks["source"].setEnabled(bool(getattr(window, "raw_images", ())))
-        has_registered = bool(getattr(window, "registration_results", ()))
-        self.target_checks["registered"].setEnabled(has_registered)
+        self.target_checks["source"].setEnabled(
+            bool(getattr(window, "raw_images", ())) or "source" in self._committed_targets)
+        self.target_checks["registered"].setEnabled(
+            bool(getattr(window, "registration_results", ()))
+            or self._record_target == "registered" or "registered" in self._committed_targets)
         # Output stays available even before the first render: the user may
         # pre-select the scope for results produced later.  A baked preview
         # is skipped by the commit path instead of silently changing scope.
@@ -717,15 +719,35 @@ class WatermarkDialog(QDialog):
                         sizes.append(tuple(other.image.shape[:2]))
         return sizes
 
+    def _checked_targets(self):
+        return tuple(target for target, check in self.target_checks.items() if check.isChecked())
+
+    def _validated_draft(self):
+        cfg = self._draft_config()
+        for height, width in dict.fromkeys(self._scope_sizes()):
+            info = watermark.analyze(cfg, int(width), int(height))
+            if not info["ok"]:
+                raise watermark.WatermarkError(info["reason"])
+        return cfg
+
     def _refresh_preview(self, *_args) -> None:
         if self._closing:
             return
         self._preview_timer.stop()
         self._sync_target_availability()
         self._sync_preview_navigation()
-        self._ok_button.setEnabled(False)
         self.font_note.clear()
         self._error.clear()
+        targets = self._checked_targets()
+        self._ok_button.setEnabled(not targets and bool(self._committed_targets))
+        cfg = None
+        if targets and self.text_edit.text().strip():
+            try:
+                cfg = self._validated_draft()
+            except watermark.WatermarkError as exc:
+                self._error.setText(trans.t(exc.message_key))
+            else:
+                self._ok_button.setEnabled(True)
         target = self._preview_target()
         if target is None:
             self._pixel_key = None
@@ -750,26 +772,14 @@ class WatermarkDialog(QDialog):
             name, frame_label, trans.t("watermark_preview_meta").format(
                 width=canvas_w, height=canvas_h, depth=image.dtype.itemsize * 8)) if part))
         self.preview_meta.clear()
-        if not self.text_edit.text().strip():
+        if cfg is None:
             self._show_preview(key, image, metadata, display, None)
-            return
-        try:
-            cfg = self._draft_config()
-        except watermark.WatermarkError as exc:
-            self.preview_lbl.clear()
-            self._error.setText(trans.t(exc.message_key))
             return
         info = watermark.analyze(cfg, canvas_w, canvas_h)
         if not info["ok"]:
-            self.preview_lbl.clear()
+            self._show_preview(key, image, metadata, display, None)
             self._error.setText(trans.t(info["message_key"]))
             return
-        for height, width in self._scope_sizes():
-            scope_info = watermark.analyze(cfg, int(width), int(height))
-            if not scope_info["ok"]:
-                self.preview_lbl.clear()
-                self._error.setText(trans.t(scope_info["message_key"]))
-                return
         preview_record = self._preview_record()
         if preview_record is not None and preview_record.watermark_baked:
             cfg = None
@@ -780,9 +790,6 @@ class WatermarkDialog(QDialog):
         if info.get("substituted"):
             self.font_note.setText(trans.t("label_font_substituted").format(
                 name=f"{info['substituted']} → {info['actual_family']}"))
-        self._ok_button.setEnabled(self._apply_allowed())
-        if not any(check.isChecked() for check in self.target_checks.values()):
-            self._error.setText(trans.t("watermark_target_required"))
 
     def _show_preview(self, key, image, metadata, display, cfg):
         height, width = image.shape[:2]
@@ -797,9 +804,6 @@ class WatermarkDialog(QDialog):
         full_display = isinstance(image, np.ndarray) and display.shape[:2] == (height, width)
         label.set_display_pixmap(pixmap, source_size=(width, height), source_key=source_key,
                                  source_pixmap=pixmap if full_display else None)
-
-    def _apply_allowed(self) -> bool:
-        return any(check.isChecked() for check in self.target_checks.values())
 
     def _fit_size(self):
         self._actual_view = False
@@ -840,39 +844,39 @@ class WatermarkDialog(QDialog):
         if parent is None:
             self.accept()
             return
-        self._refresh_preview()
-        if not self._ok_button.isEnabled():
+        targets = self._checked_targets()
+        clear_targets = self._committed_targets.difference(targets)
+        if not targets and not clear_targets:
             return
         try:
-            cfg = self._draft_config()
+            cfg = self._validated_draft() if targets else None
         except watermark.WatermarkError as exc:
             self._error.setText(trans.t(exc.message_key))
             return
-        targets = tuple(target for target, check in self.target_checks.items()
-                        if check.isChecked())
-        if not targets:
-            self._error.setText(trans.t("watermark_target_required"))
-            return
-        # The selected entry is updated under its own scope: results use the
-        # output scope, an aligned stack uses the registered one.  Passing it
-        # only for a checked "output" left a selected historical/batch aligned
-        # record without the registered style the user just applied.
-        selected = self._apply_record
-        selected_target = ("registered" if getattr(selected, "kind", "") == "aligned"
-                           else "output") if selected is not None else None
         previous = watermark.capture_state(parent)
-        for key, value in cfg.to_dict().items():
-            setattr(parent, watermark.ATTRS[key][0], value)
-        for target in targets:
-            if (target == "output" and self._apply_record is not None
-                    and not watermark.record_belongs_to_current_stack(
-                        parent, self._apply_record)):
-                # Editing a selected historical result from another stack
-                # must not rewrite this stack's default for future results.
-                continue
-            watermark.set_target_config(parent, target, cfg)
-        watermark.apply_to_records(parent, cfg, targets,
-                                   selected if selected_target in targets else None)
+        # Initialize every scope before editing the shared draft. Legacy flags
+        # would otherwise inherit that draft even when their box is unchecked.
+        for target in self.target_checks:
+            if target == "output" and self._historical_output:
+                target_cfg = watermark.config_for_target(parent, target)
+            else:
+                target_cfg = cfg if target in targets else None
+            watermark.set_target_config(parent, target, target_cfg)
+        if cfg is not None:
+            for key, value in cfg.to_dict().items():
+                setattr(parent, watermark.ATTRS[key][0], value)
+        selected = self._apply_record
+        if self._historical_output:
+            # The selected result has no connection to this stack's output scope.
+            if not selected.watermark_baked:
+                if "output" in targets:
+                    watermark.set_record_config(selected, cfg)
+                elif "output" in clear_targets:
+                    watermark.set_record_config(selected, None)
+            targets = tuple(target for target in targets if target != "output")
+            clear_targets.discard("output")
+            selected = None
+        watermark.apply_to_records(parent, cfg, targets, selected, clear_targets=clear_targets)
         if watermark.capture_state(parent) == previous:
             self.accept()
             return

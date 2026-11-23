@@ -1700,11 +1700,13 @@ class BatchWorker(QThread):
         return [entries]
 
     def _stack_scale_cfg(self, target='output') -> Optional[dict]:
+        from utils import scalebar
+
         cfg = dict(self.processing_settings.get('scale_bar') or {})
         if not cfg:
             return None
         scope = cfg.pop('target', 'all')
-        if scope not in ('all', target):
+        if not scalebar.applies_to(scope, target):
             return None
         manual = float(cfg.pop('manual_px_um', 0) or 0)
         detected = getattr(self.image_loader, 'px_size_um', None)
