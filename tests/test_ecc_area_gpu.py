@@ -24,7 +24,7 @@ def test_area_table_preserves_opencv_small_edge_cutoff():
     (np.empty((256, 256), np.float32), (95, 93)),
     (np.empty((256, 256, 2), np.uint8), (95, 93)),
     (np.empty((256, 256), np.uint8)[:, ::2], (72, 93)),
-    (np.empty((256, 256), np.uint8), (64, 128)),  # CPU integer fast path
+    (np.empty((256, 256), np.uint8), (128, 128)),  # special CPU 2x2 path
     (np.empty((256, 256), np.uint8), (128, 31)),  # too many filter taps
     (np.empty((256, 256), np.uint8), (300, 121)),
 ])
@@ -46,7 +46,7 @@ def test_missing_or_low_vram_never_creates_context(memory, monkeypatch):
     gpu._device = SimpleNamespace(max_mem_alloc_size=1024**3)
     monkeypatch.setattr(_openfocus_gpu, '_free_vram', lambda device: memory)
     image = np.zeros((182, 182), np.uint16)
-    assert not gpu._workspace(image, 64, 64, 1)
+    assert not gpu._workspace(image, 64, 64, 1, None)
     assert gpu._context is None
     assert gpu._buffers is None
 
@@ -121,6 +121,34 @@ def test_hardware_fractional_eightfold_area_matches_cpu(hardware_gpu):
     dsize = (262, 204)
     expected = cv2.resize(image, dsize, interpolation=cv2.INTER_AREA)
     np.testing.assert_array_equal(hardware_gpu.resize(image, dsize), expected)
+
+
+@pytest.mark.parametrize('dtype,channels,reverse,block,base,rounded', [
+    (np.uint8, 3, True, (8, 8), (4, 5), (4, 6)),
+    (np.uint16, 1, False, (8, 8), (40000, 40001), (40000, 40002)),
+    (np.uint16, 4, False, (5, 6), (6, 7), (7, 8)),
+])
+def test_hardware_whole_block_area_matches_cpu(hardware_gpu, dtype, channels, reverse,
+                                               block, base, rounded):
+    rng = np.random.default_rng(171)
+    width, height = 67, 131
+    sx, sy = block
+    image = rng.integers(0, np.iinfo(dtype).max + 1, (height * sy, width * sx, channels), dtype=dtype)
+    # Place half-integer averages on either side of a stripe boundary. For
+    # 5x6, OpenCV's rounded reciprocal moves the even tie above 6.5.
+    stripe_rows = area._TILE_ROWS * 4 // sy
+    positions = ((stripe_rows - 1, 0), (stripe_rows, width - 1))
+    for (y, x), value in zip(positions, base):
+        tile = image[y * sy:(y + 1) * sy, x * sx:(x + 1) * sx]
+        tile[:] = value
+        tile[:sy // 2] = value + 1
+    if reverse:
+        image = image[..., ::-1]
+    expected = cv2.resize(image, (width, height), interpolation=cv2.INTER_AREA)
+    for (y, x), value in zip(positions, rounded):
+        assert np.all(expected[y, x] == value)
+    np.testing.assert_array_equal(hardware_gpu.resize(image, (width, height)), expected)
+    assert hardware_gpu.frames_resized == 1
 
 
 @pytest.mark.parametrize('outcome', ['device_lost', 'drain_failed', 'cancelled'])
