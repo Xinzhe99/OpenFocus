@@ -87,6 +87,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   materializing the stack or pre-converting all 16-bit frames to float32.
   Bound concurrent frame workers by the memory budget and preserve the
   existing focus decisions for low-contrast and mixed-bit-depth inputs.
+- Paint the final preview position once per wheel zoom and request native
+  detail for that viewport.
 - Reuse prepared tiled StackMFF frames when switching methods on the same stack
   with matching registration and exposure settings. Check source identities
   before reuse and share the existing 2 GiB limit with retained aligned frames.
