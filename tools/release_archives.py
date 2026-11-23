@@ -27,6 +27,11 @@ SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 STABLE_TAG_RE = re.compile(r"^v[0-9]+(?:\.[0-9]+)*$")
 BETA_TAG_RE = re.compile(r"^v([0-9]+(?:\.[0-9]+)*)-beta\.([1-9][0-9]*)$")
+DELTA_VERSION_PATTERN = r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
+DELTA_TAG_PATTERN = DELTA_VERSION_PATTERN + r"(?:-beta\.([1-9][0-9]*))?"
+DELTA_TAG_RE = re.compile(DELTA_TAG_PATTERN)
+DELTA_PLATFORMS = {"windows-x64": "windows-zip", "macos-arm64": "macos-zip",
+                   "linux-x86_64": "linux-desktop"}
 WINDOWS_KEYS = ("windows-zip", "windows-setup")
 GPU_KEY = "gpu-zip"
 GPU_KIND = "gpu-preview"
@@ -89,6 +94,41 @@ def expected_name(label: str, key: str) -> str:
     if key == LINUX_KEY:
         return f"OpenFocus-{label}-{LINUX_SUFFIX}"
     raise ReleaseArchiveError(f"unknown logical asset: {key}")
+
+
+def delta_version(tag: str) -> tuple | None:
+    match = DELTA_TAG_RE.fullmatch(tag)
+    if not match:
+        return None
+    version = tuple(map(int, match.groups()[:3]))
+    if 999999999 in version:
+        return None
+    beta = match[4]
+    return (*version, beta is None, int(beta or 0))
+
+
+def delta_asset_identity(name: str, tag: str) -> tuple[str, str]:
+    match = re.fullmatch(rf"OpenFocus-{re.escape(tag)}-([a-z0-9_-]+)-from-(.+)\.ofdelta\.zip", name)
+    if not match:
+        raise ReleaseArchiveError(f"invalid delta asset name: {name}")
+    platform, base = match.groups()
+    source, target = delta_version(base), delta_version(tag)
+    if (platform not in DELTA_PLATFORMS or source is None or target is None or source >= target or
+            (not source[3] and source[:3] != target[:3])):
+        raise ReleaseArchiveError(f"invalid delta asset identity: {name}")
+    return base, platform
+
+
+def mirror_delta_names(release: dict, tag: str) -> list[str]:
+    names = []
+    for item in release.get("assets", []):
+        name = item.get("name") if isinstance(item, dict) else None
+        if isinstance(name, str) and name.endswith(".ofdelta.zip"):
+            delta_asset_identity(name, tag)
+            names.append(name)
+    if len(set(names)) != len(names):
+        raise ReleaseArchiveError("duplicate delta assets")
+    return sorted(names)
 
 
 def split_asset(source: Path, out_dir: Path, limit: int,
@@ -386,12 +426,12 @@ def list_downloads(manifest_path: Path,
 
 
 def reassemble(manifest_path: Path, source_dir: Path, output_dir: Path,
-               limit: int = GITHUB_ASSET_LIMIT) -> list:
+               limit: int = GITHUB_ASSET_LIMIT, *, keys: tuple = WINDOWS_KEYS) -> list:
     manifest = load_manifest(manifest_path, limit)
     source_dir, output_dir = Path(source_dir), Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     outputs = []
-    for key in WINDOWS_KEYS:
+    for key in keys:
         info = manifest["assets"][key]
         target = output_dir / info["name"]
         if info["parts"]:
@@ -664,6 +704,20 @@ def write_mirror_manifest(tag: str, release_json: Path, r2_dir: Path,
         raise ReleaseArchiveError("releases JSON must be a list or contain one")
     payload = {"tag": tag, "published": release.get("published_at"),
                "assets": assets, "releases": releases}
+    deltas = []
+    for name in mirror_delta_names(release, tag):
+        base, platform = delta_asset_identity(name, tag)
+        entry = _github_asset(release, name, r2_dir, trusted)
+        if not re.fullmatch(r"https://github\.com/[^/?#]+/[^/?#]+/releases/download/"
+                            + re.escape(tag) + "/" + re.escape(name), entry["url"]):
+            raise ReleaseArchiveError(f"invalid GitHub delta URL: {name}")
+        full = assets.get(DELTA_PLATFORMS[platform])
+        if not full or entry["size"] >= min(full["size"], limit):
+            raise ReleaseArchiveError(f"delta is not smaller than full asset or exceeds limit: {name}")
+        deltas.append({"name": name, "size": entry["size"], "digest": entry["digest"],
+                       "from": base, "platform": platform})
+    if deltas:
+        payload["deltas"] = deltas
     _write_json(Path(output), payload)
 
 
@@ -734,6 +788,11 @@ def _cmd_zip_tree(args) -> None:
     zip_tree(Path(args.source), Path(args.output))
 
 
+def _cmd_list_mirror_deltas(args) -> None:
+    for name in mirror_delta_names(_load_json(Path(args.release_json)), args.tag):
+        print(name)
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -788,6 +847,11 @@ def main(argv=None) -> int:
     p.add_argument("--output-dir", required=True)
     p.add_argument("--limit", type=int, default=GITHUB_ASSET_LIMIT)
     p.set_defaults(func=_cmd_reassemble)
+
+    p = sub.add_parser("list-mirror-deltas")
+    p.add_argument("--tag", required=True)
+    p.add_argument("--release-json", required=True)
+    p.set_defaults(func=_cmd_list_mirror_deltas)
 
     p = sub.add_parser("write-mirror-manifest")
     p.add_argument("--tag", required=True)

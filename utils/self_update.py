@@ -3,7 +3,7 @@
 Designed for the PyInstaller onedir layout (app folder with the exe plus
 _internal). Flow:
 
-1. download the release portable zip (progress callback)
+1. download and verify a release package (or an exact-base patch)
 2. extract into a staging folder under the user-writable temp dir
 3. verify the staged executable exists
 4. write a small apply script that switches a complete candidate into place
@@ -22,6 +22,7 @@ input: it is sanitised before reaching any filesystem path or script text.
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -98,9 +99,46 @@ def mac_app_bundle() -> Optional[str]:
     return None
 
 
+def linux_app_bundle() -> Optional[str]:
+    """Path of the running official Linux onedir bundle, if present."""
+    if sys.platform != "linux" or not is_frozen():
+        return None
+    from utils.release_delta import platform_key
+    if platform_key() != "linux-x86_64":
+        return None
+    executable = os.path.realpath(sys.executable)
+    bundle = os.path.dirname(executable)
+    if (os.path.basename(executable) == APP_NAME
+            and verify_update_candidate(bundle, "linux-x86_64")):
+        return bundle
+    return None
+
+
+def installed_update_root() -> str:
+    if sys.platform == "win32":
+        return app_install_dir()
+    return mac_app_bundle() or linux_app_bundle() or ""
+
+
+def _update_work_dir() -> str:
+    root = tempfile.gettempdir()
+    if sys.platform != "linux":
+        return root
+    # This cache and its READY markers must not be writable by other /tmp users.
+    directory = os.path.join(root, f"OpenFocus-updates-{os.getuid()}")
+    try:
+        os.mkdir(directory, 0o700)
+    except FileExistsError:
+        pass
+    info = os.lstat(directory)
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        raise OSError("Unsafe OpenFocus update workspace")
+    return directory
+
+
 def staging_root_for(tag: str) -> str:
     """User-writable staging directory for this update."""
-    return os.path.join(tempfile.gettempdir(), STAGING_PREFIX + sanitize_tag(tag))
+    return os.path.join(_update_work_dir(), STAGING_PREFIX + sanitize_tag(tag))
 
 
 def _has_executable(candidate: str) -> bool:
@@ -184,11 +222,36 @@ def _valid_macos_bundle(bundle: str) -> bool:
         return False
 
 
+
+def verify_update_candidate(candidate_root: str, platform: str, *, patch: bool = False) -> bool:
+    """Check the bundle layout and validate the signature of a patched macOS app."""
+    if platform == "macos-arm64":
+        if not _valid_macos_bundle(candidate_root):
+            return False
+        if not patch:
+            return True
+        try:
+            return subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", candidate_root],
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                  timeout=60).returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+    if platform not in ("windows-x64", "linux-x86_64"):
+        return False
+    entry = os.path.join(candidate_root, APP_NAME + (".exe" if platform == "windows-x64" else ""))
+    return (os.path.isfile(entry) and not os.path.islink(entry)
+            and os.path.isdir(os.path.join(candidate_root, "_internal"))
+            and (platform == "windows-x64" or os.access(entry, os.X_OK)))
+
+
 def verify_staged_app(staging_root: str) -> bool:
     """True when the staged folder contains a runnable app entry."""
     if sys.platform == "darwin":
         bundle = find_staged_bundle(staging_root)
         return bool(bundle and _valid_macos_bundle(bundle))
+    if sys.platform == "linux":
+        candidate = find_staged_app_dir(staging_root)
+        return bool(candidate and verify_update_candidate(candidate, "linux-x86_64"))
     return bool(find_staged_app_dir(staging_root))
 
 
@@ -262,6 +325,87 @@ def extract_zip(zip_path: str, dest_root: str,
 
 
 
+def extract_linux_tar(tar_path: str, dest_root: str,
+                      on_progress: Optional[Callable[[int, int], None]] = None,
+                      should_cancel: Optional[Callable[[], bool]] = None) -> None:
+    """Extract the official onedir bundle, preserving safe links and modes."""
+    import tarfile
+    from utils.updater import DownloadCancelled
+
+    def check_cancel():
+        if should_cancel is not None and should_cancel():
+            raise DownloadCancelled("staging cancelled")
+
+    os.makedirs(dest_root, exist_ok=True)
+    root = os.path.realpath(dest_root)
+    bundle = os.path.join(root, APP_NAME)
+
+    def member_path(name):
+        parts = name.rstrip("/").split("/")
+        if (parts[0] != APP_NAME or any(part in ("", ".", "..") for part in parts)
+                or "\\" in name):
+            raise ValueError("Archive entry escapes the application bundle")
+        path = os.path.join(root, *parts)
+        if os.path.realpath(path) != path:
+            raise ValueError("Archive entry overlaps a symlink")
+        return path
+
+    directories, hardlinks = [], []
+    done = 0
+    with tarfile.open(tar_path, "r|gz") as archive:
+        for entry in archive:
+            check_cancel()
+            target = member_path(entry.name)
+            if entry.isdir():
+                os.makedirs(target, exist_ok=True)
+                directories.append((target, entry.mode))
+            else:
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                if entry.issym():
+                    link = entry.linkname
+                    resolved = os.path.realpath(os.path.join(os.path.dirname(target), link))
+                    if os.path.isabs(link) or os.path.commonpath((bundle, resolved)) != bundle:
+                        raise ValueError("Archive symlink escapes the application bundle")
+                    os.symlink(link, target)
+                elif entry.islnk():
+                    hardlinks.append((target, member_path(entry.linkname)))
+                elif entry.isfile():
+                    with archive.extractfile(entry) as source, open(target, "xb") as dest:
+                        while True:
+                            check_cancel()
+                            chunk = source.read(256 * 1024)
+                            check_cancel()
+                            if not chunk:
+                                break
+                            dest.write(chunk)
+                    os.chmod(target, entry.mode & 0o777)
+                else:
+                    raise ValueError("Unsupported Linux archive entry")
+            done += 1
+            if on_progress is not None:
+                on_progress(done, 0)
+    for target, source in hardlinks:
+        check_cancel()
+        if (os.path.realpath(target) != target or os.path.realpath(source) != source
+                or not os.path.isfile(source)):
+            raise ValueError("Invalid Linux archive hardlink")
+        os.link(source, target)
+    for target, mode in reversed(directories):
+        os.chmod(target, mode & 0o777)
+    check_cancel()
+
+
+def full_package_path(tag: str) -> str:
+    if sys.platform == "linux":
+        return os.path.join(_update_work_dir(), f"{APP_NAME}-{sanitize_tag(tag)}-linux-x86_64.tar.gz")
+    return portable_zip_path(tag)
+
+
+def delta_package_path(name: str) -> str:
+    if not re.fullmatch(r"OpenFocus-[A-Za-z0-9._-]+\.ofdelta\.zip", name):
+        raise ValueError("Invalid patch archive name")
+    return os.path.join(_update_work_dir(), name)
+
 
 def portable_zip_path(tag: str) -> str:
     """Canonical download target for a release's portable zip."""
@@ -270,8 +414,7 @@ def portable_zip_path(tag: str) -> str:
 
 
 def result_path(tag: str) -> str:
-    return os.path.join(tempfile.gettempdir(),
-                        f"{APP_NAME}_update_result_{sanitize_tag(tag)}.txt")
+    return os.path.join(_update_work_dir(), f"{APP_NAME}_update_result_{sanitize_tag(tag)}.txt")
 
 
 def write_result(tag: str, ok: bool, detail: str = "") -> None:
@@ -291,7 +434,10 @@ def consume_results() -> list:
     """Read and delete every pending apply result. [(tag, ok, detail)]."""
     import glob
     out = []
-    pattern = os.path.join(tempfile.gettempdir(), f"{APP_NAME}_update_result_*.txt")
+    try:
+        pattern = os.path.join(_update_work_dir(), f"{APP_NAME}_update_result_*.txt")
+    except OSError:
+        return out
     for path in sorted(glob.glob(pattern)):
         try:
             with open(path, "r", encoding="utf-8", errors="replace") as f:
@@ -341,7 +487,10 @@ def discard_staging(tag: str) -> None:
 
 def staged_ready(tag: str) -> bool:
     """True when a *complete* staged build for this tag is on disk."""
-    root = staging_root_for(tag)
+    try:
+        root = staging_root_for(tag)
+    except OSError:
+        return False
     if not os.path.isdir(root):
         return False
     if not os.path.isfile(staging_complete_marker(tag)):
@@ -351,7 +500,7 @@ def staged_ready(tag: str) -> bool:
 
 def write_apply_script_windows(app_dir: str, staging_app_dir: str, tag: str,
                                staging_root: str = "", zip_path: str = "",
-                               wait_pid: int = 0) -> str:
+                               wait_pid: int = 0, *, restart: bool = True) -> str:
     """Write a PowerShell transaction with encoded, uninterpreted paths."""
     import base64
 
@@ -368,6 +517,7 @@ def write_apply_script_windows(app_dir: str, staging_app_dir: str, tag: str,
         "app": app_dir, "staged": staging_app_dir, "root": staging_root,
         "zip": os.path.abspath(zip_path) if zip_path else "",
         "result": result_path(tag), "pid": pid, "tag": sanitize_tag(tag),
+        "restart": bool(restart),
     }, ensure_ascii=True).encode("utf-8")).decode("ascii")
     template = r'''
 $ErrorActionPreference = 'Stop'
@@ -384,6 +534,8 @@ function Result([string]$value) {
     try { [IO.File]::WriteAllText($c.result, $value, (New-Object Text.UTF8Encoding $false)) } catch {}
 }
 function Restart-App {
+    if (!$c.restart -or $elevated) { return }
+    $env:PYINSTALLER_RESET_ENVIRONMENT = '1'
     try { Start-Process -FilePath (Join-Path $c.app 'OpenFocus.exe') -ArgumentList '--restore-session' } catch {}
 }
 try {
@@ -397,7 +549,7 @@ try {
     }
     $stage = 'preparation failed'
     New-Item -ItemType Directory -Path $candidate -ErrorAction Stop | Out-Null
-    & robocopy $c.staged $candidate /E /R:10 /W:5 /NFL /NDL /NJH /NJS /NP /XF OpenFocus.portable /XD OpenFocusData | Out-Null
+    & robocopy $c.staged $candidate /E /R:10 /W:5 /NFL /NDL /NJH /NJS /NP /XF OpenFocus.portable unins*.exe unins*.dat unins*.msg /XD OpenFocusData /XJ | Out-Null
     if ($LASTEXITCODE -ge 8) { throw 'candidate copy failed' }
     if (!(Test-Path -LiteralPath (Join-Path $candidate 'OpenFocus.exe') -PathType Leaf) -or
         !(Test-Path -LiteralPath (Join-Path $candidate '_internal') -PathType Container)) {
@@ -408,9 +560,16 @@ try {
         throw 'process still running'
     }
     $stage = 'switch failed'
-    $preserve = @('OpenFocus.portable', 'OpenFocusData') | Where-Object {
-        Test-Path -LiteralPath (Join-Path $c.app $_)
-    }
+    $oldEntries = @(Get-ChildItem -LiteralPath $c.app -Force)
+    $preserve = @($oldEntries | Where-Object {
+        $_.Name -in @('OpenFocus.portable', 'OpenFocusData') -or
+        (!$_.PSIsContainer -and $_.Name -match '^unins[0-9]{3,}\.(exe|dat|msg)$')
+    } | ForEach-Object { $_.Name })
+    $keepBackup = @($oldEntries | Where-Object {
+        $_.Name -notin $preserve -and
+        !($_.PSIsContainer -and $_.Name -match '^_openfocus_runtime_v[0-9.]+(?:-beta\.[0-9]+)?$') -and
+        !(Test-Path -LiteralPath (Join-Path $candidate $_.Name))
+    }).Count -gt 0
     Move-Item -LiteralPath $c.app -Destination $backup
     $oldMoved = $true
     Move-Item -LiteralPath $candidate -Destination $c.app
@@ -430,7 +589,7 @@ try {
     } catch { $rollbackOK = $false }
     if (!$rollbackOK) {
         Result ("failed`nrollback failed; backup: " + $backup)
-        exit 1
+        exit 2
     }
     if (Test-Path -LiteralPath $candidate) {
         try { Remove-Item -LiteralPath $candidate -Recurse -Force } catch {}
@@ -438,18 +597,23 @@ try {
     if ($stage -ne 'process exit timed out' -and !$elevated) {
         try {
             $p = Start-Process -FilePath 'powershell.exe' -Verb RunAs -WindowStyle Hidden -Wait -PassThru -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-EncodedCommand','__INNER__')
+            # The helper may have different Windows credentials. Relaunch only
+            # from the original user's process, including after safe rollback.
+            if ($p.ExitCode -in @(0, 1)) { Restart-App }
             exit $p.ExitCode
         } catch { $stage = 'elevation cancelled or failed' }
     }
     Result ("failed`n" + $stage + $(if ($oldMoved) { '; rollback succeeded' } else { '' }))
-    if ($stage -ne 'process exit timed out') { Restart-App }
+    if ($stage -eq 'process exit timed out') { exit 3 }
+    Restart-App
     exit 1
 }
-Result 'ok'
-foreach ($path in @($backup, $c.root, $c.zip)) {
+if ($keepBackup) { Result ("ok`n" + $backup) } else { Result 'ok' }
+foreach ($path in @($(if (!$keepBackup) { $backup }), $c.root, $c.zip)) {
     if ($path) { try { Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction Stop } catch {} }
 }
 Restart-App
+exit 0
 '''
     inner = template.replace('__CONFIG__', config).replace('__ELEVATED__', '$true').replace('__INNER__', '')
     encoded_inner = base64.b64encode(inner.encode('utf-16le')).decode('ascii')
@@ -464,61 +628,184 @@ Restart-App
 
 def write_apply_script_macos(app_bundle: str, staged_bundle: str, tag: str,
                              staging_root: str = "", zip_path: str = "",
-                             wait_pid: int = 0) -> str:
-    app_bundle = os.path.abspath(app_bundle)
-    staged_bundle = os.path.abspath(staged_bundle)
-    staging_root = os.path.abspath(staging_root or os.path.dirname(staged_bundle))
+                             wait_pid: int = 0, *, restart: bool = True) -> str:
     if not app_bundle.endswith(".app") or not os.path.isdir(app_bundle):
         raise ValueError("Refusing to replace a non-existent .app bundle")
     if not _valid_macos_bundle(staged_bundle):
         raise ValueError("Staged bundle is incomplete or incompatible")
-    pid = int(wait_pid) if str(wait_pid).lstrip("-").isdigit() else 0
-    result_file = result_path(tag)
-    script_path = os.path.join(
-        os.path.dirname(staging_root), f"apply_update_{sanitize_tag(tag)}.sh")
+    return _write_apply_script_unix(app_bundle, staged_bundle, tag, staging_root,
+                                    zip_path, wait_pid, restart, macos=True)
+
+
+def _write_apply_script_unix(installed_root, candidate_root, tag, staging_root,
+                             package_path, wait_pid, restart, *, macos):
     import shlex
+
+    app = os.path.abspath(installed_root)
+    staged = os.path.abspath(candidate_root)
+    root = os.path.abspath(staging_root or os.path.dirname(staged))
     q = shlex.quote
-    content = (
-        "#!/bin/bash\n"
-        "for _ in $(seq 1 20); do\n"
-        f"  [ {pid} -gt 0 ] && kill -0 {pid} 2>/dev/null || break\n"
-        "  sleep 1\n"
-        "done\n"
-        f"if [ {pid} -gt 0 ] && kill -0 {pid} 2>/dev/null; then exit 1; fi\n"
-        "ok=0\n"
-        f"if rm -rf {q(app_bundle + '.new')} && ditto {q(staged_bundle)} {q(app_bundle + '.new')}; then\n"
-        f"  rm -rf {q(app_bundle + '.old')}\n"
-        f"  if mv {q(app_bundle)} {q(app_bundle + '.old')}; then\n"
-        f"    if mv {q(app_bundle + '.new')} {q(app_bundle)}; then\n"
-        "      ok=1\n"
-        f"      rm -rf {q(app_bundle + '.old')}\n"
-        "    else\n"
-        f"      mv {q(app_bundle + '.old')} {q(app_bundle)}\n"
-        "    fi\n"
-        "  fi\n"
-        "fi\n"
-        'if [ "$ok" = 1 ]; then\n'
-        f"  echo ok > {q(result_file)}\n"
-        f"  rm -rf {q(staging_root)}\n"
-        f"  rm -f {q(zip_path)}\n"
-        "else\n"
-        f"  echo failed > {q(result_file)}\n"
-        "fi\n"
-        f"open {q(app_bundle)} --args --restore-session\n"
-        'rm -f "$0"\n'
-    )
-    with open(script_path, "w", encoding="utf-8") as f:
-        f.write(content)
-    os.chmod(script_path, 0o755)
+    pid = max(0, int(wait_pid))
+    config = (f"app={q(app)}\nstaged={q(staged)}\nroot={q(root)}\n"
+              f"package={q(os.path.abspath(package_path) if package_path else '')}\n"
+              f"result={q(result_path(tag))}\npid={pid}\nrestart={int(bool(restart))}\n"
+              f"macos={int(macos)}\n")
+    script = r'''
+trap 'rm -f -- "$0"' EXIT
+
+restart_app() {
+    [ "$restart" = 1 ] || return 0
+    if [ "$macos" = 1 ]; then
+        open "$app" --args --restore-session
+    else
+        PYINSTALLER_RESET_ENVIRONMENT=1 "$app/OpenFocus" --restore-session </dev/null >/dev/null 2>&1 &
+    fi
+}
+
+exists() { [ -e "$1" ] || [ -L "$1" ]; }
+
+for ((attempt=0; pid>0 && attempt<60; attempt++)); do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 1
+done
+if [ "$pid" -gt 0 ] && kill -0 "$pid" 2>/dev/null; then
+    printf 'failed\nprocess exit timed out\n' > "$result"
+    exit 3
+fi
+
+transaction=$(mktemp -d "${app}.update-XXXXXXXX") || {
+    printf 'failed\npreparation failed\n' > "$result"
+    restart_app
+    exit 1
+}
+candidate="$transaction/new"
+backup="$transaction/previous"
+old_moved=0
+new_moved=0
+preserved=()
+
+rollback() {
+    local name
+    for name in "${preserved[@]}"; do
+        mv -- "$app/$name" "$backup/$name" || return 1
+    done
+    if [ "$new_moved" = 1 ]; then mv -- "$app" "$candidate" || return 1; fi
+    if [ "$old_moved" = 1 ]; then
+        ! exists "$app" && mv -- "$backup" "$app" || return 1
+    fi
+}
+
+fail() {
+    if rollback; then
+        rm -rf -- "$transaction"
+        printf 'failed\n%s\n' "$1" > "$result"
+        restart_app
+        exit 1
+    fi
+    printf 'failed\nrollback failed; backup: %s\n' "$backup" > "$result"
+    exit 2
+}
+
+if [ "$macos" = 1 ]; then
+    ditto "$staged" "$candidate" && [ -d "$candidate/Contents/MacOS" ] || fail 'candidate copy failed'
+else
+    cp -a -- "$staged" "$candidate" && [ -x "$candidate/OpenFocus" ] &&
+        [ -d "$candidate/_internal" ] || fail 'candidate copy failed'
+    rm -rf -- "$candidate/OpenFocus.portable" "$candidate/OpenFocusData" || fail 'candidate copy failed'
+fi
+[ -d "$app" ] && [ ! -L "$app" ] && mv -- "$app" "$backup" || fail 'switch failed'
+old_moved=1
+! exists "$app" && mv -- "$candidate" "$app" || fail 'switch failed'
+new_moved=1
+
+keep_backup=0
+if [ "$macos" = 0 ]; then
+    for name in OpenFocus.portable OpenFocusData; do
+        if exists "$backup/$name"; then
+            mv -- "$backup/$name" "$app/$name" || fail 'preserving local data failed'
+            preserved+=("$name")
+        fi
+    done
+    shopt -s dotglob nullglob
+    for entry in "$backup"/*; do
+        if ! exists "$app/${entry##*/}"; then keep_backup=1; break; fi
+    done
+fi
+if [ "$keep_backup" = 1 ]; then
+    printf 'ok\n%s\n' "$backup" > "$result"
+else
+    printf 'ok\n' > "$result"
+    rm -rf -- "$transaction"
+fi
+rm -rf -- "$root"
+if [ -n "$package" ]; then rm -f -- "$package"; fi
+restart_app
+exit 0
+'''
+    fd, script_path = tempfile.mkstemp(prefix=f"apply_update_{sanitize_tag(tag)}_", suffix=".sh",
+                                       dir=os.path.dirname(root), text=True)
+    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        stream.write("#!/bin/bash\n" + config + script)
     return script_path
 
 
-def launch_detached_windows(script_path: str) -> None:
+def launch_detached_windows(script_path: str) -> subprocess.Popen:
     flags = 0x08000000 | 0x00000200  # CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
-    subprocess.Popen(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
-                      "-File", script_path], close_fds=True,
-                     creationflags=flags, cwd=os.path.dirname(script_path))
+    return subprocess.Popen(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                             "-File", script_path], close_fds=True,
+                            creationflags=flags, cwd=os.path.dirname(script_path))
 
 
-def launch_detached_unix(script_path: str) -> None:
-    subprocess.Popen(["/bin/bash", script_path], start_new_session=True)
+def launch_detached_unix(script_path: str) -> subprocess.Popen:
+    env = os.environ.copy()
+    if sys.platform == "linux" and is_frozen():
+        # The shell and its copy commands need the system libraries, not the
+        # libraries PyInstaller prepended for the running build.
+        if "LD_LIBRARY_PATH_ORIG" in env:
+            env["LD_LIBRARY_PATH"] = env["LD_LIBRARY_PATH_ORIG"]
+        else:
+            env.pop("LD_LIBRARY_PATH", None)
+    return subprocess.Popen(["/bin/bash", script_path], start_new_session=True,
+                            cwd=os.path.dirname(script_path), env=env,
+                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def handoff_update(installed_root: str, candidate_root: str, tag: str, *,
+                   staging_root: str, package_path: str = "", wait_pid: int = 0,
+                   restart: bool = True) -> subprocess.Popen:
+    """Start the shared swap transaction and return its waitable process."""
+    if not all((installed_root, candidate_root, staging_root)):
+        raise ValueError("Missing update directories")
+    app, candidate, root = tuple(os.path.realpath(path) for path in
+                                 (installed_root, candidate_root, staging_root))
+    for raw, resolved in zip((installed_root, candidate_root, staging_root), (app, candidate, root)):
+        path = os.path.abspath(raw)
+        canonical_leaf = os.path.join(os.path.realpath(os.path.dirname(path)), os.path.basename(path))
+        if (resolved == os.path.dirname(resolved)
+                or os.path.normcase(canonical_leaf) != os.path.normcase(resolved)):
+            raise ValueError("Unsafe update directories")
+
+    def is_within(path, parent):
+        try:
+            return os.path.normcase(os.path.commonpath((path, parent))) == os.path.normcase(parent)
+        except ValueError:
+            return False  # Separate Windows drives.
+
+    if (not is_within(candidate, root) or is_within(app, root) or is_within(root, app)
+            or (package_path and is_within(os.path.realpath(package_path), app))):
+        raise ValueError("Installation, staging and package paths overlap")
+    if sys.platform == "win32":
+        if not verify_update_candidate(candidate, "windows-x64"):
+            raise ValueError("Staged Windows build is incomplete")
+        return launch_detached_windows(write_apply_script_windows(
+            app, candidate, tag, root, package_path, wait_pid, restart=restart))
+    if sys.platform == "darwin":
+        return launch_detached_unix(write_apply_script_macos(
+            app, candidate, tag, root, package_path, wait_pid, restart=restart))
+    if sys.platform == "linux":
+        if not (verify_update_candidate(app, "linux-x86_64") and
+                verify_update_candidate(candidate, "linux-x86_64")):
+            raise ValueError("Expected complete Linux onedir bundles")
+        return launch_detached_unix(_write_apply_script_unix(
+            app, candidate, tag, root, package_path, wait_pid, restart, macos=False))
+    raise ValueError("Unsupported update platform")

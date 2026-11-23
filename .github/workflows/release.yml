@@ -172,6 +172,13 @@ jobs:
           python tools/release_archives.py zip-tree --source dist/OpenFocus --output "OpenFocus-${{ needs.prepare.outputs.label }}-windows-x64.zip"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Build and verify Windows update deltas
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python -m tools.publish_release --build-deltas --platform windows-x64
+          --label "${{ needs.prepare.outputs.label }}" --directory dist/release-windows
+
       - name: Build installer (Inno Setup)
         shell: pwsh
         run: |
@@ -354,6 +361,13 @@ jobs:
       - name: Package zip (portable)
         run: ditto -c -k --keepParent dist/OpenFocus.app "OpenFocus-${{ needs.prepare.outputs.label }}-macos-arm64.zip"
 
+      - name: Build and verify macOS update deltas
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python -m tools.publish_release --build-deltas --platform macos-arm64
+          --label "${{ needs.prepare.outputs.label }}" --directory .
+
       - name: Create DMG installer image
         run: |
           # `hdiutil create -srcfolder` fails with "Resource busy" when the
@@ -398,6 +412,8 @@ jobs:
           name: OpenFocus-macos
           path: |
             OpenFocus-*-macos-arm64.zip
+            OpenFocus-*-macos-arm64-from-*.ofdelta.zip
+            OpenFocus-*-macos-arm64-patch-from-v2.0.0.zip
             OpenFocus-*-macos.dmg
           retention-days: 7
 
@@ -482,6 +498,14 @@ jobs:
           done
           test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"
           python tools/frozen_cli_smoke.py --headless-wayland --executable "$RUNNER_TEMP/linux-extracted/OpenFocus/OpenFocus" --resources "$RUNNER_TEMP/linux-extracted/OpenFocus/_internal"
+
+      - name: Build and verify Linux update deltas
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python -m tools.publish_release --build-deltas --platform linux-x86_64
+          --label "${{ needs.prepare.outputs.label }}" --directory .
+
       - name: Report Linux package contents
         run: |
           python tools/packaging_report.py --toc build/OpenFocus/Analysis-00.toc --toc build/OpenFocus/COLLECT-00.toc --package dist/OpenFocus --package "OpenFocus-${{ needs.prepare.outputs.label }}-linux-x86_64.tar.gz" --output "$RUNNER_TEMP/linux-packaging-report.json"
@@ -493,7 +517,10 @@ jobs:
       - uses: actions/upload-artifact@v5
         with:
           name: OpenFocus-linux
-          path: OpenFocus-*-linux-x86_64.tar.gz
+          path: |
+            OpenFocus-*-linux-x86_64.tar.gz
+            OpenFocus-*-linux-x86_64-from-*.ofdelta.zip
+            OpenFocus-*-linux-x86_64-patch-from-v2.0.0.zip
           if-no-files-found: error
           retention-days: 7
 
@@ -588,6 +615,9 @@ jobs:
           # Language blocks survive mirroring for in-app selection after fetch.
           python3 - "${{ needs.prepare.outputs.tag }}" <<'PY'
           import os, re, sys
+          from pathlib import Path
+          from tools.release_archives import DELTA_PLATFORMS
+          from utils.release_delta import PATCH_REQUIRED_FROM, legacy_patch_name
           from utils.release_notes import release_notes_markdown
           tag = sys.argv[1]
           version = os.environ["RELEASE_VERSION"]
@@ -604,6 +634,19 @@ jobs:
                   "rebuild the complete file, or download from the site.",
                   "rebuild the complete file.",
               )
+          repo = os.environ["GITHUB_REPOSITORY"]
+          legacy_links = []
+          for platform in DELTA_PLATFORMS:
+              name = legacy_patch_name(tag, platform)
+              if (Path("release") / name).is_file():
+                  legacy_links.append(f"- [{platform}](https://github.com/{repo}/releases/download/{tag}/{name})")
+          if legacy_links:
+              heading = "## Update from OpenFocus " + PATCH_REQUIRED_FROM
+              intro = ("Download the patch installer for your platform, extract it, and follow its README. "
+                       "Save your work before updating. The installer applies only to the published "
+                       f"{PATCH_REQUIRED_FROM} build.")
+              notes = notes.replace("## Installation", "\n\n".join(
+                  (heading, intro, "\n".join(legacy_links), "## Installation")), 1)
           # Publishing requires actual notes in every selectable UI language.
           notes = release_notes_markdown(version) + "\n\n" + notes
           open("release_notes.md", "w", encoding="utf-8").write(notes)
@@ -637,4 +680,4 @@ jobs:
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
           RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
           RELEASE_SHA: ${{ needs.prepare.outputs.sha }}
-        run: python tools/publish_release.py --directory release --notes release_notes.md
+        run: python -m tools.publish_release --directory release --notes release_notes.md

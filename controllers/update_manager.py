@@ -17,12 +17,14 @@ Behaviour (modelled on the update flow of modern desktop tools):
 import os
 import json
 import sys
+import tempfile
+from contextlib import suppress
 
 from PyQt6.QtCore import QObject, QThread, QTimer, Qt, pyqtSignal, pyqtSlot
 from PyQt6.QtWidgets import QApplication
 
 from utils import self_update
-from utils.updater import DownloadCancelled, is_beta
+from utils.updater import DownloadCancelled, UpdateOffer, is_beta
 
 # Download/stage threads that did not stop in time; kept alive instead of
 # being terminated (see BatchManager for the rationale).
@@ -78,11 +80,16 @@ class _StageThread(QThread):
     progress = pyqtSignal(int, int)
     done = pyqtSignal(bool, str)
 
-    def __init__(self, zip_path: str, staging_root: str, digest: str = ""):
+    def __init__(self, zip_path: str, staging_root: str, digest: str = "", *,
+                 size: int = 0, delta=None, installed_root: str = "", target_tag: str = ""):
         super().__init__()
         self._zip, self._root = zip_path, staging_root
         self._cancelled = False
         self._digest = digest
+        self._size = size
+        self._delta = delta
+        self._installed_root = installed_root
+        self._target_tag = target_tag
 
     def cancel(self):
         self._cancelled = True
@@ -90,22 +97,36 @@ class _StageThread(QThread):
     def run(self) -> None:
         try:
             from utils.updater import verify_file_digest
-            if self._cancelled:
+            cancelled = lambda: self._cancelled
+            progress = self.progress.emit
+            if cancelled():
                 raise DownloadCancelled()
-            verdict = verify_file_digest(self._zip, self._digest,
-                                         should_cancel=lambda: self._cancelled)
-            if self._digest and verdict is not True:
+            size_ok = not self._size or os.path.getsize(self._zip) == self._size
+            digest_ok = size_ok and (not self._digest or verify_file_digest(
+                self._zip, self._digest, should_cancel=cancelled) is True)
+            if not size_ok or not digest_ok:
                 os.remove(self._zip)
                 from locales import trans
                 self.done.emit(False, trans.t("msg_update_digest_mismatch"))
                 return
-            self_update.extract_zip(
-                self._zip, self._root,
-                on_progress=lambda d, t: self.progress.emit(d, t),
-                should_cancel=lambda: self._cancelled)
-            if not self_update.verify_staged_app(self._root):
-                self.done.emit(False, "staged build has no executable")
-                return
+            if self._delta:
+                from utils.release_delta import stage_delta
+                platform = self._delta.platform
+                name = "OpenFocus.app" if platform == "macos-arm64" else "OpenFocus"
+                candidate = os.path.join(self._root, name)
+                stage_delta(self._zip, self._installed_root, candidate,
+                            base_tag=self._delta.base_tag, target_tag=self._target_tag, platform=platform,
+                            should_cancel=cancelled, on_progress=progress)
+                valid = self_update.verify_update_candidate(candidate, platform, patch=True)
+            else:
+                extract = (self_update.extract_linux_tar if self._zip.endswith(".tar.gz")
+                           else self_update.extract_zip)
+                extract(self._zip, self._root, on_progress=progress, should_cancel=cancelled)
+                valid = self_update.verify_staged_app(self._root)
+            if cancelled():
+                raise DownloadCancelled()
+            if not valid:
+                raise ValueError("Staged build is incomplete or incompatible")
             self.done.emit(True, self._root)
         except DownloadCancelled:
             self.done.emit(False, "cancelled")
@@ -127,7 +148,7 @@ class UpdateManager(QObject):
     manual_download_needed = pyqtSignal()
     # the swap script is running: the window closes and the new build starts
     restart_requested = pyqtSignal()
-    _check_result = pyqtSignal(str, str, str, str, str, str, object, int)
+    _check_result = pyqtSignal(str, str, str, str, str, str, object, int, object)
 
     def __init__(self, window):
         # Duck-typed hosts (tests bind the update helpers onto a bare widget
@@ -141,6 +162,7 @@ class UpdateManager(QObject):
         self.zip_url = ""
         self.setup_url = ""
         self.zip_digest = ""
+        self._offer = None
         # Retain language-neutral data, never text frozen to the fetch language.
         self._note_entries = []
         self._notes_tag = ""
@@ -153,7 +175,8 @@ class UpdateManager(QObject):
         self._check_generation = 0
         self._checking = False
         self._channel_check_pending = False
-        self._task_digest = ""
+        self._task_offer = None
+        self._task_root = ""
         self._task_generation = 0
         self._check_result.connect(self._on_check_result,
                                    Qt.ConnectionType.QueuedConnection)
@@ -232,7 +255,8 @@ class UpdateManager(QObject):
         try:
             from constants import app_display_version
             from utils.settings_store import get_settings
-            from utils.updater import RELEASES_PAGE_URL, SHA256_DIGEST_RE, release_note_entries
+            from utils.updater import (RELEASE_DOWNLOAD_URL, RELEASES_PAGE_URL, SHA256_DIGEST_RE,
+                                       platform_asset_kinds, release_note_entries, select_delta_asset)
             raw = get_settings().value(NOTES_CACHE_KEY, "")
             if not isinstance(raw, str) or len(raw) > 2_000_000:
                 return
@@ -249,20 +273,19 @@ class UpdateManager(QObject):
             self.page_url = RELEASES_PAGE_URL
             zip_url = cached.get("zip_url")
             digest = cached.get("zip_digest")
-            from utils.updater import RELEASE_DOWNLOAD_URL
-            if sys.platform == "win32":
-                zip_kind, setup_kind = "windows-zip", "windows-setup"
-            elif sys.platform == "darwin":
-                import platform
-                if platform.machine().lower() not in ("arm64", "aarch64"):
-                    return
-                zip_kind, setup_kind = "macos-zip", "macos-dmg"
-            else:
+            package_kind, setup_kind = platform_asset_kinds()
+            if not package_kind:
                 return
             prefix = f"{RELEASE_DOWNLOAD_URL}/{tag}/"
-            if (zip_url == prefix + zip_kind and isinstance(digest, str)
+            if (zip_url == prefix + package_kind and isinstance(digest, str)
                     and SHA256_DIGEST_RE.fullmatch(digest)):
                 self.zip_url, self.zip_digest = zip_url, digest
+                size = cached.get("package_size", 0)
+                size = size if type(size) is int and size > 0 else 0
+                delta = select_delta_asset(cached.get("deltas"), target_tag=tag,
+                                           current_version=app_display_version(),
+                                           full_size=size, full_digest=digest)
+                self._offer = UpdateOffer(tag, zip_url, digest, size, delta)
             if cached.get("setup_url") == prefix + setup_kind:
                 self.setup_url = cached["setup_url"]
         except Exception:
@@ -271,13 +294,15 @@ class UpdateManager(QObject):
 
 
     def is_busy(self) -> bool:
+        if self.state in (STATE_DOWNLOADING, STATE_STAGING, STATE_CANCELLING):
+            return True
         for thread in (self._download, self._stage):
             if thread is not None and thread.isRunning():
                 return True
         return False
 
     def can_self_update(self) -> bool:
-        """Only a frozen stable build on Windows/macOS can swap itself.
+        """Only a frozen build of the supported desktop distributions can swap itself.
 
         GPU preview bundles carry a vendor-specific torch runtime. Replacing
         them with the stable CUDA zip would silently remove ROCm/XPU support,
@@ -287,24 +312,17 @@ class UpdateManager(QObject):
             return False
         return bool(self_update.is_frozen()
                     and (sys.platform == "win32" or
-                         (sys.platform == "darwin" and self_update.mac_app_bundle())))
+                         (sys.platform == "darwin" and self_update.mac_app_bundle()) or
+                         (sys.platform == "linux" and self_update.linux_app_bundle())))
 
     def install_is_writable(self, fail_loud: bool = True) -> bool:
-        """False when the install dir exists but cannot be written (Program
-        Files without elevation).
-
-        Checked before a ~350 MB download rather than after: hitting a
-        guaranteed UAC wall at the end wastes the user's time and bandwidth.
-        A missing directory is not an error — the apply script creates it.
-        """
-        app_dir = self_update.app_install_dir()
+        """Check that a Unix transaction can create a sibling of the installed bundle."""
         try:
-            if not os.path.isdir(app_dir):
-                os.makedirs(app_dir, exist_ok=True)
-            probe = os.path.join(app_dir, ".update_write_test")
-            with open(probe, "w") as f:
-                f.write("ok")
-            os.remove(probe)
+            root = self_update.installed_update_root()
+            if not root or not os.path.isdir(root):
+                raise OSError("Installation directory is missing")
+            with tempfile.TemporaryDirectory(prefix=".openfocus-update-", dir=os.path.dirname(root)):
+                pass
             return True
         except OSError:
             # Only a user-initiated action may surface this: popping the
@@ -356,6 +374,7 @@ class UpdateManager(QObject):
         if not enabled and not self._tag_allowed(self.tag):
             self._idle_timer.stop()
             self.tag = self.page_url = self.zip_url = self.setup_url = self.zip_digest = ""
+            self._offer = None
             self.cancel_download()
             if self.state in (STATE_DOWNLOADING, STATE_STAGING):
                 self._set_state(STATE_CANCELLING, "", self.percent)
@@ -483,17 +502,17 @@ class UpdateManager(QObject):
 
         generation = self._check_generation
         def done(state, tag, url, zip_url="", setup_url="", zip_digest="",
-                 notes=None):
+                 notes=None, offer=None):
             self._check_result.emit(state, tag, url, zip_url, setup_url,
-                                    zip_digest, notes, generation)
+                                    zip_digest, notes, generation, offer)
 
         self._checking = True
         updater.check_async(app_display_version(), done, quiet=False,
-                            include_beta=self._include_beta)
+                            include_beta=self._include_beta, with_offer=True)
 
-    @pyqtSlot(str, str, str, str, str, str, object, int)
+    @pyqtSlot(str, str, str, str, str, str, object, int, object)
     def _on_check_result(self, state, tag, page_url, zip_url="", setup_url="",
-                         zip_digest="", notes=None, generation=None):
+                         zip_digest="", notes=None, generation=None, offer=None):
         self._checking = False
         if (getattr(self, "_shutting_down", False)
                 or getattr(self._window, "_shutting_down", False)):
@@ -513,6 +532,7 @@ class UpdateManager(QObject):
         if state != "update":
             if state == "latest" and self.tag:
                 self.tag = self.page_url = self.zip_url = self.setup_url = self.zip_digest = ""
+                self._offer = None
                 self._note_entries, self._notes_tag = [], ""
                 self._idle_timer.stop()
                 from utils.settings_store import get_settings
@@ -529,6 +549,8 @@ class UpdateManager(QObject):
         self.page_url = page_url or self.page_url
         self.zip_url = zip_url
         self.setup_url = setup_url
+        if self.tag != tag:
+            self._staged_zip = ""
         self.tag = tag
         from constants import app_display_version
         from utils.updater import release_note_entries
@@ -536,6 +558,8 @@ class UpdateManager(QObject):
         self._notes_tag = tag
         self._emit_notes_changed()
         self.zip_digest = zip_digest
+        self._offer = offer
+        delta = offer.delta if offer else None
         try:
             from utils.settings_store import get_settings
             settings = get_settings()
@@ -543,7 +567,10 @@ class UpdateManager(QObject):
             settings.setValue(NOTES_CACHE_KEY, json.dumps(
                 {"tag": tag, "releases": self._note_entries,
                  "zip_url": zip_url, "zip_digest": zip_digest,
-                 "setup_url": setup_url}, ensure_ascii=False))
+                 "setup_url": setup_url, "package_size": offer.size if offer else 0,
+                 "deltas": [{"name": delta.name, "size": delta.size, "digest": delta.digest,
+                             "from": delta.base_tag, "platform": delta.platform}] if delta else []},
+                ensure_ascii=False))
             settings.remove(LEGACY_URL_KEY)
             settings.sync()
         except Exception:
@@ -603,8 +630,8 @@ class UpdateManager(QObject):
             self._set_state(STATE_FAILED, tag, 0)
             return False
         safe_tag = self_update.sanitize_tag(tag)
-        staging_root = self_update.staging_root_for(safe_tag)
         try:
+            staging_root = self_update.staging_root_for(safe_tag)
             os.makedirs(staging_root, exist_ok=True)
         except OSError:
             if manual:
@@ -612,29 +639,53 @@ class UpdateManager(QObject):
             self._set_state(STATE_FAILED, tag, 0)
             return False
         if self_update.staged_ready(safe_tag):
+            if self.tag != tag:
+                self._staged_zip = ""
             self.tag = tag
             self._set_state(STATE_READY, tag, 100)
             return True
 
-        digest = self.zip_digest if tag == self.tag and zip_url == self.zip_url else ""
+        offer = self._offer
+        if offer is None or (offer.tag, offer.url) != (tag, zip_url):
+            digest = self.zip_digest if (tag, zip_url) == (self.tag, self.zip_url) else ""
+            offer = UpdateOffer(tag, zip_url, digest)
         self.tag = tag
         self._manual_download = manual
-        self.zip_url = zip_url
-        self._task_digest = digest
+        self.zip_url, self.zip_digest = offer.url, offer.digest
+        self._offer = self._task_offer = offer
+        self._task_root = self_update.installed_update_root() if offer.delta else ""
         self._task_generation = self._check_generation
-        dest = self_update.portable_zip_path(safe_tag)
-        if (digest or self._staged_zip == dest) and os.path.isfile(dest):
-            self._stage_zip(dest, staging_root, safe_tag)
-            return True
-        thread = _DownloadThread(zip_url, dest)
+        try:
+            self._start_package(safe_tag, use_delta=bool(self._task_root))
+        except OSError as exc:
+            self._set_state(STATE_FAILED, tag, 0)
+            if manual:
+                self._fail("msg_update_stage_failed", str(exc))
+            return False
+        return True
+
+    def _start_package(self, safe_tag: str, *, use_delta: bool, reuse: bool = True) -> None:
+        offer = self._task_offer
+        delta = offer.delta if use_delta else None
+        if delta:
+            dest = self_update.delta_package_path(delta.name)
+            url, digest = delta.url, delta.digest
+        else:
+            dest = self_update.full_package_path(safe_tag)
+            url, digest = offer.url, offer.digest
+        if reuse and (digest or self._staged_zip == dest) and os.path.isfile(dest):
+            self._stage_zip(dest, self_update.staging_root_for(safe_tag), safe_tag, use_delta)
+            return
+        thread = _DownloadThread(url, dest)
         thread.progress.connect(self._on_download_progress)
         thread.done.connect(
             lambda ok, detail, generation=self._task_generation:
-                self._on_download_done(ok, detail, safe_tag, generation))
+                self._on_download_done(ok, detail, safe_tag, generation, use_delta))
+        if self._download is not None and self._download.isRunning():
+            self._download.wait()  # The previous worker already emitted its last signal.
         self._download = thread
-        self._set_state(STATE_DOWNLOADING, tag, 0)
+        self._set_state(STATE_DOWNLOADING, offer.tag, 0)
         thread.start()
-        return True
 
     def download_and_apply(self, tag: str, zip_url: str) -> bool:
         """Reuse READY through restart protection; new downloads stop at READY."""
@@ -650,48 +701,60 @@ class UpdateManager(QObject):
         return self.download(tag, zip_url, manual=True)
 
     def cancel_download(self) -> None:
-        for thread in (self._download, self._stage):
-            if thread is not None and thread.isRunning():
+        if self.state in (STATE_DOWNLOADING, STATE_STAGING):
+            thread = self._download if self.state == STATE_DOWNLOADING else self._stage
+            if thread is not None:
                 thread.cancel()
-                self._set_state(STATE_CANCELLING, self.tag, self.percent)
+            # A done signal can still be queued after the thread stopped.
+            self._set_state(STATE_CANCELLING, self.tag, self.percent)
 
     def _on_download_progress(self, done: int, total: int) -> None:
         if self.state != STATE_CANCELLING:
             self._set_state(STATE_DOWNLOADING, self.tag,
                             int(done * 100 / total) if total else -1)
 
-    def _on_download_done(self, ok: bool, detail: str, safe_tag: str, generation=None) -> None:
+    def _task_cancelled(self, safe_tag, generation):
+        return (self.state == STATE_CANCELLING or not self._tag_allowed(safe_tag)
+                or (is_beta(safe_tag) and generation is not None and generation != self._check_generation))
+
+    def _on_download_done(self, ok: bool, detail: str, safe_tag: str, generation=None,
+                          use_delta=False) -> None:
         if getattr(self, "_shutting_down", False):
             return
-        if (self.state == STATE_CANCELLING or not self._tag_allowed(safe_tag)
-                or (is_beta(safe_tag) and generation is not None and generation != self._check_generation)):
+        if detail == "cancelled" or self._task_cancelled(safe_tag, generation):
             self._set_state(STATE_CANCELLED, self.tag, 0)
             self._check_changed_channel()
             return
         if not ok:
-            if detail == "cancelled":
-                self._set_state(STATE_CANCELLED, self.tag, 0)
-                self._check_changed_channel()
+            if use_delta:
+                self._start_package(safe_tag, use_delta=False, reuse=False)
                 return
             self._set_state(STATE_FAILED, self.tag, 0)
             self._check_changed_channel()
             if self._manual_download:
                 self._fail("update_status_failed", detail)
             return
-        self._staged_zip = detail
-        self._stage_zip(detail, self_update.staging_root_for(safe_tag), safe_tag)
+        if not use_delta:
+            self._staged_zip = detail
+        self._stage_zip(detail, self_update.staging_root_for(safe_tag), safe_tag, use_delta)
 
     # ---------------------------------------------------------------- stage
 
-    def _stage_zip(self, zip_path: str, staging_root: str, safe_tag: str):
+    def _stage_zip(self, zip_path: str, staging_root: str, safe_tag: str, use_delta=False):
         if getattr(self, "_shutting_down", False):
             return
         self_update.discard_staging(safe_tag)
-        thread = _StageThread(zip_path, staging_root, self._task_digest)
+        offer = self._task_offer
+        delta = offer.delta if use_delta else None
+        asset = delta or offer
+        thread = _StageThread(zip_path, staging_root, asset.digest, size=asset.size,
+                              delta=delta, installed_root=self._task_root, target_tag=offer.tag)
         thread.progress.connect(self._on_stage_progress)
         thread.done.connect(
             lambda ok, detail, generation=self._task_generation:
-                self._on_staged(ok, detail, zip_path, staging_root, safe_tag, generation))
+                self._on_staged(ok, detail, zip_path, staging_root, safe_tag, generation, use_delta))
+        if self._stage is not None and self._stage.isRunning():
+            self._stage.wait()
         self._stage = thread
         self._set_state(STATE_STAGING, self.tag, 0)
         thread.start()
@@ -699,21 +762,26 @@ class UpdateManager(QObject):
     def _on_stage_progress(self, done: int, total: int) -> None:
         if self.state != STATE_CANCELLING:
             self._set_state(STATE_STAGING, self.tag,
-                            int(done * 100 / max(1, total)))
+                            int(done * 100 / total) if total else -1)
 
     def _on_staged(self, ok: bool, detail: str, zip_path: str, staging_root: str,
-                   safe_tag=None, generation=None):
+                   safe_tag=None, generation=None, use_delta=False):
         safe_tag = safe_tag or self_update.sanitize_tag(self.tag)
         if getattr(self, "_shutting_down", False):
             self_update.discard_staging(safe_tag)
             return
-        if (self.state == STATE_CANCELLING or not self._tag_allowed(safe_tag)
-                or (is_beta(safe_tag) and generation is not None and generation != self._check_generation)):
+        if self._task_cancelled(safe_tag, generation):
             ok, detail = False, "cancelled"
+        if use_delta and detail != "cancelled":
+            with suppress(OSError):
+                os.remove(zip_path)
         if not ok:
             # A truncated extraction must never be mistaken for a good build:
             # verify_staged_app only sees that the exe exists.
             self_update.discard_staging(safe_tag)
+            if use_delta and detail != "cancelled":
+                self._start_package(safe_tag, use_delta=False, reuse=False)
+                return
             self._set_state(STATE_CANCELLED if detail == "cancelled" else STATE_FAILED,
                             self.tag, 0)
             self._check_changed_channel()
@@ -728,7 +796,7 @@ class UpdateManager(QObject):
             if self._manual_download:
                 self._fail("msg_update_stage_failed")
             return
-        self._staged_zip = zip_path
+        self._staged_zip = "" if use_delta else zip_path
         self._set_state(STATE_READY, self.tag, 100)
         self._check_changed_channel()
 
@@ -761,16 +829,12 @@ class UpdateManager(QObject):
             self._fail("msg_update_stage_failed")
             return False
         staging_root = self_update.staging_root_for(safe_tag)
-        zip_path = self._staged_zip or self_update.portable_zip_path(safe_tag)
+        zip_path = self_update.full_package_path(safe_tag)
         return self.stage_and_handoff(zip_path, staging_root, self.tag)
 
     def stage_and_handoff(self, zip_path: str, staging_root: str,
                           tag: str) -> bool:
-        """Extract if needed, write the swap script, then quit for the new build.
-
-        Kept as the single hand-off point so the download path, the
-        already-staged path and the tests all exercise the same code.
-        """
+        """Run the work-protection flow and hand the completed build to the swap helper."""
         safe_tag = self_update.sanitize_tag(tag)
         if not self.can_self_update():
             self._fail("msg_update_needs_elevation")
@@ -789,27 +853,15 @@ class UpdateManager(QObject):
             self._fail("msg_update_snapshot_failed")
             return False
 
-        app_dir = self_update.app_install_dir()
-        bundle = self_update.mac_app_bundle()
         try:
-            if sys.platform == "darwin" and bundle:
-                staged_bundle = self_update.find_staged_bundle(staging_root)
-                if not staged_bundle:
-                    self._fail("msg_update_stage_failed")
-                    return False
-                script = self_update.write_apply_script_macos(
-                    bundle, staged_bundle, safe_tag, staging_root=staging_root,
-                    zip_path=zip_path, wait_pid=os.getpid())
-                self_update.launch_detached_unix(script)
-            else:
-                staged_app = self_update.find_staged_app_dir(staging_root)
-                if not staged_app:
-                    self._fail("msg_update_stage_failed")
-                    return False
-                script = self_update.write_apply_script_windows(
-                    app_dir, staged_app, safe_tag, staging_root=staging_root,
-                    zip_path=zip_path, wait_pid=os.getpid())
-                self_update.launch_detached_windows(script)
+            find_candidate = (self_update.find_staged_bundle if sys.platform == "darwin"
+                              else self_update.find_staged_app_dir)
+            candidate = find_candidate(staging_root)
+            if not candidate:
+                self._fail("msg_update_stage_failed")
+                return False
+            self_update.handoff_update(self_update.installed_update_root(), candidate, safe_tag,
+                                       staging_root=staging_root, package_path=zip_path, wait_pid=os.getpid())
         except Exception as exc:
             # 脚本生成失败（路径安全校验等）曾直接死在 excepthook：
             # 应用不退出、不交换、用户毫无感知

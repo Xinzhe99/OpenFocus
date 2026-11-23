@@ -6,7 +6,7 @@
  * - "/api/latest" returns the latest GitHub release, cached at the edge.
  * - "/download/latest/<kind>" streams the matching R2 object with byte-range
  *   support, or redirects to the GitHub asset when the mirror has no object.
- * - "/api/updates" and "/download/releases/<tag>/<kind>" use R2 only.
+ * - "/api/updates" and versioned full and delta downloads use R2 only.
  * - The two WeChat QR paths proxy the current PNGs from the account service.
  *
  * With `run_worker_first: true` in wrangler.jsonc every request reaches this
@@ -28,6 +28,11 @@ const DOWNLOAD_SUFFIXES = {
   "macos-zip": "macos-arm64.zip",
   "linux-desktop": "linux-x86_64.tar.gz",
 };
+const DELTA_FULL_KINDS = new Map([
+  ["windows-x64", "windows-zip"],
+  ["macos-arm64", "macos-zip"],
+  ["linux-x86_64", "linux-desktop"],
+]);
 const DOWNLOAD_KINDS = new Set([
   "windows-setup",
   "windows-zip",
@@ -287,6 +292,7 @@ async function mirroredRelease(env, key = MIRROR_MANIFEST) {
         !/^sha256:[0-9a-fA-F]{64}$/.test(linux.digest || ""))) {
       delete data.assets["linux-desktop"];
     }
+    if ("deltas" in data) data.deltas = validDeltas(data);
     if (key === MIRROR_MANIFEST && Array.isArray(data.releases)) {
       data.releases = data.releases.filter((release) => release &&
         /^v[0-9]+(?:\.[0-9]+)*$/.test(release.tag_name || "") &&
@@ -301,6 +307,7 @@ async function mirroredRelease(env, key = MIRROR_MANIFEST) {
 async function latestFailure(message, env) {
   const mirror = await mirroredRelease(env);
   if (!mirror) return badGateway(message);
+  delete mirror.deltas;
   return new Response(JSON.stringify(mirror), {
     headers: { ...jsonHeaders(), "X-OpenFocus-Release-Source": "mirror" },
   });
@@ -412,6 +419,33 @@ function compareVersions(left, right) {
   }
   if (!a.beta || !b.beta) return a.beta ? -1 : b.beta ? 1 : 0;
   return compareNumber(a.beta, b.beta);
+}
+
+function deltaName(tag, base, platform) {
+  const pattern = /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-beta\.[1-9][0-9]*)?$/;
+  if (typeof tag !== "string" || typeof base !== "string" ||
+      !pattern.test(tag) || !pattern.test(base) ||
+      [tag, base].some((version) => version.split("-beta.")[0].split(".").includes("999999999")) ||
+      compareVersions(base, tag) >= 0 || !DELTA_FULL_KINDS.has(platform)) return null;
+  if (base.includes("-beta.") && base.split("-beta.")[0] !== tag.split("-beta.")[0]) return null;
+  return `OpenFocus-${tag}-${platform}-from-${base}.ofdelta.zip`;
+}
+
+function validDeltas(data) {
+  if (!Array.isArray(data.deltas)) return [];
+  const deltas = new Map();
+  const duplicates = new Set();
+  for (const entry of data.deltas) {
+    if (!entry) continue;
+    const { name, size, digest, from, platform } = entry;
+    const full = data.assets[DELTA_FULL_KINDS.get(platform)];
+    if (!full || !name || name !== deltaName(data.tag, from, platform) ||
+        !Number.isSafeInteger(size) || size <= 0 || size >= full.size ||
+        size >= 2147483648 || typeof digest !== "string" || !/^sha256:[0-9a-f]{64}$/.test(digest)) continue;
+    if (deltas.has(name)) duplicates.add(name);
+    deltas.set(name, { name, size, digest, from, platform });
+  }
+  return [...deltas.values()].filter((entry) => !duplicates.has(entry.name));
 }
 
 function betaAlias(tag) {
@@ -805,6 +839,16 @@ async function handleVersionedDownload(request, env, ctx) {
   }
   const parts = new URL(request.url).pathname.slice(VERSIONED_DOWNLOAD_PREFIX.length).split("/");
   const [tag, kind] = parts;
+  if (kind === "delta") {
+    const [, , base, platform] = parts;
+    const name = parts.length === 4 && deltaName(tag, base, platform);
+    if (!name) return textResponse("Unknown release delta", 404, {}, method);
+    // The canonical name is the whole R2 key. Older pinned requests may still
+    // finish after the corresponding metadata has advanced to a newer release.
+    const response = await r2Download(request, env, name, name);
+    if (response) recordDownload(request, response, env, ctx, tag, kind, "in-app", "r2");
+    return response || textResponse("The delta mirror is not ready; retry the download.", 503, { "Retry-After": "60" }, method);
+  }
   const alias = /^(v[0-9]+(?:\.[0-9]+)*)\.999999999\.([1-9][0-9]*)$/.exec(tag);
   const objectTag = alias && !alias[1].split(".").includes("999999999")
     ? `${alias[1]}-beta.${alias[2]}` : tag;

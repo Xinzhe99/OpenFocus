@@ -2,6 +2,7 @@
 import io
 import os
 import threading
+import time
 import zipfile
 from types import SimpleNamespace
 
@@ -28,7 +29,7 @@ def manager(qapp, monkeypatch, tmp_path):
 
 def test_check_deduplicates_and_hops_to_gui_before_notification(manager, qapp, monkeypatch):
     callbacks = []
-    monkeypatch.setattr(updater, "check_async", lambda version, callback, quiet, include_beta: callbacks.append(callback))
+    monkeypatch.setattr(updater, "check_async", lambda version, callback, **kwargs: callbacks.append(callback))
     manager.check(quiet=True)
     manager.check(quiet=False)
     assert len(callbacks) == 1
@@ -54,7 +55,7 @@ def test_check_result_respects_manual_intent(manager, qapp, monkeypatch, state, 
     from PyQt6 import QtWidgets
 
     callbacks, messages, banners, dialogs = [], [], [], []
-    monkeypatch.setattr(updater, "check_async", lambda version, callback, quiet, include_beta: callbacks.append(callback))
+    monkeypatch.setattr(updater, "check_async", lambda version, callback, **kwargs: callbacks.append(callback))
     monkeypatch.setattr(manager, "can_self_update", lambda: False)
     monkeypatch.setattr(main.trans, "t", lambda key: key)
     monkeypatch.setattr(main, "show_message_box", lambda *args, **kwargs: messages.append((args, kwargs)))
@@ -142,7 +143,8 @@ def test_auto_download_defaults_on_and_preserves_opt_out(manager):
 
 def test_beta_preference_persists_and_invalidates_inflight_check(manager, qapp, monkeypatch):
     calls, results = [], []
-    monkeypatch.setattr(updater, "check_async", lambda version, callback, quiet, include_beta: calls.append((callback, include_beta)))
+    monkeypatch.setattr(updater, "check_async", lambda version, callback, include_beta, **kwargs:
+                        calls.append((callback, include_beta)))
     manager.check_finished.connect(lambda *args: results.append(args))
     assert manager.include_beta is False
     manager.set_include_beta(True)
@@ -164,7 +166,7 @@ def test_beta_preference_persists_and_invalidates_inflight_check(manager, qapp, 
 
 def test_running_app_rechecks_the_selected_channel(manager, qapp, monkeypatch):
     calls, results = [], []
-    monkeypatch.setattr(updater, "check_async", lambda version, callback, quiet, include_beta:
+    monkeypatch.setattr(updater, "check_async", lambda version, callback, include_beta, **kwargs:
                         calls.append((callback, include_beta)))
     manager.check_finished.connect(lambda state, tag, *_: results.append((state, tag)))
     manager.start_idle()
@@ -221,6 +223,115 @@ def test_idle_reuses_cached_download_and_checks_its_digest(manager, qapp, monkey
     finally:
         restored.shutdown()
         restored.deleteLater()
+
+
+@pytest.mark.parametrize("scenario", ["manual", "idle", "wrong-base", "unavailable", "bad-bytes", "cancel"])
+def test_desktop_update_consumes_exact_patch_before_full(manager, qapp, monkeypatch, tmp_path, scenario):
+    import hashlib
+    import random
+    from tools.build_update_delta import build_delta
+    from utils import release_delta
+
+    monkeypatch.setattr(um.sys, "platform", "win32")
+    monkeypatch.setattr(release_delta, "platform_key", lambda: "windows-x64")
+    monkeypatch.setattr(self_update.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(self_update, "is_frozen", lambda: True)
+    monkeypatch.setattr(self_update, "gpu_variant", lambda: {})
+    installed = tmp_path / "installed"
+    target = tmp_path / "target"
+    unchanged = random.Random(7).randbytes(32768)
+    for root, entry in ((installed, b"old-entry"), (target, b"new-entry")):
+        (root / "_internal").mkdir(parents=True)
+        (root / "_internal" / "unchanged").write_bytes(unchanged)
+        (root / "OpenFocus.exe").write_bytes(entry)
+    (installed / "OpenFocusData").mkdir()
+    (installed / "OpenFocusData" / "settings.ini").write_bytes(b"local settings")
+    monkeypatch.setattr(self_update, "app_install_dir", lambda: str(installed))
+    tag, base, platform = "v2.0.1", "v2.0.0", "windows-x64"
+    monkeypatch.setattr("constants.app_display_version", lambda: base[1:])
+    patch_name = release_delta.delta_name(tag, base, platform)
+    patch = tmp_path / "prepared-patch.zip"
+    build_delta(installed, target, patch, base_tag=base, target_tag=tag, platform=platform)
+    if scenario == "wrong-base":
+        (installed / "OpenFocus.exe").write_bytes(b"customized executable")
+    full = tmp_path / "prepared-full.zip"
+    with zipfile.ZipFile(full, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for path in target.rglob("*"):
+            if path.is_file():
+                archive.write(path, "OpenFocus/" + path.relative_to(target).as_posix())
+
+    def metadata(path, name):
+        return {"name": name, "size": path.stat().st_size,
+                "digest": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()}
+
+    monkeypatch.setattr(updater, "_api_get", lambda url: {
+        "tag": tag, "assets": {"windows-zip": metadata(full, f"OpenFocus-{tag}-windows-x64.zip")},
+        "deltas": [{**metadata(patch, patch_name), "from": base, "platform": platform}],
+    })
+    full_url = f"{updater.RELEASE_DOWNLOAD_URL}/{tag}/windows-zip"
+    patch_url = f"{updater.RELEASE_DOWNLOAD_URL}/{tag}/delta/{base}/{platform}"
+    requests = []
+
+    class Response(io.BytesIO):
+        headers = {}
+
+    def urlopen(request, **kwargs):
+        url = request.full_url
+        requests.append(url)
+        if url == patch_url:
+            if scenario == "unavailable":
+                raise OSError("patch unavailable")
+            payload = patch.read_bytes()
+            return Response(b"X" + payload[1:] if scenario == "bad-bytes" else payload)
+        assert url == full_url
+        return Response(full.read_bytes())
+
+    monkeypatch.setattr(updater.urllib.request, "urlopen", urlopen)
+    hold_prepare = threading.Event()
+    if scenario == "cancel":
+        prepare = release_delta.stage_delta
+
+        def cancel_during_stage(*args, should_cancel, **kwargs):
+            hold_prepare.set()
+            deadline = time.monotonic() + 5
+            while not should_cancel() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            return prepare(*args, should_cancel=should_cancel, **kwargs)
+
+        monkeypatch.setattr(release_delta, "stage_delta", cancel_during_stage)
+
+    def wait_for(condition):
+        deadline = time.monotonic() + 5
+        while not condition() and time.monotonic() < deadline:
+            qapp.processEvents()
+            time.sleep(0.01)
+        assert condition()
+
+    try:
+        manager.check()
+        wait_for(lambda: manager.zip_url == full_url)
+        assert manager._offer.delta.url == patch_url
+        if scenario == "idle":
+            manager._maybe_idle_download()
+        else:
+            assert manager.download_and_apply(tag, full_url)
+        if scenario == "cancel":
+            wait_for(hold_prepare.is_set)
+            manager.cancel_download()
+            wait_for(lambda: manager.state == um.STATE_CANCELLED)
+            assert requests == [patch_url]
+            assert not self_update.staged_ready(tag)
+            return
+        wait_for(lambda: manager.state in {um.STATE_READY, um.STATE_FAILED})
+        assert manager.staged_tag() == tag
+        assert requests == ([patch_url] if scenario in {"manual", "idle"} else [patch_url, full_url])
+        staged = tmp_path / f"OpenFocus_update_{tag}" / "OpenFocus"
+        assert (staged / "OpenFocus.exe").read_bytes() == b"new-entry"
+        assert (staged / "_internal" / "unchanged").read_bytes() == unchanged
+        assert not (staged / "OpenFocusData").exists()
+        assert (installed / "OpenFocusData" / "settings.ini").read_bytes() == b"local settings"
+    finally:
+        manager.shutdown()
 
 
 def test_disabling_beta_cancels_active_stage_and_hides_it(manager, monkeypatch):
@@ -282,17 +393,19 @@ def test_restore_marker_precedes_launcher(manager, monkeypatch, tmp_path, snapsh
     monkeypatch.setattr(um.sys, "platform", "win32")
     monkeypatch.setattr(manager, "can_self_update", lambda: True)
     monkeypatch.setattr(manager, "install_is_writable", lambda: True)
-    monkeypatch.setattr(self_update, "staging_root_for", lambda tag: str(tmp_path))
+    stage = tmp_path / "stage"
+    monkeypatch.setattr(self_update, "staging_root_for", lambda tag: str(stage))
     monkeypatch.setattr(self_update, "staged_ready", lambda tag: True)
     monkeypatch.setattr(self_update, "find_staged_app_dir", lambda root: root)
     monkeypatch.setattr(self_update, "app_install_dir", lambda: str(tmp_path / "install"))
     monkeypatch.setattr(self_update, "mac_app_bundle", lambda: None)
+    monkeypatch.setattr(self_update, "verify_update_candidate", lambda *a, **kw: True)
     order = []
     manager._window.prepare_for_update_restart = lambda: order.append("protect") or True
     monkeypatch.setattr(recovery, "mark_pending_restore", lambda window: order.append("snapshot") or snapshot_ok)
     monkeypatch.setattr(self_update, "write_apply_script_windows", lambda *a, **kw: order.append("script") or "script.bat")
     monkeypatch.setattr(self_update, "launch_detached_windows", lambda script: order.append("launch"))
-    assert manager.stage_and_handoff("zip", str(tmp_path), "v999") is snapshot_ok
+    assert manager.stage_and_handoff("zip", str(stage), "v999") is snapshot_ok
     assert order == (["protect", "snapshot", "script", "launch"] if snapshot_ok else ["protect", "snapshot"])
     assert getattr(manager._window, "_restart_for_update", False) is snapshot_ok
 
@@ -521,8 +634,24 @@ def test_mac_missing_executable_is_not_ready(tmp_path, monkeypatch):
     assert not self_update.verify_staged_app(str(tmp_path))
 
 
+def test_macos_patch_requires_valid_code_signature(tmp_path, monkeypatch):
+    bundle = str(tmp_path / "OpenFocus.app")
+    monkeypatch.setattr(self_update, "_valid_macos_bundle", lambda path: path == bundle)
+    calls = []
+
+    def verify(args, **kwargs):
+        calls.append(args)
+        return SimpleNamespace(returncode=1)
+
+    monkeypatch.setattr(self_update.subprocess, "run", verify)
+    assert self_update.verify_update_candidate(bundle, "macos-arm64")
+    assert not calls
+    assert not self_update.verify_update_candidate(bundle, "macos-arm64", patch=True)
+    assert calls == [["/usr/bin/codesign", "--verify", "--deep", "--strict", bundle]]
+
+
 @pytest.mark.skipif(self_update.sys.platform != "darwin", reason="uses the macOS ditto command")
-def test_mac_retry_discards_files_from_interrupted_copy(tmp_path, monkeypatch):
+def test_mac_retry_uses_a_fresh_candidate_directory(tmp_path, monkeypatch):
     import platform
     import plistlib
     import struct
@@ -561,7 +690,7 @@ def test_mac_retry_discards_files_from_interrupted_copy(tmp_path, monkeypatch):
     assert (install / "Contents" / "MacOS" / "OpenFocus").is_file()
     assert not (install / "obsolete-library").exists()
     assert not (install / "old-version").exists()
-    assert not leftover.exists()
+    assert (leftover / "obsolete-library").is_file()  # The new transaction owns only its unique sibling.
     assert self_update.consume_results() == [("v999", True, "")]
 
 
@@ -572,7 +701,7 @@ def test_windows_script_preserves_install_mode_and_user_data(tmp_path, monkeypat
     script = self_update.write_apply_script_windows(str(tmp_path / "install"), str(stage), "v999", staging_root=str(stage))
     with open(script, encoding="utf-8-sig") as stream:
         text = stream.read()
-    assert "/XF OpenFocus.portable /XD OpenFocusData" in text
+    assert "/XF OpenFocus.portable unins*.exe unins*.dat unins*.msg /XD OpenFocusData" in text
     assert "Join-Path $backup $name" in text
     assert "rollback failed; backup:" in text
 
@@ -610,7 +739,7 @@ def test_stage_retry_reuses_downloaded_zip(manager, monkeypatch, tmp_path):
     manager._staged_zip = str(package)
     monkeypatch.setattr(manager, "can_self_update", lambda: True)
     monkeypatch.setattr(manager, "install_is_writable", lambda **kw: True)
-    monkeypatch.setattr(self_update, "portable_zip_path", lambda tag: str(package))
+    monkeypatch.setattr(self_update, "full_package_path", lambda tag: str(package))
     monkeypatch.setattr(self_update, "staging_root_for", lambda tag: str(tmp_path / "stage"))
     monkeypatch.setattr(self_update, "staged_ready", lambda tag: False)
     prepared = []
@@ -629,7 +758,7 @@ def test_notes_follow_language_changed_during_and_after_background_check(manager
     monkeypatch.setattr(trans, "current_lang", "en")
     monkeypatch.setattr(manager, "can_self_update", lambda: False)
     callbacks = []
-    monkeypatch.setattr(updater, "check_async", lambda version, callback, quiet, include_beta: callbacks.append(callback))
+    monkeypatch.setattr(updater, "check_async", lambda version, callback, **kwargs: callbacks.append(callback))
     manager.check(quiet=True)
     worker = threading.Thread(target=lambda: callbacks[0](
         "update", "v1.76.0", updater.RELEASES_PAGE_URL, "", "", "",
