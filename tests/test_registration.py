@@ -63,7 +63,7 @@ def _shifted_stack(dx=12, dy=6, size=(140, 180), n=2):
 
 
 class TestEccBackendSelection:
-    """CuPy warp must be opt-in: ``use_gpu=False`` has to mean CPU."""
+    """ECC uses the CPU unless acceleration is explicitly requested."""
 
     def test_gpu_is_off_by_default(self):
         reg = ImageRegistration(method="ecc")
@@ -72,21 +72,25 @@ class TestEccBackendSelection:
     def test_explicit_flag_is_kept(self):
         assert ImageRegistration(method="ecc", use_gpu=True).use_gpu is True
 
-    def test_cpu_path_does_not_touch_cupy(self, monkeypatch):
-        """Run real ECC while rejecting any accidental CuPy import."""
+    def test_cpu_path_reports_cpu_without_cupy(self, monkeypatch):
+        """Run real ECC and check the devices reported for the stack."""
         import builtins
         original_import = builtins.__import__
 
         def cpu_import(name, *args, **kwargs):
             if name.split('.')[0] in ('cupy', 'cupyx'):
-                pytest.fail("CPU registration imported CuPy")
+                pytest.fail(f"CPU registration imported {name}")
             return original_import(name, *args, **kwargs)
 
         monkeypatch.setattr(builtins, '__import__', cpu_import)
         frames, _ = _shifted_stack(size=(60, 80), n=2)
-        result = ImageRegistration(method="ecc", use_gpu=False).process(frames)
+        registration = ImageRegistration(method="ecc", use_gpu=False, accelerate_ecc=False)
+        result = registration.process(frames)
         assert len(result) == 2
         assert result[0].shape == result[1].shape
+        step, = registration.dispatch
+        assert (step.method, step.estimation, step.warp) == ('ecc', 'CPU', 'CPU')
+        assert step.resize_accelerator is None
 
     def test_explicit_unavailable_backend_does_not_silently_change_pixels(self, monkeypatch):
         import builtins
@@ -101,13 +105,6 @@ class TestEccBackendSelection:
         frames, _ = _shifted_stack(size=(60, 80), n=2)
         with pytest.raises(RuntimeError, match="CuPy.*unavailable"):
             ImageRegistration(method="ecc", use_gpu=True).process(frames)
-
-    def test_use_gpu_false_prints_the_cpu_path(self, capsys):
-        from core.registration import _align_ecc_impl
-        frames, _ = _shifted_stack(size=(60, 80), n=2)
-        _align_ecc_impl(list(frames), thread_count=1, use_gpu=False)
-        out = capsys.readouterr().out
-        assert "GPU warping disabled" in out
 
 
 def _sharpness_gap(a, b):
