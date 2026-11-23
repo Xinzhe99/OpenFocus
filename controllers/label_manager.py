@@ -12,6 +12,7 @@ module calls. Target names are explicit: input / registered / output.
 """
 from __future__ import annotations
 
+import os
 from typing import Any, Optional
 
 from PyQt6.QtCore import QSignalBlocker, Qt
@@ -266,13 +267,31 @@ class LabelManager:
             identities = getattr(window, "registration_frame_ids", None)
             if identities is not None:
                 return list(identities)
-        import os
-        names = list(getattr(window, "image_filenames", None) or [])
-        paths = list(getattr(window, "image_source_paths", None) or [])
-        folder = getattr(window, "current_folder_path", "") or ""
-        return [os.path.normcase(os.path.abspath(
-            paths[i] if i < len(paths) and paths[i] else os.path.join(folder, name)))
-            + "::" + name for i, name in enumerate(names)]
+        names = getattr(window, "image_filenames", None) or ()
+        return [self._source_frame_id(index, name) for index, name in enumerate(names)]
+
+    def _source_frame_id(self, index, name):
+        paths = getattr(self.window, "image_source_paths", None) or ()
+        if index < len(paths) and paths[index]:
+            path = paths[index]
+        else:
+            folder = getattr(self.window, "current_folder_path", "") or ""
+            path = os.path.join(folder, name)
+        return os.path.normcase(os.path.abspath(path)) + "::" + name
+
+    def _frame_id_at(self, target, index):
+        if hasattr(self, "_snapshot_frame_ids"):
+            identities = self._snapshot_frame_ids.get(target, ())
+        elif target == "registered":
+            identities = getattr(self.window, "registration_frame_ids", None)
+        else:
+            identities = None
+        if identities is not None:
+            return identities[index] if 0 <= index < len(identities) else None
+        names = getattr(self.window, "image_filenames", None) or ()
+        if 0 <= index < len(names):
+            return self._source_frame_id(index, names[index])
+        return None
 
     def snapshot(self, *, frame_ids_override=None):
         frozen = LabelManager(self.window)
@@ -293,14 +312,14 @@ class LabelManager:
         if wanted == "output" and output_id is None:
             output_id = (self._snapshot_output_id if hasattr(self, "_snapshot_output_id")
                          else getattr(self._selected_output(), "output_id", None))
-        identities = self.frame_ids(wanted) if wanted != "output" else ()
+        identity = self._frame_id_at(wanted, index) if wanted != "output" else None
         result = []
         for label in self._labels.for_target(wanted):
             config = label.config
             if wanted == "output" and config.output_id and config.output_id != output_id:
                 continue
             if wanted != "output" and config.frame_ids is not None:
-                if not 0 <= index < len(identities) or identities[index] not in config.frame_ids:
+                if identity is None or identity not in config.frame_ids:
                     continue
             else:
                 parsed = parse_label_range(config.range)
