@@ -41,8 +41,11 @@ def test_source_region_requests_wait_for_retiring_decode_and_keep_latest(qapp, m
     monkeypatch.setattr(scalebar, 'export_cfg', lambda *args, **kwargs: None)
     monkeypatch.setattr(watermark, 'export_cfg', lambda *args, **kwargs: None)
     frames = [np.zeros((10, 10, 3), np.uint8) for _ in range(3)]
+    failures, status = [], []
     window = SimpleNamespace(raw_images=frames, linear_dng_metadata=None,
-                             label_manager=SimpleNamespace(snapshot=lambda: None))
+                             label_manager=SimpleNamespace(snapshot=lambda: None),
+                             lbl_source_img=SimpleNamespace(set_source_region_failed=failures.append),
+                             statusBar=lambda: SimpleNamespace(showMessage=status.append))
     window._request_source_region = lambda key, request: OpenFocus._request_source_region(window, key, request)
     request = ('view', 1, (0, 0, 10, 10), (10, 10))
     keys = [(0, id(frame), index, index) for index, frame in enumerate(frames)]
@@ -55,6 +58,9 @@ def test_source_region_requests_wait_for_retiring_decode_and_keep_latest(qapp, m
     created[0].finished.emit()
     assert len(created) == 2 and created[1].key == keys[2]
     assert created[1].requests == [request]
+    created[0].failed.emit(keys[0], 'stale source')
+    created[1].failed.emit(keys[2], 'original detail failed')
+    assert failures == [keys[2]] and status == ['original detail failed']
     window._shutting_down = True
     created[1].finished.emit()
 
@@ -270,78 +276,121 @@ def test_region_memory_rejection_preserves_original_pixels(monkeypatch):
     np.testing.assert_array_equal(image, before)
 
 
-@pytest.mark.parametrize('warm_kind', ['retained', 'decoded'])
-def test_cold_region_waits_for_render_but_cached_regions_continue(qapp, tmp_path, monkeypatch, warm_kind):
-    from PyQt6.QtCore import Qt
-    from core.resource_policy import heavy_job
-    from core import source_frames
+@pytest.mark.parametrize('pressure', [False, True])
+def test_cold_jpeg_region_during_render(qapp, tmp_path, monkeypatch, pressure):
+    from dataclasses import replace
     import cv2
+    from PyQt6.QtCore import Qt
+    from core import resource_policy, source_frames
 
-    image = np.arange(80 * 100, dtype=np.uint16).reshape(80, 100)
-    source = object()
-    decoded = threading.Event()
-    resolve_frame = source_frames.resolve_frame
-
-    def resolve(frame, **kwargs):
-        if frame is source:
-            decoded.set()
-            return image
-        return resolve_frame(frame, **kwargs)
-
-    monkeypatch.setattr(source_frames, 'resolve_frame', resolve)
+    path = tmp_path / 'uncached.jpg'
+    image = np.random.default_rng(18).integers(0, 256, (512, 640, 3), dtype=np.uint8)
+    assert cv2.imwrite(str(path), image)
+    expected = cv2.imread(str(path))
+    source = source_frames.scan_source(str(path), header_only=True)[0]
+    assert source.cached_pixels() is None
     cold = SourceRegionWorker(source, 'cold')
-    if warm_kind == 'retained':
-        warm_frame = source_frames.RetainedFrame(source, None, image.shape, image.dtype, pixels=image)
-        expected = image
-    else:
-        path = tmp_path / 'cached.png'
-        assert cv2.imwrite(str(path), image)
-        warm_frame = source_frames.scan_source(str(path), header_only=True)[0]
-        expected = resolve_frame(warm_frame)
-        assert warm_frame.cached_pixels() is expected
+    warm_frame = source_frames.RetainedFrame(source, None, expected.shape, expected.dtype, pixels=expected)
     warm = SourceRegionWorker(warm_frame, 'warm')
-    cold_ready, warm_ready, held, release = (threading.Event() for _ in range(4))
-    results = []
+    cold_ready, warm_ready, held, release, rejected = (threading.Event() for _ in range(5))
+    results = {}
+
+    original_probe = resource_policy.probe_memory
+    original_require = resource_policy.require_memory
+
+    def probe():
+        snapshot = original_probe()
+        if pressure and held.is_set() and not release.is_set():
+            # Physical RAM is sufficient. Only the parent process's remaining
+            # commit allowance disallows a new JPEG decode.
+            return replace(snapshot, process_commit_headroom=2 * 1024 * 1024)
+        return snapshot
+
+    def require(*args, **kwargs):
+        try:
+            return original_require(*args, **kwargs)
+        except resource_policy.ResourceLimitError:
+            rejected.set()
+            raise
+
+    monkeypatch.setattr(resource_policy, 'probe_memory', probe)
+    monkeypatch.setattr(resource_policy, 'require_memory', require)
 
     def receive(key, request, pixels, _rect):
-        results.append((request, pixels))
+        results[key] = (request, pixels)
         (warm_ready if key == 'warm' else cold_ready).set()
 
     cold.ready.connect(receive, Qt.ConnectionType.DirectConnection)
     warm.ready.connect(receive, Qt.ConnectionType.DirectConnection)
 
     def render():
-        with heavy_job():
+        with resource_policy.heavy_job():
             held.set()
             release.wait()
 
     owner = threading.Thread(target=render)
     owner.start()
+    first = ('loupe', 1, (0, 0, 20, 20), (20, 20))
+    latest = ('loupe', 2, (10, 10, 20, 20), (20, 20))
     try:
         assert held.wait(2)
-        cold.submit(('view', 1, (0, 0, 20, 20), (20, 20)))
+        cold.submit(first)
         cold.start()
-        assert not decoded.wait(.1)
-        cold_latest = ('view', 2, (10, 10, 20, 20), (20, 20))
-        cold.submit(cold_latest)
-        warm_request = ('view', 3, (30, 30, 20, 20), (20, 20))
-        warm.submit(warm_request)
-        warm.start()
-        assert warm_ready.wait(2)
-        assert not decoded.is_set()
-        assert results[-1][0] == warm_request
-        np.testing.assert_array_equal(results[-1][1], to_display_uint8(expected[30:50, 30:50]))
-        release.set()
+        if pressure:
+            assert rejected.wait(2)
+            cold.submit(latest)
+            warm_request = ('loupe', 3, (30, 30, 20, 20), (20, 20))
+            warm.submit(warm_request)
+            warm.start()
+            assert warm_ready.wait(2)
+            assert not cold_ready.is_set()
+            assert results['warm'][0] == warm_request
+            np.testing.assert_array_equal(results['warm'][1], expected[30:50, 30:50])
+            release.set()
+            wanted = latest
+        else:
+            wanted = first
         assert cold_ready.wait(2)
-        assert decoded.is_set()
-        assert results[-1][0] == cold_latest
-        np.testing.assert_array_equal(results[-1][1], to_display_uint8(image[10:30, 10:30]))
+        assert results['cold'][0] == wanted
+        x, y, w, h = wanted[2]
+        np.testing.assert_array_equal(results['cold'][1], expected[y:y + h, x:x + w])
     finally:
         release.set()
         cold.request_cancel()
         warm.request_cancel()
         assert cold.wait(2000) and warm.wait(2000)
         owner.join(2)
+
+
+def test_native_rgb_tiff_region_skips_full_decode_and_snapshot(qapp, tmp_path, monkeypatch):
+    import tifffile
+    from PyQt6.QtCore import Qt
+    from core import frame_storage, source_frames
+
+    rgb = np.random.default_rng(28).integers(0, 65536, (96, 128, 3), dtype=np.uint16)
+    path = tmp_path / 'plain.tif'
+    tifffile.imwrite(path, rgb, photometric='rgb')
+    frame = source_frames.scan_source(str(path), header_only=True)[0]
+
+    def no_decode(*_args, **_kwargs):
+        raise AssertionError('Native TIFF regions must skip the full decoder')
+
+    monkeypatch.setattr(source_frames.SourceFrame, '_decode', no_decode)
+    worker = SourceRegionWorker(frame, 'direct')
+    ready = threading.Event()
+    results, paths = [], []
+    worker.ready.connect(lambda *args: (results.append(args), ready.set()), Qt.ConnectionType.DirectConnection)
+    worker.submit(('loupe', 1, (10, 15, 20, 30), (20, 30)))
+    with frame_storage.observe_temp_files(paths.append):
+        worker.start()
+        try:
+            assert ready.wait(2)
+            assert results[0][3] == (10, 15, 20, 30)
+            np.testing.assert_array_equal(results[0][2], to_display_uint8(rgb[15:45, 10:30, ::-1]))
+            assert not paths
+        finally:
+            worker.request_cancel()
+            assert worker.wait(2000)
 
 
 def test_previews_publish_each_completed_thumbnail_without_waiting_for_batch(qapp, monkeypatch):

@@ -79,7 +79,7 @@ _ENUMS = {
     'action': frozenset(('press', 'move', 'release', 'scroll')),
     'error_category': frozenset(('resource_limit', 'memory', 'os', 'value', 'runtime', 'other')),
     'error_origin': frozenset(('child_worker', 'child_setup_or_transfer', 'child_exit')),
-    'render_stage': frozenset(('prepare', 'align', 'fuse', 'finish', 'unknown')),
+    'render_stage': frozenset(('prepare', 'align', 'fuse', 'finish', 'finalize', 'publish', 'unknown')),
     'resource_status': frozenset(('unknown', 'insufficient')),
 }
 _ADMISSION_BYTES = ('required_bytes', 'available_ram_bytes', 'total_ram_bytes', 'ram_ceiling',

@@ -281,7 +281,8 @@ def test_resource_wait_preparation_fusion_and_late_cancel_stages_are_truthful(qa
                        ('prepare', 'render_stage_prepare'),
                        ('align', 'render_stage_align'),
                        ('fuse', 'render_stage_fuse'),
-                       ('finish', 'render_progress')]:
+                       ('finalize', 'render_stage_finalize'),
+                       ('publish', 'render_stage_publish')]:
         render.on_render_stage(stage)
         assert render._status_bar_label.text() == trans.t(key)
         assert not window.statusBar().currentMessage()
@@ -293,9 +294,14 @@ def test_resource_wait_preparation_fusion_and_late_cancel_stages_are_truthful(qa
     assert render._control_progress is None
     render.on_render_progress(1, 3)
     assert render._status_bar_label.text().startswith(trans.t('render_stage_fuse'))
-    render.on_render_stage('finish')
+    render.on_render_progress(3, 3)
+    assert render._status_bar_label.text().endswith('100% (3/3)')
+    render.on_render_stage('finalize')
     assert render._control_progress is None
-    assert render._status_bar_label.text() == trans.t('render_progress')
+    assert render._status_bar_progress.maximum() == 0
+    assert render._status_bar_label.text() == trans.t('render_stage_finalize')
+    render.on_render_stage('publish')
+    assert render._status_bar_label.text() == trans.t('render_stage_publish')
     render.worker.is_cancelled = True
     render.on_render_stage('fuse')
     render.on_render_progress(1, 10)
@@ -330,6 +336,6 @@ def test_render_progress_stays_on_left_without_duplicate_notice(qapp):
     assert render._status_bar_label.isVisible()
     window.statusBar().clearMessage()
     assert '(1/228)' in render._status_bar_label.text()
-    render.on_render_stage('finish')
-    assert render._status_bar_label.text() == trans.t('render_progress')
+    render.on_render_stage('publish')
+    assert render._status_bar_label.text() == trans.t('render_stage_publish')
     window._bar.deleteLater()

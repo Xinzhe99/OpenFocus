@@ -118,21 +118,21 @@ def test_aligned_grayscale_processed_mask_matches_array(dtype, pattern):
         np.testing.assert_array_equal(actual, expected)
 
 
-def test_aligned_mask_cancellation_after_connected_components(monkeypatch):
+def test_aligned_mask_cancellation_after_flood_fill(monkeypatch):
     import core.render_context as render_context
     from core.registration import RegistrationCancelled
 
     image = np.ones((5, 6), np.uint8)
     image[:, 0] = 0
     cancelled = [False]
-    original = render_context.cv2.connectedComponents
+    original = render_context.cv2.floodFill
 
-    def components(*args, **kwargs):
+    def fill(*args, **kwargs):
         result = original(*args, **kwargs)
         cancelled[0] = True
         return result
 
-    monkeypatch.setattr(render_context.cv2, 'connectedComponents', components)
+    monkeypatch.setattr(render_context.cv2, 'floodFill', fill)
     context = build_render_context([image], image, aligned=True)
     with pytest.raises(RegistrationCancelled):
         context.frames[0].valid_mask(should_cancel=lambda: cancelled[0])

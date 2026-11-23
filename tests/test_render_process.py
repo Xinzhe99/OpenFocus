@@ -79,7 +79,7 @@ def _changed_source_child(connection, cancel_event, request, budget, directory, 
 
 def _render_with_prepared_cache(connection, cancel_event, request, budget, directory, language, failure):
     """Run the real child pipeline with a mapped cache produced after fusion."""
-    from core import frame_storage, render_process, workers
+    from core import frame_storage, render_process
     from core.multi_focus_fusion import MultiFocusFusion
     from core.resource_policy import ResourceSnapshot, require_memory
     from utils import output_sharpen
@@ -94,7 +94,7 @@ def _render_with_prepared_cache(connection, cancel_event, request, budget, direc
         if failure == 'store':
             def fail_store(*args, **kwargs):
                 raise OSError('injected output store failure')
-            workers.store_frame = fail_store
+            frame_storage.create_transient_frame = fail_store
         return result
 
     def run_with_diagnostics(self):
@@ -497,7 +497,8 @@ def test_exchange_filters_malformed_child_details():
 
 
 @pytest.mark.parametrize('target', [_legacy_source_child, _changed_source_child])
-def test_spawn_revision_mismatch_relays_restart(qapp, scratch, monkeypatch, target):
+@pytest.mark.parametrize('live_preview', [False, True])
+def test_spawn_revision_mismatch_relays_restart(qapp, scratch, monkeypatch, target, live_preview):
     from core import render_process
 
     monkeypatch.setattr(render_process, '_windows_source_run', lambda: True)
@@ -505,6 +506,7 @@ def test_spawn_revision_mismatch_relays_restart(qapp, scratch, monkeypatch, targ
     monkeypatch.setattr(render_process, '_render_child', target)
     monkeypatch.setattr(render_process.trans, 'current_lang', 'en')
     worker = render_process.RenderProcessWorker([], algorithm=None, need_fusion=False)
+    worker.live_preview_requested = live_preview
     results, errors = _start(worker)
     _wait(worker, qapp)
     assert worker.child_pid is not None
@@ -575,7 +577,7 @@ def test_failed_render_preserves_parent_cache_and_cleans_child_scratch(
     fields = _child_evidence(caplog)
     assert fields['error_category'] == category
     assert fields['error_origin'] == 'child_worker'
-    assert fields['render_stage'] in ('prepare', 'align', 'fuse', 'finish')
+    assert fields['render_stage'] in ('prepare', 'align', 'fuse', 'finalize')
     if target is _sharpen_failure_child:
         assert fields['error']['kind'] == 'ResourceLimitError'
         assert any(frame['function'] == 'require_memory' for frame in fields['error']['stack'])
@@ -626,6 +628,64 @@ def test_successful_render_adopts_prepared_cache(qapp, tmp_path, scratch, monkey
     cache.clear()
     gc.collect()
     assert not path.exists()
+
+
+def test_openfocus_b_reuses_prepared_images_after_a_and_c(qapp, tmp_path, monkeypatch):
+    from controllers import render_manager
+    from core import frame_storage, multi_focus_fusion, source_frames
+    from core.workers import RenderWorker
+    from tests.test_control_channel import _destroy_main_window, _new_main_window, wait_until
+
+    # Exercise real snapshots with small files that have the estimated cost
+    # of decoding large photos. Keep the worker in-process for these estimates.
+    MiB = 1024 ** 2
+    estimate = source_frames.frame_resolution_bytes
+
+    def expensive_decode(frame, **kwargs):
+        actual = estimate(frame, **kwargs)
+        return max(160 * MiB, actual) if isinstance(frame, source_frames.SourceFrame) else actual
+
+    monkeypatch.setattr(render_manager, 'RenderProcessWorker', RenderWorker)
+    monkeypatch.setattr(multi_focus_fusion, 'memory_budget_bytes', lambda: 512 * MiB)
+    monkeypatch.setattr(source_frames, 'frame_resolution_bytes', expensive_decode)
+
+    frames = _sources(tmp_path)
+    window = _new_main_window(qapp, tmp_path, monkeypatch, use_gpu=False)
+    try:
+        window.set_alignment_method('none')
+        window.align_cache_enabled = False
+        window.thread_count = 1
+        frame_storage_path = tmp_path / 'scratch'
+        frame_storage_path.mkdir()
+        monkeypatch.setattr(frame_storage, '_storage_directory', str(frame_storage_path))
+        monkeypatch.setattr(frame_storage, 'automatic_preflight_may_block', lambda: False)
+        window.profile_performance = True
+        window.source_manager._start_load_worker(filepaths=[frame.path for frame in frames])
+        assert wait_until(lambda: window.source_manager._load_worker is None, timeout=30)
+        assert len(window.raw_images) == len(frames)
+        manager = window.render_manager
+
+        def render(method):
+            window.set_fusion_method(method)
+            assert manager.start_render(interactive=False, confirmed=True) == 'started'
+            assert manager.worker.wait(40_000)
+            assert wait_until(lambda: manager.worker is None, timeout=40)
+            assert manager.last_state == 'done', manager.last_error
+            return manager.performance_report
+
+        snapshot = 'render/fusion/fuse/snapshot_openfocus_b'
+        first = render('openfocus_b')
+        assert snapshot in first['stages']
+        expected = window.fusion_result.copy()
+        render('openfocus_a')
+        render('openfocus_c')
+        second = render('openfocus_b')
+        assert snapshot not in second['stages']
+        assert 'source_decode' not in second['concurrent']
+        assert not any(name.endswith('/source_decode') for name in second['stages'])
+        np.testing.assert_array_equal(window.fusion_result, expected)
+    finally:
+        _destroy_main_window(qapp, window)
 
 
 def test_spawned_tiled_fusion_publishes_frozen_tooltip_details(qapp, tmp_path, scratch, monkeypatch):
@@ -683,9 +743,48 @@ def test_legacy_tooltip_uses_saved_choice_without_guessing_tiling(monkeypatch):
     assert trans.t('output_fusion_tiled').split('（')[0] not in tooltip
 
 
+@pytest.mark.parametrize('kind', ['fusion', 'aligned'])
+def test_output_tooltip_discloses_registration_accelerator_and_reuse(qapp, monkeypatch, kind):
+    from types import SimpleNamespace
+    from PyQt6.QtWidgets import QLabel, QListWidget
+    from controllers.output_manager import OutputManager, OutputRecord
+    from core.render_context import RegistrationDetails, RegistrationDispatch
+    from locales import trans
+
+    monkeypatch.setattr(trans, 'current_lang', 'en')
+    panel = SimpleNamespace(output_list=QListWidget(), output_label=QLabel(), fusion_results=[])
+    manager = OutputManager(panel)
+    image = np.zeros((8, 9), np.uint8) if kind == 'fusion' else None
+    dispatch = RegistrationDispatch('ecc', 'CPU', 'CPU', 'OpenCL: Test GPU', True)
+    record = OutputRecord.create(image, 'result', kind=kind,
+        registration_details=RegistrationDetails((dispatch,)))
+    if kind == 'fusion':
+        record.tooltip_details = ('Fusion Device: OpenCL: Test GPU',)
+    item = manager._insert_output(image, 'result', record)
+    tooltip = item.toolTip().splitlines()
+    assert 'Registration Device: CPU' in tooltip
+    assert 'ECC Resize Accelerator: OpenCL: Test GPU' in tooltip
+    assert 'ECC Resize: CPU fallback used' in tooltip
+    assert ('Fusion Device: OpenCL: Test GPU' in tooltip) == (kind == 'fusion')
+
+    legacy = OutputRecord.create(image, 'cached', kind=kind,
+        registration_details=RegistrationDetails(reuse='disk_plan'))
+    tooltip = manager._insert_output(image, 'cached', legacy).toolTip().splitlines()
+    assert 'Registration: reused cached transforms (applied on CPU)' in tooltip
+    assert 'Original Registration Device: unavailable' in tooltip
+    assert 'Original Registration Device: CPU' not in tooltip
+
+    replayed = OutputRecord.create(image, 'replayed', kind=kind,
+        registration_details=RegistrationDetails((dispatch,), 'disk_plan', 'OpenCL: Test GPU'))
+    tooltip = manager._insert_output(image, 'replayed', replayed).toolTip().splitlines()
+    assert 'Registration: reused cached transforms (applied on OpenCL: Test GPU)' in tooltip
+    assert 'Original Registration Device: CPU' in tooltip
+
+
 @pytest.mark.parametrize('alignment', ['none', 'openfocus'])
 def test_spawned_render_preserves_uint16_and_lazy_alignment(qapp, tmp_path, scratch, alignment):
     from core.render_process import RenderProcessWorker
+    from core.render_context import RegistrationDetails, RegistrationDispatch
     from core.source_frames import ProcessedFrame, SourceFrame, resolve_frame
     from core.workers import RenderWorker
     frames = _sources(tmp_path)
@@ -715,6 +814,9 @@ def test_spawned_render_preserves_uint16_and_lazy_alignment(qapp, tmp_path, scra
         np.testing.assert_array_equal(resolve_frame(frame), resolve_frame(expected))
     assert registered == (alignment != 'none')
     assert worker.alignment_report == reference.alignment_report
+    expected_dispatch = (None if alignment == 'none' else
+                         RegistrationDetails((RegistrationDispatch('openfocus', 'CPU', 'CPU'),)))
+    assert worker.registration_details == reference.registration_details == expected_dispatch
     assert worker.fusion_details == reference.fusion_details
     assert worker.fusion_details.tile_grid is None
     assert worker.fusion_details.input_size == tuple(processed[0].shape[1::-1])
@@ -1056,7 +1158,7 @@ def test_aligned_and_prepared_caches_share_retention_budget(
         for image in images:
             source_frames.resolve_frame(image)
         worker.prepared_cache = prepared
-        return np.zeros(frames[0].shape, frames[0].dtype), 'CPU'
+        return np.zeros(frames[0].shape, frames[0].dtype), 'CPU', 0.0
 
     monkeypatch.setattr(worker, '_run_fusion', fuse)
     results = []
@@ -1113,9 +1215,12 @@ def test_isolated_render_adopts_readonly_focus_map(qapp, scratch):
     flat = np.full(shape, 128, np.uint8)
     worker = RenderProcessWorker([sharp, flat], algorithm='openfocus_c', use_gpu=False,
         sort_mode='desc', fusion_parameters={'smoothing': 0}, thread_count=1, exposure_match=False)
+    stages = []
+    worker.stage_signal.connect(stages.append)
     results, errors = _start(worker)
     _wait(worker, qapp)
     assert len(results) == 1 and not errors
+    assert stages[-2:] == ['finalize', 'publish']
     retained = worker.rendered_depth
     index = retained['index']
     assert retained['frame_count'] == 2 and retained['reverse_order']

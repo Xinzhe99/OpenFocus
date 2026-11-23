@@ -16,6 +16,7 @@ import tempfile
 import threading
 import time
 from contextlib import contextmanager
+from dataclasses import asdict
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -160,11 +161,36 @@ def _request_hash(request):
     return hashlib.sha256(encoded).hexdigest()[:32]
 
 
+def _registration_dispatch(manifest):
+    from core.render_context import RegistrationDispatch
+
+    data = manifest.get('registration_dispatch')
+    if not isinstance(data, list):
+        return ()  # Old generations did not record the original device.
+    result = []
+    for entry in data:
+        if not isinstance(entry, dict):
+            return ()
+        try:
+            stage = RegistrationDispatch(**entry)
+        except TypeError:
+            return ()
+        values = (stage.method, stage.estimation, stage.warp)
+        if stage.resize_accelerator is not None:
+            values += (stage.resize_accelerator,)
+        if (not all(isinstance(value, str) and value.strip() and len(value) <= 256
+                    for value in values) or type(stage.resize_fallback) is not bool):
+            return ()
+        result.append(stage)
+    return tuple(result)
+
+
 def load_aligned(folder: str, filenames: List[str], align_options: Tuple[str, ...],
                  downscale_width: Optional[int], scale_factor: float = 1.0,
                  frame_shape: Optional[Tuple[int, int]] = None, *, identity=None,
-                 should_cancel=None) -> Optional[List[np.ndarray]]:
-    """Return a fully decoded matching generation, or None on a cache miss."""
+                 should_cancel=None, with_dispatch=False
+                 ) -> Optional[List[np.ndarray] | Tuple[List[np.ndarray], tuple]]:
+    """Read a matching pixel generation, with original dispatch when requested."""
     _check_cancel(should_cancel)
     if not folder or not os.path.isdir(folder):
         return None
@@ -217,7 +243,7 @@ def load_aligned(folder: str, filenames: List[str], align_options: Tuple[str, ..
                 return None
             _check_cancel(should_cancel)
             os.utime(meta_path, None)
-            return frames
+            return (frames, _registration_dispatch(meta)) if with_dispatch else frames
     except (OSError, ValueError, TypeError, KeyError, MemoryError, cv2.error):
         return None
 
@@ -347,7 +373,8 @@ def save_aligned(folder: str, filenames: List[str], aligned_images: List[np.ndar
                  align_options: Tuple[str, ...], downscale_width: Optional[int],
                  scale_factor: float = 1.0,
                  frame_shape: Optional[Tuple[int, int]] = None, *, identity=None,
-                 should_cancel=None, max_cache_bytes=DEFAULT_CACHE_BYTES) -> None:
+                 should_cancel=None, max_cache_bytes=DEFAULT_CACHE_BYTES,
+                 registration_dispatch=()) -> None:
     """Best-effort encoding; only a complete, uncancelled manifest is committed."""
     _check_cancel(should_cancel)
     if (not folder or not os.path.isdir(folder) or not aligned_images
@@ -382,6 +409,8 @@ def save_aligned(folder: str, filenames: List[str], aligned_images: List[np.ndar
                 meta = {'version': CACHE_FORMAT_VERSION, 'signature': sig,
                         'count': len(aligned_images), 'generation': generation,
                         'frames': descriptions, 'encoded_bytes': encoded_bytes}
+                if registration_dispatch:
+                    meta['registration_dispatch'] = [asdict(stage) for stage in registration_dispatch]
                 manifest = os.path.join(staging, 'meta.json')
                 with open(manifest, 'w', encoding='utf-8') as handle:
                     json.dump(meta, handle)
@@ -487,8 +516,9 @@ def _validate_plan_request(plan, identity):
         raise ValueError('Alignment plan parameters differ from the cache request')
 
 
-def load_alignment_plan(folder, filenames, sources, *, identity=None, should_cancel=None):
-    """Load and validate only immutable metadata; never decode N cached frames."""
+def load_alignment_plan(folder, filenames, sources, *, identity=None, should_cancel=None,
+                        with_dispatch=False):
+    """Read a matching transform plan, with original dispatch when requested."""
     from core.openfocus_alignment import AlignmentPlan
     _check_cancel(should_cancel)
     if not folder or not os.path.isdir(folder):
@@ -527,13 +557,13 @@ def load_alignment_plan(folder, filenames, sources, *, identity=None, should_can
                 return None
             _check_cancel(should_cancel)
             os.utime(path, None)
-            return plan
+            return (plan, _registration_dispatch(manifest)) if with_dispatch else plan
     except (OSError, ValueError, TypeError, KeyError, IndexError, OverflowError):
         return None
 
 
 def save_alignment_plan(folder, filenames, plan, sources, *, identity=None, should_cancel=None,
-                        max_cache_bytes=DEFAULT_CACHE_BYTES):
+                        max_cache_bytes=DEFAULT_CACHE_BYTES, registration_dispatch=()):
     """Publish an atomic, checksummed metadata generation after source validation."""
     _check_cancel(should_cancel)
     if not folder or not os.path.isdir(folder) or max_cache_bytes <= 0:
@@ -546,6 +576,8 @@ def save_alignment_plan(folder, filenames, plan, sources, *, identity=None, shou
                     'backend': _plan_backend(identity),
                     'count': len(sources), 'plan': plan.to_dict(),
                     'sha256': hashlib.sha256(_plan_payload(plan)).hexdigest()}
+        if registration_dispatch:
+            manifest['registration_dispatch'] = [asdict(stage) for stage in registration_dispatch]
         root = cache_dir()
         plans = os.path.join(root, 'plans')
         directory = os.path.join(plans, signature)

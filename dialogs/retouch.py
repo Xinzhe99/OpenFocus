@@ -1117,7 +1117,6 @@ class RetouchDialog(QDialog):
         self._applying = False
         self._allow_close = False
         self._closing = False
-        self._confirming_close = False
         self._confirm_box = None
         self._confirm_apply_button = None
         self._syncing_frames = False
@@ -2149,7 +2148,7 @@ class RetouchDialog(QDialog):
 
     # ------------------------------------------------------------- strokes
     def begin_stroke(self, x: float, y: float) -> bool:
-        if (self._applying or self._confirming_close or self.preview_mode is not None
+        if (self._applying or self._confirm_box is not None or self.preview_mode is not None
                 or (self.doc.tool == 'source' and not self._has_current_source())
                 or self.doc.stroke_active or self._edit_dialog is not None
                 or self._checkpoint_dialog is not None):
@@ -2758,11 +2757,7 @@ class RetouchDialog(QDialog):
         self._update_controls()
         return False
 
-    def _confirm_close(self) -> bool:
-        if self.doc.stroke_active:
-            self.end_stroke()
-        if not self.doc.is_dirty:
-            return True
+    def _ask_to_close(self) -> None:
         box = QMessageBox(self)
         from utils.ui_utils import style_message_box
         style_message_box(box)
@@ -2786,16 +2781,23 @@ class RetouchDialog(QDialog):
         if self._source_loading:
             apply_btn.setToolTip(trans.t('msg_loading_stack'))
         box.setDefaultButton(continue_btn)
-        try:
-            box.exec()
+        def confirmed(_result):
             clicked = box.clickedButton()
-            if clicked is apply_btn:
-                return self._apply(close_on_success=False)
-            return clicked is discard_btn
-        finally:
             self._confirm_apply_button = None
             self._confirm_box = None
             box.deleteLater()
+            if self._closing:
+                return
+            if clicked is discard_btn or (
+                    clicked is apply_btn and self._apply(close_on_success=False)):
+                self._allow_close = True
+                self.close()
+
+        # Closing is also a control command. Return to the event loop so the
+        # same connection can discover and answer the modal confirmation.
+        box.finished.connect(confirmed)
+        box.setWindowModality(Qt.WindowModality.ApplicationModal)
+        box.show()
 
 
     def reject(self) -> None:
@@ -2810,22 +2812,22 @@ class RetouchDialog(QDialog):
             self._checkpoint_dialog.reject()
             event.ignore()
             return
-        if self._applying or self._confirming_close:
+        if self._applying or (self._confirm_box is not None and not self._allow_close):
             event.ignore()
             return
         if self._closing:
             event.accept()
             return
-        self._confirming_close = True
-        try:
-            confirmed = self._applied or self._allow_close or self._confirm_close()
-        finally:
-            self._confirming_close = False
-        if not confirmed:
-            event.ignore()
-            return
-        self._allow_close = True
+        if not (self._applied or self._allow_close):
+            if self.doc.stroke_active:
+                self.end_stroke()
+            if self.doc.is_dirty:
+                event.ignore()
+                self._ask_to_close()
+                return
         self._closing = True
+        if self._confirm_box is not None:
+            self._confirm_box.reject()
         self._save_geometry()
         self._shutdown_sharpness()
         self.deleteLater()
@@ -2863,7 +2865,7 @@ class RetouchDialog(QDialog):
         ctrl = bool(mods & (Qt.KeyboardModifier.ControlModifier
                             | Qt.KeyboardModifier.MetaModifier))
         shift = bool(mods & Qt.KeyboardModifier.ShiftModifier)
-        if self._confirming_close or self._applying:
+        if self._confirm_box is not None or self._applying:
             return True
         if event.isAutoRepeat() and key in (Qt.Key.Key_Tab, Qt.Key.Key_Alt, Qt.Key.Key_Space):
             return key in self._held_keys
@@ -2970,7 +2972,7 @@ class RetouchDialog(QDialog):
         if self._edit_dialog is not None or self._checkpoint_dialog is not None:
             return super().eventFilter(obj, event)
         if event.type() in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease):
-            if self._confirming_close or self._applying:
+            if self._confirm_box is not None or self._applying:
                 return True
             if event.type() == QEvent.Type.KeyRelease:
                 # Releasing a temporarily held key is cleanup, not editing:
@@ -2983,7 +2985,7 @@ class RetouchDialog(QDialog):
         return super().eventFilter(obj, event)
 
     def keyPressEvent(self, event) -> None:
-        if self._confirming_close or self._applying:
+        if self._confirm_box is not None or self._applying:
             event.accept()
             return
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and not (

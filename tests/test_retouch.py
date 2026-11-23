@@ -493,22 +493,25 @@ def test_closed_parented_dialog_releases_document_without_deleting_worker(qapp, 
     monkeypatch.setattr(_SharpnessWorker, "run", run_until_released)
     parent = QWidget()
     image = np.full((96, 120, 3), 100, np.uint8)
-    record = OutputRecord.create(image, "result", context=_context([image], image))
+    source = np.full_like(image, 180)
+    record = OutputRecord.create(image, "result", context=_context([source], image))
     dialog = RetouchDialog(parent, record=record, apply_callback=lambda *_: (True, ""))
     document = weakref.ref(dialog.doc)
     working = weakref.ref(dialog.doc.working)
     base = weakref.ref(dialog.doc.base)
     dialog.show()
-    qapp.processEvents()
+    _wait_for_source(qapp, dialog)
+    assert dialog.begin_stroke(60, 48)
+    dialog.end_stroke()
     dialog._start_sharpness_worker()
     worker = dialog._sharpness_worker
     try:
         assert entered.wait(2)
-        dialog._confirm_close = lambda: False
-        dialog.close()
+        assert not dialog.close()
+        dialog._confirm_box.reject()
         QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
         assert not sip.isdeleted(dialog) and worker.isRunning()
-        del dialog._confirm_close
+        dialog._allow_close = True
         dialog.close()
         QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
         assert sip.isdeleted(dialog)

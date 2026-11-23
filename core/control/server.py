@@ -163,9 +163,11 @@ def _render_state(window):
     manager = getattr(window, "render_manager", None)
     worker = getattr(manager, "worker", None)
     worker_running = worker is not None and worker.isRunning()
-    busy = bool(worker_running or getattr(manager, '_pending_storage', None) is not None)
+    publishing = getattr(manager, 'context_worker', None) is not None
     error = getattr(manager, "last_error", None)
     last_state = getattr(manager, "last_state", None)
+    active_render = worker_running or publishing or (worker is not None and last_state == 'running')
+    busy = bool(active_render or getattr(manager, '_pending_storage', None) is not None)
     if busy or last_state == "running":
         state = "rendering"
     elif last_state in ("done", "cancelled", "discarded", "error"):
@@ -184,7 +186,7 @@ def _render_state(window):
         "state": state,
         "busy": busy,
         "stage": (getattr(manager, "_render_progress_stage", None)
-                  if worker_running else None),
+                  if active_render else None),
         "progress": ({"done": int(progress[0]), "total": int(progress[1])}
                      if progress else None),
         "method": (getattr(manager, "_render_context", None) or {}).get("algorithm")
@@ -397,8 +399,9 @@ class ControlServer(QObject):
             renderer.start_render = self._original_start_render
 
     def _tracked_start_load(self, *args, **kwargs):
-        if getattr(self.window.source_manager, "_load_worker", None) is not None:
-            # A refused GUI request leaves the active generation in place.
+        manager = self.window.source_manager
+        if getattr(manager, "_load_worker", None) is not None or manager._render_blocks_load():
+            # A refused GUI request leaves the current load generation in place.
             return self._original_start_load(*args, **kwargs)
         load_id = self._begin_load()
         kwargs["on_finished"] = lambda error: self._finish_load(load_id, error)
@@ -801,6 +804,9 @@ class ControlServer(QObject):
         if getattr(manager, "_load_worker", None) is not None:
             raise ControlError("busy", "A stack is already loading",
                                "Poll stack.frames, then retry.")
+        if manager._render_blocks_load():
+            raise ControlError("busy", "A render is still running",
+                               "Wait for render.state to finish, or cancel the render.")
         load_id = None
         if folder:
             load_id = manager._start_load_worker(
@@ -1115,6 +1121,10 @@ class ControlServer(QObject):
         cancel = getattr(self.window.render_manager, 'cancel_storage_preflight', None)
         if callable(cancel) and cancel():
             return {"cancelling": True, "render_id": self._render_id}
+        context_worker = getattr(self.window.render_manager, 'context_worker', None)
+        if context_worker is not None:
+            context_worker.cancel()
+            return {"cancelling": True, "render_id": self._render_id}
         worker = getattr(self.window.render_manager, "worker", None)
         if worker is None:
             return {"cancelling": False}
@@ -1291,6 +1301,9 @@ class ControlServer(QObject):
         if getattr(window.source_manager, "_load_worker", None) is not None:
             raise ControlError("busy", "A stack is already loading",
                                "Poll stack.frames, then retry.")
+        if window.source_manager._render_blocks_load():
+            raise ControlError("busy", "A render is still running",
+                               "Wait for render.state to finish, or cancel the render.")
 
         def loaded():
             window.project_path = path
@@ -1499,8 +1512,7 @@ class ControlServer(QObject):
 
     def _cmd_dialog_close(self, args):
         dialog = self._find_dialog(args)
-        dialog.close()
-        return {"closed": True}
+        return {"closed": dialog.close()}
 
     def _cmd_dialog_accept(self, args):
         from PyQt6.QtWidgets import QDialogButtonBox, QPushButton
@@ -1554,8 +1566,9 @@ class ControlServer(QObject):
         if not hasattr(dialog, "reject"):
             raise ControlError("unsupported",
                                f"{type(dialog).__name__} has no reject()")
+        title = dialog.windowTitle()
         dialog.reject()
-        return {"rejected": True, "title": dialog.windowTitle()}
+        return {"rejected": sip.isdeleted(dialog) or not dialog.isVisible(), "title": title}
 
     def _cmd_dialog_color(self, args):
         value = _string(args, "color")

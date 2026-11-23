@@ -638,6 +638,79 @@ def test_neural_source_staging_propagates_write_failure(tmp_path, monkeypatch):
         source_frames.materialize_for_repeated_access(descriptors)
 
 
+def test_openfocus_b_reuses_disk_preparation_without_redecoding_or_warping(tmp_path, monkeypatch):
+    from core import frame_resolution_cache as cache
+    from core.frame_transport import FrameDecoder, FrameEncoder
+
+    arrays, descriptors = _sources(tmp_path, mixed=False)
+    monkeypatch.setattr(source_frames, 'SOURCE_CACHE', source_frames.FrameCache(0))
+    decodes, warps, preparations, cache_writes = [], [], [], []
+    decode = image_loader.decode_image
+    put = cache.ResolutionCache.put
+
+    def tracked_decode(path, **kwargs):
+        decodes.append(path)
+        return decode(path, **kwargs)
+
+    def tracked_put(self, frame, image, **kwargs):
+        kind = cache.entry_kind(frame)
+        if kind in ('source', 'processed'):
+            cache_writes.append(kind)
+        return put(self, frame, image, **kwargs)
+
+    def flip(image):
+        warps.append(1)
+        return cv2.flip(image, 1)
+
+    def progress(done, total):
+        pass
+
+    progress.preparation = lambda done, total: preparations.append((done, total))
+    monkeypatch.setattr(image_loader, 'decode_image', tracked_decode)
+    monkeypatch.setattr(cache.ResolutionCache, 'put', tracked_put)
+    frames = [source_frames.process_frame(frame, flip) for frame in descriptors]
+
+    def fusion():
+        instance = MultiFocusFusion('openfocus_b', use_gpu=False, exposure_match=True,
+                                    base_frame='none', tile_enabled=True, tile_threshold=24,
+                                    tile_block_size=32, tile_overlap=8)
+        instance.retain_preparation = True
+        return instance
+
+    cold = fusion()
+    with cache.render_scope(frames):
+        first = cold.fuse(frames, thread_count=1, progress_callback=progress)
+    # The reference is measured and retained once, then borrowed by staging.
+    assert sorted(decodes) == sorted(frame.path for frame in descriptors)
+    assert len(warps) == len(frames)
+    assert cache_writes == ['source', 'processed']
+    assert preparations == [(i, len(frames)) for i in range(len(frames) + 1)]
+    expected = fusion().fuse([cv2.flip(image, 1) for image in arrays], thread_count=1)
+    np.testing.assert_array_equal(first, expected)
+
+    encoder = FrameEncoder()
+    warm = fusion()
+    warm.prepared_cache = FrameDecoder().decode(encoder.encode(cold.prepared_cache))
+    for recorded in (decodes, warps, cache_writes, preparations):
+        recorded.clear()
+    with cache.render_scope(frames):
+        result = warm.fuse(frames, thread_count=1, progress_callback=progress)
+    np.testing.assert_array_equal(result, first)
+    assert decodes == warps == cache_writes == preparations == []
+
+    # Replacing a file while preserving its size and mtime still invalidates
+    # the stronger identity recorded alongside the retained pixels.
+    source = descriptors[0]
+    from pathlib import Path
+    replacement = tmp_path / 'replacement.png'
+    replacement.write_bytes(Path(source.path).read_bytes())
+    stamp = source.fingerprint[1]
+    os.utime(replacement, ns=(stamp, stamp))
+    os.replace(replacement, source.path)
+    with pytest.raises(OSError, match='Source changed since it was prepared'):
+        warm.fuse(frames, thread_count=1)
+
+
 def _classic_directory(tmp_path):
     import tifffile
 

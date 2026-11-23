@@ -197,8 +197,8 @@ def _stage_direct_rgb_chunk(source, y, chunk_xs, block, source_h, source_w,
                             all_rows, all_cols, kernels, io_workers, should_cancel,
                             *, worker_buffers=None):
     """Stage one horizontal chunk of direct RGB TIFF tiles into a batch of luma planes."""
-    from concurrent.futures import ThreadPoolExecutor
     from core.source_frames import read_rgb_tiff_rows
+    from fusion_methods.neural_runtime import run_neural_tasks
 
     count = len(source.items)
     k_count = len(chunk_xs)
@@ -282,12 +282,7 @@ def _stage_direct_rgb_chunk(source, y, chunk_xs, block, source_h, source_w,
                         adjusted = apply_exposure_gain(bgr_u8, gain)
                         common.write_luma_plane(adjusted, dst)
 
-    if io_workers > 1:
-        with ThreadPoolExecutor(max_workers=io_workers) as executor:
-            for _ in executor.map(_stage_worker, range(io_workers)):
-                pass
-    else:
-        _stage_worker(0)
+    run_neural_tasks(io_workers, range(io_workers), _stage_worker)
     common.cancel(should_cancel)
     return chunk_planes
 

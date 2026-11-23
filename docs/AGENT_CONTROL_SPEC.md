@@ -260,9 +260,9 @@ blank path is invalid.
 |---|---|---|
 | `dialog.open` | `name`, plus name-specific arguments | `{opened, title}` |
 | `dialog.list` | — | every visible top-level window: `index`, `root`, `title`, `class`, `visible`, `modal`, `popup`, `managed`, `active`, `busy` |
-| `dialog.close` | `index?`, `title?`, `root?` | `{closed:true}` |
+| `dialog.close` | `index?`, `title?`, `root?` | `{closed}` |
 | `dialog.accept` | `index?`, `title?` | `{accepted:true}`; applies pending edits and clicks the dialog's own OK/Apply action instead of raw `accept()` — refuses when busy or the commit action is disabled |
-| `dialog.reject` | `index?`, `title?` | `{rejected:true}` |
+| `dialog.reject` | `index?`, `title?`, `root?` | `{rejected, title}` |
 | `dialog.file` | `path`, `index?`, `title?`, `cancel?` | answers a `QFileDialog` by path (or cancels it) |
 | `dialog.color` | `color`, `index?` | answers a `QColorDialog` with `#rrggbb` |
 
@@ -291,6 +291,10 @@ Managed dialogs and `dialog.open` are modeless so commands continue to flow.
 Dialogs opened by a menu action with `exec()` are reachable in the same way:
 `ui.trigger` returns, then `dialog.list`, `ui.find`, `ui.click` and
 `dialog.accept` operate their widgets from inside the nested Qt loop.
+
+Closing or rejecting a dirty Retouch dialog returns `closed: false` or
+`rejected: false` while its confirmation is open. Discover the confirmation
+with `dialog.list` and click Apply, Discard Changes, or Continue Editing.
 
 Dialog controls carry `controlId` values such as `method_combo`,
 `compute_btn`, `btn_save_3d`, `btn_run`, `btn_adopt_output`, `btn_start`,

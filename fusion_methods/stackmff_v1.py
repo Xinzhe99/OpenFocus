@@ -42,18 +42,41 @@ def _fuse_tile(frames, model_path, use_gpu, should_cancel=None,
         model, device, plan = model_path, tile_plan.device_kind, tile_plan
     # The backbone pads internally. Keep the original dimensions here so the
     # second inference scale matches the released benchmark preprocessing.
-    planes = common.stage_planes(frames, 1, should_cancel)
+    threads = max(1, min(8, int(plan.native_threads or 1)))
+    planes = common.stage_planes(frames, 1, should_cancel, threads=threads)
     from fusion_methods import neural_runtime
     probs = neural_runtime.probabilities(planes, model, device, plan.native_threads,
                                          INFER_SIGMA, should_cancel)
-    # The staged planes belong to this tile and inference has finished reading them.
-    np.multiply(probs, planes, out=planes)
-    del probs
-    luma = planes.sum(axis=1)[0]
-    del planes
-    np.clip(luma, 0, 1, out=luma)
-    luma *= 255.0
-    fused = common.tensor_to_bgr(luma, frames, should_cancel)
+    common.cancel(should_cancel)
+    kernels = common.load_stackmff_kernels()
+    luma = None
+    if (kernels is not None and probs.ndim == 4 and probs.shape[0] == 1
+            and probs.dtype == np.float32 and planes.dtype == np.float32
+            and probs.flags.c_contiguous and planes.flags.c_contiguous):
+        h, w = probs.shape[2], probs.shape[3]
+        candidate = np.empty((h, w), dtype=np.float32)
+        try:
+            parts = min(threads, h) if (threads > 1 and probs.size >= 262144 and h >= 2) else 1
+            step = (h + parts - 1) // parts
+            ranges = [(y0, min(h, y0 + step)) for y0 in range(0, h, step)]
+            neural_runtime.run_neural_tasks(
+                parts, ranges,
+                lambda rng: kernels.v1_weighted_luma_rows(probs, planes, candidate, rng[0], rng[1]),
+            )
+            luma = candidate
+        except common.StackMFFKernelUnavailable:
+            del candidate
+    if luma is not None:
+        del probs, planes
+    else:
+        # The staged planes belong to this tile and inference has finished reading them.
+        np.multiply(probs, planes, out=planes)
+        del probs
+        luma = planes.sum(axis=1)[0]
+        del planes
+        np.clip(luma, 0, 1, out=luma)
+        luma *= 255.0
+    fused = common.tensor_to_bgr(luma, frames, should_cancel, threads=threads)
     if out_dtype is np.uint8:
         np.clip(np.round(fused), 0, 255, out=fused)
         return fused.astype(np.uint8)

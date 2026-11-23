@@ -27,6 +27,8 @@ from contextlib import contextmanager, nullcontext
 from dataclasses import asdict, dataclass
 import hashlib
 import json
+import math
+import mmap
 import threading
 import time
 import cv2
@@ -80,6 +82,7 @@ alignment_report = ContextVar('alignment_report', default=None)
 # lock; the owner budget is local to the source-producing context.
 _warp_threads_lock = threading.Lock()
 _deferred_warp_threads = ContextVar('deferred_warp_threads', default=None)
+_deferred_ecc_gpu = ContextVar('deferred_ecc_gpu', default=None)
 
 
 @contextmanager
@@ -89,6 +92,23 @@ def deferred_warp_threads(threads):
         yield
     finally:
         _deferred_warp_threads.reset(token)
+
+
+@contextmanager
+def deferred_ecc_warp_accelerator(enabled):
+    """Share one admitted OpenCL workspace across a prepared stack."""
+    if not enabled:
+        yield None
+        return
+    from core._perspective_gpu import ExactPerspectiveGpu
+
+    backend = ExactPerspectiveGpu()
+    token = _deferred_ecc_gpu.set(backend)
+    try:
+        yield backend
+    finally:
+        _deferred_ecc_gpu.reset(token)
+        backend.close()
 
 
 def exchange_opencv_threads(threads):
@@ -298,7 +318,7 @@ def _compute_valid_region_from_transforms(H_matrices, img_shape, margin=2):
 # ========== 单应性对齐算法实现（非线性） ==========
 
 
-def _align_homography_impl(input_source, output_path=None, img_filenames=None, downscale_width=1600, thread_count: int = 4, should_cancel=None, failure_policy='continue', *, defer_warps=False, plan_callback=None):
+def _align_homography_impl(input_source, output_path=None, img_filenames=None, downscale_width=1600, thread_count: int = 4, should_cancel=None, failure_policy='continue', *, defer_warps=False, plan_callback=None, dispatch_callback=None):
     """
     商业级图像对齐算法优化版
     特性：
@@ -477,6 +497,8 @@ def _align_homography_impl(input_source, output_path=None, img_filenames=None, d
         max_workers, should_cancel, defer_warps, method='homography', sources=source_identities,
         bounds=(top, bottom, left, right), plan_callback=plan_callback)
     _save_registration(aligned_images, output_path, img_filenames, should_cancel)
+    if dispatch_callback is not None:
+        dispatch_callback('homography', estimation='CPU', warp='CPU')
 
     return aligned_images
 
@@ -494,10 +516,66 @@ def _perspective_source(frame, image, should_cancel):
                                     _pixel_digest, _source_context)
     path, page, stamp = _source_file_identity(frame)
     source = SourceFingerprint(tuple(image.shape), image.dtype.str,
-                              _pixel_digest(image, should_cancel), path, page,
+                              _pixel_digest(image, should_cancel, source=frame), path, page,
                               stamp, _source_context(frame))
     source.validate_file()
     return source
+
+
+def _merge_cancel_callbacks(primary, secondary):
+    if primary is None:
+        return secondary
+    if secondary is None or secondary is primary:
+        return primary
+    return lambda: bool(primary() or secondary())
+
+
+def _perspective_near_lanczos_boundary(inverse, x, y, width, height, sx0, sy0,
+                                       min_denom, should_cancel):
+    from core import _alignment_kernels
+
+    x1, y1 = x + width, y + height
+    magnitude = np.abs(inverse) @ (x1 - 1, y1 - 1, 1)
+    # Bound both evaluations of the rational coordinates, including matrix
+    # rebasing and OpenCV's block/FMA evaluation order. The sums of absolute
+    # terms also cover cancellation in the numerator or denominator.
+    eps = 64 * np.finfo(np.float64).eps
+    denom = min_denom - eps * magnitude[2]
+    if denom <= 0:
+        return True
+    numerator = max(magnitude[0] + sx0 * magnitude[2],
+                    magnitude[1] + sy0 * magnitude[2])
+    bins = float(cv2.INTER_TAB_SIZE)
+    tolerance = bins * eps * numerator / denom * (1 + magnitude[2] / denom)
+    if not math.isfinite(tolerance) or tolerance >= 0.25:
+        return True
+
+    if (inverse[2, 0] == inverse[2, 1] == inverse[0, 1] == inverse[1, 0] == 0
+            and inverse[0, 0] == inverse[1, 1] == inverse[2, 2]):
+        # Integer destination steps leave a translation's fraction unchanged.
+        x, y, x1, y1 = 0, 0, 1, 1
+    elif _alignment_kernels.available():
+        for start in range(y, y1, 128):
+            _check_cancel(should_cancel)
+            if _alignment_kernels.perspective_has_rounding_edge(
+                    inverse, x, x1, start, min(start + 128, y1), bins, tolerance):
+                return True
+        return False
+
+    # Optional-Numba fallback needs only row-sized workspaces.
+    from core.resource_policy import require_memory
+    require_memory(6 * (x1 - x) * np.dtype(np.float64).itemsize)
+    xs = np.arange(x, x1, dtype=np.float64)
+    ax, ay, aw = inverse[:, 0, None] * xs
+    for row in range(y, y1):
+        _check_cancel(should_cancel)
+        shift = inverse[:, 1] * row + inverse[:, 2]
+        scale = bins / (aw + shift[2])
+        for values, offset in ((ax, shift[0]), (ay, shift[1])):
+            coords = (values + offset) * scale
+            if np.any(np.abs(coords - np.floor(coords) - 0.5) <= tolerance):
+                return True
+    return False
 
 
 @dataclass(frozen=True)
@@ -507,23 +585,42 @@ class PerspectiveWarp:
     matrix_dtype: str
     dsize: tuple
     should_cancel: object = None
+    method: str = ''
 
-    def __call__(self, image):
-        self.source.validate_pixels(image, self.should_cancel)
+    def _is_integer_crop(self, src_shape, src_dtype):
+        a, b, tx, c, d, ty, p, q, r = self.matrix
+        width, height = self.dsize
+        return (
+            a == d == r == 1 and b == c == p == q == 0
+            and src_dtype in (np.uint8, np.uint16)
+            and (len(src_shape) == 2 or (len(src_shape) == 3 and 1 <= src_shape[2] <= 4))
+            and max(src_shape[0], src_shape[1], width, height) < 32767
+            and 0 <= -tx <= src_shape[1] - width
+            and 0 <= -ty <= src_shape[0] - height
+            and int(tx) == tx and int(ty) == ty
+        )
+
+    def _run_cv_warp(self, src, M, dsize, flags, threads):
+        if threads <= 1:
+            return cv2.warpPerspective(src, M, dsize, flags=flags, borderMode=cv2.BORDER_CONSTANT)
+        with _warp_threads_lock:
+            previous = cv2.getNumThreads()
+            cv2.setNumThreads(threads)
+            try:
+                return cv2.warpPerspective(src, M, dsize, flags=flags, borderMode=cv2.BORDER_CONSTANT)
+            finally:
+                cv2.setNumThreads(0 if previous == 1 else previous)
+
+    def _apply_to_image(self, image, *, should_cancel=None):
         # At an integer sampling location Lanczos returns the source code
         # exactly for integer pixels. Keep the allocating/native path for
         # floats, where zero-weight taps can propagate NaNs or affect -0.
         from core import _alignment_kernels as _native_kernels
         from core.openfocus_alignment import _is_bgr_rev, _run_row_bands
-        a, b, tx, c, d, ty, p, q, r = self.matrix
+        cancel_fn = self.should_cancel if should_cancel is None else should_cancel
         width, height = self.dsize
-        if (a == d == r == 1 and b == c == p == q == 0
-                and image.dtype in (np.uint8, np.uint16)
-                and (image.ndim == 2 or (image.ndim == 3 and 1 <= image.shape[2] <= 4))
-                and max(image.shape[0], image.shape[1], width, height) < 32767
-                and 0 <= -tx <= image.shape[1] - width
-                and 0 <= -ty <= image.shape[0] - height
-                and int(tx) == tx and int(ty) == ty):
+        if self._is_integer_crop(image.shape, image.dtype):
+            _, _, tx, _, _, ty, _, _, _ = self.matrix
             left, top = -int(tx), -int(ty)
             crop = image[top:top + height, left:left + width]
             if crop.shape[2:] == (1,):
@@ -534,36 +631,212 @@ class PerspectiveWarp:
                 swap_fn = (_native_kernels.swap_rgb_to_bgr_rows_u8 if image.dtype == np.uint8
                            else _native_kernels.swap_rgb_to_bgr_rows_u16)
                 _run_row_bands(
-                    height, 128, self.should_cancel, swap_fn, crop[..., ::-1], out,
+                    height, 128, cancel_fn, swap_fn, crop[..., ::-1], out,
                     parallel_pixels=height * width, workers=_warp_thread_budget(),
                 )
                 return out
             # A resolved warp owns its pixels even without a render cache.
             return crop.copy(order='C')
         matrix = np.asarray(self.matrix, dtype=self.matrix_dtype).reshape(3, 3)
+        backend = _deferred_ecc_gpu.get() if self.method == 'ecc' else None
+        if backend is not None:
+            result = backend.warp(image, matrix, self.dsize, cancel_fn)
+            if result is not None:
+                return result
+            backend.note_cpu_warp()
         bgr_rev = _is_bgr_rev(image) and _native_kernels.available()
         src = image[..., ::-1] if bgr_rev else image
         threads = _warp_thread_budget()
-        if threads <= 1:
-            warped = cv2.warpPerspective(src, matrix, self.dsize,
-                flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT)
-        else:
-            with _warp_threads_lock:
-                previous = cv2.getNumThreads()
-                cv2.setNumThreads(threads)
-                try:
-                    warped = cv2.warpPerspective(src, matrix, self.dsize,
-                        flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT)
-                finally:
-                    cv2.setNumThreads(0 if previous == 1 else previous)
+        warped = self._run_cv_warp(src, matrix, self.dsize, cv2.INTER_LANCZOS4, threads)
         if bgr_rev:
             swap_fn = (_native_kernels.swap_bgr_inplace_rows_u8 if warped.dtype == np.uint8
                        else _native_kernels.swap_bgr_inplace_rows_u16)
             _run_row_bands(
-                warped.shape[0], 128, self.should_cancel, swap_fn, warped,
+                warped.shape[0], 128, cancel_fn, swap_fn, warped,
                 parallel_pixels=warped.shape[0] * warped.shape[1], workers=threads,
             )
         return warped
+
+    def __call__(self, image):
+        self.source.validate_pixels(image, self.should_cancel)
+        return self._apply_to_image(image)
+
+    def call_with_source(self, source_frame, image, *, should_cancel=None):
+        """Apply warp passing original descriptor so direct-RGB TIFF hash reuses render scope."""
+        cancel_fn = _merge_cancel_callbacks(self.should_cancel, should_cancel)
+        self.source.validate_pixels(image, cancel_fn, source=source_frame)
+        return self._apply_to_image(image, should_cancel=cancel_fn)
+
+    def _full_warp_crop(self, image, x, y, width, height, channels, should_cancel):
+        from core import _alignment_kernels
+        from core.openfocus_alignment import _is_bgr_rev
+        from core.resource_policy import require_memory
+
+        src_channels = image.shape[2] if image.ndim == 3 else 1
+        packed = (0 if image.flags.c_contiguous or
+                  (_is_bgr_rev(image) and _alignment_kernels.available()) else image.nbytes)
+        full_bytes = math.prod(self.dsize) * src_channels * image.dtype.itemsize
+        crop_bytes = width * height * (channels or src_channels) * image.dtype.itemsize
+        require_memory(full_bytes + max(packed, crop_bytes))
+        _check_cancel(should_cancel)
+        full = self._apply_to_image(image, should_cancel=should_cancel)
+        _check_cancel(should_cancel)
+        if full.shape[:2] == (height, width) and (channels is None or full.ndim == 2):
+            return full
+        cropped = full[y:y + height, x:x + width]
+        if channels is not None and cropped.ndim == 3:
+            cropped = cropped[:, :, :channels]
+        return cropped.copy(order='C')
+
+    def warp_region(self, source_or_image, x, y, width, height, *,
+                    channels=None, should_cancel=None):
+        """Compute one destination rectangle bit-identical to full warp[y:y+h, x:x+w]."""
+        from core import _alignment_kernels as _native_kernels
+        from core.openfocus_alignment import _is_bgr_rev, _run_row_bands, _validate_direct_rgb_source
+        from core.resource_policy import require_memory
+        from core.source_frames import _read_direct_rgb_tiff_region, is_direct_rgb_tiff, resolve_frame
+
+        cancel_fn = _merge_cancel_callbacks(self.should_cancel, should_cancel)
+        _check_cancel(cancel_fn)
+        dsize_w, dsize_h = self.dsize
+        if x < 0 or y < 0 or width < 0 or height < 0 or x + width > dsize_w or y + height > dsize_h:
+            raise ValueError('Requested region does not fit the frame')
+
+        direct_tiff = is_direct_rgb_tiff(source_or_image)
+        image = None
+        if direct_tiff:
+            _validate_direct_rgb_source(self.source, source_or_image, cancel_fn)
+        elif isinstance(source_or_image, np.ndarray):
+            image = source_or_image
+            self.source.validate_pixels(image, cancel_fn)
+        else:
+            image = resolve_frame(source_or_image, should_cancel=cancel_fn)
+            self.source.validate_pixels(image, cancel_fn)
+
+        src_shape = tuple(source_or_image.shape)
+        src_dtype = np.dtype(source_or_image.dtype)
+        drop_singleton = len(src_shape) == 3 and src_shape[2] == 1
+        out_ch = None if (len(src_shape) == 2 or drop_singleton) else (
+            channels if channels is not None else src_shape[2])
+        out_shape = (height, width) if out_ch is None else (height, width, out_ch)
+        if width == 0 or height == 0:
+            return np.empty(out_shape, dtype=src_dtype)
+
+        if self._is_integer_crop(src_shape, src_dtype):
+            _, _, tx, _, _, ty, _, _, _ = self.matrix
+            left, top = -int(tx) + x, -int(ty) + y
+            if direct_tiff:
+                result = _read_direct_rgb_tiff_region(
+                    source_or_image, left, top, width, height,
+                    channels=channels if not drop_singleton else None,
+                    should_cancel=cancel_fn,
+                )
+                return result
+            require_memory(math.prod(out_shape) * src_dtype.itemsize)
+            crop = image[top:top + height, left:left + width]
+            if crop.shape[2:] == (1,):
+                crop = crop[:, :, 0]
+            if channels is not None and crop.ndim == 3:
+                crop = crop[:, :, :channels]
+            if (crop.ndim == 3 and crop.shape[2] == 3
+                    and _is_bgr_rev(image) and _native_kernels.available()):
+                out = np.empty(crop.shape, dtype=src_dtype)
+                swap_fn = (_native_kernels.swap_rgb_to_bgr_rows_u8 if src_dtype == np.uint8
+                           else _native_kernels.swap_rgb_to_bgr_rows_u16)
+                _run_row_bands(
+                    height, 128, cancel_fn, swap_fn, crop[..., ::-1], out,
+                    parallel_pixels=height * width, workers=_warp_thread_budget(),
+                )
+                return out
+            return crop.copy(order='C')
+
+        M64 = np.asarray(self.matrix, dtype=self.matrix_dtype).astype(np.float64).reshape(3, 3)
+        ok, M_inv = cv2.invert(M64)
+        corners = np.array([
+            [float(x), float(y), 1.0],
+            [float(x + width - 1), float(y), 1.0],
+            [float(x + width - 1), float(y + height - 1), 1.0],
+            [float(x), float(y + height - 1), 1.0],
+        ], dtype=np.float64).T
+        sc = (M_inv @ corners) if ok else None
+        unsafe = (not ok or not np.all(np.isfinite(sc)) or np.any(sc[2] <= 1e-6)
+                  or max(src_shape[:2]) >= 32767)
+        if not unsafe:
+            sx = sc[0] / sc[2]
+            sy = sc[1] / sc[2]
+            # The full OpenCV map saturates to signed 16-bit coordinates.
+            unsafe = max(np.max(np.abs(sx)), np.max(np.abs(sy))) >= 32760
+        if unsafe:
+            if direct_tiff:
+                image = resolve_frame(source_or_image, should_cancel=cancel_fn)
+            return self._full_warp_crop(image, x, y, width, height, channels, cancel_fn)
+
+        halo = 8
+        sx0 = max(0, int(math.floor(float(np.min(sx)))) - halo)
+        sy0 = max(0, int(math.floor(float(np.min(sy)))) - halo)
+        sx1 = min(src_shape[1], int(math.ceil(float(np.max(sx)))) + halo + 1)
+        sy1 = min(src_shape[0], int(math.ceil(float(np.max(sy)))) + halo + 1)
+        if sx0 >= sx1 or sy0 >= sy1:
+            require_memory(math.prod(out_shape) * src_dtype.itemsize)
+            return np.zeros(out_shape, dtype=src_dtype)
+
+        if _perspective_near_lanczos_boundary(
+                M_inv, x, y, width, height, sx0, sy0, float(np.min(sc[2])), cancel_fn):
+            if direct_tiff:
+                image = resolve_frame(source_or_image, should_cancel=cancel_fn)
+            return self._full_warp_crop(image, x, y, width, height, channels, cancel_fn)
+
+        T_shift = np.array([[1.0, 0.0, float(x)], [0.0, 1.0, float(y)], [0.0, 0.0, 1.0]], dtype=np.float64)
+        T_src = np.array([[1.0, 0.0, float(-sx0)], [0.0, 1.0, float(-sy0)], [0.0, 0.0, 1.0]], dtype=np.float64)
+        M_sub_inv = T_src @ (M_inv @ T_shift)
+
+        threads = _warp_thread_budget()
+        flags = cv2.INTER_LANCZOS4 | cv2.WARP_INVERSE_MAP
+        if direct_tiff:
+            have_native = _native_kernels.available()
+            src_ch = src_shape[2] if len(src_shape) == 3 else 1
+            sub_bytes = (sy1 - sy0) * (sx1 - sx0) * src_ch * src_dtype.itemsize
+            out_bytes = height * width * src_ch * src_dtype.itemsize
+            require_memory(out_bytes + (0 if have_native else sub_bytes))
+            with source_or_image._open_direct_tiff() as stream:
+                with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+                    rgb_full = np.ndarray(
+                        src_shape, dtype=src_dtype,
+                        buffer=mm, offset=source_or_image._rgb_tiff_offset,
+                    )
+                    sub_src = (rgb_full[sy0:sy1, sx0:sx1] if have_native
+                               else np.ascontiguousarray(rgb_full[sy0:sy1, sx0:sx1, ::-1]))
+                    try:
+                        warped = self._run_cv_warp(sub_src, M_sub_inv, (width, height), flags, threads)
+                    finally:
+                        del sub_src, rgb_full
+            if have_native and warped.ndim == 3 and warped.shape[2] == 3:
+                swap_fn = (_native_kernels.swap_bgr_inplace_rows_u8 if src_dtype == np.uint8
+                           else _native_kernels.swap_bgr_inplace_rows_u16)
+                _run_row_bands(
+                    warped.shape[0], 128, cancel_fn, swap_fn, warped,
+                    parallel_pixels=warped.shape[0] * warped.shape[1], workers=threads,
+                )
+        else:
+            bgr_rev = _is_bgr_rev(image) and _native_kernels.available()
+            sub_src = (image[..., ::-1] if bgr_rev else image)[sy0:sy1, sx0:sx1]
+            src_ch = src_shape[2] if len(src_shape) == 3 else 1
+            require_memory(height * width * src_ch * src_dtype.itemsize)
+            warped = self._run_cv_warp(sub_src, M_sub_inv, (width, height), flags, threads)
+            if bgr_rev and warped.ndim == 3 and warped.shape[2] == 3:
+                swap_fn = (_native_kernels.swap_bgr_inplace_rows_u8 if warped.dtype == np.uint8
+                           else _native_kernels.swap_bgr_inplace_rows_u16)
+                _run_row_bands(
+                    warped.shape[0], 128, cancel_fn, swap_fn, warped,
+                    parallel_pixels=warped.shape[0] * warped.shape[1], workers=threads,
+                )
+
+        if channels is not None and warped.ndim == 3 and warped.shape[2] != channels:
+            return np.array(warped[:, :, :channels], copy=True, order='C')
+        return warped
+
+
+_ORIGINAL_PERSPECTIVE_CALL = PerspectiveWarp.__call__
 
 
 def _perspective_output_shape(shape, dsize):
@@ -629,7 +902,8 @@ class PerspectiveStage:
     def apply(self, images, *, defer_warps, should_cancel=None, workers=1):
         from core.source_frames import process_frame, resolve_frame
         self.validate_sources(images, should_cancel=should_cancel)
-        frames = [process_frame(image, PerspectiveWarp(source, matrix, dtype, self.dsize, should_cancel),
+        frames = [process_frame(image, PerspectiveWarp(source, matrix, dtype, self.dsize,
+                                                       should_cancel, method=self.method),
                     shape=_perspective_output_shape(image.shape, self.dsize), should_cancel=should_cancel)
                   for image, source, matrix, dtype in
                   zip(images, self.sources, self.matrices, self.matrix_dtypes)]
@@ -982,7 +1256,13 @@ def apply_alignment_plan(sources, plan, *, defer_warps=False, should_cancel=None
         from core.source_frames import resolve_frame
         return [store_frame(resolve_frame(frame, should_cancel=should_cancel)) for frame in result]
     from functools import partial
-    from core.openfocus_alignment import apply_alignment, alignment_resolution_bytes
+    from core import openfocus_alignment as _oa
+    from core.openfocus_alignment import (
+        _ORIGINAL_APPLY_ALIGNMENT,
+        alignment_resolution_bytes,
+        apply_alignment,
+        apply_alignment_region,
+    )
     from core.source_frames import resolve_frame
     plan.validate_sources(sources, should_cancel=should_cancel)
     for transform in plan.transforms:
@@ -998,6 +1278,7 @@ def apply_alignment_plan(sources, plan, *, defer_warps=False, should_cancel=None
     if top >= bottom or left >= right:
         raise ValueError('Registration transforms have no common valid crop')
     _record_grouped_crop(top, bottom, left, right)
+    use_direct_region = apply_alignment is _ORIGINAL_APPLY_ALIGNMENT
     result = []
     for source, transform in zip(sources, plan.transforms):
         _check_cancel(should_cancel)
@@ -1009,7 +1290,13 @@ def apply_alignment_plan(sources, plan, *, defer_warps=False, should_cancel=None
             h, w = source.shape[:2]
             if (left, top, right, bottom) != (0, 0, w, h):
                 aligned = crop_frame(aligned, left, top, right - left, bottom - top,
-                                     should_cancel=should_cancel)
+                                     should_cancel=should_cancel, store_source=False)
+        elif use_direct_region:
+            image = apply_alignment_region(
+                source, transform, left, top, right - left, bottom - top,
+                should_cancel=should_cancel,
+            )
+            aligned = store_frame(image)
         else:
             image = processor(resolve_frame(source, should_cancel=should_cancel))
             aligned = store_frame(image[top:bottom, left:right])
@@ -1021,7 +1308,7 @@ def apply_alignment_plan(sources, plan, *, defer_warps=False, should_cancel=None
 def _align_openfocus_impl(input_source, output_path=None, img_filenames=None, *,
                         should_cancel=None, max_shift_ratio=.05, failure_policy='continue',
                         reference_frame=1, rotation=0., magnification=3.,
-                        defer_warps=False, plan_callback=None):
+                        defer_warps=False, plan_callback=None, dispatch_callback=None):
     """Wide detector using the verified search and sampling behavior."""
     from core.openfocus_alignment import estimate_alignment_plan
     images = input_source
@@ -1058,6 +1345,8 @@ def _align_openfocus_impl(input_source, output_path=None, img_filenames=None, *,
             from core.source_frames import resolve_frame
             _save_registration((resolve_frame(frame, should_cancel=should_cancel) for frame in result), output_path,
                                img_filenames, should_cancel)
+        if dispatch_callback is not None and len(images) > 1:
+            dispatch_callback('openfocus', estimation='CPU', warp='CPU')
         return result
 
 
@@ -1152,7 +1441,7 @@ def _plan_deferred_ecc(images, downscale_width, accelerate_ecc, preference, thre
 def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscale_width=1000,
                     thread_count: int = 4, should_cancel=None, use_gpu: bool = False,
                     failure_policy='continue', *, defer_warps=False, plan_callback=None,
-                    accelerate_ecc=False, stage_budget=None):
+                    accelerate_ecc=False, stage_budget=None, dispatch_callback=None):
     """
     基于 ECC (增强相关系数) 的高精度图像栈对齐算法
     适用于：显微摄影、微距摄影中伴随呼吸效应的图像栈
@@ -1456,12 +1745,16 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
             print("    [Info] Explicit CuPy alignment uses linear interpolation.")
         except ImportError as error:
             raise RuntimeError("Explicit CuPy alignment backend is unavailable") from error
+    if defer_warps:
+        log_action('registration_warp_deferred', method='ecc', frames=len(images),
+                   shape=(target_h, target_w))
     else:
-        print("    [Info] GPU warping disabled. Using CPU for warping.")
-    log_action('registration_warp', method='ecc',
-               provider='CuPy' if HAS_CUPY else 'OpenCV',
-               device='CUDA' if HAS_CUPY else 'CPU', shape=(target_h, target_w),
-               frames=len(images), gpu_requested=use_gpu)
+        if not HAS_CUPY:
+            print("    [Info] GPU warping disabled. Using CPU for warping.")
+        log_action('registration_warp', method='ecc',
+                   provider='CuPy' if HAS_CUPY else 'OpenCV',
+                   device='CUDA' if HAS_CUPY else 'CPU', shape=(target_h, target_w),
+                   frames=len(images), gpu_requested=use_gpu)
 
     if not HAS_CUPY:
         aligned_images = _apply_perspective_warps(
@@ -1469,6 +1762,10 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
             max_workers, should_cancel, defer_warps, method='ecc', sources=source_identities,
             bounds=(top, bottom, left, right), plan_callback=plan_callback)
         _save_registration(aligned_images, output_path, img_filenames, should_cancel)
+        if dispatch_callback is not None:
+            dispatch_callback('ecc', estimation='CPU', warp='CPU',
+                resize_accelerator=area_gpu.device_name if area_gpu and area_gpu.frames_resized else None,
+                resize_fallback=bool(area_gpu and area_gpu.fell_back))
         return aligned_images
 
     def warp_task(args):
@@ -1497,6 +1794,10 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
                                    should_cancel, stage='registration.warp') as results:
         aligned_images = [store_frame(image) for image in results]
     _save_registration(aligned_images, output_path, img_filenames, should_cancel)
+    if dispatch_callback is not None:
+        dispatch_callback('ecc', estimation='CPU', warp='CUDA (CuPy)',
+            resize_accelerator=area_gpu.device_name if area_gpu and area_gpu.frames_resized else None,
+            resize_fallback=bool(area_gpu and area_gpu.fell_back))
 
     return aligned_images
 
@@ -1669,6 +1970,15 @@ class ImageRegistration:
         self.defer_warps = bool(defer_warps)
         self.alignment_plan = None
         self._perspective_stages = []
+        self._dispatch = []
+
+    @property
+    def dispatch(self):
+        return tuple(self._dispatch)
+
+    def _record_dispatch(self, method, **devices):
+        from core.render_context import RegistrationDispatch
+        self._dispatch.append(RegistrationDispatch(method, **devices))
     
     def process(self, 
                 input_source: Union[str, List[np.ndarray]], 
@@ -1694,6 +2004,7 @@ class ImageRegistration:
             _check_cancel(should_cancel)
             self.alignment_plan = None
             self._perspective_stages = []
+            self._dispatch.clear()
             if self.steps == ('openfocus',):
                 from core.algorithms import get_registration, resolve_runner
                 sources = input_source if input_source is not None else []
@@ -1859,7 +2170,10 @@ class ImageRegistration:
         Returns:
             配准后的图像列表
         """
-        return _align_homography_impl(input_source, output_path, downscale_width=self.downscale_width, thread_count=thread_count, should_cancel=should_cancel, failure_policy=failure_policy, defer_warps=self.defer_warps and not self.use_gpu, plan_callback=self._perspective_stages.append)
+        return _align_homography_impl(input_source, output_path, downscale_width=self.downscale_width,
+            thread_count=thread_count, should_cancel=should_cancel, failure_policy=failure_policy,
+            defer_warps=self.defer_warps and not self.use_gpu, plan_callback=self._perspective_stages.append,
+            dispatch_callback=self._record_dispatch)
     
     def _process_ecc(self, 
                     input_source: Union[str, List[np.ndarray]], 
@@ -1882,7 +2196,7 @@ class ImageRegistration:
                     thread_count=thread_count, should_cancel=should_cancel, use_gpu=self.use_gpu,
                     failure_policy=failure_policy, defer_warps=self.defer_warps,
                     plan_callback=self._perspective_stages.append, accelerate_ecc=self.accelerate_ecc,
-                    stage_budget=stage_budget)
+                    stage_budget=stage_budget, dispatch_callback=self._record_dispatch)
         except RejectedAlignmentFrame as error:
             # Pair estimation may run on a pool thread. Record it in the caller's report.
             _report_alignment(error.frame_index, 'ecc', 'failed', reason=error.reason,

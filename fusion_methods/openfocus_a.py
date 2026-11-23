@@ -135,7 +135,7 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
                      blend_mode: str = 'hard', soft_gamma: float = 1.0,
                      feather_theta: float = 0.9,
                      should_cancel=None, progress_callback=None,
-                     use_gpu: bool = False, device_callback=None):
+                     use_gpu: bool = False, device_callback=None, *, live_preview=None):
     """Fuse with the Burt-pyramid focus response.
 
     ``kernel_size=2*R+1`` controls ``floor(log2(R))+3`` levels. Smoothing is
@@ -169,7 +169,9 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
         gpu = None
         try:
             gpu = GpuA()
-            result = gpu.fuse(frames, img_resize, radius, should_cancel, progress_callback)
+            args = (frames, img_resize, radius, should_cancel, progress_callback)
+            result = (gpu.fuse(*args) if live_preview is None else
+                      gpu.fuse(*args, live_preview=live_preview))
             if device_callback is not None:
                 device_callback(gpu.device_name)
             return result
@@ -241,6 +243,8 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
                         np.copyto(i2[rows], np.full(r.shape, index, np.int32), where=take2)
                     run_bands(response.shape[0], 128, select_top_two,
                               scratch_bytes=min(128, response.shape[0]) * response.shape[1] * 8)
+                if live_preview is not None:
+                    live_preview.show_positions(i1, index, len(frames), len(frames) - 1)
                 del frame, response
                 step += 1
                 if progress_callback is not None:
@@ -302,6 +306,8 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
                     log_max = lr
                 else:
                     np.maximum(log_max, lr, out=log_max)
+                if live_preview is not None:
+                    live_preview.update_best(log_max, index, len(frames))
                 del frame, response, lr
                 step += 1
                 if progress_callback is not None:
@@ -397,6 +403,9 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
                         band_state[slot] = select_rows(*args, no_background)
                 run_bands(height, band, select, scratch_bytes=row_scratch + cache_bytes,
                           workspace=lambda: np.empty(width, np.int32))
+                if live_preview is not None:
+                    _check_cancel(should_cancel)
+                    live_preview.update_best(best, index, len(frames))
                 del frame, pyramid
                 if progress_callback is not None:
                     progress_callback(index + 1, len(frames))

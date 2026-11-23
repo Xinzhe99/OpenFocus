@@ -298,15 +298,15 @@ def test_v2_tiled_selected_pixels_keep_exposure_and_alpha(monkeypatch, mixed):
     np.testing.assert_array_equal(actual, expected)
 
 
+@pytest.mark.parametrize('shape', [(257, 11), (257, 11, 3)], ids=['gray', 'bgr'])
 @pytest.mark.parametrize('cancel', [False, True])
-def test_v2_sparse_sampling_releases_sources_and_skips_unused_strips(monkeypatch, cancel):
+def test_v2_sparse_sampling_releases_sources_and_skips_unused_strips(monkeypatch, cancel, shape):
     import weakref
 
     from core import frame_storage, source_frames
     from core.registration import RegistrationCancelled
     from fusion_methods.stackmff_v2 import _sample
 
-    shape = (257, 11)
     frames = [np.full(shape, layer + 1, np.uint8) for layer in range(200)]
     index = np.zeros((shape[0], shape[1] + 1), dtype=np.int64)[:, :-1]
     index[0, :2] = (-1, len(frames))
@@ -314,14 +314,16 @@ def test_v2_sparse_sampling_releases_sources_and_skips_unused_strips(monkeypatch
     resolved, borrowed = [], []
     frame_region = frame_storage.frame_region
 
+    first = (0,) * len(shape)
+
     def resolve(frame, **kwargs):
         assert not resolved or resolved[-1][1]() is None
         image = frame.copy()
-        resolved.append((int(image[0, 0]), weakref.ref(image)))
+        resolved.append((int(image[first]), weakref.ref(image)))
         return image
 
     def borrow(image, rows):
-        borrowed.append((int(image[0, 0]), rows.start))
+        borrowed.append((int(image[first]), rows.start))
         return frame_region(image, rows)
 
     monkeypatch.setattr(source_frames, 'resolve_frame', resolve)

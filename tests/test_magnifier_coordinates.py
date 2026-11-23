@@ -263,8 +263,8 @@ def test_pending_native_crop_keeps_useful_pixels_and_bounded_region_memory(view,
     view.set_magnifier_settings(size=120)
     pos = QPointF(250, 180)
     mouse(view, QMouseEvent.Type.MouseButtonPress, pos, Qt.MouseButton.LeftButton)
-    # Embedded pixels are still useful outside the loupe, never as native detail.
-    assert_color(pixel(view.grab(), pos), QColor(24, 24, 24))
+    # The thumbnail fills the loupe immediately until native detail arrives.
+    assert_color(pixel(view.grab(), pos), QColor('magenta'))
     first = view._region_requests['loupe']
     native = QPixmap(120, 120)
     native.fill(QColor('lime'))
@@ -273,16 +273,21 @@ def test_pending_native_crop_keeps_useful_pixels_and_bounded_region_memory(view,
     near = pos + QPointF(1, 1)
     mouse(view, QMouseEvent.Type.MouseMove, near)
     assert_color(pixel(view.grab(), near), QColor('lime'))
-    # A distant crop cannot reuse the previous native detail or the thumbnail.
+    # A distant crop returns to the thumbnail instead of showing stale detail.
     far = QPointF(390, 270)
     mouse(view, QMouseEvent.Type.MouseMove, far)
-    assert_color(pixel(view.grab(), far), QColor(24, 24, 24))
+    assert_color(pixel(view.grab(), far), QColor('magenta'))
     assert not view.set_source_region(native, first[2], source_key='continuous', request=first)
     for step in range(40):
         mouse(view, QMouseEvent.Type.MouseMove, QPointF(250 + step, 180))
     assert set(view._source_regions) <= {'view', 'loupe'}
     assert len(view._region_requests) <= 2
     assert view._source_pixmap is None
+    view.set_source_region_failed('earlier generation')
+    assert not view._source_region_failed
+    view.set_source_region_failed('continuous')
+    assert view._source_region_failed
+    assert_color(pixel(view.grab(), QPointF(289, 180)), QColor('magenta'))
     view.clear()
     assert not view._source_regions and not view._region_requests
 

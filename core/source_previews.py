@@ -2,6 +2,7 @@
 import threading
 import math
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from contextlib import nullcontext
 
 import numpy as np
 
@@ -209,7 +210,8 @@ DISPLAY_REGION_MAX_SIDE = 4096
 _SOURCE_DISPLAY = threading.Semaphore(1)
 
 
-def render_source_region(image, rect, size, metadata=None, *, preserve_alpha=False):
+def render_source_region(image, rect, size, metadata=None, *, preserve_alpha=False,
+                         should_cancel=None):
     """Sample an original-pixel rectangle without copying its full pixel domain.
 
     The returned rectangle includes integer edge pixels; the consumer maps it
@@ -227,24 +229,33 @@ def render_source_region(image, rect, size, metadata=None, *, preserve_alpha=Fal
     out_w = max(1, min(DISPLAY_REGION_MAX_SIDE, math.ceil(size[0]) + 2))
     out_h = max(1, min(DISPLAY_REGION_MAX_SIDE, math.ceil(size[1]) + 2))
     factor = min(1.0, out_w / (right - left), out_h / (bottom - top))
-    channels = image.shape[2] if image.ndim == 3 else 1
-    pixel_stride = image.dtype.itemsize * channels
-    # OpenCV packs unsupported layouts before resizing. Admit that input copy
-    # too, including for ndarray views that would otherwise need no decoding.
-    layout_copy = 0
-    if factor < 1 and (image.strides[0] <= 0 or image.strides[1] != pixel_stride
-                       or image.strides[-1] != image.dtype.itemsize):
-        layout_copy = (right - left) * (bottom - top) * pixel_stride
-    from core.resource_policy import require_memory
-    pixels = max(1, round((right - left) * factor)) * max(1, round((bottom - top) * factor))
-    # Include conversion, owned delivery pixels, annotations and Qt upload.
-    require_memory(layout_copy + pixels * 96 + 1024 * 1024)
     from core.frame_storage import frame_region
-    with frame_region(image, np.s_[top:bottom, left:right]) as crop:
+    from core.resource_policy import probe_memory, require_memory
+    from core.source_frames import borrow_frame_region
+    out_w = max(1, round((right - left) * factor))
+    out_h = max(1, round((bottom - top) * factor))
+    # Include conversion, owned delivery pixels, annotations and Qt upload.
+    working = out_w * out_h * 96 + 1024 * 1024
+    key = np.s_[top:bottom, left:right]
+    region = (frame_region(image, key) if isinstance(image, np.ndarray)
+              else borrow_frame_region(image, key, should_cancel=should_cancel))
+    with region as crop:
+        channels = crop.shape[2] if crop.ndim == 3 else 1
+        pixel_stride = crop.dtype.itemsize * channels
+        # Resizing acts independently on each channel. Reverse a TIFF's
+        # BGR view back to its packed RGB layout for the resize itself.
+        reverse = factor < 1 and channels > 1 and crop.strides[-1] == -crop.dtype.itemsize
+        if reverse:
+            crop = crop[..., ::-1]
+        # OpenCV packs unsupported layouts before resizing. Admit that input copy too.
+        if factor < 1 and (crop.strides[0] <= 0 or crop.strides[1] != pixel_stride
+                           or crop.strides[-1] != crop.dtype.itemsize):
+            working += crop.nbytes
+        require_memory(working, snapshot=probe_memory())
         if factor < 1:
-            crop = cv2.resize(crop, (max(1, round((right - left) * factor)),
-                                     max(1, round((bottom - top) * factor))),
-                              interpolation=cv2.INTER_AREA)
+            crop = cv2.resize(crop, (out_w, out_h), interpolation=cv2.INTER_AREA)
+            if reverse:
+                crop = crop[..., ::-1]
         if metadata is not None:
             from utils.linear_dng import develop_linear
             crop = develop_linear(crop, metadata)
@@ -265,8 +276,8 @@ def _composite_region(tile, rect):
 class SourceRegionWorker(QThread):
     """One selected original, two coalesced requests (viewport and loupe).
 
-    Cold resolution uses the shared resource admission. Borrowed or retained
-    pixels only need bounded tile admission. Idle workers hold neither turn.
+    The display turn admits one decode or tile at a time. Only a memory
+    rejection defers the selected request until shared heavy work frees RAM.
     """
     ready = pyqtSignal(object, object, object, object)
     failed = pyqtSignal(object, str)
@@ -329,7 +340,8 @@ class SourceRegionWorker(QThread):
                             raise InterruptedError('Source display cancelled')
                         subrect = (col, row, min(1024, right - col), min(128, bottom - row))
                         pixels, sampled = render_source_region(
-                            image, subrect, (1024, 128), self.metadata)
+                            image, subrect, (1024, 128), self.metadata,
+                            should_cancel=lambda: self.cancelled)
                         if self.labels is not None:
                             if pixels.ndim == 2:
                                 pixels = cv2.cvtColor(pixels, cv2.COLOR_GRAY2BGR)
@@ -356,12 +368,21 @@ class SourceRegionWorker(QThread):
                 scale=tile.shape[1] / max(1, rect[2]))
         return tile
 
-    def _resolve_original(self):
+    def _resolve_original(self, *, exclusive):
         from core.frame_storage import (describe_frame, owns_temp_file, scratch_directory,
                                         select_scratch, store_frame)
-        from core.source_frames import resolve_frame
+        from core.resource_policy import probe_memory, ram_budget, require_memory
+        from core.source_frames import frame_resolution_bytes, resolve_frame, without_source_cache_growth
 
-        with scratch_directory():
+        working = frame_resolution_bytes(self.frame)
+        if working:
+            # Leave working headroom for a concurrent render. If the decode
+            # needs more than the comfortable share, retry with exclusive heavy
+            # admission. Both checks use live physical and commit headroom.
+            resources = probe_memory()
+            require_memory(working, snapshot=resources,
+                           user_limit=None if exclusive else ram_budget(resources))
+        with scratch_directory(), without_source_cache_growth():
             resolved = resolve_frame(self.frame, should_cancel=lambda: self.cancelled)
             if self.cancelled:
                 return None
@@ -373,11 +394,16 @@ class SourceRegionWorker(QThread):
             return store_frame(resolved, prefer_ram=False)
 
     def run(self):
-        from core.source_frames import RetainedFrame, SourceFrame, resolve_frame, validate_frame_source
-        from core.resource_policy import heavy_job
+        from core.resource_policy import ResourceLimitError, heavy_job
+        from core.source_frames import (PreparedFrame, RetainedFrame, SourceFrame,
+                                        is_direct_rgb_tiff, map_native_rgb_tiffs,
+                                        validate_frame_source)
 
         cancelled = lambda: self.cancelled
-        image = None
+        source = self.frame
+        snapshot = None
+        checked_tiff = False
+        deferred = False
         try:
             while True:
                 with self._condition:
@@ -385,61 +411,77 @@ class SourceRegionWorker(QThread):
                         self._condition.wait()
                     if self.cancelled:
                         return
-                    kind = 'loupe' if 'loupe' in self._pending else next(iter(self._pending))
-                    request = self._pending.pop(kind)
 
-                if image is None:
-                    if isinstance(self.frame, (np.ndarray, RetainedFrame)):
-                        image = resolve_frame(self.frame, should_cancel=cancelled)
-                    elif isinstance(self.frame, SourceFrame):
-                        image = self.frame.cached_pixels()
-                    if image is None:
-                        # A waiting cold request must not occupy the bounded
-                        # sampling turn that already-materialized frames can use.
-                        with heavy_job(cancelled):
-                            validate_frame_source(self.frame)
-                            image = self._resolve_original()
-                        if image is None:
-                            return
-
-                acquired = False
-                try:
-                    while not self.cancelled:
+                # A memory-deferred request never occupies the display turn
+                # while waiting behind the render. Retake the latest request
+                # only after both admissions, so panning still coalesces.
+                with heavy_job(cancelled) if deferred else nullcontext():
+                    while not cancelled():
                         if _SOURCE_DISPLAY.acquire(timeout=.05):
-                            acquired = True
                             break
-                    if not acquired:
-                        return
-                    with self._condition:
-                        if self.cancelled:
-                            return
-                        if kind in self._pending:
-                            continue
-                    validate_frame_source(self.frame)
-                    _, _, rect, size = request
-                    keep_alpha = bool(self.watermark_cfg and self.labels is None and not self.scale_cfg
-                                      and image.ndim == 3 and image.shape[2] == 4)
-                    if keep_alpha:
-                        tile, sampled = render_source_region(image, rect, size, self.metadata,
-                                                             preserve_alpha=True)
                     else:
-                        tile, sampled = render_source_region(image, rect, size, self.metadata)
-                    tile = self._decorate(tile, sampled, image)
-                    if keep_alpha and tile is not None:
-                        tile = _composite_region(tile, sampled)
-                    with self._condition:
-                        if not self.cancelled and kind not in self._pending:
-                            self.ready.emit(self.key, request, tile, sampled)
-                    tile = None
-                finally:
-                    if acquired:
+                        return
+                    image = tile = None
+                    try:
+                        with self._condition:
+                            if self.cancelled:
+                                return
+                            kind = 'loupe' if 'loupe' in self._pending else next(iter(self._pending))
+                            request = self._pending.pop(kind)
+                        validate_frame_source(source)
+                        if isinstance(source, SourceFrame) and not checked_tiff:
+                            source, = map_native_rgb_tiffs((source,), should_cancel=cancelled)
+                            checked_tiff = True
+                        if isinstance(source, (np.ndarray, PreparedFrame, RetainedFrame)) or is_direct_rgb_tiff(source):
+                            image = source
+                        elif snapshot is not None:
+                            image = snapshot
+                        elif isinstance(source, SourceFrame):
+                            image = source.cached_pixels()
+                        if image is None:
+                            snapshot = image = self._resolve_original(exclusive=deferred)
+                            if image is None:
+                                return
+
+                        with self._condition:
+                            if self.cancelled:
+                                return
+                            if kind in self._pending:
+                                continue
+                            if kind != 'loupe' and 'loupe' in self._pending:
+                                self._pending[kind] = request
+                                continue
+                        _, _, rect, size = request
+                        keep_alpha = bool(self.watermark_cfg and self.labels is None and not self.scale_cfg
+                                          and image.ndim == 3 and image.shape[2] == 4)
+                        tile, sampled = render_source_region(
+                            image, rect, size, self.metadata, preserve_alpha=keep_alpha,
+                            should_cancel=cancelled)
+                        tile = self._decorate(tile, sampled, image)
+                        if keep_alpha and tile is not None:
+                            tile = _composite_region(tile, sampled)
+                        validate_frame_source(source)
+                        with self._condition:
+                            if not self.cancelled and kind not in self._pending:
+                                self.ready.emit(self.key, request, tile, sampled)
+                        deferred = False
+                    except ResourceLimitError:
+                        if deferred:
+                            raise
+                        with self._condition:
+                            if self.cancelled:
+                                return
+                            self._pending.setdefault(kind, request)
+                        deferred = True
+                    finally:
+                        image = tile = None
                         _SOURCE_DISPLAY.release()
         except Exception as exc:
             with self._condition:
                 if not self.cancelled:
                     self.failed.emit(self.key, str(exc))
         finally:
-            image = None
+            snapshot = None
             self.frame = None
             with self._condition:
                 self._pending.clear()

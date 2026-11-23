@@ -36,6 +36,7 @@ def test_ineligible_input_does_not_probe_gpu(image, dsize, monkeypatch):
     assert gpu.resize(image, dsize) is None
     assert gpu.frames_resized == 0
     assert gpu.device_name == ''
+    assert not gpu.fell_back
 
 
 @pytest.mark.parametrize('memory', [None, (8 * 1024**2, 4 * 1024**3)])
@@ -64,6 +65,7 @@ def test_opencl_failure_falls_back_once_per_job(monkeypatch):
         assert gpu.resize(np.zeros((182, 182), np.uint8), (64, 64)) is None
     assert calls == [1]
     assert gpu.frames_resized == 0
+    assert gpu.fell_back
 
 
 @pytest.fixture

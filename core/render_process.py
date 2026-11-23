@@ -30,10 +30,12 @@ from utils.report_bundle import _MAX_FRAMES, safe_exception
 
 logger = get_logger(__name__)
 _CANCEL_GRACE_SECONDS = 3.0
+_LIVE_PREVIEW_EDGE = 512
 _ERROR_STATE_FIELDS = ('alignment_reused', 'alignment_computed', 'alignment_report',
                        'alignment_report_provenance', 'performance_report')
-_SUCCESS_STATE_FIELDS = (*_ERROR_STATE_FIELDS, 'prepared_cache', 'rendered_depth', 'fusion_details')
-_RENDER_STAGES = ('prepare', 'align', 'fuse', 'finish')
+_SUCCESS_STATE_FIELDS = (*_ERROR_STATE_FIELDS, 'prepared_cache', 'rendered_depth', 'fusion_details',
+                         'registration_details')
+_RENDER_STAGES = ('prepare', 'align', 'fuse', 'finish', 'finalize', 'publish')
 _ERROR_CATEGORIES = ('resource_limit', 'memory', 'os', 'value', 'runtime', 'other')
 _ERROR_ORIGINS = ('child_worker', 'child_setup_or_transfer')
 _CHILD_EXIT_ORIGIN = 'child_exit'
@@ -41,6 +43,7 @@ _RENDER_SOURCE_FILES = tuple(Path(__file__).with_name(f'{name}.py') for name in 
     'render_process', 'frame_transport', 'source_frames', 'frame_storage',
     'frame_resolution_cache', 'workers', 'registration', 'resource_policy',
     'algorithms', 'multi_focus_fusion', 'render_context',
+    'fusion_live_preview', '_perspective_gpu',
 ))
 
 
@@ -142,6 +145,47 @@ def _validated_admission(admission):
     return safe
 
 
+class _LivePreviewMailbox:
+    """One latest grayscale map shared with the spawned child, outside the pipe."""
+
+    def __init__(self, shared):
+        self._pixels, self._metadata, self._lock = self.shared = shared
+        self._last_read = (0, 0)
+
+    @classmethod
+    def create(cls, context):
+        return cls((context.RawArray('B', _LIVE_PREVIEW_EDGE ** 2),
+                    context.RawArray('q', 5),  # width, height, done, total, blending
+                    context.Lock()))
+
+    def publish(self, gray, done, total, blending):
+        height, width = gray.shape
+        if not (0 < width <= _LIVE_PREVIEW_EDGE and 0 < height <= _LIVE_PREVIEW_EDGE
+                and 0 < done <= total):
+            return
+        if not self._lock.acquire(False):
+            return
+        try:
+            memoryview(self._pixels).cast('B')[:width * height] = memoryview(gray).cast('B')
+            self._metadata[:] = (width, height, done, total, blending)
+        finally:
+            self._lock.release()
+
+    def take(self):
+        if not self._lock.acquire(False):
+            return None
+        try:
+            width, height, done, total, blending = self._metadata[:]
+            position = (blending, done)
+            if position <= self._last_read:
+                return None
+            gray = bytes(memoryview(self._pixels)[:width * height])
+            self._last_read = position
+            return gray, width, height, done, total, bool(blending)
+        finally:
+            self._lock.release()
+
+
 class _ChildRenderWorker(RenderWorker):
     def __init__(self, cancel_event, *args, **kwargs):
         self._cancel_event = cancel_event
@@ -229,12 +273,18 @@ def _render_child(connection, cancel_event, request, budget, directory, language
             request = unwrap_source_request(request, _LOADED_SOURCE_REVISION)
             if request is None:
                 raise RuntimeError(trans.t('render_source_changed'))
+        mailbox = None
+        if isinstance(request, tuple) and len(request) == 3 and request[0] == 'live_preview':
+            _, request, shared = request
+            mailbox = _LivePreviewMailbox(shared)
         storage.restore_storage_directory(directory)
         with process_budget(budget), storage.observe_temp_files(relay.temporary_file):
             inputs = FrameDecoder(should_cancel=cancel_event.is_set).decode(request)
             set_log_level(inputs['log_level'])
             _restore_algorithms(inputs['fusions'], inputs['registrations'])
             worker = _ChildRenderWorker(cancel_event, *inputs['args'], **inputs['kwargs'])
+            if mailbox is not None:
+                worker.live_preview_sink = mailbox.publish
             results, errors = [], []
             direct = Qt.ConnectionType.DirectConnection
             worker.progress_signal.connect(relay.progress, direct)
@@ -255,6 +305,7 @@ def _render_child(connection, cancel_event, request, budget, directory, language
                 return
             if not results:
                 raise RuntimeError('Render worker produced neither a result nor an error')
+            relay.stage('publish')
             state = {name: getattr(worker, name) for name in _SUCCESS_STATE_FIELDS}
             encoder = FrameEncoder(cancel_event.is_set)
             payload = encoder.encode({'result': results[-1], 'state': state})
@@ -368,17 +419,23 @@ class RenderProcessWorker(RenderWorker):
     def __init__(self, *args, **kwargs):
         kwargs.setdefault('retain_aligned_pixels', True)
         super().__init__(*args, **kwargs)
-        # A directory chosen for this render only (set before start). It binds
-        # the parent's job scope and therefore the child (see _run_process).
-        # Not a constructor argument: the arguments are RenderWorker's own.
+        # The controller sets process-only options before starting the worker.
+        # Only RenderWorker's constructor arguments go to the child.
         self.storage_directory = None
+        self.live_preview_requested = False
         self._render_args = args
         self._render_kwargs = kwargs
+        self._live_preview_mailbox = None
         self._process = None
         self._cancel_event = None
         self.child_pid = None
         self.failure_category = None
         self._child_error_evidence = None
+
+    def take_live_preview(self):
+        """Poll from the GUI thread without waiting for the child."""
+        mailbox = self._live_preview_mailbox
+        return mailbox.take() if mailbox is not None else None
 
     def cancel(self):
         super().cancel()
@@ -394,6 +451,7 @@ class RenderProcessWorker(RenderWorker):
     def run(self):
         self.failure_category = None
         self.fusion_details = None
+        self.registration_details = None
         self._child_error_evidence = None
         result = None
         error = None
@@ -427,12 +485,14 @@ class RenderProcessWorker(RenderWorker):
                     self.failure_category = _render_error_category(exc)
                 logger.exception('could not complete isolated render')
             error = str(exc)
+        self._live_preview_mailbox = None
         if self.is_cancelled:
             self.failure_category = None
             result = None
             error = 'CANCELLED: render cancelled'
         if error is not None:
             self.fusion_details = None
+            self.registration_details = None
             self.error_signal.emit(error)
         elif result is not None:
             self.finished_signal.emit(*result)
@@ -457,6 +517,11 @@ class RenderProcessWorker(RenderWorker):
             request = encoder.encode({'args': self._render_args, 'kwargs': self._render_kwargs,
                 'fusions': fusion_algorithms(), 'registrations': registration_algorithms(),
                 'log_level': logger.getEffectiveLevel()})
+            if self.live_preview_requested:
+                mailbox = self._live_preview_mailbox = _LivePreviewMailbox.create(context)
+                # Standard multiprocessing handles keep the same spawn signature
+                # so a mismatched Windows child can still reject the revision.
+                request = ('live_preview', request, mailbox.shared)
             if source_revision is not None:
                 request = wrap_source_request(request, source_revision)
             log_action('render_dispatch.request_encoded')

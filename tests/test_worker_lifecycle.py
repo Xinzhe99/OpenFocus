@@ -177,6 +177,8 @@ def test_fresh_alignment_writes_in_background_then_hit_is_not_rewritten(tmp_path
     assert first.wait(30000)
     assert first_errors == [] and len(first_results) == 1
     assert first.alignment_computed and not first.alignment_reused
+    from core.render_context import RegistrationDetails, RegistrationDispatch
+    assert first.registration_details == RegistrationDetails((RegistrationDispatch('openfocus', 'CPU', 'CPU'),))
     assert writers and writers[0] != get_ident()
     second = _render(frames, request)
     second_results, second_errors = _capture(second)
@@ -184,6 +186,7 @@ def test_fresh_alignment_writes_in_background_then_hit_is_not_rewritten(tmp_path
     assert second.wait(30000)
     assert second_errors == [] and len(second_results) == 1
     assert second.alignment_reused and not second.alignment_computed
+    assert second.registration_details == RegistrationDetails(first.registration_details.dispatch, 'disk_plan')
     assert len(writers) == 1
     np.testing.assert_array_equal(first_results[0][1], second_results[0][1])
 
@@ -208,9 +211,13 @@ def test_cached_alignment_remains_resolvable_after_stack_revision(tmp_path, alig
         assert not errors and len(results) == 1
         return worker, results[0][0]
 
-    _, first_frames = render()
+    first, first_frames = render()
     second, warm_frames = render()
     assert second.alignment_reused
+    assert second.registration_details.reuse == 'disk_plan'
+    assert second.registration_details.dispatch == first.registration_details.dispatch
+    step, = second.registration_details.dispatch
+    assert (step.method, step.estimation, step.warp) == (alignment, 'CPU', 'CPU')
     expected = resolve_frame(first_frames[1]).copy()
     current[0] = False
     np.testing.assert_array_equal(resolve_frame(warm_frames[1]), expected)

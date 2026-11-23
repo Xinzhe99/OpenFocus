@@ -33,8 +33,9 @@ def test_close_confirmation_applies_borrowed_buffer_once(qapp):
     assert dialog.begin_stroke(60, 48)
     dialog.end_stroke()
     working = dialog.doc.working
-    QTimer.singleShot(0, lambda: dialog._confirm_apply_button.click())
-    assert dialog.close()
+    assert not dialog.close()
+    dialog._confirm_apply_button.click()
+    assert dialog._closing
     assert len(calls) == 1
     assert calls[0] is working
 
@@ -46,8 +47,8 @@ def test_close_failed_publication_preserves_session(qapp, monkeypatch):
     assert dialog.begin_stroke(60, 48)
     dialog.end_stroke()
     before = dialog.doc.working.copy()
-    QTimer.singleShot(0, lambda: dialog._confirm_apply_button.click())
     assert not dialog.close()
+    dialog._confirm_apply_button.click()
     assert len(attempts) == 1 and dialog.doc.is_dirty and not dialog._closing
     np.testing.assert_array_equal(dialog.doc.working, before)
     dialog._allow_close = True
