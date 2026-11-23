@@ -40,29 +40,26 @@ def _reference(image, matrix, dsize):
                                borderMode=cv2.BORDER_CONSTANT)
 
 
-class _Recorder:
+class _Recorder(gpu.ExactPerspectiveGpu):
     """Stand-in accelerator that answers with OpenCV pixels or declines."""
 
-    device_name = 'OpenCL: Test Device'
-
     def __init__(self, declines=0):
+        super().__init__()
+        self.device_name = 'OpenCL: Test Device'
         self.declines = declines
         self.calls = []
-        self.gpu_warps = self.cpu_warps = 0
         self.closed = False
 
     def close(self):
         self.closed = True
 
-    def note_cpu_warp(self):
-        self.cpu_warps += 1
-
-    def warp(self, image, matrix, dsize, should_cancel, *, bgr_rev=False, region=None):
+    def warp(self, image, matrix, dsize, should_cancel, *, bgr_rev=False, region=None, method=''):
         self.calls.append((image.shape, image.flags.c_contiguous, bgr_rev, region))
         if self.declines:
             self.declines -= 1
             return None
         self.gpu_warps += 1
+        self._gpu_by_method[method] += 1
         full = _reference(image[..., ::-1] if bgr_rev else image, matrix, dsize)
         if region is None:
             return full
@@ -259,6 +256,9 @@ def test_accelerator_scope_builds_closes_and_restores(monkeypatch):
     assert not backend.closed
     with deferred_ecc_warp_accelerator(True) as enabled:
         assert enabled is backend and _deferred_ecc_gpu.get() is backend
+        with deferred_ecc_warp_accelerator(False) as disabled:
+            assert disabled is None and _deferred_ecc_gpu.get() is None
+        assert _deferred_ecc_gpu.get() is enabled and not backend.closed
     assert backend.closed and _deferred_ecc_gpu.get() is None
     with pytest.raises(ValueError, match='stopped'):
         with deferred_ecc_warp_accelerator(True):
@@ -283,18 +283,26 @@ def test_bands_fit_the_vram_budget_and_stage_narrow_windows():
     assert outside[1] == 0 and outside[0][0][2] == outside[0][0][4]
 
 
-def test_host_block_repair_reproduces_opencv_inside_regions():
+@pytest.mark.parametrize('reverse', [False, True])
+def test_host_block_repair_reproduces_opencv_inside_regions(monkeypatch, reverse):
     rng = np.random.default_rng(3)
     image = rng.integers(0, 65536, (320, 480, 3), np.uint16)
     dsize = (777, 517)
     inverse, _ = gpu._warp_geometry(_MATRICES[0], 0, 0, *dsize)
-    expected = _reference(image, _MATRICES[0], dsize)
+    expected = _reference(image[..., ::-1] if reverse else image, _MATRICES[0], dsize)
+    warp_perspective = cv2.warpPerspective
+
+    def warp_block(source, *args, **kwargs):
+        assert source is image
+        return warp_perspective(source, *args, **kwargs)
+
+    monkeypatch.setattr(cv2, 'warpPerspective', warp_block)
     for rect in ((0, 0, *dsize), (151, 97, 600, 400)):
         x0, y0, width, height = rect
         result = np.zeros((height, width, 3), np.uint16)
         offsets = [y * dsize[0] + x for y in range(y0, y0 + height, 97)
                    for x in (x0, x0 + 63, x0 + 64, x0 + width - 1)]
-        gpu._repair_rounding_edges(image, inverse, result, offsets, rect, dsize, None)
+        gpu._repair_rounding_edges(image, inverse, result, offsets, rect, dsize, None, bgr_rev=reverse)
         assert np.count_nonzero(result)
         for offset in offsets:
             y, x = divmod(offset, dsize[0])
@@ -358,7 +366,67 @@ def test_tiled_fusion_lends_its_warp_accelerator_to_the_tile_threads(tmp_path, m
     accelerated = _fusion(use_gpu=True, tile_enabled=True, tile_threshold=1)
     np.testing.assert_array_equal(accelerated.fuse(frames), expected)
     assert accelerated.ecc_warp_device == 'OpenCL: Test Device'
+    assert accelerated.registration_warp_devices == {'ecc': 'OpenCL: Test Device'}
     assert any(name.startswith('ThreadPoolExecutor') for name in made[-1].threads)
+
+
+def test_combined_registration_reports_the_device_for_each_actual_step(tmp_path, monkeypatch):
+    from core.source_frames import scan_source
+    from core.workers import RenderWorker
+
+    class OnlyEcc(_Recorder):
+        def warp(self, *args, method='', **kwargs):
+            if method != 'ecc':
+                return None
+            return super().warp(*args, method=method, **kwargs)
+
+    original = _stack(tmp_path)
+    frames = [scan_source(os.path.join(original, name), header_only=True)[0]
+              for name in ('00.tif', '01.tif')]
+    monkeypatch.setattr(gpu, 'ExactPerspectiveGpu', OnlyEcc)
+    worker = RenderWorker(frames, algorithm='openfocus_a', alignment='both', use_gpu=True,
+                          need_fusion=True, exposure_match=False, thread_count=2)
+    results, errors = [], []
+    worker.finished_signal.connect(lambda *args: results.append(args[1]))
+    worker.error_signal.connect(errors.append)
+    worker.run()
+    assert not errors and len(results) == 1
+    assert worker.alignment_computed
+    assert {stage.method: stage.warp for stage in worker.registration_details.dispatch} == {
+        'homography': 'CPU', 'ecc': 'OpenCL: Test Device',
+    }
+
+
+@pytest.mark.parametrize('algorithm,module,name', [
+    ('dct', '_openfocus_gpu_dct', 'GpuDct'),
+    ('guided_filter', '_openfocus_gpu_gff', 'GpuGff'),
+    ('gfgfgf', '_openfocus_gpu_gfg', 'GpuGfg'),
+])
+def test_cpu_fusion_fallback_borrows_warp_accelerator_in_frame_workers(
+        tmp_path, monkeypatch, algorithm, module, name):
+    from importlib import import_module
+    from threading import current_thread
+    from fusion_methods._openfocus_gpu import GpuError
+
+    class RecordThreads(_Recorder):
+        def warp(self, *args, **kwargs):
+            threads.add(current_thread())
+            return super().warp(*args, **kwargs)
+
+    def unavailable():
+        raise GpuError('fusion backend unavailable')
+
+    frames = _deferred_frames(tmp_path)
+    options = dict(algorithm=algorithm, tile_enabled=False, exposure_match=False)
+    expected = MultiFocusFusion(**options, use_gpu=False).fuse(frames, thread_count=2)
+    threads = set()
+    monkeypatch.setattr(import_module(f'fusion_methods.{module}'), name, unavailable)
+    monkeypatch.setattr(gpu, 'ExactPerspectiveGpu', RecordThreads)
+    fusion = MultiFocusFusion(**options, use_gpu=True)
+    np.testing.assert_array_equal(fusion.fuse(frames, thread_count=2), expected)
+    assert fusion.registration_warp_devices == {'ecc': 'OpenCL: Test Device'}
+    assert any(thread is not current_thread() for thread in threads)
+
 
 @pytest.mark.parametrize('method', ['ecc', 'homography'])
 def test_registration_reports_the_device_that_ran_its_eager_warps(tmp_path, monkeypatch, method):

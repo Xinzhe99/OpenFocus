@@ -97,18 +97,18 @@ def deferred_warp_threads(threads):
 @contextmanager
 def deferred_ecc_warp_accelerator(enabled):
     """Share one admitted OpenCL workspace across a prepared stack."""
-    if not enabled:
-        yield None
-        return
-    from core._perspective_gpu import ExactPerspectiveGpu
+    backend = None
+    if enabled:
+        from core._perspective_gpu import ExactPerspectiveGpu
 
-    backend = ExactPerspectiveGpu()
+        backend = ExactPerspectiveGpu()
     token = _deferred_ecc_gpu.set(backend)
     try:
         yield backend
     finally:
         _deferred_ecc_gpu.reset(token)
-        backend.close()
+        if backend is not None:
+            backend.close()
 
 
 def carry_warp_accelerator(function):
@@ -605,6 +605,7 @@ class PerspectiveWarp:
     matrix_dtype: str
     dsize: tuple
     should_cancel: object = None
+    method: str = ''
 
     def _is_integer_crop(self, src_shape, src_dtype):
         a, b, tx, c, d, ty, p, q, r = self.matrix
@@ -662,10 +663,9 @@ class PerspectiveWarp:
             # Direct RGB TIFF frames arrive as a reversed view of contiguous storage.
             bgr_rev = _is_bgr_rev(image)
             result = backend.warp(image[..., ::-1] if bgr_rev else image, matrix, self.dsize,
-                                  cancel_fn, bgr_rev=bgr_rev)
+                                  cancel_fn, bgr_rev=bgr_rev, method=self.method)
             if result is not None:
                 return result
-            backend.note_cpu_warp()
         bgr_rev = _is_bgr_rev(image) and _native_kernels.available()
         src = image[..., ::-1] if bgr_rev else image
         threads = _warp_thread_budget()
@@ -677,6 +677,8 @@ class PerspectiveWarp:
                 warped.shape[0], 128, cancel_fn, swap_fn, warped,
                 parallel_pixels=warped.shape[0] * warped.shape[1], workers=threads,
             )
+        if backend is not None:
+            backend.note_cpu_warp(self.method)
         return warped
 
     def __call__(self, image):
@@ -810,18 +812,19 @@ class PerspectiveWarp:
                                          offset=source_or_image._rgb_tiff_offset)
                         try:
                             warped = backend.warp(rgb, M64, self.dsize, cancel_fn,
-                                                  bgr_rev=True, region=(x, y, width, height))
+                                                  bgr_rev=True, region=(x, y, width, height),
+                                                  method=self.method)
                         finally:
                             del rgb
             else:
                 bgr_rev = _is_bgr_rev(image)
                 warped = backend.warp(image[..., ::-1] if bgr_rev else image, M64, self.dsize,
-                                      cancel_fn, bgr_rev=bgr_rev, region=(x, y, width, height))
+                                      cancel_fn, bgr_rev=bgr_rev, region=(x, y, width, height),
+                                      method=self.method)
             if warped is not None:
                 if channels is not None and warped.ndim == 3 and warped.shape[2] != channels:
                     return np.array(warped[:, :, :channels], copy=True, order='C')
                 return warped
-            backend.note_cpu_warp()
 
         if _perspective_near_lanczos_boundary(
                 M_inv, x, y, width, height, sx0, sy0, float(np.min(sc[2])), cancel_fn):
@@ -874,6 +877,8 @@ class PerspectiveWarp:
                     parallel_pixels=warped.shape[0] * warped.shape[1], workers=threads,
                 )
 
+        if backend is not None:
+            backend.note_cpu_warp(self.method)
         if channels is not None and warped.ndim == 3 and warped.shape[2] != channels:
             return np.array(warped[:, :, :channels], copy=True, order='C')
         return warped
@@ -945,7 +950,8 @@ class PerspectiveStage:
     def apply(self, images, *, defer_warps, should_cancel=None, workers=1):
         from core.source_frames import process_frame, resolve_frame
         self.validate_sources(images, should_cancel=should_cancel)
-        frames = [process_frame(image, PerspectiveWarp(source, matrix, dtype, self.dsize, should_cancel),
+        frames = [process_frame(image, PerspectiveWarp(source, matrix, dtype, self.dsize,
+                                                       should_cancel, method=self.method),
                     shape=_perspective_output_shape(image.shape, self.dsize), should_cancel=should_cancel)
                   for image, source, matrix, dtype in
                   zip(images, self.sources, self.matrices, self.matrix_dtypes)]

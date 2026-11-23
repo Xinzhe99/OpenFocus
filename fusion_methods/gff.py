@@ -97,9 +97,12 @@ def gff_impl(input_source, img_resize, kernel_size=31, thread_count: int = None,
         finally:
             SOURCE_CACHE.clear()
 
+    from core.registration import carry_warp_accelerator
+
     out_dtype = fuse_output_dtype(stack_ori)
     kernels = _load_kernels()
 
+    @carry_warp_accelerator
     def _resolve_raw(index):
         from core.source_frames import resolve_frame, without_source_cache_growth
 

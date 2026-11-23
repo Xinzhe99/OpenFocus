@@ -271,6 +271,7 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
         finally:
             SOURCE_CACHE.clear()
 
+    from core.registration import carry_warp_accelerator
     from core.source_frames import process_frame, resolve_frame, without_source_cache_growth
 
     resize = (img_resize is not None
@@ -300,6 +301,7 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
     out_dtype = fuse_output_dtype(stack_ori)
     kernels = _load_kernels()
 
+    @carry_warp_accelerator
     def _resolve_raw(index):
         check_cancel()
         with without_source_cache_growth():

@@ -148,6 +148,9 @@ def _ordered_frame_results(count, produce, workers, should_cancel):
             _check_cancel(cancelled)
             yield index, produce(index, cancelled)
         return
+    from core.registration import carry_warp_accelerator
+
+    produce = carry_warp_accelerator(produce)
     scratch = capture_scratch()
     with ThreadPoolExecutor(max_workers=workers, initializer=_worker_native_limit) as pool:
         window = deque()

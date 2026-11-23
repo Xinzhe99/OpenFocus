@@ -3,6 +3,7 @@ import ctypes
 import logging
 import math
 import os
+from collections import Counter
 from string import Template
 from threading import Lock
 
@@ -217,12 +218,11 @@ def _band_plan(inverse, rect, src_size, channels, itemsize, budget, max_alloc, f
     return None
 
 
-def _repair_rounding_edges(image, inverse, result, coordinates, rect, dsize, should_cancel):
+def _repair_rounding_edges(image, inverse, result, coordinates, rect, dsize, should_cancel,
+                           *, bgr_rev=False):
     """Evaluate flagged samples with OpenCV's own block arithmetic."""
     from core.registration import _check_cancel
 
-    if not image.flags.c_contiguous:
-        image = np.ascontiguousarray(image)
     x0, y0, width, _ = rect
     full_w, full_h = dsize
     # Match WarpPerspectiveInvoker's horizontal blocks in OpenCV 5.0.0.
@@ -241,6 +241,8 @@ def _repair_rounding_edges(image, inverse, result, coordinates, rect, dsize, sho
         cols = min(block_width, full_w - x)
         row = cv2.warpPerspective(image, shifted, (cols, 1),
                                   flags=cv2.INTER_LANCZOS4 | cv2.WARP_INVERSE_MAP)
+        if bgr_rev:
+            row = row[..., ::-1]
         left, right = max(x, x0), min(x + cols, x0 + width)
         result[y - y0, left - x0:right - x0] = row[0, left - x:right - x]
 
@@ -322,6 +324,8 @@ class ExactPerspectiveGpu:
         self.device_name = ''
         self.gpu_warps = 0
         self.cpu_warps = 0
+        self._gpu_by_method = Counter()
+        self._cpu_by_method = Counter()
 
     def close(self):
         buffers, self._buffers = self._buffers, None
@@ -358,11 +362,17 @@ class ExactPerspectiveGpu:
             buffers = self._buffers
         return buffers[2:]
 
-    def note_cpu_warp(self):
+    @property
+    def devices_by_method(self):
+        return {method: ('CPU / ' if self._cpu_by_method[method] else '') + self.device_name
+                for method in self._gpu_by_method if method}
+
+    def note_cpu_warp(self, method=''):
         with _queue_lock:
             self.cpu_warps += 1
+            self._cpu_by_method[method] += 1
 
-    def warp(self, image, matrix, dsize, should_cancel, *, bgr_rev=False, region=None):
+    def warp(self, image, matrix, dsize, should_cancel, *, bgr_rev=False, region=None, method=''):
         """Return exact pixels when the device, layout and geometry are admitted.
 
         ``bgr_rev`` reads a contiguous RGB frame as its reversed BGR view.
@@ -412,6 +422,7 @@ class ExactPerspectiveGpu:
                     self.device_name = opencl_device_name(self._device)
                     _log.info('Deferred Lanczos4 warp on %s', self.device_name)
                 self.gpu_warps += 1
+                self._gpu_by_method[method] += 1
                 return result
             except Exception as exc:
                 if queue is not None:
@@ -444,7 +455,7 @@ class ExactPerspectiveGpu:
         snapshot = policy.ResourceSnapshot(free_vram=memory[0], total_vram=memory[1])
         budget = min(_MAX_WORKSPACE_BYTES, policy.vram_budget(snapshot))
         plan = _band_plan(inverse, rect, image.shape[:2], channels, itemsize, budget,
-                          int(self._device.max_mem_alloc_size), weights.size + _REPAIR_BYTES)
+                          int(self._device.max_mem_alloc_size), weights8.size + weights16.size + _REPAIR_BYTES)
         if plan is None:
             self._disabled = True
             return None
@@ -484,6 +495,6 @@ class ExactPerspectiveGpu:
         if edges[0] > _REPAIR_LIMIT:
             return None
         if edges[0]:
-            _repair_rounding_edges(image[..., ::-1] if bgr_rev else image, inverse, result,
-                                   edges[1:1 + edges[0]], rect, dsize, should_cancel)
+            _repair_rounding_edges(image, inverse, result, edges[1:1 + edges[0]], rect,
+                                   dsize, should_cancel, bgr_rev=bgr_rev)
         return result

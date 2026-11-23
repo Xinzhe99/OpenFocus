@@ -149,10 +149,12 @@ def _iter_ordered(worker_fn, items, workers=None, should_cancel=None):
         return
     from collections import deque
     from threading import local
+    from core.registration import carry_warp_accelerator
 
     state = local()
     scratch = capture_scratch()
 
+    @carry_warp_accelerator
     def run_item(item):
         check_cancel()
         return worker_fn(item, state)
