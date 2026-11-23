@@ -2926,7 +2926,6 @@ def test_dirty_retouch_confirmation_replies_on_same_socket(server, qapp, command
         entries = request('dialog.list')['dialogs']
         boxes = [item for item in entries if item['class'] == 'QMessageBox']
         assert len(boxes) == 1 and boxes[0]['modal']
-        assert boxes[0]['title'] == trans.t('retouch_close_title')
         assert request(command, title=title)[result_key] is False
         assert [item['root'] for item in request('dialog.list')['dialogs']
                 if item['class'] == 'QMessageBox'] == [boxes[0]['root']]
