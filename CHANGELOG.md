@@ -102,6 +102,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   A/B/C. Prefetch one frame when the job budget allows, and cap GPU OpenFocus
   C color readback buffers at 8 MiB. Use tiled OpenCL transposes when the
   device and compiled kernel support the work-group size.
+- Keep wipe divider repaints on the canvas with desktop stylesheets applied.
 - Stream whole-image OpenFocus B when optional stack snapshots do not fit
   on disk and the streamed job fits the available RAM.
 - Write neural input grayscale directly into model planes. Reduce V1 color

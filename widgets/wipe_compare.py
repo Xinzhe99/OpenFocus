@@ -7,7 +7,7 @@ dragging the divider (or the handle) changes the split position.
 import math
 from typing import Optional
 
-from PyQt6.QtCore import QObject, QPointF, QRect, QRectF, Qt
+from PyQt6.QtCore import QEvent, QObject, QPointF, QRect, QRectF, Qt
 from PyQt6.QtGui import QColor, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import QApplication, QWidget
 
@@ -192,6 +192,13 @@ class WipeCompareWidget(QWidget):
         for side in sides:
             side.set_source(None)
         return any(side.worker is not None and side.worker.isRunning() for side in sides)
+
+    def event(self, event):
+        handled = super().event(event)
+        if event.type() in (QEvent.Type.Polish, QEvent.Type.StyleChange):
+            # The stylesheet can clear this flag, but paintEvent fills the canvas.
+            self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent)
+        return handled
 
     def hideEvent(self, event):
         for side in (self._left_regions, self._right_regions):

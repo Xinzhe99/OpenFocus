@@ -168,6 +168,43 @@ def test_wipe_does_not_stretch_different_image_dimensions(qapp, monkeypatch, the
     assert _canvas_color(grab, 160, 180) == _canvas_color(grab, 5, 5)
 
 
+@pytest.mark.parametrize('theme', ['light', 'dark', 'gray'])
+def test_wipe_paints_opaque_canvas_under_transparent_previews(qapp, monkeypatch, theme):
+    from PyQt6.QtGui import QColor, QImage, QPixmap
+    from PyQt6.QtWidgets import QWidget
+    from ui import styles
+
+    monkeypatch.setattr(styles, 'CURRENT_THEME', theme)
+    parent = QWidget()
+    parent.setStyleSheet(styles.build_stylesheet(theme))
+    widget = WipeCompareWidget(parent)
+    widget.ensurePolished()
+    assert widget.testAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent)
+    parent.setStyleSheet(styles.build_stylesheet(theme, font_size=12))
+    assert widget.testAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent)
+    widget.resize(240, 160)
+    preview = QPixmap(80, 40)
+    preview.fill(Qt.GlobalColor.transparent)
+    widget.set_images(preview, preview, 'A', 'B')
+    expected = QColor(styles.tokens()['wipeCanvas'])
+
+    def render():
+        image = QImage(widget.size(), QImage.Format.Format_ARGB32_Premultiplied)
+        image.fill(Qt.GlobalColor.transparent)
+        widget.render(image, flags=QWidget.RenderFlag.DrawChildren)
+        return image
+
+    comparison = render()
+    assert comparison.pixelColor(0, 0) == expected
+    assert comparison.pixelColor(60, 80) == expected
+    assert comparison.pixelColor(180, 80) == expected
+    widget.set_comparison_enabled(False)
+    assert render().pixelColor(120, 80) == expected
+    widget.clear()
+    assert render().pixelColor(120, 80) == expected
+    widget.close()
+
+
 def test_wipe_uses_aligned_trimmed_frames_and_source_indices(qapp):
     aligned = [np.full((72, 90, 3), (0, 0, 100), np.uint8),
                np.full((72, 90, 3), (0, 0, 210), np.uint8)]
