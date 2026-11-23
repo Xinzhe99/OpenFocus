@@ -166,8 +166,6 @@ def test_tiled_child_plan_is_serial(monkeypatch):
                     execution_plan=execution_plan, **callbacks)
 
     monkeypatch.setattr(module, "_dtcwt_impl", observed)
-    monkeypatch.setattr(
-        "core.multi_focus_fusion._dtcwt_impl", observed, raising=False)
     # Admit a 32px tile but not a 48px whole transform. The decision must
     # reflect the actual transform workspace, not an N-frame activity stack.
     tile_fixed, tile_worker = module.estimate_working_set(32, 32, 4, 3)
