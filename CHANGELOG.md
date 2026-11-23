@@ -132,6 +132,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   from packed source pixels. Log the device and admission limit on CPU fallback.
 - Count prepared frames and reuse OpenFocus B scratch data for matching renders
   in the same session, including the aligned depth validity mask.
+- Screen unsupported extensions before resolving paths in Batch Image
+  Converter, speeding up imports from folders with sidecar files.
 - Bound PyTorch CUDA and MPS attention workspace while retaining all focus
   layers. Reuse CUDA worker admission on completed tile sizes and reuse logits
   storage for probabilities. StackMFF V2 reads only contributing color strips.

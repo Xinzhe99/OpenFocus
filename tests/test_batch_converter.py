@@ -261,11 +261,12 @@ def test_converter_real_drop_expands_folders_orders_and_reports_skips(
         qapp, converter_dialog, tmp_path, target):
     from pathlib import Path
     from PyQt6.QtCore import QUrl
+    from locales import trans
     folder = tmp_path / 'images'
     folder.mkdir()
     for name in ('frame10.PNG', 'frame2.png', 'notes.txt'):
         (folder / name).touch()
-    nested = folder / 'nested'
+    nested = folder / 'nested.PNG'
     nested.mkdir()
     (nested / 'not-a-direct-child.png').touch()
     first = tmp_path / 'frame1.png'
@@ -280,6 +281,8 @@ def test_converter_real_drop_expands_folders_orders_and_reports_skips(
     assert [Path(path).name for path in dialog.sources] == ['frame1.png', 'frame2.png', 'frame10.PNG']
     assert dialog.list.count() == 3
     assert dialog.empty_hint.isHidden()
+    assert dialog.summary.text() == trans.t('converter_import_status').format(
+        added=2, skipped=5, total=3)
 
 
 def test_converter_picker_and_drop_share_order_dedup_and_empty_feedback(
