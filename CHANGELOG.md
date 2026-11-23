@@ -35,6 +35,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Write disk-backed frames, preview pixels and imported video frames to scratch
   in chunks up to 8 MiB, with bounded packing of strided images and exact pixel
   bytes in C order.
+- Reuse the open stack's import mode when appending a folder, skipping the
+  mode-selection scan before the loader starts.
 - Compute deferred perspective, OpenFocus alignment, and OpenFocus translation
   crops directly over the requested ROI or tile, reuse direct-mapped RGB TIFF
   digests within a render scope, reuse adjacent-pair pyramids, and fuse
