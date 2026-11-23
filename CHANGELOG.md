@@ -23,6 +23,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Sign in from the desktop app through your browser, including when the
   browser is signed out of OpenFocus. The app also offers direct email sign-in
   while the browser is open.
+- Verify desktop email sign-in in your browser, then confirm the email link on
+  your phone or computer to sign in automatically on the desktop.
 
 ### Changed
 - Apply deferred ECC warps for large 8-bit color stacks on supported OpenCL
