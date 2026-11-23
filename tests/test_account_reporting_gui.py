@@ -359,31 +359,70 @@ def test_old_or_unknown_terms_do_not_enable_automatic_reports(qapp, settings, ve
         window.deleteLater()
 
 
-@pytest.mark.parametrize(('mode', 'message'), [
-    ('poll-v1', 'account_wait_email_phone'),
-    ('loopback', 'account_wait_email'),
-])
-def test_email_status_matches_available_verification_mode(qapp, settings, mode, message):
+@pytest.mark.parametrize('cancelled', [False, True])
+def test_email_button_retries_browser_launch_and_polls_for_remote_approval(qapp, settings, monkeypatch, cancelled):
     from dialogs.account import AccountDialog
     from locales import trans
-    release = Event()
+    from tests.test_account_client import EMAIL_FLOW, EMAIL_PREPARED, MemoryStore, session
+    from utils import account_client as account
 
-    class Waiting(_Account):
-        def login(self, provider, **kwargs):
-            self.email_handoff_mode = mode
-            kwargs['on_started']()
+    entered, release = Event(), Event()
+    calls, opened = [], []
+
+    def open_browser(url):
+        opened.append(url)
+        return len(opened) == 2
+
+    def request(method, url, body=None, **kwargs):
+        endpoint = url.rsplit('/', 1)[-1]
+        calls.append(endpoint)
+        if endpoint == 'terms':
+            return _Account().terms()
+        if endpoint == 'prepare':
+            assert body['email'] == 'user@example.test'
+            assert body['terms_version'] == '2026-11-11'
+            assert 'redirect_uri' not in body
+            return EMAIL_PREPARED
+        if endpoint == 'cancel':
+            assert body == EMAIL_FLOW
+            return {}
+        if endpoint == 'poll':
+            assert body['code_verifier']
+            entered.set()
             assert release.wait(5)
-            return super().login(provider, **kwargs)
+            return {'status': 'approved', 'code': 'remote-code'}
+        assert endpoint == 'exchange' and body['code'] == 'remote-code'
+        return session()
 
+    monkeypatch.setattr(account.webbrowser, 'open', open_browser)
+    store = MemoryStore()
     window = QWidget()
-    window._account_client = Waiting()
+    window._account_client = account.AccountClient(store=store, request=request)
     dialog = AccountDialog(window)
     try:
-        dialog.terms.setChecked(True)
-        dialog.email.setText('user@example.test')
+        dialog.email.setText(' user@example.test ')
         dialog.email_button.click()
-        _wait(qapp, lambda: dialog.status.text().startswith(trans.t(message)))
+        assert dialog.status.text() == trans.t('account_terms_required')
+        assert not calls
+        dialog.terms.setChecked(True)
+        dialog.email_button.click()
+        _wait(qapp, lambda: dialog._job is None)
+        assert dialog.status.text() == trans.t('account_generic_error')
+        assert calls == ['terms', 'prepare', 'cancel']
+        assert not store.load()
+
+        dialog.email_button.click()
+        _wait(qapp, lambda: entered.is_set() and dialog.status.text().startswith(trans.t('account_wait_email')))
         assert trans.t('account_switch_hint') in dialog.status.text()
+        dialog.email_button.click()
+        if cancelled:
+            dialog.reject()
+        release.set()
+        _wait(qapp, lambda: dialog._job is None)
+        assert calls == ['terms', 'prepare', 'cancel', 'terms', 'prepare', 'poll',
+                         'cancel' if cancelled else 'exchange']
+        assert window._account_client.is_signed_in() is not cancelled
+        assert store.load() == (None if cancelled else session())
     finally:
         release.set()
         _wait(qapp, lambda: dialog._job is None)

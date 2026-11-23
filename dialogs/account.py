@@ -385,18 +385,15 @@ class AccountDialog(QDialog):
     def _started(self):
         if (self.sender() is not None and self.sender() is not self._job) or self._cancel.is_set():
             return
-        if self._operation == 'email':
-            key = ('account_wait_email_phone'
-                   if getattr(self.client, 'email_handoff_mode', None) == 'poll-v1'
-                   else 'account_wait_email')
-        else:
-            key = 'account_wait_browser'
+        key = 'account_wait_email' if self._operation == 'email' else 'account_wait_browser'
         self.status.setText(trans.t(key) + '\n' + trans.t('account_switch_hint'))
         self.status.show()
 
     def _sign_in(self, provider):
         if self.client is None or (self._job is not None and
                 self._operation not in _SIGN_IN_OPERATIONS):
+            return
+        if provider == 'email' and self._operation == 'email' and not self._cancel.is_set():
             return
         if not self.terms.isChecked():
             self.status.setText(trans.t('account_terms_required'))
@@ -505,6 +502,8 @@ class AccountDialog(QDialog):
     def _error_text(error):
         if error.category == 'not_signed_in':
             return trans.t('account_browser_not_signed_in')
+        if error.category == 'email_verification_unavailable':
+            return trans.t('account_generic_error') + '\n' + trans.t('account_switch_hint')
         if error.category in ('terms_required', 'invalid_terms_version'):
             key = 'account_terms_required'
         elif error.category == 'verified_email_required':
@@ -519,7 +518,7 @@ class AccountDialog(QDialog):
             key = 'account_terms_unavailable'
         elif error.category in ('network', 'loopback'):
             key = 'account_network_error'
-        elif error.category == 'http' and error.status == 429:
+        elif error.category == 'rate_limited' or (error.category == 'http' and error.status == 429):
             key = 'account_rate_limited'
         elif error.category == 'http' and error.status == 403:
             key = 'account_disabled'
