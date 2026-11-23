@@ -233,6 +233,78 @@ def _orient_tiff_pixels(page, image):
     return np.ascontiguousarray(transform(image)) if transform is not None else image
 
 
+# Rows exchanged at once while turning stored RGB samples into BGR in place.
+_TIFF_SWAP_BAND_BYTES = 4 << 20
+
+
+def _stored_tiff_layout(page):
+    """Where a TIFF page's stored samples are, or None when OpenCV must decode it.
+
+    Admits an uncompressed, unpredicted page of uint8 or uint16 samples in
+    contiguous gray or RGB strips that follow each other in the file in row
+    order, each holding whole rows, with no extra sample, reversed fill order
+    or orientation transform. OpenCV returns such a page as stored, with red
+    and blue exchanged for RGB. The result is (offset, shape, dtype, rgb).
+    """
+    photometric = int(page.photometric)
+    orientation = page.tags.get('Orientation')
+    bits = page.bitspersample
+    if (int(page.compression) != 1 or int(page.predictor) != 1 or page.is_tiled
+            or int(page.planarconfig) != 1 or int(page.fillorder) != 1
+            or page.extrasamples or photometric not in (1, 2)
+            or page.samplesperpixel != (3 if photometric == 2 else 1)
+            or page.dtype.kind != 'u' or page.dtype.itemsize not in (1, 2)
+            or any(int(bit) != page.dtype.itemsize * 8 for bit in np.atleast_1d(bits))
+            or (orientation is not None and int(orientation.value) != 1)):
+        return None
+    rows, per_strip = int(page.imagelength), int(page.rowsperstrip)
+    offsets = np.asarray(page.dataoffsets, dtype=np.int64)
+    counts = np.asarray(page.databytecounts, dtype=np.int64)
+    row_bytes = int(page.imagewidth) * page.samplesperpixel * page.dtype.itemsize
+    if not len(offsets) or min(rows, per_strip, row_bytes) < 1:
+        return None
+    strip_rows = np.minimum(per_strip, rows - np.arange(len(offsets)) * per_strip)
+    if (np.any(strip_rows <= 0) or np.any(counts != row_bytes * strip_rows)
+            or np.any(offsets[1:] != offsets[:-1] + counts[:-1])):
+        return None
+    dtype = page.dtype.newbyteorder(page.parent.byteorder)
+    return int(offsets[0]), tuple(page.shape), dtype, photometric == 2
+
+
+def _exchange_red_blue(image):
+    """Turn stored RGB samples into BGR in place, one band of rows at a time."""
+    rows = max(1, _TIFF_SWAP_BAND_BYTES // (image.shape[1] * 3 * image.dtype.itemsize))
+    band = np.empty((min(rows, image.shape[0]),) + image.shape[1:], image.dtype)
+    for start in range(0, image.shape[0], rows):
+        stop = min(image.shape[0], start + rows)
+        cv2.cvtColor(image[start:stop], cv2.COLOR_RGB2BGR, dst=band[:stop - start])
+        np.copyto(image[start:stop], band[:stop - start])
+
+
+def _read_stored_tiff_page(path, layout):
+    """Read a plain uncompressed TIFF page's samples in one pass.
+
+    Returns None when the file ends before the page's last strip, so that the
+    decoder reports the truncated page.
+    """
+    offset, shape, dtype, rgb = layout
+    image = np.empty(shape, dtype.newbyteorder('='))
+    view = memoryview(image).cast('B')
+    with open(path, 'rb', buffering=0) as stream:
+        stream.seek(offset)
+        done = 0
+        while done < view.nbytes:
+            got = stream.readinto(view[done:])
+            if not got:
+                return None
+            done += got
+    if not dtype.isnative:
+        image = image.view(dtype).byteswap(inplace=True).view(dtype.newbyteorder('='))
+    if rgb:
+        _exchange_red_blue(image)
+    return image
+
+
 def validate_tiff_page(path, page):
     """Validate display TIFF metadata only; return whether samples are CMYK.
 
@@ -299,12 +371,15 @@ def decode_tiff_page(path, page_index=None, *, preserve_grayscale=False):
             image = cmyk_to_bgr(PILImage.fromarray(samples, 'CMYK'), path,
                                 profile_tag.value if profile_tag is not None else b'')
             return _orient_tiff_pixels(page, image)
-    data = np.memmap(path, dtype=np.uint8, mode='r')
-    success, decoded = cv2.imdecodemulti(data, flags=cv2.IMREAD_UNCHANGED,
-                                        range=(page_index, page_index + 1))
-    if not success or len(decoded) != 1:
-        raise ValueError(f"Could not decode TIFF page {page_index + 1}: {path}")
-    image = decoded[0]
+        stored = _stored_tiff_layout(page)
+    image = _read_stored_tiff_page(path, stored) if stored is not None else None
+    if image is None:
+        data = np.memmap(path, dtype=np.uint8, mode='r')
+        success, decoded = cv2.imdecodemulti(data, flags=cv2.IMREAD_UNCHANGED,
+                                            range=(page_index, page_index + 1))
+        if not success or len(decoded) != 1:
+            raise ValueError(f"Could not decode TIFF page {page_index + 1}: {path}")
+        image = decoded[0]
     _validate_depth(path, image.dtype)
     if _has_transparency(image):
         raise UnsupportedTransparency(f"Transparent TIFF pages are unsupported: {path}")
