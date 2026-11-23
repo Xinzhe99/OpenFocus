@@ -136,6 +136,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and preserve their output order.
 
 ### Fixed
+- Process large Auto Background stacks at full resolution by moving focus
+  tables to scratch storage when RAM is limited and reading aligned frames and
+  validity masks one at a time.
 - Retain OpenFocus B's prepared images when switching fusion methods with
   compatible source and registration settings.
 - Keep the desktop control connection responsive while Retouch asks whether

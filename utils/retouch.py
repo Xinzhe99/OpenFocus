@@ -888,42 +888,20 @@ class RetouchDocument:
 
     def _compute_background(self, stacked, preset, clean, keep_soft_parts,
                             cancelled, progress, use_gpu):
-        from core.background_fill import background_working_set_bytes, replace_background
-        from core.resource_policy import heavy_job, require_memory
-
-        count = len(self.frames)
-        pixels = self.width * self.height
-        aligned = sum(frame.aligned for frame in self.frames)
-        required = background_working_set_bytes(self.height, self.width, count)
-        if aligned:
-            required += pixels * (aligned + 16)  # Retained masks and one labelling workspace.
+        from core.background_fill import replace_background
+        from core.resource_policy import heavy_job
 
         if progress is not None:
             progress(0., 'waiting for processing')
         with heavy_job(cancelled):
-            require_memory(required)
-            if progress is not None:
-                progress(0., 'preparing source frames')
-            self.resolve_all_sources(cancelled, progress=None if progress is None else
-                                     lambda fraction: progress(0.12 * fraction, 'preparing source frames'))
-            masks = []
-            for index, frame in enumerate(self.frames):
-                if cancelled is not None and cancelled():
-                    from core.background_fill import BackgroundFillCancelled
-                    raise BackgroundFillCancelled()
-                mask = (self._mask_cache[index] if index in self._mask_cache else
-                        frame.valid_mask(should_cancel=cancelled))
-                masks.append(mask)
-                if progress is not None:
-                    progress(0.12 + 0.10 * (index + 1) / count, 'checking aligned frames')
-
             def analyse(fraction, message):
                 if message != 'done':
-                    progress(0.22 + 0.74 * fraction, message)
+                    progress(0.96 * fraction, message)
 
             return replace_background(
                 [frame.image for frame in self.frames], stacked, preset=preset,
-                valid_masks=masks, clean=clean, keep_soft_parts=keep_soft_parts,
+                aligned=[frame.aligned for frame in self.frames], clean=clean,
+                keep_soft_parts=keep_soft_parts,
                 composite_onto=None if stacked is self.base and not self.is_dirty else self.working,
                 cancelled=cancelled, progress=analyse if progress is not None else None,
                 use_gpu=use_gpu)

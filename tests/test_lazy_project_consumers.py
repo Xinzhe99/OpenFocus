@@ -295,14 +295,14 @@ def test_retouch_whole_stack_operations_resolve_sources_when_requested(tmp_path,
 
     calls.clear()
     other = retouch.prepare_retouch_document(pixels, context)
-    def stop_after_resolution(images, *_args, **_kwargs):
-        assert calls == [1, 1]
-        for image in images:
-            np.testing.assert_array_equal(image, pixels)
+    def stop_at_analysis(images, *_args, **_kwargs):
+        assert calls == []
+        assert all(image is original for image, original in zip(images, processed, strict=True))
         raise RuntimeError("analysis reached")
-    monkeypatch.setattr('core.background_fill.replace_background', stop_after_resolution)
+    monkeypatch.setattr('core.background_fill.replace_background', stop_at_analysis)
     with pytest.raises(RuntimeError, match="analysis reached"):
         other.auto_background()
+    assert all(item.image is original for item, original in zip(other.context.frames, processed, strict=True))
 
 
 def test_retouch_resolves_selected_processed_frame_and_replays_checkpoint(tmp_path):
