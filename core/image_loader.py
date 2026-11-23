@@ -235,6 +235,12 @@ def _orient_tiff_pixels(page, image):
 
 # Rows exchanged at once while turning stored RGB samples into BGR in place.
 _TIFF_SWAP_BAND_BYTES = 4 << 20
+# OpenCV enforces these defaults before allocating a decoded image.
+_TIFF_DECODE_MAX_DIMENSION = 1 << 20
+_TIFF_DECODE_MAX_PIXELS = 1 << 30
+_TIFF_DECODE_LIMIT_OVERRIDES = (
+    'OPENCV_IO_MAX_IMAGE_WIDTH', 'OPENCV_IO_MAX_IMAGE_HEIGHT', 'OPENCV_IO_MAX_IMAGE_PIXELS',
+)
 
 
 def _stored_tiff_layout(page):
@@ -247,28 +253,36 @@ def _stored_tiff_layout(page):
     and blue exchanged for RGB. The result is (offset, shape, dtype, rgb).
     """
     photometric = int(page.photometric)
+    rgb = photometric == 2
     orientation = page.tags.get('Orientation')
-    bits = page.bitspersample
     if (int(page.compression) != 1 or int(page.predictor) != 1 or page.is_tiled
             or int(page.planarconfig) != 1 or int(page.fillorder) != 1
             or page.extrasamples or photometric not in (1, 2)
-            or page.samplesperpixel != (3 if photometric == 2 else 1)
+            or page.samplesperpixel != (3 if rgb else 1)
             or page.dtype.kind != 'u' or page.dtype.itemsize not in (1, 2)
-            or any(int(bit) != page.dtype.itemsize * 8 for bit in np.atleast_1d(bits))
+            or page.bitspersample != page.dtype.itemsize * 8
             or (orientation is not None and int(orientation.value) != 1)):
         return None
-    rows, per_strip = int(page.imagelength), int(page.rowsperstrip)
-    offsets = np.asarray(page.dataoffsets, dtype=np.int64)
-    counts = np.asarray(page.databytecounts, dtype=np.int64)
-    row_bytes = int(page.imagewidth) * page.samplesperpixel * page.dtype.itemsize
-    if not len(offsets) or min(rows, per_strip, row_bytes) < 1:
+    rows, width, per_strip = int(page.imagelength), int(page.imagewidth), int(page.rowsperstrip)
+    row_bytes = width * page.samplesperpixel * page.dtype.itemsize
+    shape = (rows, width, 3) if rgb else (rows, width)
+    if (min(rows, width, per_strip) < 1 or tuple(page.shape) != shape
+            or max(rows, width) > _TIFF_DECODE_MAX_DIMENSION or rows * width > _TIFF_DECODE_MAX_PIXELS
+            or (rgb and row_bytes > _TIFF_SWAP_BAND_BYTES)
+            or any(name in os.environ for name in _TIFF_DECODE_LIMIT_OVERRIDES)):
         return None
-    strip_rows = np.minimum(per_strip, rows - np.arange(len(offsets)) * per_strip)
-    if (np.any(strip_rows <= 0) or np.any(counts != row_bytes * strip_rows)
-            or np.any(offsets[1:] != offsets[:-1] + counts[:-1])):
+
+    offsets, counts = page.dataoffsets, page.databytecounts
+    strip_count = (rows + per_strip - 1) // per_strip
+    if len(offsets) != strip_count or len(counts) != strip_count or offsets[0] <= 0:
         return None
-    dtype = page.dtype.newbyteorder(page.parent.byteorder)
-    return int(offsets[0]), tuple(page.shape), dtype, photometric == 2
+    first_offset = offset = int(offsets[0])
+    for index, (start, size) in enumerate(zip(offsets, counts)):
+        strip_rows = min(per_strip, rows - index * per_strip)
+        if start != offset or size != row_bytes * strip_rows:
+            return None
+        offset += size
+    return first_offset, shape, page.dtype.newbyteorder(page.parent.byteorder), rgb
 
 
 def _exchange_red_blue(image):
@@ -281,23 +295,24 @@ def _exchange_red_blue(image):
         np.copyto(image[start:stop], band[:stop - start])
 
 
-def _read_stored_tiff_page(path, layout):
+def _read_stored_tiff_page(stream, layout):
     """Read a plain uncompressed TIFF page's samples in one pass.
 
     Returns None when the file ends before the page's last strip, so that the
     decoder reports the truncated page.
     """
     offset, shape, dtype, rgb = layout
+    if offset + math.prod(shape) * dtype.itemsize > stream.size:
+        return None
     image = np.empty(shape, dtype.newbyteorder('='))
     view = memoryview(image).cast('B')
-    with open(path, 'rb', buffering=0) as stream:
-        stream.seek(offset)
-        done = 0
-        while done < view.nbytes:
-            got = stream.readinto(view[done:])
-            if not got:
-                return None
-            done += got
+    stream.seek(offset)
+    done = 0
+    while done < view.nbytes:
+        got = stream.readinto(view[done:])
+        if not got:
+            return None
+        done += got
     if not dtype.isnative:
         image = image.view(dtype).byteswap(inplace=True).view(dtype.newbyteorder('='))
     if rgb:
@@ -371,8 +386,9 @@ def decode_tiff_page(path, page_index=None, *, preserve_grayscale=False):
             image = cmyk_to_bgr(PILImage.fromarray(samples, 'CMYK'), path,
                                 profile_tag.value if profile_tag is not None else b'')
             return _orient_tiff_pixels(page, image)
-        stored = _stored_tiff_layout(page)
-    image = _read_stored_tiff_page(path, stored) if stored is not None else None
+        stored = _stored_tiff_layout(page) if page_index >= 0 else None
+        # Read from the same file handle used to inspect the strip layout.
+        image = _read_stored_tiff_page(tif.filehandle, stored) if stored is not None else None
     if image is None:
         data = np.memmap(path, dtype=np.uint8, mode='r')
         success, decoded = cv2.imdecodemulti(data, flags=cv2.IMREAD_UNCHANGED,

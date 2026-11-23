@@ -115,6 +115,52 @@ def test_strips_out_of_order_go_through_libtiff(tmp_path, libtiff_decodes):
     assert len(libtiff_decodes) == 1
 
 
+@pytest.mark.parametrize('short_offsets', [False, True])
+def test_incomplete_strip_table_uses_decoder(tmp_path, libtiff_decodes, short_offsets):
+    pixels = _samples((12, 8), np.uint8, 11)
+    path = tmp_path / 'missing-strip.tif'
+    with tifffile.TiffWriter(path) as tif:
+        tif.write(pixels, photometric='minisblack', rowsperstrip=4)
+        tif.write(pixels, photometric='minisblack')
+    with tifffile.TiffFile(path) as tif:
+        order = tif.byteorder
+        counts = tif.pages[0].tags['StripByteCounts']
+        offsets = tif.pages[0].tags['StripOffsets']
+    data = bytearray(path.read_bytes())
+    struct.pack_into(order + 'I', data, counts.offset + 4, 2)
+    if int(counts.dtype) == 3:
+        # Two SHORT values fit inside the IFD entry's four-byte value field.
+        struct.pack_into(order + 'HH', data, counts.offset + 8, *counts.value[:2])
+    if short_offsets:
+        struct.pack_into(order + 'I', data, offsets.offset + 4, 2)
+    path.write_bytes(data)
+
+    success, original = cv2.imdecodemulti(np.frombuffer(data, np.uint8),
+                                          flags=cv2.IMREAD_UNCHANGED, range=(0, 1))
+    if success:
+        np.testing.assert_array_equal(decode_tiff_page(path, 0, preserve_grayscale=True), original[0])
+    else:
+        with pytest.raises(ValueError, match='Could not decode TIFF page 1'):
+            decode_tiff_page(path, 0)
+    assert libtiff_decodes == [(0, 1)]
+
+
+def test_tiff_width_limit_is_still_enforced(tmp_path, libtiff_decodes):
+    path = tmp_path / 'wide.tif'
+    tifffile.imwrite(path, np.zeros((1, (1 << 20) + 1), np.uint8), photometric='minisblack')
+    with pytest.raises(cv2.error, match='CV_IO_MAX_IMAGE_WIDTH'):
+        decode_tiff_page(path)
+    assert libtiff_decodes == [(0, 1)]
+
+
+def test_negative_page_index_keeps_decoder_error(tmp_path, libtiff_decodes):
+    path = tmp_path / 'negative-index.tif'
+    tifffile.imwrite(path, np.zeros((12, 8), np.uint8), photometric='minisblack')
+    with pytest.raises(cv2.error):
+        decode_tiff_page(path, -1)
+    assert libtiff_decodes == [(-1, 0)]
+
+
 def test_truncated_page_is_reported_by_the_decoder(tmp_path, libtiff_decodes):
     path = tmp_path / 'truncated.tif'
     tifffile.imwrite(path, _samples((23, 9, 3), np.uint16, 7), photometric='rgb')
