@@ -91,6 +91,13 @@ class SourceManager(QObject):
                 or getattr(batch, "_worker", None) is not None
                 or getattr(batch, "_thread", None) is not None)
 
+    def _render_blocks_load(self):
+        render = getattr(self.window, "render_manager", None)
+        return (getattr(render, "worker", None) is not None
+                or getattr(render, "_pending_storage", None) is not None
+                or (getattr(render, "_compare_mode", False)
+                    and getattr(render, "_render_after_load", None) is None))
+
     def reset_current_stack(self):
         window = self.window
         baseline = self._stack_baseline
@@ -364,6 +371,15 @@ class SourceManager(QObject):
             show_warning_box(window, trans.t("msg_warning"), trans.t("msg_load_in_progress"))
             if on_error is not None:
                 on_error(trans.t("msg_load_in_progress"))
+            return
+        if self._render_blocks_load():
+            message = trans.t("load_render_busy")
+            if on_error is not None:
+                on_error(message)
+            else:
+                window.statusBar().showMessage(message, 5000)
+            if on_finished is not None:
+                on_finished(message)
             return
 
         def reject_start(message):

@@ -293,7 +293,7 @@ def _activity_frames(frames, img_resize, kernel_size, thread_count, should_cance
             run_bands(gray.shape[0], 128, activity)
         del gray, fine
         activity = _filter(diff, coarse_radius, cancel, overwrite=True)
-        return (activity, detail) if preserve_detail else activity
+        return activity, detail
 
     return _ordered_frame_results(len(frames), produce, workers, should_cancel)
 
@@ -302,7 +302,7 @@ def _activity_frames(frames, img_resize, kernel_size, thread_count, should_cance
 def depth_map(frames, img_resize, kernel_size, smoothing, should_cancel,
               progress_callback=None, thread_count=1, *, return_codes=False,
               half_resolution=False, preserve_detail=False, feather: int = 0,
-              use_gpu=False, device_callback=None, _gpu=None):
+              use_gpu=False, device_callback=None, _gpu=None, _live_preview=None):
     """Estimate depth with the specified integer feather, defaulting to F0."""
     _validate_feather(feather)
     from fusion_methods.openfocus_ab import _check_cancel
@@ -340,7 +340,7 @@ def depth_map(frames, img_resize, kernel_size, smoothing, should_cancel,
         try:
             accelerated = gpu.full_depth(frames, shape, img_resize, kernel_size,
                                          smoothing, feather, should_cancel,
-                                         progress_callback)
+                                         progress_callback, live_preview=_live_preview)
         except GpuError as exc:
             gpu.failed = True
             log_fallback(exc)
@@ -378,10 +378,9 @@ def depth_map(frames, img_resize, kernel_size, smoothing, should_cancel,
                                 should_cancel, half_resolution=half_resolution,
                                 preserve_detail=preserve_detail, gpu=gpu)
     try:
-        for index, activity in produced:
+        for index, (activity, detail) in produced:
             cancel()
             if preserve_detail:
-                activity, detail = activity
                 if detail_best is None:
                     detail_best = detail
                     detail_second = create_frame(detail.shape, np.uint16)
@@ -419,6 +418,8 @@ def depth_map(frames, img_resize, kernel_size, smoothing, should_cancel,
                     select_activity_rows(activity, best, depth, votes, code,
                                          reciprocal, start, stop)
                 run_bands(activity.shape[0], 128, select)
+            if _live_preview is not None:
+                _live_preview.show_positions(depth, index, len(frames), step * (len(frames) - 1))
             if progress_callback is not None:
                 progress_callback(index, len(frames))
             del activity

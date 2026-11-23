@@ -201,10 +201,16 @@ class TestAlignCache:
         return sorted(os.listdir(folder))
 
     def test_round_trip(self, stack_dir):
+        from core.render_context import RegistrationDispatch
+
         names = self.names(stack_dir)
         frames = [np.full((8, 8, 3), 9, np.uint8) for _ in names]
-        align_cache.save_aligned(stack_dir, names, frames, ('homography',), 1024, 1.0)
-        loaded = align_cache.load_aligned(stack_dir, names, ('homography',), 1024, 1.0)
+        dispatch = (RegistrationDispatch('homography', 'CPU', 'CPU'),)
+        align_cache.save_aligned(stack_dir, names, frames, ('homography',), 1024, 1.0,
+                                 registration_dispatch=dispatch)
+        loaded, saved_dispatch = align_cache.load_aligned(
+            stack_dir, names, ('homography',), 1024, 1.0, with_dispatch=True)
+        assert saved_dispatch == dispatch
         assert loaded is not None and len(loaded) == 3
         assert np.array_equal(loaded[0], frames[0])
 
@@ -287,6 +293,8 @@ class TestAlignCacheIsNotOnTheGuiThread:
             "align_options": ('homography',), "downscale_width": 1024,
         })
         loaded = worker._load_cached_alignment()
+        assert worker.registration_details.reuse == 'disk_pixels'
+        assert worker.registration_details.dispatch == ()
         assert loaded is not None and len(loaded) == len(frames)
         assert np.array_equal(loaded[0], aligned[0])
 

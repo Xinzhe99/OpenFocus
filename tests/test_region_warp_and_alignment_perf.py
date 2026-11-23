@@ -365,6 +365,36 @@ def test_perspective_warp_region_matches_lanczos_rounding_edge(monkeypatch, use_
     np.testing.assert_array_equal(warp.warp_region(image, 64, 64, 1, 1), warp(image)[64:, 64:])
 
 
+def test_opencl_ecc_warp_keeps_lanczos_pixels_at_stripes_and_rounding_edges(monkeypatch):
+    from core import _perspective_gpu as perspective
+    from fusion_methods import _openfocus_gpu
+
+    if not perspective._cpu_contract() or cv2.ipp.useIPP_NotExact():
+        pytest.skip('requires the audited OpenCV Windows warp path')
+    cl = pytest.importorskip('pyopencl')
+    device = _openfocus_gpu._device(cl)
+    if (device is None or not device.endian_little
+            or 'cl_khr_fp64' not in device.extensions.split()
+            or not device.double_fp_config & cl.device_fp_config.ROUND_TO_NEAREST
+            or not _openfocus_gpu._free_vram(device)):
+        pytest.skip('requires an admitted OpenCL GPU with FP64')
+    monkeypatch.setattr(perspective, '_MIN_PIXELS', 0)
+    image = _textured_rgb(530, 785, dtype=np.uint8, seed=55)
+    p, b = 17 / 2048, 44691 / 131072
+    cases = (
+        (np.array([[.993, -.004, 5.37], [.003, 1.002, -3.81], [1e-5, -2e-5, 1]]), (777, 517)),
+        (np.array([[1, -b, 0], [0, 1, 0], [-p, p * b, 1]]), (65, 65)),
+    )
+    backend = perspective.ExactPerspectiveGpu()
+    try:
+        for matrix, dsize in cases:
+            expected = cv2.warpPerspective(image, matrix, dsize, flags=cv2.INTER_LANCZOS4)
+            actual = backend.warp(image, matrix, dsize, None)
+            np.testing.assert_array_equal(actual, expected)
+    finally:
+        backend.close()
+
+
 def test_full_perspective_fallback_obeys_memory_admission(monkeypatch):
     from core import resource_policy
 

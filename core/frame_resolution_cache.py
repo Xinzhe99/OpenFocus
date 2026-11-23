@@ -33,6 +33,8 @@ from utils.performance_profile import current as _profile
 logger = get_logger(__name__)
 
 RETAINED_FRAME_LIMIT_BYTES = 2 * 1024 ** 3
+# One explicitly prepared native stack may outlive the render on scratch disk.
+NATIVE_PREPARED_FRAME_LIMIT_BYTES = 16 * 1024 ** 3
 
 _active = []
 _active_lock = threading.RLock()

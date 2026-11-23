@@ -22,6 +22,7 @@ _KERNEL_NAMES = (
     'a_select_u8', 'a_select_u16',
     'a_select_u8_bgr_rev', 'a_select_u16_bgr_rev',
     'a_blend_low', 'a_out_u8', 'a_out_f32',
+    'sample_focus_plane',
 )
 
 _cache_lock = Lock()
@@ -30,7 +31,7 @@ _PROGRAM_CACHE = None
 
 def _get_or_build_program(cl, device):
     global _PROGRAM_CACHE
-    from fusion_methods._openfocus_gpu import _device_cache_key
+    from fusion_methods._openfocus_gpu import _PREVIEW_KERNEL, _device_cache_key
 
     key = _device_cache_key(device)
     with _cache_lock:
@@ -38,7 +39,7 @@ def _get_or_build_program(cl, device):
             return _PROGRAM_CACHE[1:]
         ctx = cl.Context(devices=[device])
         queue = cl.CommandQueue(ctx, device=device)
-        program = cl.Program(ctx, _A_K).build(
+        program = cl.Program(ctx, _A_K + _PREVIEW_KERNEL.format(type='int')).build(
             options=['-cl-fp32-correctly-rounded-divide-sqrt'],
         )
         kernels = {name: cl.Kernel(program, name) for name in _KERNEL_NAMES}
@@ -377,7 +378,8 @@ class GpuA:
             except Exception:
                 _invalidate_program_cache()
 
-    def fuse(self, frames, img_resize, radius, should_cancel=None, progress_callback=None):
+    def fuse(self, frames, img_resize, radius, should_cancel=None, progress_callback=None,
+             *, live_preview=None):
         from fusion_methods._openfocus_gpu import GpuError, _device_lock
 
         class CallbackFailure(BaseException):
@@ -393,8 +395,10 @@ class GpuA:
             _check_cancel(should_cancel)
         try:
             try:
-                return self._fuse_locked(frames, img_resize, radius, should_cancel,
-                                         progress if progress_callback is not None else None)
+                args = (frames, img_resize, radius, should_cancel,
+                        progress if progress_callback is not None else None)
+                return (self._fuse_locked(*args) if live_preview is None else
+                        self._fuse_locked(*args, live_preview=live_preview))
             except CallbackFailure as exc:
                 self._drain_queue()
                 raise exc.__cause__
@@ -411,12 +415,13 @@ class GpuA:
             self.ctx = None
             _device_lock.release()
 
-    def _fuse_locked(self, frames, img_resize, radius, should_cancel, progress_callback):
+    def _fuse_locked(self, frames, img_resize, radius, should_cancel, progress_callback,
+                     *, live_preview=None):
         from dataclasses import replace
         from core import resource_policy
         from core.source_frames import resolve_frame, without_source_cache_growth
         from fusion_methods._openfocus_gpu import (
-            GpuError, _free_vram, _iter_prefetched, _prepare_gpu_upload,
+            GpuError, _PreviewPlaneReader, _free_vram, _iter_prefetched, _prepare_gpu_upload,
         )
 
         shape = frames[0].shape
@@ -498,6 +503,10 @@ class GpuA:
         prefetch_budget = host_budget - need if unified_memory else host_budget
         prefetch = staging + source_peak <= prefetch_budget
         in_flight = False
+        reader = None
+        if live_preview is not None:
+            reader = _PreviewPlaneReader(self.cl, self.ctx, self.q, self.k['sample_focus_plane'],
+                                         (height, width), np.int32)
 
         def prepare_frame(_index, source, cancelled):
             _check_cancel(cancelled)
@@ -563,6 +572,11 @@ class GpuA:
                 # Bound queued frame uploads to one source, even for very deep stacks.
                 self.q.finish()
                 in_flight = False
+                if reader is not None and live_preview.tracks():
+                    _check_cancel(should_cancel)
+                    sample = reader.read(best_buf, live_preview)
+                    if sample is not None:
+                        live_preview.update_best(sample, index, total, sampled=True)
                 del host_src
                 if progress_callback is not None:
                     progress_callback(index + 1, total)

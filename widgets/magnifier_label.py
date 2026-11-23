@@ -82,6 +82,7 @@ class MagnifierLabel(QLabel):
         self._source_size = QSizeF()
         self._source_key = None
         self._source_regions = {}
+        self._source_region_failed = False
         self._region_requests = {}
         self._region_serial = 0
         self._zoom_factor = 1.0
@@ -230,6 +231,7 @@ class MagnifierLabel(QLabel):
             self.sourceRegionsReleased.emit(self._source_key)
         self._source_regions.clear()
         self._region_requests.clear()
+        self._source_region_failed = False
         self._base_pixmap = pixmap
         self._source_key = source_key
         self._composite_key = None
@@ -262,6 +264,12 @@ class MagnifierLabel(QLabel):
         self._composite_key = None
         self.update()
         return True
+
+    def set_source_region_failed(self, source_key):
+        """Keep showing the current preview after original detail fails."""
+        if source_key == self._source_key and self._base_pixmap is not None:
+            self._source_region_failed = True
+            self.update()
 
     def _fit_scale(self):
         if self._source_size.isEmpty():
@@ -297,7 +305,7 @@ class MagnifierLabel(QLabel):
         self.sourceRegionRequested.emit(self._source_key, request)
 
     def _request_source_regions(self):
-        if self._source_pixmap is not None or self._base_pixmap is None:
+        if self._source_pixmap is not None or self._base_pixmap is None or self._source_region_failed:
             return
         scale, x, y = self._get_layout_params()
         dpr = self.devicePixelRatioF()
@@ -365,6 +373,7 @@ class MagnifierLabel(QLabel):
         self._source_key = None
         self._source_regions.clear()
         self._region_requests.clear()
+        self._source_region_failed = False
         self._composite_key = None
         self._zoom_factor = 1.0
         self._pan_offset = QPointF(0, 0)
@@ -833,7 +842,7 @@ class MagnifierLabel(QLabel):
             required = source.intersected(region)
             device_scale = target.width() / source.width() * self.devicePixelRatioF()
 
-            def draw_region(pixels, domain):
+            def draw_region(pixels, domain, *, preview=False):
                 clipped = source.intersected(domain)
                 if pixels is None or pixels.isNull() or clipped.isEmpty():
                     return
@@ -845,15 +854,14 @@ class MagnifierLabel(QLabel):
                 sample = QRectF((clipped.x() - domain.x()) * sx, (clipped.y() - domain.y()) * sy,
                                 clipped.width() * sx, clipped.height() * sy)
                 painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform,
-                                      native_scale * self.devicePixelRatioF() < 1)
+                                      preview or device_scale < 1)
                 painter.drawPixmap(drawn, pixels, sample)
 
             complete = self._source_pixmap is not None or required.isEmpty()
             if self._source_pixmap is not None:
                 draw_region(self._source_pixmap, region)
             else:
-                # Reuse a decoded viewport or earlier crop only at sufficient
-                # sampling density. A camera thumbnail never supplies loupe pixels.
+                usable = []
                 density = min(1.0, device_scale)
                 for kind in ('view', 'loupe'):
                     cached = self._source_regions.get(kind)
@@ -863,18 +871,27 @@ class MagnifierLabel(QLabel):
                     if (pixels.width() + 0.5 < domain.width() * density
                             or pixels.height() + 0.5 < domain.height() * density):
                         continue
-                    draw_region(pixels, domain)
+                    usable.append(cached)
                     complete = complete or domain.contains(required)
+                if not complete:
+                    # Fill gaps with the current preview in source coordinates.
+                    draw_region(self._base_pixmap, region, preview=True)
+                for pixels, domain in usable:
+                    draw_region(pixels, domain)
             painter.setPen(QPen(QColor(255, 255, 255, 220), 2))
             painter.drawRect(target)
-            caption = (f"{device_scale * 100:.0f}% ({self._magnifier_zoom:.1f}x)"
-                       if complete else trans.t('native_detail_loading'))
+            if complete:
+                caption = f"{device_scale * 100:.0f}% ({self._magnifier_zoom:.1f}x)"
+            else:
+                caption = trans.t('label_preview' if self._source_region_failed else 'native_detail_loading')
             font = QFont()
             font.setPointSize(9)
             painter.setFont(font)
-            caption_width = min(target.width() - 8, painter.fontMetrics().horizontalAdvance(caption) + 12)
+            metrics = painter.fontMetrics()
+            caption = metrics.elidedText(caption, Qt.TextElideMode.ElideRight, int(target.width() - 20))
+            caption_width = metrics.horizontalAdvance(caption) + 12
             text_bg_rect = QRectF(target.x() + 4, target.y() + 4,
-                                  caption_width, painter.fontMetrics().height() + 2)
+                                  caption_width, metrics.height() + 2)
             painter.fillRect(text_bg_rect, QColor(0, 0, 0, 180))
             painter.setPen(QColor(255, 255, 255))
             painter.drawText(text_bg_rect, Qt.AlignmentFlag.AlignCenter, caption)

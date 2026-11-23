@@ -82,6 +82,7 @@ alignment_report = ContextVar('alignment_report', default=None)
 # lock; the owner budget is local to the source-producing context.
 _warp_threads_lock = threading.Lock()
 _deferred_warp_threads = ContextVar('deferred_warp_threads', default=None)
+_deferred_ecc_gpu = ContextVar('deferred_ecc_gpu', default=None)
 
 
 @contextmanager
@@ -91,6 +92,23 @@ def deferred_warp_threads(threads):
         yield
     finally:
         _deferred_warp_threads.reset(token)
+
+
+@contextmanager
+def deferred_ecc_warp_accelerator(enabled):
+    """Share one admitted OpenCL workspace across a prepared stack."""
+    if not enabled:
+        yield None
+        return
+    from core._perspective_gpu import ExactPerspectiveGpu
+
+    backend = ExactPerspectiveGpu()
+    token = _deferred_ecc_gpu.set(backend)
+    try:
+        yield backend
+    finally:
+        _deferred_ecc_gpu.reset(token)
+        backend.close()
 
 
 def exchange_opencv_threads(threads):
@@ -300,7 +318,7 @@ def _compute_valid_region_from_transforms(H_matrices, img_shape, margin=2):
 # ========== 单应性对齐算法实现（非线性） ==========
 
 
-def _align_homography_impl(input_source, output_path=None, img_filenames=None, downscale_width=1600, thread_count: int = 4, should_cancel=None, failure_policy='continue', *, defer_warps=False, plan_callback=None):
+def _align_homography_impl(input_source, output_path=None, img_filenames=None, downscale_width=1600, thread_count: int = 4, should_cancel=None, failure_policy='continue', *, defer_warps=False, plan_callback=None, dispatch_callback=None):
     """
     商业级图像对齐算法优化版
     特性：
@@ -479,6 +497,8 @@ def _align_homography_impl(input_source, output_path=None, img_filenames=None, d
         max_workers, should_cancel, defer_warps, method='homography', sources=source_identities,
         bounds=(top, bottom, left, right), plan_callback=plan_callback)
     _save_registration(aligned_images, output_path, img_filenames, should_cancel)
+    if dispatch_callback is not None:
+        dispatch_callback('homography', estimation='CPU', warp='CPU')
 
     return aligned_images
 
@@ -565,6 +585,7 @@ class PerspectiveWarp:
     matrix_dtype: str
     dsize: tuple
     should_cancel: object = None
+    method: str = ''
 
     def _is_integer_crop(self, src_shape, src_dtype):
         a, b, tx, c, d, ty, p, q, r = self.matrix
@@ -617,6 +638,12 @@ class PerspectiveWarp:
             # A resolved warp owns its pixels even without a render cache.
             return crop.copy(order='C')
         matrix = np.asarray(self.matrix, dtype=self.matrix_dtype).reshape(3, 3)
+        backend = _deferred_ecc_gpu.get() if self.method == 'ecc' else None
+        if backend is not None:
+            result = backend.warp(image, matrix, self.dsize, cancel_fn)
+            if result is not None:
+                return result
+            backend.note_cpu_warp()
         bgr_rev = _is_bgr_rev(image) and _native_kernels.available()
         src = image[..., ::-1] if bgr_rev else image
         threads = _warp_thread_budget()
@@ -875,7 +902,8 @@ class PerspectiveStage:
     def apply(self, images, *, defer_warps, should_cancel=None, workers=1):
         from core.source_frames import process_frame, resolve_frame
         self.validate_sources(images, should_cancel=should_cancel)
-        frames = [process_frame(image, PerspectiveWarp(source, matrix, dtype, self.dsize, should_cancel),
+        frames = [process_frame(image, PerspectiveWarp(source, matrix, dtype, self.dsize,
+                                                       should_cancel, method=self.method),
                     shape=_perspective_output_shape(image.shape, self.dsize), should_cancel=should_cancel)
                   for image, source, matrix, dtype in
                   zip(images, self.sources, self.matrices, self.matrix_dtypes)]
@@ -1280,7 +1308,7 @@ def apply_alignment_plan(sources, plan, *, defer_warps=False, should_cancel=None
 def _align_openfocus_impl(input_source, output_path=None, img_filenames=None, *,
                         should_cancel=None, max_shift_ratio=.05, failure_policy='continue',
                         reference_frame=1, rotation=0., magnification=3.,
-                        defer_warps=False, plan_callback=None):
+                        defer_warps=False, plan_callback=None, dispatch_callback=None):
     """Wide detector using the verified search and sampling behavior."""
     from core.openfocus_alignment import estimate_alignment_plan
     images = input_source
@@ -1317,6 +1345,8 @@ def _align_openfocus_impl(input_source, output_path=None, img_filenames=None, *,
             from core.source_frames import resolve_frame
             _save_registration((resolve_frame(frame, should_cancel=should_cancel) for frame in result), output_path,
                                img_filenames, should_cancel)
+        if dispatch_callback is not None and len(images) > 1:
+            dispatch_callback('openfocus', estimation='CPU', warp='CPU')
         return result
 
 
@@ -1411,7 +1441,7 @@ def _plan_deferred_ecc(images, downscale_width, accelerate_ecc, preference, thre
 def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscale_width=1000,
                     thread_count: int = 4, should_cancel=None, use_gpu: bool = False,
                     failure_policy='continue', *, defer_warps=False, plan_callback=None,
-                    accelerate_ecc=False, stage_budget=None):
+                    accelerate_ecc=False, stage_budget=None, dispatch_callback=None):
     """
     基于 ECC (增强相关系数) 的高精度图像栈对齐算法
     适用于：显微摄影、微距摄影中伴随呼吸效应的图像栈
@@ -1715,12 +1745,16 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
             print("    [Info] Explicit CuPy alignment uses linear interpolation.")
         except ImportError as error:
             raise RuntimeError("Explicit CuPy alignment backend is unavailable") from error
+    if defer_warps:
+        log_action('registration_warp_deferred', method='ecc', frames=len(images),
+                   shape=(target_h, target_w))
     else:
-        print("    [Info] GPU warping disabled. Using CPU for warping.")
-    log_action('registration_warp', method='ecc',
-               provider='CuPy' if HAS_CUPY else 'OpenCV',
-               device='CUDA' if HAS_CUPY else 'CPU', shape=(target_h, target_w),
-               frames=len(images), gpu_requested=use_gpu)
+        if not HAS_CUPY:
+            print("    [Info] GPU warping disabled. Using CPU for warping.")
+        log_action('registration_warp', method='ecc',
+                   provider='CuPy' if HAS_CUPY else 'OpenCV',
+                   device='CUDA' if HAS_CUPY else 'CPU', shape=(target_h, target_w),
+                   frames=len(images), gpu_requested=use_gpu)
 
     if not HAS_CUPY:
         aligned_images = _apply_perspective_warps(
@@ -1728,6 +1762,10 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
             max_workers, should_cancel, defer_warps, method='ecc', sources=source_identities,
             bounds=(top, bottom, left, right), plan_callback=plan_callback)
         _save_registration(aligned_images, output_path, img_filenames, should_cancel)
+        if dispatch_callback is not None:
+            dispatch_callback('ecc', estimation='CPU', warp='CPU',
+                resize_accelerator=area_gpu.device_name if area_gpu and area_gpu.frames_resized else None,
+                resize_fallback=bool(area_gpu and area_gpu.fell_back))
         return aligned_images
 
     def warp_task(args):
@@ -1756,6 +1794,10 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
                                    should_cancel, stage='registration.warp') as results:
         aligned_images = [store_frame(image) for image in results]
     _save_registration(aligned_images, output_path, img_filenames, should_cancel)
+    if dispatch_callback is not None:
+        dispatch_callback('ecc', estimation='CPU', warp='CUDA (CuPy)',
+            resize_accelerator=area_gpu.device_name if area_gpu and area_gpu.frames_resized else None,
+            resize_fallback=bool(area_gpu and area_gpu.fell_back))
 
     return aligned_images
 
@@ -1928,6 +1970,15 @@ class ImageRegistration:
         self.defer_warps = bool(defer_warps)
         self.alignment_plan = None
         self._perspective_stages = []
+        self._dispatch = []
+
+    @property
+    def dispatch(self):
+        return tuple(self._dispatch)
+
+    def _record_dispatch(self, method, **devices):
+        from core.render_context import RegistrationDispatch
+        self._dispatch.append(RegistrationDispatch(method, **devices))
     
     def process(self, 
                 input_source: Union[str, List[np.ndarray]], 
@@ -1953,6 +2004,7 @@ class ImageRegistration:
             _check_cancel(should_cancel)
             self.alignment_plan = None
             self._perspective_stages = []
+            self._dispatch.clear()
             if self.steps == ('openfocus',):
                 from core.algorithms import get_registration, resolve_runner
                 sources = input_source if input_source is not None else []
@@ -2118,7 +2170,10 @@ class ImageRegistration:
         Returns:
             配准后的图像列表
         """
-        return _align_homography_impl(input_source, output_path, downscale_width=self.downscale_width, thread_count=thread_count, should_cancel=should_cancel, failure_policy=failure_policy, defer_warps=self.defer_warps and not self.use_gpu, plan_callback=self._perspective_stages.append)
+        return _align_homography_impl(input_source, output_path, downscale_width=self.downscale_width,
+            thread_count=thread_count, should_cancel=should_cancel, failure_policy=failure_policy,
+            defer_warps=self.defer_warps and not self.use_gpu, plan_callback=self._perspective_stages.append,
+            dispatch_callback=self._record_dispatch)
     
     def _process_ecc(self, 
                     input_source: Union[str, List[np.ndarray]], 
@@ -2141,7 +2196,7 @@ class ImageRegistration:
                     thread_count=thread_count, should_cancel=should_cancel, use_gpu=self.use_gpu,
                     failure_policy=failure_policy, defer_warps=self.defer_warps,
                     plan_callback=self._perspective_stages.append, accelerate_ecc=self.accelerate_ecc,
-                    stage_budget=stage_budget)
+                    stage_budget=stage_budget, dispatch_callback=self._record_dispatch)
         except RejectedAlignmentFrame as error:
             # Pair estimation may run on a pool thread. Record it in the caller's report.
             _report_alignment(error.frame_index, 'ecc', 'failed', reason=error.reason,
