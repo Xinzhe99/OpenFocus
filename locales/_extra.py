@@ -75,7 +75,7 @@ EXTRA_TRANSLATIONS = {
         "account_email_send": "サインインリンクをメールで受け取る",
         "account_github": "GitHub で続ける",
         "account_google": "Google で続ける",
-        "account_browser_login": "ブラウザーのアカウントで続ける",
+        "account_browser_login": "ブラウザーでサインイン",
 
         "account_continue": "続ける",
         "account_wait_email": "メールを確認し、このコンピューターでサインインリンクを開いてください。",
@@ -1771,7 +1771,7 @@ EXTRA_TRANSLATIONS = {
         "account_email_send": "Enviarme un enlace de inicio de sesión",
         "account_github": "Continuar con GitHub",
         "account_google": "Continuar con Google",
-        "account_browser_login": "Continuar con la cuenta del navegador",
+        "account_browser_login": "Iniciar sesión en el navegador",
 
         "account_continue": "Continuar",
         "account_wait_email": "Revisa tu correo y abre el enlace de inicio de sesión en este equipo.",

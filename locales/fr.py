@@ -64,7 +64,7 @@ PACK = {
     "account_email_send": "M’envoyer un lien de connexion par e-mail",
     "account_github": "Continuer avec GitHub",
     "account_google": "Continuer avec Google",
-    "account_browser_login": "Continuer avec le compte du navigateur",
+    "account_browser_login": "Se connecter dans le navigateur",
 
     "account_continue": "Continuer",
     "account_wait_email": "Consultez vos e-mails et ouvrez le lien de connexion sur cet ordinateur.",

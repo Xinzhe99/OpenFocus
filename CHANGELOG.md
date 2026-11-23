@@ -17,6 +17,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   keeps the focus map readable during layer blending.
 - Report registration and fusion devices separately in result details. Show
   ECC resize acceleration and where reused registration came from.
+- Sign in from the desktop app through your browser, including when the
+  browser is signed out of OpenFocus. The app also offers direct email sign-in
+  while the browser is open.
 
 ### Changed
 - Apply deferred ECC warps for large 8-bit color stacks on supported OpenCL

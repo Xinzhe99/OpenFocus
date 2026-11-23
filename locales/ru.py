@@ -64,7 +64,7 @@ PACK = {
     "account_email_send": "Отправить ссылку для входа на почту",
     "account_github": "Продолжить с GitHub",
     "account_google": "Продолжить с Google",
-    "account_browser_login": "Продолжить с учётной записью браузера",
+    "account_browser_login": "Войти в браузере",
 
     "account_continue": "Продолжить",
     "account_wait_email": "Проверьте почту и откройте ссылку для входа на этом компьютере.",

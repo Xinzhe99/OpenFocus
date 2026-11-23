@@ -68,7 +68,7 @@ EN = {
     "account_email_send": "Email me a sign-in link",
     "account_github": "Continue with GitHub",
     "account_google": "Continue with Google",
-    "account_browser_login": "Continue with browser account",
+    "account_browser_login": "Sign in with your browser",
 
     "account_continue": "Continue",
     "account_wait_email": "Check your email and open the sign-in link on this computer.",

@@ -64,7 +64,7 @@ PACK = {
     "account_email_send": "Stuur mij een aanmeldlink per e-mail",
     "account_github": "Doorgaan met GitHub",
     "account_google": "Doorgaan met Google",
-    "account_browser_login": "Doorgaan met browseraccount",
+    "account_browser_login": "Aanmelden in je browser",
 
     "account_continue": "Doorgaan",
     "account_wait_email": "Controleer je e-mail en open de aanmeldlink op deze computer.",
