@@ -1,4 +1,5 @@
 """Large-chunk frame writes keep the bytes of a buffered ``tofile``."""
+import errno
 import os
 
 import numpy as np
@@ -12,28 +13,23 @@ def _read(path):
         return stream.read()
 
 
-@pytest.fixture
-def chunk(monkeypatch):
-    def set_chunk(bytes_):
-        monkeypatch.setattr(frame_storage, '_WRITE_CHUNK_BYTES', bytes_)
-    return set_chunk
-
-
 @pytest.mark.parametrize('shape,dtype,transform', [
     ((7, 11), np.uint8, 'plain'),
     ((5, 6, 3), np.uint16, 'plain'),
     ((5, 6, 3), np.uint16, 'reversed'),
+    ((5, 6, 3), '>u2', 'reversed'),
+    ((4, 5), 'datetime64[ns]', 'reversed'),
     ((8, 30, 3), np.uint16, 'strided'),
     ((9, 4), np.float32, 'fortran'),
     ((13, 5, 1), np.uint16, 'drop'),
     ((0, 4, 3), np.uint8, 'plain'),
 ])
-def test_write_frame_writes_what_tofile_writes(tmp_path, chunk, shape, dtype, transform):
+def test_write_frame_writes_what_tofile_writes(tmp_path, monkeypatch, shape, dtype, transform):
     rng = np.random.default_rng(5)
     if dtype == np.float32:
         image = rng.random(size=shape).astype(np.float32)
     else:
-        image = rng.integers(0, (255 if dtype == np.uint8 else 65535) + 1, size=shape, dtype=dtype)
+        image = rng.integers(0, 65536, size=shape, dtype=np.uint16).astype(dtype)
     if transform == 'reversed':
         image = image[..., ::-1]
     elif transform == 'strided':
@@ -42,8 +38,7 @@ def test_write_frame_writes_what_tofile_writes(tmp_path, chunk, shape, dtype, tr
         image = np.asfortranarray(image)
     elif transform == 'drop':
         image = image[..., 0]
-    # Several chunks per frame, each larger than the descriptor may accept at once.
-    chunk(1000)
+    monkeypatch.setattr(frame_storage, '_WRITE_CHUNK_BYTES', 13)
     expected = tmp_path / 'expected.bin'
     image.tofile(str(expected))
     target = tmp_path / 'actual.bin'
@@ -94,3 +89,36 @@ def test_stored_mapped_frame_round_trips_a_reversed_view(tmp_path, monkeypatch):
     mapped = frame_storage.store_frame(source[..., ::-1], prefer_ram=False)
     assert isinstance(mapped, np.memmap)
     np.testing.assert_array_equal(np.asarray(mapped), source[..., ::-1])
+
+
+def test_write_frame_rejects_object_arrays(tmp_path):
+    path = tmp_path / 'objects.bin'
+    with path.open('wb', buffering=0) as stream:
+        with pytest.raises(OSError, match='object arrays'):
+            frame_storage.write_frame(stream.fileno(), np.array([None], dtype=object))
+    assert path.stat().st_size == 0
+
+
+@pytest.mark.parametrize('preview', [False, True])
+def test_partial_scratch_write_discards_file(tmp_path, monkeypatch, preview):
+    from core.source_frames import store_preview
+
+    def disk_full(fd, image):
+        os.write(fd, b'\x01')
+        raise OSError(errno.ENOSPC, 'disk full during frame write')
+
+    monkeypatch.setattr(frame_storage, '_storage_directory', str(tmp_path))
+    monkeypatch.setattr(frame_storage, 'write_frame', disk_full)
+    image = np.ones((5, 6, 3), np.uint16)
+    observed = []
+    with frame_storage.observe_temp_files(observed.append):
+        with pytest.raises(frame_storage.ScratchSpaceError) as failure:
+            if preview:
+                store_preview(image)
+            else:
+                frame_storage.store_frame(image, prefer_ram=False)
+    assert failure.value.required == image.nbytes
+    assert failure.value.__cause__.errno == errno.ENOSPC
+    path, = observed
+    assert not os.path.exists(path)
+    assert not frame_storage.owns_temp_file(path)

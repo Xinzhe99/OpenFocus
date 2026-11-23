@@ -83,7 +83,7 @@ def load_video(video_path, scale, should_cancel):
         for shape, dtype in layouts:
             if should_cancel():
                 return False, 'CANCELLED', []
-            # ndarray.tofile writes C-order pixels regardless of input strides.
+            # The scratch writer stores each frame in C order.
             strides = [0] * len(shape)
             frame_size = np.dtype(dtype).itemsize
             for axis in range(len(shape) - 1, -1, -1):
