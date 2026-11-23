@@ -1,4 +1,5 @@
 """Behavioral boundaries for directory artifacts and stable image exports."""
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -397,6 +398,22 @@ def test_source_paths_cannot_be_export_targets(qapp, tmp_path):
     with pytest.raises(ValueError):
         window.export_manager.normalize_export_path(str(path))
     assert path.read_bytes() == original
+
+
+def test_export_protects_a_hard_link_to_a_saved_record_source(tmp_path):
+    source = tmp_path / 'input.png'
+    source.write_bytes(b'original image')
+    alias = tmp_path / 'alias.png'
+    try:
+        os.link(source, alias)
+    except OSError as exc:
+        pytest.skip(f'Hard links unavailable: {exc}')
+    duplicate = str(tmp_path / 'current.png')
+    window = SimpleNamespace(image_source_paths=[duplicate],
+                             image_loader=SimpleNamespace(image_paths=[duplicate]))
+    with pytest.raises(ValueError):
+        ExportManager(window)._safe_export_path(str(alias), [source])
+    assert source.read_bytes() == b'original image'
 
 
 def test_failed_cache_write_keeps_previous_complete_cache(qapp, tmp_path, monkeypatch):
