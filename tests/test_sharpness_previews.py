@@ -1,15 +1,18 @@
-"""Regression coverage for sharpness after asynchronous source previews."""
+"""Regression coverage for the sharpness curve and source previews."""
+import cv2
 import numpy as np
 import pytest
 
 pytest.importorskip("PyQt6")
-from PyQt6.QtCore import QMimeData, QModelIndex, QObject, QPoint, QPointF, Qt, pyqtSignal
+from PyQt6.QtCore import (QMimeData, QModelIndex, QObject, QPoint, QPointF,
+                          QSignalBlocker, Qt, pyqtSignal)
 from PyQt6.QtGui import QDropEvent, QIcon, QPixmap
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QListWidget
 
 from controllers.transform_manager import TransformManager
-from core.source_frames import SourceFrame
+from core.frame_storage import scratch_directory
+from core.source_frames import SourceFrame, store_preview
 from tests.test_control_channel import control_window as control_window
 from tests.test_stack_review_gui import _window
 from widgets.sharpness_curve import SharpnessCurveWidget
@@ -171,7 +174,7 @@ def test_inclusion_change_keeps_pending_sharpness_previews(
 
 
 def test_source_drop_remaps_navigation_and_in_flight_previews(
-        control_window, monkeypatch, preview_workers):
+        control_window, monkeypatch, preview_workers, tmp_path):
     window = control_window
     view = window.file_list
     curve = window.sharpness_curve
@@ -233,7 +236,8 @@ def test_source_drop_remaps_navigation_and_in_flight_previews(
     current = preview_workers[-1]
     assert current is not old and current.indices == (0,)
     pixels = pattern(40)
-    object.__setattr__(frames[3], 'preview', pixels)
+    with scratch_directory(explicit_directory=tmp_path):
+        object.__setattr__(frames[3], 'preview', store_preview(pixels))
     current.ready.emit(current.request, 0, id(frames[3]), pixels)
     current.finished.emit()
     assert window.lbl_source_img._base_pixmap.toImage().pixelColor(0, 0).red() == 40
@@ -245,6 +249,82 @@ def test_source_drop_remaps_navigation_and_in_flight_previews(
     assert window.stack_slider.value() == view.currentRow() == curve._current == 2
     assert view.currentItem().text() == names[2]
     assert window.lbl_source_img._source_key[1] == id(frames[2])
+
+
+def test_stack_refresh_reuses_scores_until_preview_pixels_change(
+        control_window, monkeypatch, tmp_path):
+    window = control_window
+    view = window.file_list
+    curve = window.sharpness_curve
+    manager = window.source_manager
+    names = ['one.jpg', 'two.jpg', 'three.jpg']
+
+    def pattern(value):
+        image = np.zeros((16, 16, 3), dtype=np.uint8)
+        image[::2, ::2] = value
+        return image
+
+    with scratch_directory(explicit_directory=tmp_path):
+        frames = [SourceFrame(name, 0, (16, 16, 3), np.dtype('uint8'),
+                              store_preview(pattern(value)), ())
+                  for name, value in zip(names, (10, 20, 30))]
+        replacement = store_preview(pattern(40))
+    window.raw_images = list(frames)
+    window.image_filenames = names.copy()
+    window.excluded_frames = {1}
+    manager._review_frames = tuple(frames)
+    manager._review_results = [{'index': 2, 'reference_index': 0, 'difference': 0.0}]
+    manager._review_status_key = 'stack_review_found'
+
+    calls = []
+    laplacian = cv2.Laplacian
+
+    def count_score(gray, *args, **kwargs):
+        calls.append(int(gray[0, 0]))
+        return laplacian(gray, *args, **kwargs)
+
+    monkeypatch.setattr(cv2, 'Laplacian', count_score)
+    assert window.transform_manager.reload_image_stack(initial_index=1)
+    original = list(curve._values)
+    assert calls == [10, 20, 30]
+    assert view.item(2).toolTip()
+    assert view.item(1).checkState() == Qt.CheckState.Unchecked
+
+    view.item(2).setSelected(True)
+    with QSignalBlocker(view):
+        assert view.model().moveRows(QModelIndex(), 1, 1, QModelIndex(), 3)
+    manager.apply_list_order()
+    assert [view.item(i).text() for i in range(3)] == [names[0], names[2], names[1]]
+    assert not any(view.item(i).toolTip() for i in range(3))
+    assert view.item(2).checkState() == Qt.CheckState.Unchecked
+    assert {view.row(item) for item in view.selectedItems()} == {1, 2}
+    assert window.stack_slider.value() == view.currentRow() == curve._current == 2
+    assert curve._values == [original[0], original[2], original[1]]
+
+    manager.delete_source_image(view.item(0))
+    assert curve._values == [original[2], original[1]]
+    assert window.stack_slider.value() == view.currentRow() == curve._current == 0
+    assert view.item(1).checkState() == Qt.CheckState.Unchecked
+    assert calls == [10, 20, 30]
+
+    # Selected RAW decoding can replace a preview on the same descriptor.
+    object.__setattr__(frames[1], 'preview', replacement)
+    assert window.transform_manager.reload_image_stack(initial_index=1)
+    assert calls == [10, 20, 30, 40]
+    assert curve._values[1] > original[2]
+
+
+def test_stack_refresh_recomputes_scores_for_mutable_pixels(control_window):
+    window = control_window
+    image = np.zeros((16, 16, 3), dtype=np.uint8)
+    window.raw_images = [image]
+    window.image_filenames = ['image.tif']
+    assert window.transform_manager.reload_image_stack()
+    assert window.sharpness_curve._values == [0.0]
+
+    image[::2, ::2] = 90
+    assert window.transform_manager.reload_image_stack()
+    assert window.sharpness_curve._values[0] > 0
 
 
 def test_curve_click_uses_the_plotted_x_coordinates(qapp):
