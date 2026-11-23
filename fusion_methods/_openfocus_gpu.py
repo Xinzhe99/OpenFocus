@@ -24,9 +24,48 @@ _DEPTH_KERNEL_NAMES = (
     'gray_u8', 'gray_u16', 'detail_pool', 'detail_smooth', 'detail_select',
     'init_detail', 'detail_confidence', 'confidence', 'apply_detail',
     'activity', 'init_activity', 'select_activity', 'guide', 'snap',
+    'sample_focus_plane',
 )
 _FILTER_KERNEL_NAMES = ('filt4', 'filt_guided', 'transpose_u16')
 _RESAMPLE_KERNEL_NAMES = ('vert', 'horiz')
+
+_PREVIEW_KERNEL = r'''
+__kernel void sample_focus_plane(__global const {type}* plane, __global {type}* sample,
+                                 const int height, const int width,
+                                 const int rows, const int cols)
+{{
+    int col = get_global_id(0), row = get_global_id(1);
+    size_t y = ((2 * row + 1) * (size_t)height) / (2 * rows);
+    size_t x = ((2 * col + 1) * (size_t)width) / (2 * cols);
+    sample[row * cols + col] = plane[y * width + x];
+}}
+'''
+
+
+class _PreviewPlaneReader:
+    """Gather a bounded focus plane on-device, then read only the sample."""
+
+    def __init__(self, cl, context, queue, kernel, shape, dtype):
+        self._cl, self._context, self._queue = cl, context, queue
+        self._kernel, self._shape, self._dtype = kernel, shape, dtype
+        self._buffer = self._pixels = None
+
+    def read(self, source, preview):
+        from core.fusion_live_preview import preview_shape
+
+        try:
+            if self._pixels is None:
+                self._pixels = np.empty(preview_shape(*self._shape), self._dtype)
+                self._buffer = self._cl.Buffer(self._context, self._cl.mem_flags.WRITE_ONLY,
+                                               self._pixels.nbytes)
+            rows, cols = self._pixels.shape
+            self._kernel(self._queue, (cols, rows), None, source, self._buffer,
+                         *map(np.int32, (*self._shape, rows, cols)))
+            self._cl.enqueue_copy(self._queue, self._pixels, self._buffer, is_blocking=True)
+        except (self._cl.Error, MemoryError):
+            preview.unavailable()
+            return None
+        return self._pixels
 
 
 def _prepare_gpu_upload(array, dtype=None):
@@ -148,7 +187,8 @@ def _get_or_build_depth_program(cl, device, context):
     with _cache_lock:
         if _DEPTH_PROGRAM_CACHE is not None and _DEPTH_PROGRAM_CACHE[0] == key:
             return _DEPTH_PROGRAM_CACHE[1:]
-        program, tiled = _build_filter_program(cl, device, context, _DEPTH_K + _RESAMPLE_K)
+        source = _DEPTH_K + _RESAMPLE_K + _PREVIEW_KERNEL.format(type='ushort')
+        program, tiled = _build_filter_program(cl, device, context, source)
         depth_kernels = {name: cl.Kernel(program, name) for name in _DEPTH_KERNEL_NAMES}
         filter_kernels = {name: cl.Kernel(program, name) for name in _FILTER_KERNEL_NAMES}
         resample_kernels = {name: cl.Kernel(program, name) for name in _RESAMPLE_KERNEL_NAMES}
@@ -491,7 +531,7 @@ class Merge:
         _device_lock.release()
 
     def full_depth(self, frames, shape, img_resize, kernel_size, smoothing,
-                   feather, should_cancel, progress_callback):
+                   feather, should_cancel, progress_callback, *, live_preview=None):
         """Run the PR depth stages only when all resident planes fit the job."""
         from core import resource_policy
         from core.multi_focus_fusion import memory_budget_bytes
@@ -596,7 +636,8 @@ class Merge:
                     resample_kernels=resamp_k, tiled_transpose=tiled,
                 )
                 return engine.depth(frames, kernel_size, smoothing, feather, shape,
-                                    len(frames), should_cancel, progress, prefetch=prefetch)
+                                    len(frames), should_cancel, progress, prefetch=prefetch,
+                                    live_preview=live_preview)
             except CallbackFailure as exc:
                 self._drain_queue()
                 raise exc.__cause__
@@ -1325,7 +1366,7 @@ class _GpuB:
         return buf
 
     # -- per-frame stages -------------------------------------------------
-    def _prepare_gray_input(self, _index, frame, cancelled, height, width):
+    def _prepare_gray_input(self, frame, cancelled, height, width):
         from fusion_methods._openfocus_pixels import frame_gray_codes
         from core.source_frames import resolve_frame, without_source_cache_growth
         with without_source_cache_growth():
@@ -1361,7 +1402,7 @@ class _GpuB:
 
     # -- depth_map equivalent ---------------------------------------------
     def depth(self, frames, kernel_size, smoothing, feather, shape, count,
-              should_cancel, progress_callback=None, *, prefetch=False):
+              should_cancel, progress_callback=None, *, prefetch=False, live_preview=None):
         from fusion_methods.openfocus_depth import _snap_lut
         from fusion_methods.openfocus_ab import _check_cancel
 
@@ -1399,8 +1440,13 @@ class _GpuB:
             depth_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes)
             votes_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes)
 
-            def prepare(index, frame, cancelled):
-                return self._prepare_gray_input(index, frame, cancelled, height, width)
+            reader = None
+            if live_preview is not None:
+                reader = _PreviewPlaneReader(self.cl, self.ctx, self.q,
+                                             self.kernels['sample_focus_plane'], (oh, ow), np.uint16)
+
+            def prepare(_index, frame, cancelled):
+                return self._prepare_gray_input(frame, cancelled, height, width)
 
             prepared_iter = _iter_prefetched(
                 frames, prepare, enabled=prefetch, should_cancel=should_cancel,
@@ -1439,6 +1485,12 @@ class _GpuB:
                                                   d_second_buf, d_winner_buf, np.uint16(code),
                                                   np.int32(m))
                 self.q.finish()
+                if reader is not None and live_preview.ready():
+                    cancel()
+                    sample = reader.read(depth_buf, live_preview)
+                    if sample is not None:
+                        live_preview.show_positions(sample, idx, count, step * (count - 1),
+                                                    sampled=True)
                 del upload, prepared
                 if progress_callback is not None:
                     progress_callback(idx, count)

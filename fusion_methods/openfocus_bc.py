@@ -25,12 +25,14 @@ def _inputs(input_source, img_resize, should_cancel):
 
 def _depth(frames, shape, img_resize, kernel_size, smoothing, should_cancel,
            depth_override, thread_count, progress_callback=None, *, return_codes=False,
-           half_resolution=False, preserve_detail=False, feather=0, gpu=None):
+           half_resolution=False, preserve_detail=False, feather=0, gpu=None,
+           live_preview=None):
     if depth_override is None:
         return depth_map(frames, img_resize, kernel_size, smoothing, should_cancel,
                          progress_callback=progress_callback, thread_count=thread_count,
                          return_codes=return_codes, half_resolution=half_resolution,
-                         preserve_detail=preserve_detail, feather=feather, _gpu=gpu)
+                         preserve_detail=preserve_detail, feather=feather, _gpu=gpu,
+                         _live_preview=live_preview)
     depth = np.asarray(depth_override, dtype=np.float32)
     if depth.shape != shape[:2]:
         raise ValueError("depth_override must match the source height and width")
@@ -161,7 +163,7 @@ def openfocus_b_impl(input_source, img_resize=None, kernel_size: int = 17,
                      thread_count: int = None, depth_smoothing: float = 1.44,
                      should_cancel=None, depth_override=None, progress_callback=None,
                      *, feather: int = 0, use_gpu: bool = False,
-                     device_callback=None, focus_callback=None):
+                     device_callback=None, focus_callback=None, live_preview=None):
     """Fuse source codes, optionally accelerating ordered merge on an OpenCL GPU."""
     _validate_feather(feather)
     from core import source_frames
@@ -190,7 +192,7 @@ def openfocus_b_impl(input_source, img_resize=None, kernel_size: int = 17,
                    smoothing * (5.0 / 1.2), should_cancel, depth_override,
                    thread_count, depth_progress, return_codes=True,
                    half_resolution=True, preserve_detail=True, feather=feather,
-                   gpu=gpu)
+                   gpu=gpu, live_preview=live_preview)
     bands, columns = ((side + _MERGE_TILE - 1) // _MERGE_TILE for side in depth.shape)
     # Limit the auxiliary mask even for stacks much deeper than the 8K target.
     tiles = (np.zeros((bands, columns, count), dtype=bool)
@@ -229,6 +231,8 @@ def openfocus_b_impl(input_source, img_resize=None, kernel_size: int = 17,
                                        source_scale=source_scale, gpu=gpu,
                                        tiles=None if tiles is None else tiles[:, :, index])
                 del frame
+            if live_preview is not None:
+                live_preview.show_blend(depth, index, count)
             current = activity_steps + index + 1
             if progress_callback is not None and current > merge_progress:
                 progress_callback(current, total)
@@ -290,7 +294,7 @@ def _pyramid_levels(height, width):
 def openfocus_c_impl(input_source, img_resize=None, thread_count: int = None,
                      blend_smoothing: float = 2.4, should_cancel=None,
                      progress_callback=None, use_gpu: bool = False,
-                     device_callback=None, focus_callback=None):
+                     device_callback=None, focus_callback=None, *, live_preview=None):
     """Fuse source frames using a streaming weighted detail pyramid."""
     from core import source_frames
 
@@ -307,22 +311,31 @@ def openfocus_c_impl(input_source, img_resize=None, thread_count: int = None,
                 reported = index
     try:
         if use_gpu:
-            from fusion_methods._openfocus_gpu import GpuError, log_fallback
+            from fusion_methods._openfocus_gpu import GpuError
             from fusion_methods._openfocus_gpu_c import GpuC
+            from utils.logging_setup import get_logger
+
+            gpu = None
             try:
                 gpu = GpuC()
-                result = gpu.fuse(frames, shape, img_resize,
-                                  smoothing * (5.0 / 3.0),
-                                  should_cancel, progress_callback, focus_callback)
+                args = (frames, shape, img_resize, smoothing * (5.0 / 3.0),
+                        should_cancel, progress_callback, focus_callback)
+                result = (gpu.fuse(*args) if live_preview is None else
+                          gpu.fuse(*args, live_preview=live_preview))
+            except GpuError as exc:
+                cause = f': {exc.__cause__}' if exc.__cause__ is not None else ''
+                get_logger(__name__).warning(
+                    'OpenFocus C GPU fallback to CPU for shape=%s device=%s: %s%s',
+                    shape, getattr(gpu, 'device_name', 'OpenCL'), exc, cause,
+                )
+            else:
                 if device_callback is not None:
                     device_callback(gpu.device_name)
                 return result
-            except GpuError as exc:
-                log_fallback(exc)
-                gpu = None
         from fusion_methods._openfocus_pyramid import fuse_pyramid
         result = fuse_pyramid(frames, shape, img_resize, smoothing * (5.0 / 3.0),
-                              should_cancel, progress_callback, focus_callback)
+                              should_cancel, progress_callback, focus_callback,
+                              live_preview=live_preview)
         if device_callback is not None:
             device_callback('CPU')
         return result

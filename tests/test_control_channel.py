@@ -1955,6 +1955,29 @@ def test_gui_started_load_advances_the_generation(server, stack_frames):
     assert frames["count"] == 3
 
 
+def test_import_during_render_does_not_queue_source_replacement(server, stack_frames):
+    window = server.window
+    assert call(server, 'stack.load', folder=str(stack_frames))['ok']
+    assert wait_until(lambda: call(server, 'stack.frames')['result']['load']['finished'])
+    before = call(server, 'stack.frames')['result']
+
+    renderer = window.render_manager
+    renderer._pending_storage = object()
+    try:
+        rejected = call(server, 'stack.load', folder=str(stack_frames))
+        assert rejected['error']['code'] == 'busy'
+        errors = []
+        window.source_manager._start_load_worker(folder=str(stack_frames), on_error=errors.append)
+        assert errors
+        assert call(server, 'stack.frames')['result'] == before
+    finally:
+        renderer._pending_storage = None
+
+    assert call(server, 'stack.load', folder=str(stack_frames))['ok']
+    assert wait_until(lambda: call(server, 'stack.frames')['result']['load']['finished'])
+    assert call(server, 'stack.frames')['result']['load']['id'] == before['load']['id'] + 1
+
+
 def test_render_state_keeps_cancelled_and_discarded_terminal(server, control_window):
     manager = control_window.render_manager
     control_window.fusion_result = np.zeros((4, 4, 3), np.uint8)
@@ -1972,17 +1995,33 @@ def test_render_state_keeps_cancelled_and_discarded_terminal(server, control_win
 
 def test_render_state_reports_only_the_active_worker_stage(server, control_window, monkeypatch):
     manager = control_window.render_manager
+
     class Worker:
         running = True
+        is_cancelled = False
+
         def isRunning(self):
             return self.running
 
+        def cancel(self):
+            self.is_cancelled = True
+
     worker = Worker()
-    monkeypatch.setattr(manager, 'worker', worker)
-    monkeypatch.setattr(manager, '_render_progress_stage', 'align', raising=False)
-    assert call(server, 'render.state')['result']['stage'] == 'align'
-    worker.running = False
-    assert call(server, 'render.state')['result']['stage'] is None
+    with monkeypatch.context() as patch:
+        patch.setattr(manager, 'worker', worker)
+        patch.setattr(manager, '_render_progress_stage', 'align', raising=False)
+        assert call(server, 'render.state')['result']['stage'] == 'align'
+        worker.running = False
+        assert call(server, 'render.state')['result']['stage'] is None
+        context_worker = Worker()
+        patch.setattr(manager, 'context_worker', context_worker)
+        patch.setattr(manager, '_render_progress_stage', 'publish')
+        state = call(server, 'render.state')['result']
+        assert state['busy'] and state['state'] == 'rendering'
+        assert state['stage'] == 'publish'
+        assert call(server, 'render.cancel')['result']['cancelling']
+        assert context_worker.is_cancelled
+        assert not worker.is_cancelled
 
 
 def test_render_state_is_idle_without_a_finished_render(server, control_window):
@@ -2849,18 +2888,78 @@ def test_retouch_reports_busy_while_loading_source(server, qapp, monkeypatch):
         dialog.close()
 
 
+@pytest.mark.parametrize(('command', 'result_key'), [
+    ('dialog.reject', 'rejected'), ('dialog.close', 'closed'),
+])
+def test_dirty_retouch_confirmation_replies_on_same_socket(server, qapp, command, result_key):
+    from PyQt6 import sip
+    from PyQt6.QtCore import QTimer
+    from PyQt6.QtNetwork import QLocalSocket
+    from locales import trans
+    from tests.test_retouch import _dialog
+
+    dialog, published = _dialog(qapp)
+    assert dialog.begin_stroke(60, 48)
+    dialog.end_stroke()
+    assert dialog.doc.is_dirty
+    socket = QLocalSocket()
+    socket.connectToServer(server.socket_name)
+    assert socket.waitForConnected(5000)
+
+    def request(cmd, **args):
+        socket.write(encode({'id': cmd, 'cmd': cmd, 'token': server.token, 'args': args}))
+        socket.flush()
+        assert wait_until(socket.canReadLine)
+        reply = decode(bytes(socket.readLine()))
+        assert reply['id'] == cmd and reply['ok'], reply
+        return reply['result']
+
+    # Unwind a regression's nested exec() before the test can time out.
+    escape = QTimer()
+    escape.setSingleShot(True)
+    escape.timeout.connect(lambda: dialog._confirm_box.reject() if dialog._confirm_box else None)
+    escape.start(4000)
+    try:
+        title = dialog.windowTitle()
+        assert request(command, title=title)[result_key] is False
+        escape.stop()
+        entries = request('dialog.list')['dialogs']
+        boxes = [item for item in entries if item['class'] == 'QMessageBox']
+        assert len(boxes) == 1 and boxes[0]['modal']
+        assert request(command, title=title)[result_key] is False
+        assert [item['root'] for item in request('dialog.list')['dialogs']
+                if item['class'] == 'QMessageBox'] == [boxes[0]['root']]
+
+        def click(label, root):
+            buttons = request('ui.find', window=root, **{'class': 'QPushButton'})['matches']
+            button = next(item for item in buttons if item['text'] == trans.t(label))
+            request('ui.click', path=button['path'])
+
+        click('btn_continue', boxes[0]['root'])
+        assert dialog.isVisible() and dialog.doc.is_dirty and not published
+        assert request(command, title=title)[result_key] is False
+        box = next(item for item in request('dialog.list')['dialogs']
+                   if item['class'] == 'QMessageBox')
+        click('btn_discard_changes', box['root'])
+        assert all(item['class'] not in ('RetouchDialog', 'QMessageBox')
+                   for item in request('dialog.list')['dialogs'])
+        assert request('ping')['pong'] and not published
+    finally:
+        escape.stop()
+        socket.abort()
+        if not sip.isdeleted(dialog):
+            dialog._allow_close = True
+            dialog.close()
+
+
 def test_retouch_managed_dialog_can_reopen_after_deletion(server, qapp, monkeypatch):
     from PyQt6 import sip
     from PyQt6.QtCore import QCoreApplication, QEvent
     from tests.test_retouch import _dialog
-    def create():
-        dialog, _ = _dialog(qapp)
-        monkeypatch.setattr(dialog, '_confirm_close', lambda: True)
-        return dialog
-    monkeypatch.setattr(server, '_retouch_dialog', create)
+    monkeypatch.setattr(server, '_retouch_dialog', lambda: _dialog(qapp)[0])
     assert call(server, 'dialog.open', name='retouch')['result']['opened']
     first = server._dialogs['retouch']
-    first.reject()
+    assert call(server, 'dialog.reject', title=first.windowTitle())['result']['rejected']
     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     assert sip.isdeleted(first)
     assert call(server, 'dialog.open', name='retouch')['result']['opened']

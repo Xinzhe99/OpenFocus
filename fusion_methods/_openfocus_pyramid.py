@@ -674,7 +674,7 @@ def _synthesize(coarse, target, weight, cancel):
 
 
 def fuse_pyramid(frames, shape, img_resize, smoothing, should_cancel, progress_callback=None,
-                 focus_callback=None):
+                 focus_callback=None, *, live_preview=None):
     """Fuse ordered sources in mapped, cancellable pyramid passes."""
     from core.source_frames import without_source_cache_growth
     from fusion_methods.openfocus_ab import _check_cancel
@@ -732,6 +732,11 @@ def fuse_pyramid(frames, shape, img_resize, smoothing, should_cancel, progress_c
             _rows(height, lambda a, b: _merge_rows(fine, weights, accumulators[level],
                   maxima[level], index == 0, a, b, level_winner, index), cancel)
             fine = coarse
+        if live_preview is not None:
+            if detail_levels:
+                live_preview.update_best(maxima[0], index, len(frames))
+            else:
+                live_preview.show_positions(np.zeros((1, 1), np.uint8), index, len(frames), 1)
         if progress_callback is not None:
             progress_callback(index + 1, total)
     del maxima, full, fine

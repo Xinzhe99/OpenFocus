@@ -558,12 +558,16 @@ def test_render_request_captures_sharpening_settings(qapp, monkeypatch):
 
 
 def test_reused_alignment_preview_displays_and_owns_draft(qapp, monkeypatch):
+    from core.render_context import RegistrationDetails, RegistrationDispatch
+
     frames = [np.full((60, 140, 3), i, np.uint8) for i in range(2)]
     window = _render_window(frames)
     window.set_fusion_method("none")
     window.set_alignment_method("ecc")
     manager, _ = _patched_render_manager(monkeypatch, window)
     assert manager.start_render() == "started"
+    dispatch = (RegistrationDispatch('ecc', 'CPU', 'CPU'),)
+    manager.worker.registration_details = RegistrationDetails(dispatch)
     aligned = _finish_alignment(manager, window, manager.worker.args[0])
     window.output_list.addItem("old output")
     window.output_list.setCurrentRow(0)
@@ -576,6 +580,9 @@ def test_reused_alignment_preview_displays_and_owns_draft(qapp, monkeypatch):
     assert manager.last_state == "done"
     assert manager.last_result["preview"] and manager.last_result["registration_performed"]
     assert window.preview_result["kind"] == "registration"
+    assert window.alignment_registration_dispatch == dispatch
+    assert trans.t('output_registration_reuse_session') in window.status.messages[-1]
+    assert trans.t('output_registration_original_device').format('CPU') in window.status.messages[-1]
     assert window.preview_result["image"] is draft[0]
     assert window.output_list.currentItem() is None
     assert window.aligned_images is aligned

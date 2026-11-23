@@ -1,5 +1,7 @@
 from typing import Any, List, Optional
 from copy import deepcopy
+from math import ceil
+from time import monotonic
 
 
 from PyQt6.QtCore import QObject, QTimer, Qt, pyqtSignal
@@ -9,7 +11,7 @@ from utils import show_message_box, show_warning_box
 from utils.image_utils import cv2_to_pixmap
 from utils.output_sharpen import DEFAULT_SHARPEN_STRENGTH
 from core.multi_focus_fusion import is_ai_fusion_available
-from core.render_context import build_render_context
+from core.render_context import RegistrationDetails, build_render_context
 from core.render_process import RenderProcessWorker
 from dialogs import ROIRenderOptionsDialog  # Import the new dialog
 from locales import trans
@@ -20,6 +22,11 @@ from ui.algorithm_combo import desktop_fusion_lock_reason, fusion_lock_reason
 
 
 _STORAGE_UNSET = object()
+_RENDER_STAGE_KEYS = {
+    'waiting': 'render_stage_waiting', 'prepare': 'render_stage_prepare',
+    'align': 'render_stage_align', 'fuse': 'render_stage_fuse',
+    'finalize': 'render_stage_finalize', 'publish': 'render_stage_publish',
+}
 
 
 def _base_frame(method, enabled):
@@ -112,6 +119,7 @@ class RenderManager:
         self._compare_token = object()
         self._compare_context = None
         self._preview_mode = False
+        self._live_preview_timer = None
         # What the *running* render was launched with; see start_render().
         self._render_context: Optional[dict] = None
         # Control-channel observability: the last outcome and tile progress.
@@ -950,6 +958,7 @@ class RenderManager:
             self._start_status = "busy"
             if interactive:
                 self.worker.is_cancelled = True
+                self.dismiss_live_preview()
                 window.btn_render.setEnabled(False)
                 window.btn_render.setText(trans.t('depth_cancelling'))
                 self._show_progress_bar(trans.t('depth_cancelling'))
@@ -1394,6 +1403,13 @@ class RenderManager:
             "algorithm": force_algorithm or fusion_method,
             "memory_estimate": memory_estimate,
             "aligned": bool(effective_is_aligned),
+            "registration_reuse": ('roi' if use_roi_aligned_images and effective_is_aligned
+                                   else 'session' if self._preview_mode and effective_is_aligned
+                                   else None),
+            "cached_registration_dispatch": (
+                getattr(getattr(window, 'roi_registration_details', None), 'dispatch', ())
+                if use_roi_aligned_images else
+                getattr(window, 'alignment_registration_dispatch', ()) if reusable else ()),
             "filenames": list(stack_filenames),
             "included": list(included_idx),
             "source_revision": getattr(window, "source_revision", 0),
@@ -1439,34 +1455,56 @@ class RenderManager:
         self.last_result = None
         self._control_progress = None
         self.last_state = "running"
+        self._render_context['started_at'] = monotonic()
         self._render_interactive = interactive
         if publish_cached_alignment:
-            self._render_context["alignment_reused"] = True
+            self._render_context["registration_reuse"] = 'session'
             self.on_render_finished(effective_aligned_images, None, True, 0.0, 0.0, "CPU")
             return
 
         all_source_paths = list(getattr(window, "image_source_paths", None) or [])
         source_paths = ([all_source_paths[i] for i in included_idx]
                         if len(all_source_paths) == len(window.raw_images) else [])
-        # Reuse post-alignment frames across tiled StackMFF methods when the
-        # prepared pixel representation matches. Budget for float32 here.
+        # Retain one prepared stack. Methods that do not build snapshots can
+        # leave it in place as long as the full-resolution alignment is valid.
         from core.source_frames import SourceFrame
         descriptor = get_fusion(method) if need_fusion else None
+        native_preparation = method == 'openfocus_b'
+        preparation_key = (alignment_key,)
+        if native_preparation:
+            from core.frame_storage import storage_directory
+            preparation_key += (method, storage_override or storage_directory())
         retain_preparation = bool(
-            descriptor and descriptor.neural and descriptor.streaming_sources
-            and not (descriptor.sort_frames and getattr(window, 'stack_reverse_order', False))
-            and getattr(window, 'tile_enabled', None) is not False
+            descriptor and descriptor.streaming_sources
+            and (native_preparation or (
+                descriptor.neural and getattr(window, 'tile_enabled', None) is not False
+                and not (descriptor.sort_frames and getattr(window, 'stack_reverse_order', False))))
             and not self._preview_mode and roi_rect is None and not use_roi_aligned_images
             and not collect_report and not cleanup
             and all(isinstance(frame, SourceFrame) and
                     not (frame.ndim == 3 and frame.shape[2] == 4)
                     for frame in stack_images))
-        if (self._prepared_cache_source is not source_ref
-                or self._prepared_cache_key != alignment_key
-                or (requested_steps and (not reusable or collect_report))):
+        replaces_alignment = (requested_steps and not self._preview_mode
+                              and roi_rect is None and not use_roi_aligned_images
+                              and (not reusable or collect_report))
+        if self._prepared_cache is not None and (
+                self._prepared_cache_source is not source_ref
+                or self._prepared_cache_key[0] != alignment_key
+                or replaces_alignment
+                or (retain_preparation and self._prepared_cache_key != preparation_key)):
             self.clear_prepared_cache()
         prepared_cache = self._prepared_cache if retain_preparation else None
-        self._render_context['preparation_key'] = alignment_key if retain_preparation else None
+        self._render_context['preparation_key'] = preparation_key if retain_preparation else None
+        live_preview = (
+            interactive and not compare and need_fusion
+            and method in ('openfocus_a', 'openfocus_b', 'openfocus_c')
+            and not self._preview_mode and roi_rect is None and not use_roi_aligned_images
+            and getattr(window, 'live_preview_page', None) is not None
+            and not window.wipe_active and not getattr(window, 'roi_mode_active', False))
+        if live_preview:
+            self._render_context['live_source_rows'] = tuple(
+                reversed(included_idx) if getattr(window, 'stack_reverse_order', False)
+                else included_idx)
         self.worker = RenderProcessWorker(
             source_images,
             effective_aligned_images,
@@ -1511,15 +1549,14 @@ class RenderManager:
             profile_performance=bool(getattr(window, "profile_performance", False)),
         )
         self.worker.storage_directory = storage_override
+        self.worker.live_preview_requested = live_preview
 
-        self._progress_first_t = None
-        self._progress_last_t = None
         self.worker.finished_signal.connect(self.on_render_finished)
         self.worker.error_signal.connect(self.on_render_error)
         self.worker.progress_signal.connect(self.on_render_progress)
         self.worker.stage_signal.connect(self.on_render_stage)
         window.statusBar().clearMessage()
-        self._render_progress_stage = 'waiting'
+        self.on_render_stage('waiting')
         if memory_estimate:
             summary = self._memory_summary(memory_estimate)
             if memory_estimate.gpu_fallback:
@@ -1527,8 +1564,62 @@ class RenderManager:
                 summary += ' · ' + trans.t('render_memory_fallback_plan').format(
                     device=display_name(memory_estimate.accelerator))
             window.statusBar().showMessage(summary, 8000)
-        self._show_progress_bar(trans.t('render_stage_waiting'))
         self.worker.start()
+        if live_preview:
+            self._start_live_preview()
+
+    def _start_live_preview(self):
+        if self._live_preview_timer is None:
+            timer = self._live_preview_timer = QTimer(self.window.live_preview_page)
+            timer.setInterval(80)
+            timer.timeout.connect(self._poll_live_preview)
+        self._live_preview_timer.start()
+
+    def _poll_live_preview(self):
+        if not self._live_preview_timer.isActive():
+            return
+        worker, context, window = self.worker, self._render_context, self.window
+        if (worker is None or worker.is_cancelled or context is None
+                or getattr(self, '_closing', False)
+                or window.raw_images is not context['source_ref']
+                or getattr(window, 'source_revision', 0) != context['source_revision']
+                or window.wipe_active or getattr(window, 'roi_mode_active', False)):
+            self.dismiss_live_preview()
+            return
+        frame = worker.take_live_preview()
+        if frame is not None:
+            page = window.live_preview_page
+            page.show_frame(*frame)
+            window.view_stack.setCurrentWidget(page)
+            # Fusion order follows the included, possibly reversed subset.
+            rows = context['live_source_rows']
+            index = frame[3] - 1
+            source_list = window.file_list
+            # Do not replace the pane's source during a held loupe or drag.
+            if 0 <= index < len(rows) and not QApplication.mouseButtons():
+                row = rows[index]
+                item = source_list.item(row)
+                if item is not None and row != source_list.currentRow():
+                    source_list.setCurrentRow(row)
+                    source_list.scrollToItem(item)
+
+    def inspect_previous_output(self, *_args):
+        # History stays usable while preparing frames or aligning. Once the
+        # live page is visible, an explicit selection takes precedence.
+        page = self.window.live_preview_page
+        if self.window.view_stack.currentWidget() is page:
+            self.dismiss_live_preview()
+
+    def dismiss_live_preview(self):
+        """Restore the current output and keep it visible for this job."""
+        timer = self._live_preview_timer
+        if timer is None or not timer.isActive():
+            return
+        timer.stop()
+        page, stack = self.window.live_preview_page, self.window.view_stack
+        if stack.currentWidget() is page:
+            stack.setCurrentIndex(0)
+        page.clear()
 
     def _stack_changed_since(self, context) -> bool:
         """True when the stack (or the settings it was rendered with) is no
@@ -1555,15 +1646,12 @@ class RenderManager:
         fusion_time: float,
         device_name: str,
     ) -> None:
+        self.dismiss_live_preview()
         window = self.window
         if self.worker is not None and getattr(self.worker, "is_cancelled", False):
             self.on_render_error("CANCELLED: render cancelled")
             return
-        from utils.logging_setup import log_action
-        log_action("render_finished", preview=bool(
-            (self._render_context or {}).get("preview")),
-            seconds=round(fusion_time, 2))
-        # The render stays busy until any provenance copy has finished.
+        # The render stays busy until the output and its provenance are published.
         context = self._render_context
         preview = context["preview"] if context else getattr(self, '_preview_mode', False)
         # Preserve the request while a context worker is active.
@@ -1592,9 +1680,24 @@ class RenderManager:
             # with a stale "-1/0" progress label.
             self._abort_compare_run()
             self._render_context = None
+            self._hide_progress_bar()
             self._dispose_worker()
             self._restore_ui_controls()
             return
+        if getattr(self, '_render_progress_stage', None) != 'publish':
+            self.on_render_stage('publish')
+        ctx = context or {}
+        registration_details = getattr(self.worker, 'registration_details', None)
+        reuse = ctx.get('registration_reuse') or getattr(registration_details, 'reuse', None)
+        if not reuse and getattr(self.worker, 'alignment_reused', False):
+            reuse = 'session'
+        if reuse in ('session', 'roi'):
+            registration_details = RegistrationDetails(ctx.get('cached_registration_dispatch', ()), reuse)
+        elif registration_details is None and registration_performed:
+            registration_details = RegistrationDetails()
+        effective_registration = bool(registration_details is not None)
+        if context is not None:
+            context['registration_details'] = registration_details
         candidate = getattr(self, "_context_candidate", None)
         if candidate is None and fusion_result is not None and not preview:
             import numpy as np
@@ -1604,7 +1707,7 @@ class RenderManager:
                              for image in processed_images if image is not None)
             if needs_copy:
                 from core.workers import RenderContextWorker
-                kwargs = self._render_context_kwargs(context, compare, registration_performed)
+                kwargs = self._render_context_kwargs(context, compare, effective_registration)
                 worker = RenderContextWorker(processed_images, fusion_result, **kwargs)
                 self._retiring_context_workers.add(worker)
                 self.context_worker = worker
@@ -1615,13 +1718,7 @@ class RenderManager:
                 worker.finished.connect(lambda: self._context_worker_finished(worker))
                 worker.start()
                 return
-        self._hide_progress_bar()
         self._preview_mode = False
-        reused_preview_alignment = bool(context and context.get("preview")
-                                        and not context.get("roi")
-                                        and context.get("aligned")
-                                        and context.get("alignment_options"))
-        effective_registration = bool(registration_performed or reused_preview_alignment)
         if context and context.get('preparation_key') is not None:
             self._prepared_cache = getattr(self.worker, 'prepared_cache', None)
             self._prepared_cache_key = context['preparation_key'] if self._prepared_cache is not None else None
@@ -1637,6 +1734,7 @@ class RenderManager:
 
         previous_preview_record = getattr(window, "_wipe_preview_record", None)
         display_committed = False
+        result_info = None
         try:
             window._wipe_preview_record = None
             # Draft ownership changes only after the replacement pixels are displayed.
@@ -1655,6 +1753,7 @@ class RenderManager:
                             source_revision=ctx.get("source_revision", 0),
                             parameters=ctx.get("parameters"),
                             fusion_details=getattr(self.worker, 'fusion_details', None),
+                            registration_details=registration_details,
                             linear_dng_metadata=ctx.get("linear_dng_metadata"),
                             source_exif=((ctx.get("frame_exif") or (b"",))[0]),
                             frame_exif=ctx.get("frame_exif"),
@@ -1668,7 +1767,7 @@ class RenderManager:
                         logging.getLogger("openfocus").exception("could not record preview provenance")
                 previous_fusion = getattr(window, "fusion_result", None)
                 window.fusion_result = fusion_result
-                self.last_result = {
+                result_info = {
                     "shape": list(fusion_result.shape),
                     "dtype": str(fusion_result.dtype),
                     "device": device_name,
@@ -1730,7 +1829,7 @@ class RenderManager:
                         else:
                             new_context = build_render_context(
                                 processed_images, fusion_result,
-                                **self._render_context_kwargs(context, compare, registration_performed))
+                                **self._render_context_kwargs(context, compare, effective_registration))
                         window.last_render_context = new_context
                     except Exception:
                         window.last_render_context = None
@@ -1744,6 +1843,7 @@ class RenderManager:
                         label,
                         context=new_context,
                         fusion_details=getattr(self.worker, 'fusion_details', None),
+                        registration_details=registration_details,
                         linear_dng_metadata=(context or {}).get("linear_dng_metadata"),
                         source_paths=(context or {}).get("source_paths", ()))
 
@@ -1775,7 +1875,7 @@ class RenderManager:
                     "render finished (preview=%s, method fusion, %.1fs)", preview, fusion_time)
             else:
                 if effective_registration:
-                    self.last_result = {
+                    result_info = {
                         "device": device_name,
                         "alignment_seconds": round(float(alignment_time), 3),
                         "fusion_seconds": round(float(fusion_time), 3),
@@ -1862,11 +1962,15 @@ class RenderManager:
                 window.is_images_aligned = True
                 window.last_alignment_options = context["alignment_identity"]
                 window.alignment_request_key = context["alignment_key"]
+                window.alignment_registration_dispatch = getattr(registration_details, 'dispatch', ())
                 # The disk cache was written by the worker (it owns the PNG
                 # encode); writing it here again re-encoded the whole stack on
                 # the GUI thread for nothing.
 
-            total_time = alignment_time + fusion_time
+            started_at = (context or {}).get('started_at')
+            total_time = monotonic() - started_at if started_at is not None else alignment_time + fusion_time
+            if result_info is not None:
+                result_info['elapsed_seconds'] = round(total_time, 3)
 
             info_lines = []
             if fusion_result is not None:
@@ -1875,14 +1979,7 @@ class RenderManager:
 
             if preview:
                 info_lines.append(trans.t("info_preview_quality"))
-            cache_hit = bool((context or {}).get("alignment_reused")
-                             or getattr(self.worker, "alignment_reused", False)
-                             or reused_preview_alignment)
-            if effective_registration and cache_hit:
-                # The frames are aligned, but this run did not align them:
-                # reporting 0.00 s under the method name read as "aligned
-                # instantly" instead of "reused the cached result".
-                info_lines.append(trans.t("alignment_report_cached"))
+            if effective_registration and reuse:
                 info_lines.append(trans.t("info_align_time").format(0.0))
             elif effective_registration:
                 alignment_method = window.current_alignment_method()
@@ -1892,6 +1989,8 @@ class RenderManager:
             else:
                 info_lines.append(trans.t("info_align_none"))
                 info_lines.append(trans.t("info_align_time").format(0.0))
+            from controllers.output_manager import registration_tooltip_lines
+            info_lines.extend(registration_tooltip_lines(registration_details))
 
             fusion_method = (context or {}).get('algorithm') or window.current_fusion_method()
             if fusion_method == "none" and not compare:
@@ -1904,7 +2003,7 @@ class RenderManager:
                     compare_method or fusion_method)
                 info_lines.append(trans.t("info_fusion_method").format(method_name))
                 info_lines.append(trans.t("info_fusion_time").format(fusion_time))
-                info_lines.append(trans.t("info_proc_unit").format(device_name))
+                info_lines.append(trans.t("info_fusion_device").format(device_name))
                 estimate = (context or {}).get('memory_estimate')
                 if estimate and estimate.accelerator and device_name == 'CPU':
                     from fusion_methods.neural_runtime import display_name
@@ -1939,9 +2038,14 @@ class RenderManager:
                         refresh(0)
                     else:
                         newest.setToolTip("\n".join([newest.text(), ""] + info_lines))
+            self.last_result = result_info
             self.last_state = "done" if self.last_result is not None else "error"
             if self.last_state == "error":
                 self.last_error = "Render completed without producing a result"
+            else:
+                from utils.logging_setup import log_action
+                log_action('render_finished', preview=bool(preview), seconds=round(total_time, 2),
+                           alignment_seconds=round(alignment_time, 2), fusion_seconds=round(fusion_time, 2))
 
         except Exception as exc:
             if not display_committed:
@@ -1961,6 +2065,7 @@ class RenderManager:
                 )
 
         finally:
+            self._hide_progress_bar()
             if compare:
                 if self._compare_queue:
                     # Keep controls locked and chain the next method. The
@@ -1993,6 +2098,7 @@ class RenderManager:
             frame_exif=ctx.get("frame_exif"), frame_icc_profiles=ctx.get("frame_icc_profiles"),
             rendered_depth=getattr(self.worker, 'rendered_depth', None),
             fusion_details=getattr(self.worker, 'fusion_details', None),
+            registration_details=ctx.get('registration_details'),
             linear_dng_metadata=ctx.get("linear_dng_metadata"), source_paths=ctx.get("source_paths"))
 
     def _context_ready(self, worker, result, error):
@@ -2041,6 +2147,7 @@ class RenderManager:
                                   source_exif=(frame_exif[0] if frame_exif else b""),
                                   frame_exif=frame_exif,
                                   frame_icc_profiles=ctx.get("frame_icc_profiles"),
+                                  registration_details=ctx.get('registration_details'),
                                   source_frames=ctx.get("comparison_source"),
                                   source_indices=(self._render_context or {}).get("included"),
                                   alignment_options=(self._render_context or {}).get("alignment_options"),
@@ -2132,18 +2239,16 @@ class RenderManager:
         if self.worker is not None and getattr(self.worker, 'is_cancelled', False):
             text = trans.t('depth_cancelling')
         else:
-            key = {'waiting': 'render_stage_waiting', 'prepare': 'render_stage_prepare',
-                   'align': 'render_stage_align', 'fuse': 'render_stage_fuse',
-                   'finish': 'render_progress'}.get(stage, 'render_progress')
-            text = trans.t(key)
+            text = trans.t(_RENDER_STAGE_KEYS.get(stage, 'render_progress'))
         self._control_progress = None
-        self._progress_first_t = None
+        self._progress_first_t = monotonic()
         self._progress_last_t = None
         self._show_progress_bar(text)
 
     def on_render_progress(self, done: int, total: int) -> None:
         """Surface completed preparation frames or fusion tiles with an ETA."""
-        import time as _time
+        if total <= 0:
+            return
         if self.worker is not None and getattr(self.worker, 'is_cancelled', False):
             self.on_render_stage('cancelling')
             return
@@ -2156,21 +2261,17 @@ class RenderManager:
             bar.setRange(0, int(total))
             bar.setValue(int(done))
         self._control_progress = (int(done), int(total))
-        now = _time.time()
+        now = monotonic()
         last = getattr(self, '_progress_last_t', None)
         if last is None or now - last > 1.0 or (total > 0 and done >= total):
             self._progress_last_t = now
             pct = int(done * 100 / max(1, total))
             eta = ''
             first = getattr(self, '_progress_first_t', None)
-            if first is not None and done > 0:
+            if first is not None and 0 < done < total:
                 remaining = (now - first) / done * (total - done)
-                eta = f" · ~{int(remaining) + 1}s"
-            else:
-                self._progress_first_t = now
-            key = {'prepare': 'render_stage_prepare', 'align': 'render_stage_align',
-                   'fuse': 'render_stage_fuse'}.get(
-                       getattr(self, '_render_progress_stage', None), 'render_progress')
+                eta = f" · ~{ceil(remaining)}s"
+            key = _RENDER_STAGE_KEYS.get(getattr(self, '_render_progress_stage', None), 'render_progress')
             text = f"{trans.t(key)} {pct}% ({done}/{total}){eta}"
             label = getattr(self, '_status_bar_label', None)
             if label is not None:
@@ -2201,6 +2302,7 @@ class RenderManager:
                              details, QMessageBox.Icon.Warning)
 
     def on_render_error(self, error_message: str) -> None:
+        self.dismiss_live_preview()
         window = self.window
         if (getattr(self, "_compare_cancelling", False)
                 or bool(getattr(self.worker, "is_cancelled", False))):

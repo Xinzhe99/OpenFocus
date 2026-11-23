@@ -1,6 +1,7 @@
 from typing import Optional
 
 from functools import partial
+from contextlib import nullcontext
 from dataclasses import replace
 from PyQt6.QtCore import QThread, pyqtSignal
 import time
@@ -8,9 +9,10 @@ import os
 import cv2
 import numpy as np
 from core.registration import ImageRegistration, RegistrationCancelled
+from core.render_context import RegistrationDetails
 from core.multi_focus_fusion import MultiFocusFusion, OPENCL_FUSION_ALGORITHMS
 from core.fusion_diagnostics import log_effective_fusion
-from core.frame_storage import store_frame, scratch_directory, estimate_fusion_space
+from core.frame_storage import is_mapped_frame, store_frame, scratch_directory, estimate_fusion_space
 from core.source_frames import materialize_frames, processing_preview, resolve_frame
 from core.resource_policy import ResourceLimitError, heavy_job, require_memory
 from utils import resource_path
@@ -464,6 +466,7 @@ class ROIAlignmentWorker(QThread):
         alignment_time = time.time() - alignment_start_time
         if self._cancelled:
             raise RegistrationCancelled()
+        self.registration_details = RegistrationDetails(getattr(registration, 'dispatch', ()))
     
         self.finished_signal.emit(aligned_images, alignment_time)
 
@@ -473,7 +476,7 @@ class RenderWorker(QThread):
 
     finished_signal = pyqtSignal(object, object, bool, float, float, str)
     progress_signal = pyqtSignal(int, int)  # done, total (tiled fusion)
-    stage_signal = pyqtSignal(str)  # waiting | prepare | align | fuse | finish
+    stage_signal = pyqtSignal(str)  # waiting | prepare | align | fuse | finalize | publish
     error_signal = pyqtSignal(str)
 
     def __init__(self, raw_images, aligned_images=None, is_images_aligned=False,
@@ -509,6 +512,7 @@ class RenderWorker(QThread):
         self.last_alignment_options = last_alignment_options
         self.need_fusion = bool(need_fusion)
         self.preview = bool(preview)
+        self.live_preview_sink = None
         self.roi_rect = roi_rect
         self.roi_mode = roi_mode
         self.roi_base_index = roi_base_index
@@ -542,6 +546,7 @@ class RenderWorker(QThread):
         self.resource_preference = resource_preference
         self.alignment_reused = False
         self.alignment_computed = False
+        self.registration_details = None
         self.alignment_report = [] if collect_alignment_report else None
         self.prepared_cache = prepared_cache
         self.retain_preparation = bool(retain_preparation)
@@ -564,6 +569,7 @@ class RenderWorker(QThread):
     def run(self):
         self._render_error_category = None
         self.fusion_details = None
+        self.registration_details = None
         self._pending_fusion_details = None
         with log_operation("render", method=self.algorithm, parameters=self.fusion_parameters,
                            registration=self.alignment, registration_parameters=self.registration_parameters,
@@ -708,6 +714,7 @@ class RenderWorker(QThread):
                                       for frame in self.aligned_images]
             registration_performed = True
             self.alignment_reused = True
+            self.registration_details = RegistrationDetails(reuse='session')
         else:
             if self.preview:
                 from core.frame_storage import select_scratch
@@ -808,7 +815,6 @@ class RenderWorker(QThread):
                     self.alignment_reused = True
                     alignment_time = 0.0
                 else:
-                    alignment_start_time = time.time()
                     self.stage_signal.emit("align")
                     with profile.stage('registration', resources=True):
                         if self.alignment_report is None:
@@ -843,7 +849,7 @@ class RenderWorker(QThread):
         if self.need_fusion:
             if self.is_cancelled:
                 raise RegistrationCancelled()
-            fusion_start_time = time.time()
+            aligned_depth = registration_performed or (roi_rect_int is not None and self.is_images_aligned)
             self.stage_signal.emit("fuse")
             full_frame_roi = roi_rect_int is not None and get_fusion(self.algorithm).roi is None
             fusion_images = (processed_images if full_frame_roi or cropped_images is None
@@ -855,19 +861,44 @@ class RenderWorker(QThread):
             focus_region = ({'depth_crop': roi_rect_int}
                             if full_frame_roi and not self.preview and self.algorithm in _RENDER_DEPTH_METHODS
                             else {})
-            with profile.stage('fusion', resources=True):
-                fusion_result, device_name = self._run_fusion(
+            validity = None
+            from core.source_frames import NativePreparedCache
+            previous_preparation = self.prepared_cache
+            if (isinstance(previous_preparation, NativePreparedCache)
+                    and aligned_depth and not self.alignment_reused):
+                # The cache describes the earlier alignment, not new warps.
+                previous_preparation = self.prepared_cache = None
+            observer = nullcontext()
+            if self.algorithm in _RENDER_DEPTH_METHODS and not self.preview and aligned_depth:
+                from core.render_context import RenderAlignmentMask
+                from core.source_frames import observe_resolved_frames
+                validity = RenderAlignmentMask(fusion_images, roi_rect_int if full_frame_roi else None,
+                                               lambda: self.is_cancelled)
+                observer = observe_resolved_frames(validity.capture)
+            with observer:
+                fusion_result, device_name, fusion_time = self._run_fusion(
                     fusion_images, should_cancel=lambda: self.is_cancelled,
                     progress_callback=self._fusion_progress(), **focus_region)
-            if self.rendered_depth is not None and (registration_performed or
-                    (roi_rect_int is not None and self.is_images_aligned)):
-                from core.render_context import render_alignment_mask
-                try:
-                    self.rendered_depth['valid_mask'] = render_alignment_mask(
-                        processed_images, roi_rect_int, lambda: self.is_cancelled)
-                except (MemoryError, OSError):
-                    logger.warning('could not retain aligned focus validity', exc_info=True)
+            if self.is_cancelled:
+                raise RegistrationCancelled()
+            if self.rendered_depth is not None and validity is not None:
+                prepared = self.prepared_cache
+                if isinstance(prepared, NativePreparedCache) and prepared is previous_preparation:
+                    mask, failed = prepared.valid_mask, False
+                else:
+                    with profile.stage('retain_depth_validity'):
+                        mask, failed = validity.complete()
+                    if isinstance(prepared, NativePreparedCache):
+                        from dataclasses import replace
+                        self.prepared_cache = None if failed else replace(prepared, valid_mask=mask)
+                if failed:
+                    logger.warning('could not retain aligned focus validity')
                     self.rendered_depth = None
+                else:
+                    self.rendered_depth['valid_mask'] = mask
+            elif validity is not None and isinstance(self.prepared_cache, NativePreparedCache):
+                # No proven validity to reuse alongside this aligned stack.
+                self.prepared_cache = None
             if self.rendered_depth is not None:
                 self.rendered_depth.update(method=self.algorithm, roi_rect=roi_rect_int)
                 log_action('render.depth_retained', method=self.algorithm, roi=roi_rect_int,
@@ -882,14 +913,14 @@ class RenderWorker(QThread):
             if self.roi_mode == "paste" and base_full_image is not None and fusion_result is not None and roi_rect_int is not None:
                 fusion_result = self._apply_roi_pasting(fusion_result, base_full_image, roi_rect_int)
     
-            fusion_time = time.time() - fusion_start_time
-        if self.is_cancelled:
-            raise RegistrationCancelled()
+        else:
+            self.stage_signal.emit('finalize')
     
         # Finalize the render and persist fresh alignment for later reuse.
         # Deferred warps may have been applied during fusion; cache writing is
         # not another alignment stage.
-        self.stage_signal.emit("finish")
+        if self.is_cancelled:
+            raise RegistrationCancelled()
         if self.alignment_computed:
             with profile.stage('alignment_cache_save'):
                 self._save_cached_alignment(list(reversed(processed_images))
@@ -899,8 +930,7 @@ class RenderWorker(QThread):
     
         result_details = None
         if fusion_result is not None:
-            from utils.logging_setup import image_result_details
-            result_details = image_result_details(fusion_result)
+            result_details = {'shape': tuple(fusion_result.shape), 'dtype': str(fusion_result.dtype)}
             if profile.enabled:
                 profile.set('render', output_shape=list(fusion_result.shape),
                             output_dtype=str(fusion_result.dtype), device=device_name)
@@ -925,6 +955,8 @@ class RenderWorker(QThread):
             processed_images = retain_aligned_frames(
                 processed_images, should_cancel=lambda: self.is_cancelled,
                 limit_bytes=max(0, RETAINED_FRAME_LIMIT_BYTES - prepared_bytes))
+        if self.is_cancelled:
+            raise RegistrationCancelled()
         self.fusion_details = self._pending_fusion_details if fusion_result is not None else None
         self.finished_signal.emit(
             processed_images,
@@ -993,18 +1025,20 @@ class RenderWorker(QThread):
                 raise RegistrationCancelled()
             self._prepare_cache_identity()
             if self._defer_warps:
-                plan = align_cache.load_alignment_plan(
+                hit = align_cache.load_alignment_plan(
                     request.get('folder', ''), self._cache_filenames(),
-                    self._cache_source_images, identity=request.get('identity'),
+                    self._cache_source_images, identity=request.get('identity'), with_dispatch=True,
                     should_cancel=lambda: self.is_cancelled or not is_current())
-                if plan is None:
+                if hit is None:
                     return None
+                plan, dispatch = hit
                 from core.registration import apply_alignment_plan
                 cached = apply_alignment_plan(self._cache_source_images, plan,
                     defer_warps=True, should_cancel=lambda: self.is_cancelled)
                 self._alignment_plan = plan
+                reuse = 'disk_plan'
             else:
-                cached = align_cache.load_aligned(
+                hit = align_cache.load_aligned(
                     request.get("folder", ""),
                     self._cache_filenames(),
                     tuple(request.get("align_options") or ()),
@@ -1012,8 +1046,13 @@ class RenderWorker(QThread):
                     request.get("scale_factor", 1.0),
                     request.get("frame_shape"),
                     identity=request.get("identity"),
+                    with_dispatch=True,
                     should_cancel=lambda: self.is_cancelled or not is_current(),
                 )
+                if hit is None:
+                    return None
+                cached, dispatch = hit
+                reuse = 'disk_pixels'
         except RegistrationCancelled:
             raise
         except Exception:
@@ -1025,6 +1064,7 @@ class RenderWorker(QThread):
             return None
         if self.is_cancelled or not is_current():
             raise RegistrationCancelled()
+        self.registration_details = RegistrationDetails(dispatch, reuse)
         print("Registration cache hit — skipping alignment")
         return cached
 
@@ -1050,11 +1090,13 @@ class RenderWorker(QThread):
         from utils import align_cache
         try:
             self._prepare_cache_identity()
+            dispatch = self.registration_details.dispatch if self.registration_details else ()
             if self._defer_warps:
                 align_cache.save_alignment_plan(
                     request.get('folder', ''), self._cache_filenames(),
                     self._alignment_plan, self._cache_source_images,
                     identity=request.get('identity'),
+                    registration_dispatch=dispatch,
                     should_cancel=lambda: self.is_cancelled or not is_current())
             else:
                 align_cache.save_aligned(
@@ -1066,6 +1108,7 @@ class RenderWorker(QThread):
                     request.get("scale_factor", 1.0),
                     request.get("frame_shape"),
                     identity=request.get("identity"),
+                    registration_dispatch=dispatch,
                     should_cancel=lambda: self.is_cancelled or not is_current(),
                 )
         except RegistrationCancelled:
@@ -1076,7 +1119,7 @@ class RenderWorker(QThread):
             logger.exception("could not write the alignment cache")
 
     def _run_registration(self, images, should_cancel=None):
-        started = time.time()
+        started = time.monotonic()
         registration = ImageRegistration(method=self.alignment,
             parameters=self.registration_parameters,
             downscale_width=self.reg_downscale_width,
@@ -1092,7 +1135,8 @@ class RenderWorker(QThread):
                     'frame_index': error.frame_index, 'reason': error.reason}]
             raise
         self._alignment_plan = registration.alignment_plan if self._defer_warps else None
-        return images, time.time() - started
+        self.registration_details = RegistrationDetails(getattr(registration, 'dispatch', ()))
+        return images, time.monotonic() - started
 
     def _apply_roi_cropping(self, images):
         """应用ROI裁剪，返回(裁剪后图像栈, 基准图像, ROI矩形)"""
@@ -1133,7 +1177,7 @@ class RenderWorker(QThread):
         return rx, ry, rw, rh
 
     def _fusion_progress(self):
-        """Forward source preparation and tile counts with their correct stages."""
+        """Forward completed frames during staging and backend counts during fusion."""
         preparing = False
 
         def tiles(done, total):
@@ -1155,6 +1199,7 @@ class RenderWorker(QThread):
 
     def _run_fusion(self, images, should_cancel=None, progress_callback=None, depth_crop=None):
         """Run the selected descriptor with its complete parameter mapping."""
+        started = time.monotonic()
         from core.transparency import restore_transparent_canvas
         self.rendered_depth = None
         domain_shape = images[0].shape[:2]
@@ -1188,7 +1233,7 @@ class RenderWorker(QThread):
         profile = performance_profile.current()
         with profile.stage('prepare_input'):
             images, is_16bit = prepare_fusion_input(images, should_cancel)
-        focus = {}
+        callbacks = {}
         if not self.preview and self.algorithm in _RENDER_DEPTH_METHODS:
             from core.render_context import store_rendered_focus
 
@@ -1208,19 +1253,41 @@ class RenderWorker(QThread):
                         'parameters': dict(self.fusion_parameters),
                     }
 
-            focus['focus_callback'] = capture
-        with profile.stage('fuse'):
+            callbacks['focus_callback'] = capture
+        if (self.live_preview_sink is not None and not self.preview
+                and self.algorithm in ('openfocus_a', 'openfocus_b', 'openfocus_c')):
+            from core.fusion_live_preview import LiveFusionPreview
+            callbacks['live_preview'] = LiveFusionPreview(self.live_preview_sink)
+        with profile.stage('fusion', resources=True), profile.stage('fuse'):
             result = fusion.fuse(images, thread_count=self.thread_count,
-                should_cancel=should_cancel, progress_callback=progress_callback, **focus)
+                should_cancel=should_cancel, progress_callback=progress_callback, **callbacks)
+        fusion_time = time.monotonic() - started
+        if should_cancel is not None and should_cancel():
+            raise RegistrationCancelled()
+        self.stage_signal.emit('finalize')
         self.prepared_cache = fusion.prepared_cache
+        if self.registration_details is not None and fusion.ecc_warp_device:
+            details = self.registration_details
+            if self.alignment_computed:
+                dispatch = tuple(replace(stage, warp=fusion.ecc_warp_device)
+                                 if stage.method == 'ecc' else stage
+                                 for stage in details.dispatch)
+                self.registration_details = replace(details, dispatch=dispatch)
+            elif details.reuse == 'disk_plan':
+                self.registration_details = replace(details, applied_warp=fusion.ecc_warp_device)
         if self.sharpen_output and result is not None:
             from utils.output_sharpen import sharpen_output
             with profile.stage('sharpen'):
                 result = sharpen_output(result, should_cancel, strength=self.sharpen_strength)
         device = fusion.get_info()['device'] if (get_fusion(self.algorithm).neural or self.algorithm in OPENCL_FUSION_ALGORITHMS) else 'CPU'
         with profile.stage('finalize_output'):
-            result = quantize_fuse_output(result, is_16bit)
-            result = store_frame(restore_transparent_canvas(result, transparent))
+            quantized = quantize_fuse_output(result, is_16bit)
+            if transparent is not None:
+                result = store_frame(restore_transparent_canvas(quantized, transparent))
+            elif self.sharpen_output and self.sharpen_strength and quantized is result and result is not None and not is_mapped_frame(result):
+                result = store_frame(result)
+            else:
+                result = quantized
         details = fusion.fusion_details
         if details is not None:
             options = details.options + (
@@ -1231,7 +1298,7 @@ class RenderWorker(QThread):
             if self.sharpen_output:
                 options += (('sharpen_strength', self.sharpen_strength),)
             self._pending_fusion_details = replace(details, options=options)
-        return result, device
+        return result, device, fusion_time
 
     def _apply_roi_pasting(self, fusion_result, base_image, roi_rect_int):
         """将融合结果粘贴回基准图像"""

@@ -938,7 +938,7 @@ def test_watermark_native_alpha_stays_live_during_fusion(qapp):
 
 def test_watermark_native_interleaved_selection_and_close(qapp, monkeypatch):
     import threading
-    from core import source_frames
+    from core.source_previews import SourceRegionWorker
     from dialogs.watermark import WatermarkDialog
     from utils.image_utils import pixmap_to_cv2
 
@@ -947,15 +947,15 @@ def test_watermark_native_interleaved_selection_and_close(qapp, monkeypatch):
     host = _DialogHost(source=first)
     host.raw_images.append(second)
     started, release = threading.Event(), threading.Event()
-    resolve = source_frames.resolve_frame
+    decorate = SourceRegionWorker._decorate
 
-    def delayed(frame, **kwargs):
+    def delayed(worker, tile, rect, frame):
         if frame is first:
             started.set()
             assert release.wait(10)
-        return resolve(frame, **kwargs)
+        return decorate(worker, tile, rect, frame)
 
-    monkeypatch.setattr(source_frames, "resolve_frame", delayed)
+    monkeypatch.setattr(SourceRegionWorker, '_decorate', delayed)
     dialog = WatermarkDialog(host)
     try:
         _wait_watermark(qapp, lambda: dialog.preview_lbl._base_pixmap is not None)

@@ -5,6 +5,9 @@ import pytest
 
 from core.image_loader import ImageStackLoader
 from controllers.output_manager import OutputManager, OutputRecord
+from tests.test_control_channel import call, wait_until
+from tests.test_control_channel import control_window as control_window
+from tests.test_control_channel import server as server
 from utils.linear_dng import LinearDNGMetadata
 
 
@@ -272,6 +275,67 @@ def test_annotated_dng_rejects_unrepresentable_color(monkeypatch, tmp_path):
     assert trans.t('linear_dng_gamut_error') in str(error.value)
     assert target.read_bytes() == b'old'
     np.testing.assert_array_equal(record.image, image)
+
+
+def test_linear_stack_render_exports_calibrated_dng_over_control_channel(server, tmp_path):
+    import tifffile
+    from PyQt6.QtNetwork import QLocalSocket
+
+    from core.control.protocol import decode, encode
+    from utils.linear_dng import load_linear_raw, write_linear_dng
+    from utils.scalebar import detect_px_size_um
+
+    metadata = LinearDNGMetadata(
+        ((0.8293, -0.1611, -0.1132), (-0.4759, 1.2711, 0.2275),
+         (-0.1013, 0.2415, 0.5509)),
+        (1024 / 1853, 1.0, 1024 / 1667), 'Canon', 'EOS 5D')
+    y, x = np.indices((96, 128))
+    paths = [tmp_path / f'source-{i}.dng' for i in range(2)]
+    for i, path in enumerate(paths):
+        pixels = np.stack((2000 + x * 40, 5000 + y * 40 + i * 20,
+                           10000 + (x + y) * 30), axis=2).astype(np.uint16)
+        write_linear_dng(path, pixels, metadata, px_size_um=0.65)
+
+    assert call(server, 'stack.load', files=list(map(str, paths)), linear_raw=True)['ok']
+    assert wait_until(lambda: call(server, 'stack.frames')['result']['load']['finished'], timeout=30)
+    stack = call(server, 'stack.frames')['result']
+    assert stack['count'] == len(paths) and stack['load']['error'] is None, stack
+    assert call(server, 'method.set', id='dct')['ok']
+    started = call(server, 'render.start', confirm=True)
+    assert started['result']['started'], started
+    assert wait_until(lambda: call(server, 'render.state')['result']['state']
+                      in ('done', 'error', 'cancelled'), timeout=90)
+    state = call(server, 'render.state')['result']
+    assert state['state'] == 'done', state
+    row = call(server, 'output.list')['result']['selected']
+    assert row == 0
+    record = server.window.output_manager.record_for_row(row)
+    assert record.kind == 'fusion'
+
+    path = tmp_path / 'result.dng'
+    socket = QLocalSocket()
+    socket.connectToServer(server.socket_name)
+    assert socket.waitForConnected(5000)
+    try:
+        socket.write(encode({'id': 'export', 'cmd': 'output.export', 'token': server.token,
+                             'args': {'index': row, 'path': str(path)}}))
+        socket.flush()
+        assert wait_until(socket.canReadLine, timeout=30)
+        response = decode(bytes(socket.readLine()))
+        assert response['ok'] and response['result']['written'], response
+    finally:
+        socket.abort()
+
+    assert record.exported and record.export_path == str(path)
+    with tifffile.TiffFile(path) as tif:
+        assert tif.pages[0].photometric.value == 34892
+        np.testing.assert_array_equal(tif.asarray(), record.image[:, :, ::-1])
+    reloaded, profile = load_linear_raw(path)
+    assert reloaded.shape == record.image.shape and reloaded.dtype == np.uint16
+    assert (profile.camera_make, profile.camera_model) == (metadata.camera_make, metadata.camera_model)
+    np.testing.assert_allclose(profile.color_matrix, metadata.color_matrix)
+    np.testing.assert_allclose(profile.as_shot_neutral, metadata.as_shot_neutral)
+    assert detect_px_size_um(str(path)) == pytest.approx(0.65)
 
 
 def test_dng_export_keeps_the_records_result_calibration(tmp_path):
