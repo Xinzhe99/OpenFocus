@@ -2251,9 +2251,8 @@ class MultiFocusFusion:
 
                         try:
                             if io_workers > 1:
-                                with concurrent.futures.ThreadPoolExecutor(max_workers=io_workers) as executor:
-                                    for _ in executor.map(_stage_color_worker, range(io_workers)):
-                                        pass
+                                from fusion_methods.neural_runtime import run_neural_tasks
+                                run_neural_tasks(io_workers, range(io_workers), _stage_color_worker)
                             else:
                                 _stage_color_worker(0)
                         except StackMFFKernelUnavailable:

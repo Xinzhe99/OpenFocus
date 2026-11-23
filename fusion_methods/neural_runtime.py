@@ -1,6 +1,7 @@
 """Admit and dispatch StackMFF inference to installed native and ONNX engines."""
 import atexit
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 import json
 import hashlib
@@ -838,6 +839,70 @@ def logits(planes, path, device, threads, should_cancel=None):
     return result[..., :h, :w]
 
 
+_NEURAL_POOL = None
+_NEURAL_POOL_WORKERS = 0
+_NEURAL_POOL_LOCK = threading.Lock()
+_IN_NEURAL_WORKER = threading.local()
+
+
+def _shutdown_neural_pool():
+    global _NEURAL_POOL, _NEURAL_POOL_WORKERS
+    with _NEURAL_POOL_LOCK:
+        pool, _NEURAL_POOL = _NEURAL_POOL, None
+        _NEURAL_POOL_WORKERS = 0
+    if pool is not None:
+        pool.shutdown(wait=False, cancel_futures=True)
+
+
+atexit.register(_shutdown_neural_pool)
+
+
+def _get_neural_pool(workers):
+    global _NEURAL_POOL, _NEURAL_POOL_WORKERS
+    target = max(1, min(workers, min(8, max(2, os.cpu_count() or 2))))
+    with _NEURAL_POOL_LOCK:
+        if _NEURAL_POOL is None or _NEURAL_POOL_WORKERS < target:
+            old = _NEURAL_POOL
+            _NEURAL_POOL = ThreadPoolExecutor(max_workers=target, thread_name_prefix='openfocus-neural')
+            _NEURAL_POOL_WORKERS = target
+            if old is not None:
+                old.shutdown(wait=False)
+        return _NEURAL_POOL
+
+
+def run_neural_tasks(workers, items, fn):
+    """Execute fn across items using the persistent bounded pool, joining all futures."""
+    items = list(items)
+    if workers <= 1 or len(items) <= 1 or getattr(_IN_NEURAL_WORKER, 'active', False):
+        return [fn(item) for item in items]
+    pool = _get_neural_pool(min(workers, len(items)))
+
+    def _run(item):
+        _IN_NEURAL_WORKER.active = True
+        try:
+            return fn(item)
+        finally:
+            _IN_NEURAL_WORKER.active = False
+
+    futures = [pool.submit(_run, item) for item in items[1:]]
+    results = [None] * len(items)
+    first_exc = None
+    try:
+        results[0] = fn(items[0])
+    except BaseException as exc:
+        first_exc = exc
+    finally:
+        for i, fut in enumerate(futures, 1):
+            try:
+                results[i] = fut.result()
+            except BaseException as exc:
+                if first_exc is None:
+                    first_exc = exc
+        if first_exc is not None:
+            raise first_exc
+    return results
+
+
 def softmax(x):
     return _softmax_shifted(x - x.max(axis=1, keepdims=True))
 
@@ -856,17 +921,28 @@ _DEFAULT_SOFTMAX_INPLACE = softmax_inplace
 
 
 def _run_softmax_inplace(x, threads=1):
-    workers = max(1, min(4, int(threads or 1)))
-    if (workers > 1 and softmax_inplace is _DEFAULT_SOFTMAX_INPLACE
-            and x.ndim == 4 and x.size >= 262144 and x.shape[2] >= workers):
-        from concurrent.futures import ThreadPoolExecutor
-
+    if softmax_inplace is not _DEFAULT_SOFTMAX_INPLACE:
+        return softmax_inplace(x)
+    if x.ndim == 4 and x.shape[2] >= 1 and x.shape[1] >= 1 and x.shape[3] >= 1:
         h = x.shape[2]
-        step = (h + workers - 1) // workers
-        slices = [x[:, :, y0:min(h, y0 + step), :] for y0 in range(0, h, step)]
-        with ThreadPoolExecutor(max_workers=len(slices)) as executor:
-            list(executor.map(_softmax_slice, slices))
-        return x
+        row_bytes = max(1, x.shape[0] * x.shape[1] * x.shape[3] * x.itemsize)
+        strip_rows = max(1, min(h, (1 << 20) // row_bytes))
+        workers = max(1, min(8, int(threads or 1)))
+
+        def _softmax_band(rng):
+            y0, y1 = rng
+            for top in range(y0, y1, strip_rows):
+                _softmax_slice(x[:, :, top:min(y1, top + strip_rows), :])
+
+        if workers > 1 and x.size >= 262144 and h >= 2:
+            parts = min(workers, h)
+            step = (h + parts - 1) // parts
+            ranges = [(y0, min(h, y0 + step)) for y0 in range(0, h, step)]
+            run_neural_tasks(workers, ranges, _softmax_band)
+            return x
+        if x.size >= 65536 and strip_rows < h:
+            _softmax_band((0, h))
+            return x
     return softmax_inplace(x)
 
 
@@ -948,17 +1024,15 @@ def _resize_antialias_native(planes, scale, should_cancel, workers, kernels):
                     top, min(out_h, top + row_block), scratch)
 
     if workers > 1 and layers >= 8:
-        from concurrent.futures import ThreadPoolExecutor
-
         step = (layers + workers - 1) // workers
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            for batch in range(batches):
-                cancel(should_cancel)
-                def resize_partition(start):
-                    resize_range(batch, start, min(layers, start + step))
+        starts = range(0, layers, step)
+        for batch in range(batches):
+            cancel(should_cancel)
 
-                for _ in executor.map(resize_partition, range(0, layers, step)):
-                    pass
+            def resize_partition(start, batch=batch):
+                resize_range(batch, start, min(layers, start + step))
+
+            run_neural_tasks(workers, starts, resize_partition)
     else:
         for batch in range(batches):
             resize_range(batch, 0, layers)
@@ -972,7 +1046,7 @@ _DEFAULT_RESIZE_ANTIALIAS = _resize_antialias
 def _run_resize_antialias(planes, scale, should_cancel=None, threads=1):
     if _resize_antialias is not _DEFAULT_RESIZE_ANTIALIAS:
         return _resize_antialias(planes, scale, should_cancel)
-    workers = max(1, min(4, int(threads or 1)))
+    workers = max(1, min(8, int(threads or 1)))
     return _resize_antialias_impl(planes, scale, should_cancel, workers)
 
 
@@ -1027,16 +1101,22 @@ def _resize_three_quarters(planes, should_cancel=None):
 
 
 def probabilities(planes, path, device, threads, sigma, cancel=None, *, dual_scale=True):
-    from fusion_methods.neural_common import cancel as check
+    from fusion_methods.neural_common import (
+        StackMFFKernelUnavailable, cancel as check, load_stackmff_kernels,
+    )
     profile = _profile()
     h, w = planes.shape[-2:]
-    workers = max(1, min(4, int(threads or 1)))
+    workers = max(1, min(8, int(threads or 1)))
     with profile.stage('logits.full'):
         p = logits(planes, path, device, threads, cancel)
     with profile.stage('softmax.full'):
         p = _run_softmax_inplace(p, workers)
     check(cancel)
     n_layers = p.shape[1]
+    spatial_px = h * w
+    scratch_workers = min(workers, max(1, (32 << 20) // max(1, spatial_px * 4)))
+    if spatial_px <= 4096:
+        scratch_workers = min(4, scratch_workers)
     if dual_scale:
         with profile.stage('resize.0.75'):
             small = _run_resize_antialias(planes, 0.75, cancel, workers)
@@ -1046,11 +1126,10 @@ def probabilities(planes, path, device, threads, sigma, cancel=None, *, dual_sca
         with profile.stage('softmax.reduced'):
             q = _run_softmax_inplace(q, workers)
         with profile.stage('upsample_combine'):
-            if workers > 1 and n_layers >= 8:
-                from concurrent.futures import ThreadPoolExecutor
-
-                step = (n_layers + workers - 1) // workers
+            if scratch_workers > 1 and n_layers >= 8:
+                step = (n_layers + scratch_workers - 1) // scratch_workers
                 ranges = [(n0, min(n_layers, n0 + step)) for n0 in range(0, n_layers, step)]
+
                 def _upsample_range(rng_pair):
                     scratch = np.empty((h, w), np.float32)
                     for n in range(*rng_pair):
@@ -1058,8 +1137,8 @@ def probabilities(planes, path, device, threads, sigma, cancel=None, *, dual_sca
                         cv2.resize(q[0, n], (w, h), dst=scratch, interpolation=cv2.INTER_LINEAR)
                         p[0, n] += scratch
                         p[:, n] *= np.float32(0.5)
-                with ThreadPoolExecutor(max_workers=len(ranges)) as executor:
-                    list(executor.map(_upsample_range, ranges))
+
+                run_neural_tasks(scratch_workers, ranges, _upsample_range)
             else:
                 scratch = np.empty((h, w), np.float32)
                 for n in range(n_layers):
@@ -1072,11 +1151,10 @@ def probabilities(planes, path, device, threads, sigma, cancel=None, *, dual_sca
         with profile.stage('gaussian'):
             radius = int(3 * sigma + 0.5)
             ksize = (radius * 2 + 1,) * 2
-            if workers > 1 and n_layers >= 8:
-                from concurrent.futures import ThreadPoolExecutor
-
-                step = (n_layers + workers - 1) // workers
+            if scratch_workers > 1 and n_layers >= 8:
+                step = (n_layers + scratch_workers - 1) // scratch_workers
                 ranges = [(n0, min(n_layers, n0 + step)) for n0 in range(0, n_layers, step)]
+
                 def _blur_range(rng_pair):
                     scratch = np.empty((h, w), np.float32)
                     for n in range(rng_pair[0], rng_pair[1]):
@@ -1084,15 +1162,8 @@ def probabilities(planes, path, device, threads, sigma, cancel=None, *, dual_sca
                         cv2.GaussianBlur(p[0, n], ksize, sigma,
                                          dst=scratch, borderType=cv2.BORDER_REPLICATE)
                         p[0, n] = scratch
-                with ThreadPoolExecutor(max_workers=len(ranges)) as executor:
-                    list(executor.map(_blur_range, ranges))
-                check(cancel)
-                ystep = (h + workers - 1) // workers
-                yslices = [p[:, :, y0:min(h, y0 + ystep), :] for y0 in range(0, h, ystep) if y0 < h]
-                def _norm_slice(sub):
-                    sub /= sub.sum(axis=1, keepdims=True)
-                with ThreadPoolExecutor(max_workers=len(yslices)) as executor:
-                    list(executor.map(_norm_slice, yslices))
+
+                run_neural_tasks(scratch_workers, ranges, _blur_range)
             else:
                 scratch = np.empty((h, w), np.float32)
                 for n in range(n_layers):
@@ -1100,7 +1171,41 @@ def probabilities(planes, path, device, threads, sigma, cancel=None, *, dual_sca
                     cv2.GaussianBlur(p[0, n], ksize, sigma,
                                      dst=scratch, borderType=cv2.BORDER_REPLICATE)
                     p[0, n] = scratch
-                check(cancel)
-                p /= p.sum(axis=1, keepdims=True)
+            check(cancel)
+            normalized = False
+            kernels = (load_stackmff_kernels()
+                       if p.ndim == 4 and p.dtype == np.float32 and p.flags.c_contiguous
+                       and n_layers >= 1 and h >= 1 and w >= 1
+                       else None)
+            if kernels is not None:
+                try:
+                    parts = (min(workers, h, max(1, (h * w) // 4096))
+                             if (workers > 1 and p.size >= 65536 and h >= 2 and h * w >= 8192) else 1)
+                    if parts > 1:
+                        ystep = (h + parts - 1) // parts
+                        yranges = [(y0, min(h, y0 + ystep)) for y0 in range(0, h, ystep)]
+                        run_neural_tasks(parts, yranges,
+                                         lambda rng: kernels.normalize_probs_rows(p, rng[0], rng[1]))
+                    else:
+                        kernels.normalize_probs_rows(p, 0, h)
+                    normalized = True
+                except StackMFFKernelUnavailable:
+                    pass
+            if not normalized:
+                if workers > 1 and p.size >= 65536 and h >= 2:
+                    row_bytes = max(1, p.shape[0] * n_layers * w * p.itemsize)
+                    strip_rows = max(1, min(h, (1 << 20) // row_bytes))
+                    parts = min(workers, h)
+                    ystep = (h + parts - 1) // parts
+                    yranges = [(y0, min(h, y0 + ystep)) for y0 in range(0, h, ystep)]
+
+                    def _norm_band(rng):
+                        for top in range(rng[0], rng[1], strip_rows):
+                            sub = p[:, :, top:min(rng[1], top + strip_rows), :]
+                            sub /= sub.sum(axis=1, keepdims=True)
+
+                    run_neural_tasks(parts, yranges, _norm_band)
+                else:
+                    p /= p.sum(axis=1, keepdims=True)
     check(cancel)
     return p
