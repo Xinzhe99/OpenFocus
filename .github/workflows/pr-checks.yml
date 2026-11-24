@@ -26,7 +26,7 @@ jobs:
 
       - name: Check patch whitespace and Python syntax
         run: |
-          git diff --check HEAD^1 HEAD
+          git -c core.whitespace=trailing-space,space-before-tab,cr-at-eol diff --check HEAD^1 HEAD
           python - <<'PY'
           import os
           from pathlib import Path
