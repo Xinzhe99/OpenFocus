@@ -17,6 +17,7 @@ MAX_FILE_BYTES = 64 * 1024 * 1024
 MAX_POINTS = 250000
 MAX_OPERATIONS = 100000
 MAX_ARCHIVE_MEMBERS = 500000
+FINGERPRINT_CHUNK_BYTES = 64 * 1024
 PAYLOAD_CHUNK_BYTES = 1024 * 1024
 
 
@@ -48,11 +49,18 @@ def _fingerprint(array, cancelled=None):
     if array is None:
         return None
     digest = hashlib.sha256()
-    # Hash in row order without copying an entire non-contiguous ROI.
-    for row in array:
-        if cancelled is not None and cancelled():
-            raise ValueError('Retouch replay cancelled')
-        digest.update(memoryview(np.ascontiguousarray(row)).cast('B'))
+    if array.ndim >= 2 and array.flags.c_contiguous and array.nbytes:
+        # A byte view avoids copies of RAM-backed and mapped frames alike.
+        data = memoryview(array).cast('B')
+        for start in range(0, len(data), FINGERPRINT_CHUNK_BYTES):
+            _cancel_checkpoint(cancelled)
+            digest.update(data[start:start + FINGERPRINT_CHUNK_BYTES])
+    else:
+        # Bound copies of non-contiguous ROIs to one row in C order.
+        for row in array:
+            if cancelled is not None and cancelled():
+                raise ValueError('Retouch replay cancelled')
+            digest.update(memoryview(np.ascontiguousarray(row)).cast('B'))
     return {"shape": list(array.shape), "dtype": array.dtype.str,
             "sha256": digest.hexdigest()}
 

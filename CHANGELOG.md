@@ -124,6 +124,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   reader.
 - Reuse sharpness scores for unchanged disk-backed previews when source
   frames are reordered or deleted.
+- Hash contiguous retouch checkpoint pixels in bounded chunks while preserving
+  checkpoint bytes and cancellation.
 - Write neural input grayscale directly into model planes. Reduce V1 color
   reconstruction allocations, size V2 tiles from frame metadata, skip V2 weight
   maps when tiles cover each pixel once, and bound V3 hard-choice scratch by
