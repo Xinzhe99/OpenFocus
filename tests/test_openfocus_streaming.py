@@ -413,18 +413,20 @@ def test_comparison_openfocus_registration_reuses_plan_for_roi(tmp_path, monkeyp
     np.testing.assert_array_equal(source_frames.resolve_frame(cropped), original[2:10, 3:13])
 
 
-def test_nested_resolution_charges_full_decode_and_warp_for_roi(tmp_path, monkeypatch):
+@pytest.mark.parametrize('warp_dominates', [False, True], ids=['decode-peak', 'warp-peak'])
+def test_nested_resolution_admits_peak_workspace_for_roi(tmp_path, monkeypatch, warp_dominates):
     from core import resource_policy
     first, original = _source(tmp_path, 'charged.png', 18001)
-    warp_bytes = first.nbytes + first.shape[1] * 64
+    decode_bytes = source_frames.frame_resolution_bytes(first)
+    warp_bytes = decode_bytes if warp_dominates else first.nbytes + first.shape[1] * 64
     aligned = source_frames.process_frame(first, lambda pixels: pixels.copy(), scratch_bytes=warp_bytes)
     roi = source_frames.crop_frame(aligned, 3, 2, 10, 8)
-    expected = source_frames.frame_resolution_bytes(first) + warp_bytes
+    expected = first.nbytes + warp_bytes if warp_dominates else decode_bytes
     assert source_frames.frame_resolution_bytes(roi) == expected
     admitted = []
-    monkeypatch.setattr(resource_policy, 'require_memory', lambda size, **kwargs: admitted.append(size))
+    monkeypatch.setattr(resource_policy, 'require_memory', lambda size, *args, **kwargs: admitted.append(size))
     np.testing.assert_array_equal(source_frames.resolve_frame(roi), original[2:10, 3:13])
-    assert expected in admitted
+    assert max(admitted) == expected
     assert expected > roi.nbytes
 
 
