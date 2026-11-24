@@ -13,6 +13,7 @@ import cv2
 import numpy as np
 from scipy.ndimage import median_filter
 
+from core.frame_storage import async_upload_view
 from fusion_methods.dct import _ensure_color_image
 from fusion_methods.openfocus_ab import _check_cancel
 from utils.image_utils import fuse_output_dtype
@@ -481,7 +482,7 @@ class GpuDct:
                 _check_cancel(should_cancel)
                 h_src, ch, kind = prepare_upload(index)
                 in_flight = True
-                self.cl.enqueue_copy(self.q, src_buf, h_src, is_blocking=False)
+                self.cl.enqueue_copy(self.q, src_buf, async_upload_view(h_src), is_blocking=False)
                 self._run(
                     self.k[f'dct_block_var_argmax_{kind}'],
                     (map_w, map_h),
@@ -513,7 +514,7 @@ class GpuDct:
 
             unique_set = set(int(v) for v in np.unique(final_index_map))
             in_flight = True
-            self.cl.enqueue_copy(self.q, idx_buf, final_index_map, is_blocking=False)
+            self.cl.enqueue_copy(self.q, idx_buf, async_upload_view(final_index_map), is_blocking=False)
 
             # Pass 3: reconstruct selected blocks for active source frames only.
             out_buf = self.cl.Buffer(self.ctx, self.mf.WRITE_ONLY, max(1, out_bytes))
@@ -530,7 +531,7 @@ class GpuDct:
                     continue
                 h_src, ch, kind = prepare_upload(index)
                 in_flight = True
-                self.cl.enqueue_copy(self.q, src_buf, h_src, is_blocking=False)
+                self.cl.enqueue_copy(self.q, src_buf, async_upload_view(h_src), is_blocking=False)
                 self._run(
                     self.k[f'dct_copy_{kind}_{out_suffix}'],
                     (orig_w, orig_h),

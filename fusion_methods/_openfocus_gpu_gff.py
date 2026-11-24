@@ -14,6 +14,7 @@ from threading import Lock
 import cv2
 import numpy as np
 
+from core.frame_storage import async_upload_view
 from fusion_methods.dct import _ensure_color_image
 from fusion_methods.openfocus_ab import _check_cancel
 from utils.image_utils import fuse_output_dtype
@@ -806,7 +807,7 @@ class GpuGff:
             for index in range(count):
                 host_src, channels, kind = prepare_upload(index)
                 in_flight = True
-                self.cl.enqueue_copy(self.q, src_buf, host_src, is_blocking=False)
+                self.cl.enqueue_copy(self.q, src_buf, async_upload_view(host_src), is_blocking=False)
                 self._run(self.k[f'gff_sum_{kind}'], n, src_buf, t1_buf,
                           np.int32(n), np.int32(channels))
                 self._run(self.k['gff_laplacian_abs'], (width, height),
@@ -864,7 +865,7 @@ class GpuGff:
                     continue
                 host_src, channels, kind = prepare_upload(index)
                 in_flight = True
-                self.cl.enqueue_copy(self.q, src_buf, host_src, is_blocking=False)
+                self.cl.enqueue_copy(self.q, src_buf, async_upload_view(host_src), is_blocking=False)
                 self._run(self.k[f'prep_{kind}_f4'], grid_hw, src_buf, bgrg, bgrg_T,
                           np.int32(height), np.int32(width), np.int32(channels), lsize=local_16)
                 if rad_avg > 0:

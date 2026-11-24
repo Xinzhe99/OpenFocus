@@ -916,20 +916,51 @@ def frame_region(image, key=Ellipsis, *, write=False):
     if root is None:
         yield region
         return
+    borrowed, mapping = _reopen_mapped(region, root, write=write)
+    try:
+        yield borrowed
+    finally:
+        mapping._mmap.close()
+
+
+def _reopen_mapped(region, root, *, write):
+    """Map only ``region``'s bytes of ``root``'s file again, as (view, mapping)."""
     offset = root.offset + region.ctypes.data - root.ctypes.data
     extent = [(size - 1) * stride for size, stride in zip(region.shape, region.strides)]
     start = offset + sum(min(0, value) for value in extent)
     stop = offset + sum(max(0, value) for value in extent) + region.dtype.itemsize
     mapping = np.memmap(root.filename, dtype=np.uint8,
                         mode='r+' if write else 'r', offset=start, shape=(stop - start,))
-    try:
-        borrowed = np.ndarray(region.shape, dtype=region.dtype, buffer=mapping,
-                              offset=offset - start, strides=region.strides)
-        if not write:
-            borrowed.flags.writeable = False
-        yield borrowed
-    finally:
-        mapping._mmap.close()
+    view = np.ndarray(region.shape, dtype=region.dtype, buffer=mapping,
+                      offset=offset - start, strides=region.strides)
+    if not write:
+        view.flags.writeable = False
+    return view, mapping
+
+
+# Windows cannot delete a file while any view of it is mapped, and a pending
+# copy may hold a reopened view after the frame's owner has released the file.
+_READ_ONLY_UPLOADS = os.name != 'nt'
+
+
+def async_upload_view(image):
+    """``image`` as the host source of a non-blocking host-to-device copy.
+
+    A non-blocking OpenCL copy from a writable shared file mapping can stall
+    while the system writes the file back over and over: on Linux with an
+    Intel integrated GPU, one such upload of a 116 MB frame had not finished
+    after 90 seconds and kept the disk writing at about 1 GB/s, while the same
+    bytes mapped read-only uploaded in under 0.1 s. A writable mapping is
+    therefore reopened read-only over the same bytes, without copying them;
+    the view keeps that mapping open until the copy releases it. RAM arrays
+    and read-only or private mappings are returned unchanged.
+    """
+    if not _READ_ONLY_UPLOADS or not isinstance(image, np.ndarray) or not image.size:
+        return image
+    root = _mapped_base(image)
+    if root is None or getattr(root, 'mode', None) in ('r', 'c'):
+        return image
+    return _reopen_mapped(image, root, write=False)[0]
 
 
 def _mapped_base(image):

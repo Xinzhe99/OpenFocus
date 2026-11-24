@@ -281,6 +281,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   input read-only and release temporary views after each source pass.
 - Plan OpenFocus B's mapped integer-frame fusion using its bounded RAM
   working set and release source mappings after their depth and merge passes.
+- Upload frames held in temporary files to the GPU from a read-only view of
+  the file. A non-blocking upload from the writable mapping could stall on
+  Linux with an Intel GPU while the system rewrote the file to disk over and
+  over: a 40-frame OpenFocus B render with its frame cache on disk wrote about
+  6 TB and took 100 minutes in power-saver mode.
 - Bound OpenFocus alignment memory for deep stacks by reusing cached source
   pixels during estimation and staging the resolved frames during fusion.
 - Release the isolated render worker after a memory error so the next render
