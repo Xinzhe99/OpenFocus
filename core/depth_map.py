@@ -377,7 +377,7 @@ def _plan_neural_depth(images, model_path, use_gpu, thread_count,
 
 
 def _measure_stackmffv2(images, progress, should_cancel,
-                        model_path=None, use_gpu=False, execution_plan=None,
+                        model_path=None, use_gpu=True, execution_plan=None,
                         thread_count=None, resource_preference='balanced'):
     """Sampled focal layer from the V2 network."""
     from fusion_methods.stackmff_v2 import DEFAULT_WEIGHTS, depth_positions
@@ -409,7 +409,7 @@ def _plan_stackmffv2_depth(images, model_path, use_gpu, thread_count,
 
 
 def _measure_stackmffv3(images, progress, should_cancel,
-                       model_path=None, use_gpu=False, execution_plan=None,
+                       model_path=None, use_gpu=True, execution_plan=None,
                        mode="soft", inference_scale="single"):
     """Soft: expected frame position. Hard: per-pixel most probable frame."""
     from fusion_methods.stackmffv3 import SOFT_SIGMA, model_probabilities, normalize_mode
@@ -460,7 +460,7 @@ def _measure_stackmffv3(images, progress, should_cancel,
 
 
 def compute_focus_index(images: Sequence[np.ndarray], method: str, parameters=None, *,
-                         model_path=None, use_gpu=False, progress_callback=None,
+                         model_path=None, use_gpu=True, progress_callback=None,
                          should_cancel=None, thread_count=None,
                          resource_preference='balanced', **legacy_parameters):
     """Return normalized focus positions using the descriptor's depth runner.

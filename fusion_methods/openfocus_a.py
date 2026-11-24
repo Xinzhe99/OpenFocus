@@ -136,7 +136,7 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
                      blend_mode: str = 'hard', soft_gamma: float = 1.0,
                      feather_theta: float = 0.9,
                      should_cancel=None, progress_callback=None,
-                     use_gpu: bool = False, device_callback=None, *, live_preview=None):
+                     use_gpu: bool = True, device_callback=None, *, live_preview=None):
     """Fuse with the Burt-pyramid focus response.
 
     ``kernel_size=2*R+1`` controls ``floor(log2(R))+3`` levels. Smoothing is

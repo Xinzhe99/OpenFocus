@@ -442,6 +442,7 @@ class GpuC:
         )
         from fusion_methods._openfocus_gpu import (
             GpuError, _PreviewPlaneReader, _free_vram, _iter_prefetched, _prepare_gpu_upload,
+            _release_buffers,
         )
         from utils.logging_setup import log_debug
 
@@ -538,49 +539,50 @@ class GpuC:
                   total_vram_bytes=total_vram, staging_bytes=staging,
                   host_budget_bytes=host_budget)
 
-        accumulators = [self._f32(size, channels) for size in detail_sizes]
-        maxima = [self._u16(size) for size in detail_sizes]
-        coarsest = self._f32(coarsest_size, channels)
-        rolling = tuple(self._f32(size, channels) for size in rolling_sizes)
-        horizontal = self._f32(horizontal_size, channels) if detail_levels else None
-        weight = self._u16(weight_size) if weight_size else None
-        winner = self._u16(full_size) if keep_winner else None
-        filter_scratch = tuple(self._u16(full_size) for _ in range(filter_planes))
-        filter_configs = []
-        if filter_scratch:
-            from fusion_methods.openfocus_depth import _weight
-            for (h, w), _ in detail_levels:
-                radius = float(np.float32(np.float32(max(h, w)) * parameter / np.float32(100)))
-                q = int(_weight(radius))
-                filter_configs.append((max(1, min(int(radius), w)), max(1, min(int(radius), h)),
-                                       q, (4096 - q) >> 1))
-        src = self.cl.Buffer(self.ctx, self.mf.READ_ONLY, upload_bytes)
-        prefetch_budget = host_budget - need if unified_memory else host_budget
-        prefetch = bool(detail_levels) and (staging + source_peak <= prefetch_budget)
+        accumulators = maxima = coarsest = rolling = horizontal = weight = winner = filter_scratch = src = dst = None
+        reader = prepared_iter = None
         in_flight = False
-        reader = None
-        if live_preview is not None and detail_levels:
-            reader = _PreviewPlaneReader(self.cl, self.ctx, self.q, self.k['sample_focus_plane'],
-                                         (height, width), np.uint16)
-
-        def prepare_frame(index, frame, cancelled):
-            _check_cancel(cancelled)
-            with without_source_cache_growth():
-                pixels, scale = _source_codes(frame, img_resize, cancelled)
-            if tuple(pixels.shape) != tuple(shape):
-                raise ValueError('OpenFocus C requires frames with matching shapes')
-            if not detail_levels and index > 0:
-                del pixels
-                return None
-            pix_u8 = pixels.dtype == np.uint8
-            codes, bgr_rev = _prepare_gpu_upload(pixels, np.uint8 if pix_u8 else np.uint16)
-            del pixels
-            return codes, scale, pix_u8, bgr_rev
-
-        prepared_iter = _iter_prefetched(
-            frames, prepare_frame, enabled=prefetch, should_cancel=should_cancel,
-        )
         try:
+            accumulators = [self._f32(size, channels) for size in detail_sizes]
+            maxima = [self._u16(size) for size in detail_sizes]
+            coarsest = self._f32(coarsest_size, channels)
+            rolling = tuple(self._f32(size, channels) for size in rolling_sizes)
+            horizontal = self._f32(horizontal_size, channels) if detail_levels else None
+            weight = self._u16(weight_size) if weight_size else None
+            winner = self._u16(full_size) if keep_winner else None
+            filter_scratch = tuple(self._u16(full_size) for _ in range(filter_planes))
+            filter_configs = []
+            if filter_scratch:
+                from fusion_methods.openfocus_depth import _weight
+                for (h, w), _ in detail_levels:
+                    radius = float(np.float32(np.float32(max(h, w)) * parameter / np.float32(100)))
+                    q = int(_weight(radius))
+                    filter_configs.append((max(1, min(int(radius), w)), max(1, min(int(radius), h)),
+                                           q, (4096 - q) >> 1))
+            src = self.cl.Buffer(self.ctx, self.mf.READ_ONLY, upload_bytes)
+            prefetch_budget = host_budget - need if unified_memory else host_budget
+            prefetch = bool(detail_levels) and (staging + source_peak <= prefetch_budget)
+            if live_preview is not None and detail_levels:
+                reader = _PreviewPlaneReader(self.cl, self.ctx, self.q, self.k['sample_focus_plane'],
+                                             (height, width), np.uint16)
+
+            def prepare_frame(index, frame, cancelled):
+                _check_cancel(cancelled)
+                with without_source_cache_growth():
+                    pixels, scale = _source_codes(frame, img_resize, cancelled)
+                if tuple(pixels.shape) != tuple(shape):
+                    raise ValueError('OpenFocus C requires frames with matching shapes')
+                if not detail_levels and index > 0:
+                    del pixels
+                    return None
+                pix_u8 = pixels.dtype == np.uint8
+                codes, bgr_rev = _prepare_gpu_upload(pixels, np.uint8 if pix_u8 else np.uint16)
+                del pixels
+                return codes, scale, pix_u8, bgr_rev
+
+            prepared_iter = _iter_prefetched(
+                frames, prepare_frame, enabled=prefetch, should_cancel=should_cancel,
+            )
             for index, item in prepared_iter:
                 _check_cancel(should_cancel)
                 if item is None:
@@ -647,7 +649,8 @@ class GpuC:
                 if progress_callback is not None:
                     progress_callback(index + 1, total)
 
-            del src
+            _release_buffers(src)
+            src = None
             result = coarsest
             in_flight = True
             for ((h, w), (ch, cw)), detail in zip(reversed(detail_levels), reversed(accumulators)):
@@ -685,6 +688,13 @@ class GpuC:
                 self._drain_queue()
             raise
         finally:
-            prepared_iter.close()
+            if prepared_iter is not None:
+                prepared_iter.close()
+            if reader is not None:
+                reader.close()
+            _release_buffers(
+                accumulators, maxima, coarsest, rolling, horizontal,
+                weight, winner, filter_scratch, src, dst,
+            )
 
 

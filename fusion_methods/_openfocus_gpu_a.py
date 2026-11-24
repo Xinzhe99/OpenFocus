@@ -422,6 +422,7 @@ class GpuA:
         from core.source_frames import resolve_frame, without_source_cache_growth
         from fusion_methods._openfocus_gpu import (
             GpuError, _PreviewPlaneReader, _free_vram, _iter_prefetched, _prepare_gpu_upload,
+            _release_buffers,
         )
 
         shape = frames[0].shape
@@ -490,49 +491,50 @@ class GpuA:
         if need > limit or largest > single:
             raise GpuError('OpenFocus A GPU workspace exceeds the device budget')
 
-        gray_bufs = [self.cl.Buffer(self.ctx, self.mf.READ_WRITE, size) for size in gray_sizes]
-        lap_buf = (self.cl.Buffer(self.ctx, self.mf.READ_WRITE, lap_bytes)
-                   if lap_bytes else gray_bufs[0])
-        best_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, n * 4))
-        out_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, n * channels * 2))
-        acc_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, n * channels * 4))
-        wt_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, n * 4))
-        stat_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, n * 4))
-
-        src_buf = self.cl.Buffer(self.ctx, self.mf.READ_ONLY, src_bytes)
-        prefetch_budget = host_budget - need if unified_memory else host_budget
-        prefetch = staging + source_peak <= prefetch_budget
+        gray_bufs = lap_buf = best_buf = out_buf = acc_buf = wt_buf = stat_buf = src_buf = dst_buf = None
+        reader = prepared_iter = None
         in_flight = False
-        reader = None
-        if live_preview is not None:
-            reader = _PreviewPlaneReader(self.cl, self.ctx, self.q, self.k['sample_focus_plane'],
-                                         (height, width), np.int32)
-
-        def prepare_frame(_index, source, cancelled):
-            _check_cancel(cancelled)
-            with without_source_cache_growth():
-                raw = resolve_frame(source, should_cancel=cancelled)
-            if native_upload and source.dtype in (np.uint8, np.uint16):
-                _check_cancel(cancelled)
-                if tuple(raw.shape) != tuple(shape):
-                    raise ValueError('OpenFocus A requires frames with matching shapes')
-                host_src, bgr_rev = _prepare_gpu_upload(raw)
-                del raw
-                src_is_u8 = host_src.dtype == np.uint8
-                return host_src, src_is_u8, 0, bgr_rev
-            raw_code = frame_codes(raw, img_resize, cancelled)
-            del raw
-            if tuple(raw_code.shape) != tuple(shape):
-                raise ValueError('OpenFocus A requires frames with matching shapes')
-            host_src, bgr_rev = _prepare_gpu_upload(raw_code, np.uint16)
-            del raw_code
-            u8_gray = 1 if getattr(source, 'dtype', None) == np.uint8 else 0
-            return host_src, False, u8_gray, bgr_rev
-
-        prepared_iter = _iter_prefetched(
-            frames, prepare_frame, enabled=prefetch, should_cancel=should_cancel,
-        )
         try:
+            gray_bufs = [self.cl.Buffer(self.ctx, self.mf.READ_WRITE, size) for size in gray_sizes]
+            lap_buf = (self.cl.Buffer(self.ctx, self.mf.READ_WRITE, lap_bytes)
+                       if lap_bytes else gray_bufs[0])
+            best_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, n * 4))
+            out_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, n * channels * 2))
+            acc_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, n * channels * 4))
+            wt_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, n * 4))
+            stat_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, n * 4))
+
+            src_buf = self.cl.Buffer(self.ctx, self.mf.READ_ONLY, src_bytes)
+            prefetch_budget = host_budget - need if unified_memory else host_budget
+            prefetch = staging + source_peak <= prefetch_budget
+            if live_preview is not None:
+                reader = _PreviewPlaneReader(self.cl, self.ctx, self.q, self.k['sample_focus_plane'],
+                                             (height, width), np.int32)
+
+            def prepare_frame(_index, source, cancelled):
+                _check_cancel(cancelled)
+                with without_source_cache_growth():
+                    raw = resolve_frame(source, should_cancel=cancelled)
+                if native_upload and source.dtype in (np.uint8, np.uint16):
+                    _check_cancel(cancelled)
+                    if tuple(raw.shape) != tuple(shape):
+                        raise ValueError('OpenFocus A requires frames with matching shapes')
+                    host_src, bgr_rev = _prepare_gpu_upload(raw)
+                    del raw
+                    src_is_u8 = host_src.dtype == np.uint8
+                    return host_src, src_is_u8, 0, bgr_rev
+                raw_code = frame_codes(raw, img_resize, cancelled)
+                del raw
+                if tuple(raw_code.shape) != tuple(shape):
+                    raise ValueError('OpenFocus A requires frames with matching shapes')
+                host_src, bgr_rev = _prepare_gpu_upload(raw_code, np.uint16)
+                del raw_code
+                u8_gray = 1 if getattr(source, 'dtype', None) == np.uint8 else 0
+                return host_src, False, u8_gray, bgr_rev
+
+            prepared_iter = _iter_prefetched(
+                frames, prepare_frame, enabled=prefetch, should_cancel=should_cancel,
+            )
             for index, (host_src, src_is_u8, u8_gray, bgr_rev) in prepared_iter:
                 _check_cancel(should_cancel)
                 in_flight = True
@@ -581,7 +583,8 @@ class GpuA:
                 if progress_callback is not None:
                     progress_callback(index + 1, total)
 
-            del src_buf, gray_bufs, lap_buf
+            _release_buffers(src_buf, gray_bufs, lap_buf)
+            src_buf = gray_bufs = lap_buf = None
             _check_cancel(should_cancel)
             in_flight = True
             self._run(self.k['a_blend_low'], n, out_buf, best_buf,
@@ -607,4 +610,8 @@ class GpuA:
                 self._drain_queue()
             raise
         finally:
-            prepared_iter.close()
+            if prepared_iter is not None:
+                prepared_iter.close()
+            if reader is not None:
+                reader.close()
+            _release_buffers(gray_bufs, lap_buf, best_buf, out_buf, acc_buf, wt_buf, stat_buf, src_buf, dst_buf)

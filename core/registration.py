@@ -333,7 +333,7 @@ def _compute_valid_region_from_transforms(H_matrices, img_shape, margin=2):
 # ========== 单应性对齐算法实现（非线性） ==========
 
 
-def _align_homography_impl(input_source, output_path=None, img_filenames=None, downscale_width=1600, thread_count: int = 4, should_cancel=None, failure_policy='continue', *, defer_warps=False, plan_callback=None, dispatch_callback=None, accelerate_warp=False):
+def _align_homography_impl(input_source, output_path=None, img_filenames=None, downscale_width=1600, thread_count: int = 4, should_cancel=None, failure_policy='continue', *, defer_warps=False, plan_callback=None, dispatch_callback=None, accelerate_warp=True):
     """
     商业级图像对齐算法优化版
     特性：
@@ -1659,7 +1659,7 @@ def _plan_deferred_ecc(images, downscale_width, accelerate_ecc, preference, thre
 def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscale_width=1000,
                     thread_count: int = 4, should_cancel=None, use_gpu: bool = False,
                     failure_policy='continue', *, defer_warps=False, plan_callback=None,
-                    accelerate_ecc=False, stage_budget=None, dispatch_callback=None):
+                    accelerate_ecc=True, stage_budget=None, dispatch_callback=None):
     """
     基于 ECC (增强相关系数) 的高精度图像栈对齐算法
     适用于：显微摄影、微距摄影中伴随呼吸效应的图像栈
@@ -1885,42 +1885,44 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
                     recent_pairs.popitem(last=False)
         return result
 
-    if max_workers == 1:
-        pair_transforms = []
-        profile = _profile()
-        for pair in pairs():
-            _check_cancel(should_cancel)
-            if profile.enabled:
-                with profile.stage('registration.estimate'):
+    from contextlib import closing, nullcontext
+    with closing(area_gpu) if area_gpu is not None else nullcontext():
+        if max_workers == 1:
+            pair_transforms = []
+            profile = _profile()
+            for pair in pairs():
+                _check_cancel(should_cancel)
+                if profile.enabled:
+                    with profile.stage('registration.estimate'):
+                        transform = _compute_pair_transform(pair)
+                else:
                     transform = _compute_pair_transform(pair)
-            else:
-                transform = _compute_pair_transform(pair)
-            _check_cancel(should_cancel)
-            pair_transforms.append(transform)
-            del pair  # Release the old gray before decoding the next frame.
-    else:
-        def prepare_frame(image):
-            with deferred_warp_threads(1):
-                return preprocess(image)
+                _check_cancel(should_cancel)
+                pair_transforms.append(transform)
+                del pair  # Release the old gray before decoding the next frame.
+        else:
+            def prepare_frame(image):
+                with deferred_warp_threads(1):
+                    return preprocess(image)
 
-        def estimate_pair(index, previous, current):
-            return _compute_pair_transform((index, previous[0], current[0], scale_of[0],
-                                            previous[2], current[2]))
+            def estimate_pair(index, previous, current):
+                return _compute_pair_transform((index, previous[0], current[0], scale_of[0],
+                                                previous[2], current[2]))
 
-        scale_of = []
+            scale_of = []
 
-        def remember_scale(index, prepared):
-            if index == 0:
-                scale_of.append(prepared[1])
+            def remember_scale(index, prepared):
+                if index == 0:
+                    scale_of.append(prepared[1])
 
-        pair_transforms, prepared_identities = _prepare_and_estimate_pairs(
-            images, prepare_frame, estimate_pair, max_workers, should_cancel,
-            on_prepared=remember_scale, budget=stage_budget)
-        source_identities.extend(prepared_identities)
+            pair_transforms, prepared_identities = _prepare_and_estimate_pairs(
+                images, prepare_frame, estimate_pair, max_workers, should_cancel,
+                on_prepared=remember_scale, budget=stage_budget)
+            source_identities.extend(prepared_identities)
 
-    if area_gpu is not None:
-        log_action('registration_ecc_resize', device=area_gpu.device_name or 'CPU',
-                   gpu_resizes=area_gpu.frames_resized, frames=len(images))
+        if area_gpu is not None:
+            log_action('registration_ecc_resize', device=area_gpu.device_name or 'CPU',
+                       gpu_resizes=area_gpu.frames_resized, frames=len(images))
 
     trajectory_failed = False
     for idx, (warp_matrix, cc) in enumerate(pair_transforms, start=1):
@@ -2207,7 +2209,7 @@ class ImageRegistration:
     
     def __init__(self, method='homography', downscale_width=1024,
                  max_shift_ratio=None, brightness_reference='first',
-                 use_gpu=False, parameters=None, *, defer_warps=False, accelerate_ecc=False):
+                 use_gpu=False, parameters=None, *, defer_warps=False, accelerate_ecc=True):
         from core.algorithms import (alignment_steps, registration_parameter_specs,
                                      resolve_registration_parameters)
         self.method = method

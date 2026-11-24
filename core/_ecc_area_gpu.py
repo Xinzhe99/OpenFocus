@@ -173,6 +173,12 @@ class ExactAreaGpu:
         self.device_name = ''
         self.fell_back = False
 
+    def close(self):
+        from fusion_methods._openfocus_gpu import _release_buffers
+
+        _release_buffers(self._buffers)
+        self._buffers = self._shape = self._ys = None
+
     def _select_device(self):
         if not _cpu_contract() or os.environ.get('PYOPENCL_BUILD_OPTIONS'):
             return False
@@ -192,7 +198,7 @@ class ExactAreaGpu:
         from core import resource_policy as policy
         from fusion_methods._openfocus_gpu import _free_vram
 
-        self._buffers = self._shape = self._ys = None
+        self.close()
         source_h, source_w = image.shape[:2]
         itemsize = image.itemsize
         # Preserve the source-stripe row bound of the fourfold path. At
@@ -330,7 +336,7 @@ class ExactAreaGpu:
                     _invalidate_program_cache()
                 self._disabled = True
                 self.fell_back = True
-                self._buffers = self._ys = None
+                self.close()
                 self._context = None
                 self._queue = None
                 self._kernels = None

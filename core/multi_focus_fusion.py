@@ -273,7 +273,7 @@ class MultiFocusFusion:
     def descriptor(self):
         return get_fusion(self.algorithm)
 
-    def __init__(self, algorithm: str = FUSION_DEFAULT, use_gpu: bool = False,
+    def __init__(self, algorithm: str = FUSION_DEFAULT, use_gpu: bool = True,
                  tile_enabled: bool = True, tile_block_size: int = 1024,
                  tile_overlap: int = 256, tile_threshold: int = 2048,
                  ai_batch_size: int = 2,
@@ -286,7 +286,7 @@ class MultiFocusFusion:
         
         Args:
             algorithm (str): 融合算法名称,可选 'guided_filter', 'dct', 'dtcwt', 'stackmffv3'
-            use_gpu (bool): 是否使用GPU加速(CUDA/ROCm/XPU/MPS),默认为False
+            use_gpu (bool): 是否优先使用GPU加速(OpenCL / CUDA / ROCm / XPU / MPS),默认为True并在不可用时回退CPU
             ai_batch_size (int): StackMFF V3 批量处理大小，默认为2
             exposure_match (bool): 融合前匹配整栈曝光；OpenFocus A/B/C 使用
                 处理序首帧，其余算法使用末帧。分块前统一计算，默认 True。
@@ -1753,7 +1753,9 @@ class MultiFocusFusion:
                 depth_threads = min(depth_threads, thread_count)
             global_depth = depth_map(depth_images, None, kernel, smoothing, should_cancel,
                                      thread_count=depth_threads, half_resolution=True,
-                                     preserve_detail=True, feather=kwargs.get('feather', 3))
+                                     preserve_detail=True, feather=kwargs.get('feather', 3),
+                                     use_gpu=self.use_gpu,
+                                     device_callback=self._record_openfocus_device)
             del depth_images
 
         if get_fusion(algorithm).resource_estimator:
@@ -1794,6 +1796,11 @@ class MultiFocusFusion:
             # Directory tiles decode full source frames. Serializing them keeps
             # simultaneous full-frame decodes out of the tile-only budget.
             optimal_threads = 1
+        elif (self.use_gpu and algorithm in OPENCL_FUSION_ALGORITHMS
+              and optimal_threads > 2 and ensure_openfocus_gpu_available()):
+            # OpenCL device work serializes on _device_lock; keeping at most two
+            # tile workers avoids holding many cropped stacks in RAM at once.
+            optimal_threads = 2
         acc = create_frame((h, w, channels), np.float32)
         weight = create_frame((h, w, 1), np.float32)
         acc[...] = 0
@@ -2404,7 +2411,7 @@ class MultiFocusFusion:
 # 便捷函数
 def fuse_images(input_source: Union[str, List[np.ndarray]],
                 algorithm: str = FUSION_DEFAULT,
-                use_gpu: bool = False,
+                use_gpu: bool = True,
                 img_resize: Optional[Tuple[int, int]] = None,
                 tile_enabled: Optional[bool] = None,
                 tile_block_size: Optional[int] = None,
@@ -2419,7 +2426,7 @@ def fuse_images(input_source: Union[str, List[np.ndarray]],
     Args:
         input_source: 图像源(目录路径或图像列表)
             algorithm: 融合算法 ('guided_filter', 'dct', 'dtcwt', 'stackmffv3')
-        use_gpu: 是否使用GPU（当前版本将自动切换到CPU）
+        use_gpu: 是否优先使用GPU加速（不可用时自动回退CPU，默认True）
         img_resize: 目标尺寸
         ai_batch_size: StackMFF V3 批量处理大小（默认2）
         mode: StackMFF V3 输出模式，'soft'（概率加权，默认）或 'hard'（argmax）

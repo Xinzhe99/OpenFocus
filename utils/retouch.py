@@ -908,7 +908,7 @@ class RetouchDocument:
 
     def auto_background(self, preset: str = "auto", clean: bool = True,
                         cancelled=None, progress=None, keep_soft_parts: bool = False,
-                        *, use_gpu: bool = False) -> str:
+                        *, use_gpu: bool = True) -> str:
         """Replace the background of the current result with one source
         frame (see core.background_fill) as one history transaction.
 
