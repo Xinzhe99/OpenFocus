@@ -56,12 +56,25 @@ def composite_transparent_for_display(image: np.ndarray, *, origin=(0, 0), scale
     h, w = image.shape[:2]
     rows = np.floor((origin[1] + np.arange(h) * scale[1]) / 12).astype(np.int64)
     cols = np.floor((origin[0] + np.arange(w) * scale[0]) / 12).astype(np.int64)
-    checker = (((rows[:, None] + cols[None, :]) % 2) * 48 + 160).astype(np.uint16)
-    alpha = (image[:, :, 3] if alpha is None else alpha).astype(np.uint16)
+    rows = (rows & 1).astype(np.uint16)
+    cols = (cols & 1).astype(np.uint16)
+    alpha = image[..., 3] if alpha is None else alpha
     out = np.empty((h, w, 3), dtype=np.uint8)
-    for channel in range(3):
-        out[:, :, channel] = ((image[:, :, channel].astype(np.uint16) * alpha
-                               + checker * (255 - alpha) + 127) // 255).astype(np.uint8)
+    for top in range(0, h, 128):
+        band = slice(top, top + 128)
+        coverage = alpha[band].astype(np.uint16)
+        background = rows[band, None] ^ cols
+        background *= 48
+        background += 160
+        # Every color channel shares the same weighted checker and bias.
+        background *= 255 - coverage
+        background += 127
+        values = np.empty_like(background)
+        for channel in range(3):
+            np.multiply(image[band, :, channel], coverage, out=values)
+            values += background
+            values //= 255
+            out[band, :, channel] = values
     return out
 
 
