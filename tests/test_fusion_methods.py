@@ -491,7 +491,7 @@ def test_guided_tiled_exposure_matches_whole_frame_preprocessing(dtype, base_fra
 
 @pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
 def test_v3_tiled_exposure_matches_whole_stack_preprocessing(dtype, monkeypatch):
-    import core.multi_focus_fusion as fusion_module
+    from fusion_methods import stackmffv3
     from core.source_frames import resolve_frame
     from utils.image_utils import apply_exposure_gain, exposure_gains
 
@@ -501,7 +501,7 @@ def test_v3_tiled_exposure_matches_whole_stack_preprocessing(dtype, monkeypatch)
         normalized, _ = normalize_fuse_input([resolve_frame(frame) for frame in source])
         return sum(frame.astype(np.float32) for frame in normalized) / len(normalized)
 
-    monkeypatch.setattr(fusion_module, '_stackmffv3_impl', fuse_crop)
+    monkeypatch.setattr(stackmffv3, '_stackmffv3_impl', fuse_crop)
     rng = np.random.default_rng(712)
     frames = [rng.integers(5, high, (32, 40, 3), dtype=np.uint8)
               for high in (110, 180, 240)]

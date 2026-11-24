@@ -216,9 +216,16 @@ class ExportManager:
         sources.extend(getattr(self.window, '_standalone_retouch_paths', ()) or ())
         sources.extend(extra_sources)
         target = os.path.normcase(os.path.realpath(path))
+        checked = set()
         for source in sources:
             if not source:
                 continue
+            # The stack and loader often hold the same paths. Keep this
+            # local to an export so every new attempt rechecks the filesystem.
+            source = os.fspath(source)
+            if source in checked:
+                continue
+            checked.add(source)
             same = target == os.path.normcase(os.path.realpath(source))
             if not same and os.path.exists(path) and os.path.exists(source):
                 same = os.path.samefile(path, source)

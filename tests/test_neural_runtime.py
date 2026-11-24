@@ -449,12 +449,12 @@ def test_fusion_info_does_not_borrow_another_jobs_actual_device(monkeypatch):
 
 def test_frozen_defaults_resolve_each_bundled_model(monkeypatch, tmp_path):
     from core import multi_focus_fusion
-    from fusion_methods import stackmff_v1
+    from fusion_methods import stackmff_v1, stackmffv3
     seen = []
     monkeypatch.setattr(sys, 'frozen', True, raising=False)
     monkeypatch.setattr(sys, '_MEIPASS', str(tmp_path), raising=False)
     monkeypatch.setattr(stackmff_v1, 'stackmff_impl', lambda frames, resize, path, *a, **k: seen.append(path))
-    monkeypatch.setattr(multi_focus_fusion, '_stackmffv3_impl',
+    monkeypatch.setattr(stackmffv3, '_stackmffv3_impl',
                         lambda frames, resize, path, *a, **k: seen.append(path))
     multi_focus_fusion.MultiFocusFusion('stackmff', use_gpu=False)._fuse_stackmff([])
     multi_focus_fusion.MultiFocusFusion('stackmffv3', use_gpu=False)._fuse_stackmffv3([])

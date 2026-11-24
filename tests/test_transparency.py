@@ -303,6 +303,30 @@ def test_display_composites_alpha_without_using_hidden_color():
     assert displayed[0, 0, 0] != displayed[0, 12, 0]
 
 
+@pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
+@pytest.mark.parametrize('separate_alpha', [False, True])
+def test_display_composites_scaled_strided_alpha_in_canvas_coordinates(dtype, separate_alpha):
+    from utils.image_utils import composite_transparent_for_display
+
+    rng = np.random.default_rng(42)
+    pixels = rng.integers(0, 256, size=(521, 62, 4), dtype=np.uint8)
+    pixels[::4, :, 3] = 0
+    pixels[2::4, ::4, 3] = 255
+    image = pixels.astype(dtype) * (np.iinfo(dtype).max // 255)
+    image = image[::2, ::-2]
+    source = pixels[::2, ::-2].astype(np.uint32)
+    y, x = np.indices(source.shape[:2])
+    phase = (np.floor((0.75 * x - 3) / 12) + np.floor((1.25 * y + 31) / 12)) % 2
+    checker = (160 + 48 * phase).astype(np.uint32)[..., None]
+    coverage = source[..., 3:]
+    expected = ((source[..., :3] * coverage + checker * (255 - coverage) + 127) // 255)
+    kwargs = {'origin': (-3, 31), 'scale': (.75, 1.25)}
+    actual = (composite_transparent_for_display(image[..., :3], alpha=image[..., 3], **kwargs)
+              if separate_alpha else composite_transparent_for_display(image, **kwargs))
+    assert actual.dtype == np.uint8
+    np.testing.assert_array_equal(actual, expected)
+
+
 def test_transparent_export_rejects_other_formats(tmp_path):
     from utils.image_utils import imwrite_auto
     image = np.zeros((8, 8, 4), np.uint8)

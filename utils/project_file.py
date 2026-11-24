@@ -379,13 +379,17 @@ def _owned_sidecars(project_path):
     return owned
 
 
-def _foreign_sidecar(source, project_path):
-    root = os.path.dirname(os.path.dirname(os.path.abspath(source)))
+def _foreign_sidecar(source, project_path, owned_by_project):
+    source = os.path.abspath(source)
+    root = os.path.dirname(os.path.dirname(source))
     if not root.endswith(".sources"):
         return False
     owner = root[:-len(".sources")]
-    return (os.path.normcase(os.path.abspath(owner)) != os.path.normcase(os.path.abspath(project_path))
-            and os.path.abspath(source) in _owned_sidecars(owner))
+    if os.path.normcase(os.path.abspath(owner)) == os.path.normcase(os.path.abspath(project_path)):
+        return False
+    if owner not in owned_by_project:
+        owned_by_project[owner] = _owned_sidecars(owner)
+    return source in owned_by_project[owner]
 
 
 def _remove_owned_files(files):
@@ -425,13 +429,14 @@ def _persist_pathless_sources(window, state, project_path, created, directories)
     from utils.frame_pixels import run_pixel_worker
     from utils.image_utils import imwrite_auto
     pending = []
+    owned_by_project = {}
     recorded = list(getattr(window, "image_source_paths", ()) or ())
     for index, frame in enumerate(state["frame_order"]):
         source = state["sources"][frame["source"]]
         image = window.raw_images[index]
         pathless = (not os.path.isfile(source) and isinstance(image, np.ndarray)
                     and not (index < len(recorded) and recorded[index]))
-        if pathless or _foreign_sidecar(source, project_path):
+        if pathless or _foreign_sidecar(source, project_path, owned_by_project):
             pending.append((index, image, source, pathless))
     if not pending:
         return

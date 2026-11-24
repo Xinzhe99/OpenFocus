@@ -38,6 +38,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Read eligible uncompressed 8-bit and 16-bit gray and RGB TIFF pages directly
   from the file, preserving pixel values. Keep decoder validation for incomplete
   strip tables, configured limits, and other TIFF layouts.
+- Reuse the open stack's import mode when appending a folder, skipping the
+  mode-selection scan before the loader starts.
 - Compute deferred perspective, OpenFocus alignment, and OpenFocus translation
   crops directly over the requested ROI or tile, reuse direct-mapped RGB TIFF
   digests within a render scope, reuse adjacent-pair pyramids, and fuse
@@ -65,6 +67,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   before releasing buffers after cancellation or error.
 - Reuse the NVML session for VRAM queries and repeat device enumeration after
   a query fails to avoid using memory information from the wrong adapter.
+- Repaint the region-of-interest overlay only when pointer movement changes
+  its delete highlight. Keep move and resize previews responsive.
 - Accelerate OpenFocus alignment candidate scoring, similarity warping,
   uint8 translation warping, pyramid downsizing, and validity mask generation
   with single-threaded native CPU kernels while preserving bit-exact results
@@ -74,6 +78,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Reduce CPU DTCWT processing time and peak memory with native transform
   kernels and sparse coefficient selection.
 - Group desktop fusion choices under OpenFocus, StackMFF, and Other.
+- Update the remaining frames' exclusion markers more quickly after removing
+  large selections from the source list.
 - Preselect NVIDIA acceleration review on Windows PCs with an NVIDIA driver,
   including when upgrading from 2.0.0.
 - Stream background replacement focus protection and CPU focus measures in
@@ -81,15 +87,23 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   guided filtering with closed-form banded computation, band initial frame
   grayscale loading, and cache the OpenCL background-focus program. Drain
   the queue on cancellation and fall back to the CPU if synchronization fails.
+- Reduce pixel conversion and copying when drawing scale bars on large color
+  images, preserving their geometry and 16-bit output.
 - Reuse existing decoded frames during whole-image CPU OpenFocus A and C
   without adding single-use frames to disk or memory caches.
+- Blend watermark stamps only over covered pixels, reusing the blend weights
+  across color channels.
 - Choose the PyTorch download order from the network region, with a manual
   override and a server-maintained list of mirrors. Resume interrupted
   transfers on the next source and log why the source changed.
+- Resolve caption membership directly for the frame being displayed, keeping
+  captioned source and registered-image browsing responsive on large stacks.
 - Stream DCT, GFG-FGF, DTCWT, and OpenFocus C depth map estimation without
   materializing the stack or pre-converting all 16-bit frames to float32.
   Bound concurrent frame workers by the memory budget and preserve the
   existing focus decisions for low-contrast and mixed-bit-depth inputs.
+- Paint the final preview position once per wheel zoom and request native
+  detail for that viewport.
 - Reuse prepared tiled StackMFF frames when switching methods on the same stack
   with matching registration and exposure settings. Check source identities
   before reuse and share the existing 2 GiB limit with retained aligned frames.
@@ -98,6 +112,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   precompilation when a render starts and let the render compile as needed.
 - Continue compilation without the disk cache when another process holds its
   lock on Windows, avoiding repeated waits during a cold render.
+- Read each source project's ownership manifest once when saving a copy with
+  linked project-owned images.
+- Composite transparent previews and clipboard images in bounded row bands
+  while preserving checkerboard phase and display pixels.
 - Reduce OpenFocus A/B/C CPU and OpenCL working sets with bounded row processing,
   reusable pyramid storage, and fewer full-image operations. Expand exact
   OpenCL ECC resize coverage and reuse successful repeated pair solves.
@@ -105,8 +123,18 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   A/B/C. Prefetch one frame when the job budget allows, and cap GPU OpenFocus
   C color readback buffers at 8 MiB. Use tiled OpenCL transposes when the
   device and compiled kernel support the work-group size.
+- Refresh Batch Image Converter's queue controls once per removal and share
+  the pending thumbnail icon across rows.
+- Keep wipe divider repaints on the canvas with desktop stylesheets applied.
 - Stream whole-image OpenFocus B when optional stack snapshots do not fit
   on disk and the streamed job fits the available RAM.
+- Reuse undecorated opaque source pixmaps when switching frames in the desktop
+  reader.
+- Reuse sharpness scores for unchanged disk-backed previews when source
+  frames are reordered or deleted.
+- Hash contiguous retouch checkpoint pixels in bounded chunks while preserving
+  checkpoint bytes and cancellation.
+- Load fusion implementations when first used, reducing desktop startup work.
 - Write neural input grayscale directly into model planes. Reduce V1 color
   reconstruction allocations, size V2 tiles from frame metadata, skip V2 weight
   maps when tiles cover each pixel once, and bound V3 hard-choice scratch by
@@ -129,12 +157,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Bound direct TIFF staging by the available RAM and the admitted tile grid.
 - Limit the lifetime of ONNX Runtime CPU work buffers and release unused
   arena memory after each StackMFF inference.
+- Avoid repeated CPU topology queries while admitting each file in Batch Image
+  Converter. Continue checking current memory and destination disk space.
 - Reuse OpenFocus A response rows and limit GPU output readback size. Skip
   inactive OpenFocus B merge tiles and reuse OpenFocus C pyramid buffers.
 - Reduce the OpenFocus C OpenCL working set by processing the finest layer
   from packed source pixels. Log the device and admission limit on CPU fallback.
 - Count prepared frames and reuse OpenFocus B scratch data for matching renders
   in the same session, including the aligned depth validity mask.
+- Screen unsupported extensions before resolving paths in Batch Image
+  Converter, speeding up imports from folders with sidecar files.
 - Bound PyTorch CUDA and MPS attention workspace while retaining all focus
   layers. Reuse CUDA worker admission on completed tile sizes and reuse logits
   storage for probabilities. StackMFF V2 reads only contributing color strips.
@@ -142,6 +174,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   previews with native row kernels. Preserve OpenCV's exposure calculation
   for normalized grayscale. Encode compressed TIFF strips in a bounded queue
   and preserve their output order.
+- Check repeated original paths once when validating a desktop export
+  destination, including exports from large image stacks.
 
 ### Fixed
 - Default new watermarks to fusion results. Apply removes unchecked watermark

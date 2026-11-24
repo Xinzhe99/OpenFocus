@@ -8,7 +8,7 @@ from time import perf_counter
 from core.resource_policy import heavy_job
 from threadpoolctl import threadpool_limits
 
-from PyQt6.QtCore import QEvent, QItemSelectionModel, QThread, pyqtSignal, QSize, Qt
+from PyQt6.QtCore import QEvent, QItemSelectionModel, QSignalBlocker, QThread, pyqtSignal, QSize, Qt
 from PyQt6.QtGui import QIcon, QImage, QPixmap, QShortcut, QKeySequence, QPainter, QColor
 from PyQt6.QtWidgets import (QComboBox, QDialog, QFormLayout, QHBoxLayout, QLabel,
                              QLineEdit, QListWidget, QListWidgetItem, QMenu, QMessageBox,
@@ -111,8 +111,10 @@ class BatchConverterDialog(QDialog):
         self._terminal_rows = set()
         self.thumbnail_worker = None
         self._thumbnail_items = {}
+        # Rows before the cursor have already been submitted to the worker.
         self._thumbnail_cursor = 0
         self._next_token = 0
+        self._thumbnail_placeholder = self._thumbnail_icon(QImage())
         outer = QVBoxLayout(self)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -422,11 +424,14 @@ class BatchConverterDialog(QDialog):
                     candidates.append(path)
             except OSError:
                 skipped += 1
+        images = [path for path in candidates if path.suffix.lower() in INPUT_EXTENSIONS]
+        skipped += len(candidates) - len(images)
+        images.sort(key=natural_sort_key)
         seen = {os.path.normcase(os.path.realpath(p)) for p in self.sources}
         added = 0
-        for path in sorted(candidates, key=natural_sort_key):
+        for path in images:
             key = os.path.normcase(os.path.realpath(path))
-            if key in seen or not path.is_file() or path.suffix.lower() not in INPUT_EXTENSIONS:
+            if key in seen or not path.is_file():
                 skipped += 1
                 continue
             seen.add(key)
@@ -434,7 +439,7 @@ class BatchConverterDialog(QDialog):
             self.sources.append(source)
             item = QListWidgetItem(source)
             item.setSizeHint(QSize(240, 88))
-            item.setIcon(self._thumbnail_icon(QImage()))
+            item.setIcon(self._thumbnail_placeholder)
             item.setToolTip(source)
             token = self._next_token
             self._next_token += 1
@@ -470,18 +475,20 @@ class BatchConverterDialog(QDialog):
     def _remove(self):
         if self._busy or self._close_pending:
             return
+        rows = sorted((index.row() for index in self.list.selectionModel().selectedRows()), reverse=True)
         tokens = set()
-        for item in sorted(self.list.selectedItems(), key=self.list.row, reverse=True):
-            row = self.list.row(item)
-            token = item.data(Qt.ItemDataRole.UserRole)
-            tokens.add(token)
-            ext = item.data(Qt.ItemDataRole.UserRole + 3)
-            if ext:
-                self._format_counts[ext] -= 1
-            self._thumbnail_items.pop(token, None)
-            self.list.takeItem(row)
-            self.sources.pop(row)
-            self._thumbnail_cursor = min(self._thumbnail_cursor, row)
+        with QSignalBlocker(self.list):
+            for row in rows:
+                item = self.list.takeItem(row)
+                self.sources.pop(row)
+                token = item.data(Qt.ItemDataRole.UserRole)
+                tokens.add(token)
+                ext = item.data(Qt.ItemDataRole.UserRole + 3)
+                if ext:
+                    self._format_counts[ext] -= 1
+                self._thumbnail_items.pop(token, None)
+                if row < self._thumbnail_cursor:
+                    self._thumbnail_cursor -= 1
         if self.thumbnail_worker:
             self.thumbnail_worker.discard(tokens)
         if tokens:
@@ -602,19 +609,15 @@ class BatchConverterDialog(QDialog):
             self.thumbnail_worker.start()
         while self._thumbnail_cursor < self.list.count():
             item = self.list.item(self._thumbnail_cursor)
-            if item.data(Qt.ItemDataRole.UserRole + 1):
-                self._thumbnail_cursor += 1
-                continue
             token = item.data(Qt.ItemDataRole.UserRole)
             if not self.thumbnail_worker.enqueue(token, self.sources[self._thumbnail_cursor]):
                 break
-            item.setData(Qt.ItemDataRole.UserRole + 1, True)
             self._thumbnail_cursor += 1
 
     def _thumbnail_ready(self, token, image, error, tiff_ext):
         item = self._thumbnail_items.get(token)
         if item is not None:
-            item.setIcon(self._thumbnail_icon(image))
+            item.setIcon(self._thumbnail_placeholder if image.isNull() else self._thumbnail_icon(image))
             if error:
                 item.setToolTip(item.toolTip() + '\n' + trans.t('converter_no_preview'))
             if tiff_ext:

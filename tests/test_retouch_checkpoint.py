@@ -1,4 +1,5 @@
 """Retouch records reproduce pixels and reject changed inputs transactionally."""
+import hashlib
 import json
 
 import numpy as np
@@ -6,6 +7,30 @@ import pytest
 
 from core.render_context import build_render_context
 from utils.retouch import RetouchDocument
+from utils.retouch_checkpoint import _fingerprint
+
+
+@pytest.mark.parametrize('layout', ['contiguous', 'padded_rows', 'reversed_columns'])
+def test_fingerprint_preserves_c_order_bytes(layout):
+    pixels = np.arange(129 * 259 * 3, dtype=np.uint32).reshape(129, 259, 3).astype('>u2')
+    if layout == 'padded_rows':
+        pixels = pixels[:, 1:-1]
+    elif layout == 'reversed_columns':
+        pixels = pixels[:, ::-1]
+
+    assert _fingerprint(pixels) == {
+        'shape': list(pixels.shape),
+        'dtype': '>u2',
+        'sha256': hashlib.sha256(pixels.tobytes(order='C')).hexdigest(),
+    }
+
+
+def test_fingerprint_polls_cancellation_within_contiguous_frame():
+    pixels = np.zeros((512, 512, 3), dtype=np.uint16)
+    cancel = iter([False, True])
+
+    with pytest.raises(ValueError, match='Retouch replay cancelled'):
+        _fingerprint(pixels, lambda: next(cancel))
 
 
 def document(dtype):

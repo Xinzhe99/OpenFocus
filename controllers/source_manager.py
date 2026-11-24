@@ -1,3 +1,4 @@
+from bisect import bisect_left
 from dataclasses import dataclass
 from typing import Any
 
@@ -918,7 +919,9 @@ class SourceManager(QObject):
         if same_folder and getattr(window, "linear_dng_metadata", None) is not None:
             linear_raw = True
         else:
-            linear_raw = self._choose_raw_import_mode(self._folder_import_paths(folder_path), append=append)
+            # Appending to a stack inherits its import mode regardless of the folder contents.
+            paths = () if append and getattr(window, 'raw_images', None) else self._folder_import_paths(folder_path)
+            linear_raw = self._choose_raw_import_mode(paths, append=append)
         if linear_raw is None:
             return
         if append and same_folder:
@@ -1518,8 +1521,9 @@ class SourceManager(QObject):
 
     def _remap_exclusions_after_delete(self, rows) -> None:
         removed = set(rows)
+        removed_rows = sorted(removed)
         self.window.excluded_frames = {
-            i - sum(r < i for r in removed)
+            i - bisect_left(removed_rows, i)
             for i in getattr(self.window, "excluded_frames", set()) if i not in removed}
 
     def _pop_sequence(self, sequence: list[Any] | None, index: int) -> None:

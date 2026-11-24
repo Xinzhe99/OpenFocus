@@ -261,11 +261,12 @@ def test_converter_real_drop_expands_folders_orders_and_reports_skips(
         qapp, converter_dialog, tmp_path, target):
     from pathlib import Path
     from PyQt6.QtCore import QUrl
+    from locales import trans
     folder = tmp_path / 'images'
     folder.mkdir()
     for name in ('frame10.PNG', 'frame2.png', 'notes.txt'):
         (folder / name).touch()
-    nested = folder / 'nested'
+    nested = folder / 'nested.PNG'
     nested.mkdir()
     (nested / 'not-a-direct-child.png').touch()
     first = tmp_path / 'frame1.png'
@@ -280,6 +281,8 @@ def test_converter_real_drop_expands_folders_orders_and_reports_skips(
     assert [Path(path).name for path in dialog.sources] == ['frame1.png', 'frame2.png', 'frame10.PNG']
     assert dialog.list.count() == 3
     assert dialog.empty_hint.isHidden()
+    assert dialog.summary.text() == trans.t('converter_import_status').format(
+        added=2, skipped=5, total=3)
 
 
 def test_converter_picker_and_drop_share_order_dedup_and_empty_feedback(
@@ -898,6 +901,54 @@ def test_thumbnail_queue_is_bounded_and_delete_is_disabled_while_busy(qapp, tmp_
         dialog.close()
 
 
+def test_thumbnail_queue_keeps_fifo_order_after_mixed_removal(qapp, converter_dialog, tmp_path):
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtGui import QImage
+    from PyQt6.QtTest import QTest
+    from locales import trans
+
+    dialog = converter_dialog
+    sources = [str(tmp_path / f'frame{index}.jpg') for index in range(40)]
+    for source in sources:
+        Path(source).touch()
+    dialog._append(reversed(sources))
+    worker = dialog.thumbnail_worker
+    assert [path for _, path in worker._queue] == sources[:worker.capacity]
+
+    image = QImage(48, 32, QImage.Format.Format_RGB888)
+    image.fill(Qt.GlobalColor.red)
+    for source in sources[:3]:
+        token, path = worker._queue.popleft()
+        assert path == source
+        dialog._thumbnail_ready(token, image, '', '')
+    in_flight, path = worker._queue.popleft()
+    assert path == sources[3]
+
+    # Remove one completed, one running, one queued, and one unissued row.
+    removed = {1, 3, 5, 25}
+    for row in removed:
+        dialog.list.item(row).setSelected(True)
+    dialog.list.setFocus()
+    qapp.processEvents()
+    QTest.keyClick(dialog.list, Qt.Key.Key_Delete)
+    remaining = [source for row, source in enumerate(sources) if row not in removed]
+    expected_thumbnails = [source for row, source in enumerate(sources[4:], 4) if row not in removed]
+    assert dialog.sources == remaining
+    assert dialog.list.count() == len(remaining)
+    assert not dialog.list.selectedItems()
+    assert not dialog.summary.text()
+    assert dialog.queue_count.text() == trans.t('converter_queue_count').format(count=len(remaining))
+    assert [path for _, path in worker._queue] == expected_thumbnails[:worker.capacity]
+
+    dialog._thumbnail_ready(in_flight, image, 'removed preview', '.dng')
+    for index, source in enumerate(expected_thumbnails):
+        assert len(worker._queue) == min(worker.capacity, len(expected_thumbnails) - index)
+        token, path = worker._queue.popleft()
+        assert path == source
+        dialog._thumbnail_ready(token, image, '', '')
+    assert not worker._queue
+
+
 def test_multipage_partial_failure_retains_successful_pages(tmp_path, monkeypatch):
     from types import SimpleNamespace
     source = tmp_path / 'partial.tif'
@@ -1345,8 +1396,8 @@ def test_batch_reports_unknown_memory_instead_of_claiming_shortage(tmp_path, mon
     plan = SimpleNamespace(workers=1, native_threads=1, max_in_flight=1,
                            ram_budget=100, describe=lambda: 'test')
     monkeypatch.setattr(converter.resource_policy, 'plan_execution', lambda *a, **k: plan)
-    monkeypatch.setattr(converter.resource_policy, 'probe_resources', lambda: SimpleNamespace(ram_known=False))
-    monkeypatch.setattr(converter.resource_policy, 'ram_ceiling', lambda *a: 0)
+    monkeypatch.setattr(converter.resource_policy, 'probe_memory',
+                        lambda: converter.resource_policy.ResourceSnapshot(available_ram=0, total_ram=0))
     monkeypatch.setattr(converter, '_estimate_source', lambda *a: (1, 10, 1))
     events = []
     result = converter.convert_batch(['source'], str(tmp_path), '.jpg', lambda: False,
