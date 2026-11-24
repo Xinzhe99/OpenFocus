@@ -5,10 +5,6 @@ import threading
 import time
 import numpy as np
 from typing import Union, List, Tuple, Optional
-from fusion_methods.dct import dct_focus_stack_fusion
-from fusion_methods.gff import gff_impl
-from fusion_methods.stackmffv3 import _stackmffv3_impl, normalize_mode
-from fusion_methods.dtcwt import _dtcwt_impl
 from utils import memory, resource_path
 from utils.image_utils import apply_exposure_gain, normalize_fuse_input
 from utils.logging_setup import log_action, log_debug
@@ -1211,6 +1207,8 @@ class MultiFocusFusion:
         Returns:
             融合后的图像
         """
+        from fusion_methods.gff import gff_impl
+
         thread_count = kwargs.get('thread_count', None)
         return gff_impl(
             input_source,
@@ -1241,6 +1239,8 @@ class MultiFocusFusion:
         Returns:
             融合后的图像
         """
+        from fusion_methods.dct import dct_focus_stack_fusion
+
         if img_resize is not None:
             raise ValueError("DCT fusion does not support dynamic resizing. Resize images before processing.")
 
@@ -1292,6 +1292,8 @@ class MultiFocusFusion:
         Returns:
             融合后的图像
         """
+        from fusion_methods.dtcwt import _dtcwt_impl
+
         return _dtcwt_impl(
             input_source,
             img_resize,
@@ -1326,6 +1328,8 @@ class MultiFocusFusion:
         Returns:
             融合后的图像
         """
+        from fusion_methods.stackmffv3 import _stackmffv3_impl
+
         if not model_path or model_path == 'weights/stackmff_v3_final.onnx':
             model_path = resource_path('weights', 'stackmff_v3_final.onnx')
 
