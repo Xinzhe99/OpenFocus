@@ -16,6 +16,32 @@ or other verification. Delete temporary remote branches promptly after their
 changes are merged or preserved elsewhere. Keep branches and issues open
 while work still depends on them.
 
+## Pull request checks and end-of-day CI
+
+Run focused local tests for behavior changes before pushing a pull request.
+Use GitHub's required checks for merges. Prefer fast static checks for
+routine PRs and track pending checks in the background while continuing
+independent work.
+
+Process new PRs when the maintainer requests a merge batch. After the
+maintainer confirms the day's PRs have been handled, run the full test
+matrix on `main` with `gh workflow run tests.yml --ref main -f run_suite=true`.
+Investigate failures across platforms, verify fixes locally, and rerun the
+matrix on the corrected `main` when needed. The release workflow runs the
+full matrix against the exact release commit.
+
+## Daily closeout
+
+After the day's validation and fixes, review the repository and workspace.
+
+1. Review local and remote branches. Remove surplus branches after their
+   changes are merged or preserved and keep branches for active work.
+2. Work both open queues, pull requests and issues, down to zero using the
+   GitHub closeout rules. Record any unresolved item and its blocker.
+3. Archive artifacts needed for review or recovery. Remove remaining
+   temporary files and folders and retire temporary worktrees as described
+   below.
+
 ## Temporary workspace
 
 Keep task-specific scripts, screenshots, fixtures, and test output in a named
