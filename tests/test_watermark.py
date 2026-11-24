@@ -453,6 +453,26 @@ def test_rgba_keeps_alpha_and_transparent_pixels():
     assert np.array_equal(result[transparent], image[transparent])
 
 
+def test_bgra_stroke_then_fill_preserves_rounding_on_strided_patch():
+    backing = np.full((2, 6, 4), 17, np.uint16)
+    patch = backing[:, ::2]
+    patch[:] = [
+        [[4626, 4883, 5397, 100], [3084, 4112, 5140, 101], [18247, 35466, 58853, 255]],
+        [[42662, 53456, 64250, 77], [4626, 12593, 20817, 0], [65535, 514, 23387, 128]],
+    ]
+    ring = np.array([[255, 255, 173], [88, 255, 0]], np.uint8)
+    fill = np.array([[0, 255, 87], [230, 255, 0]], np.uint8)
+
+    wm._blend_patch(patch, ring, fill, _config(opacity=0.5))
+
+    # The first two pixels exercise half-to-even rounding for stroke and fill.
+    np.testing.assert_array_equal(patch, [
+        [[2313, 2442, 2698, 100], [33538, 33796, 34052, 101], [21180, 30617, 43435, 255]],
+        [[48936, 53839, 58743, 77], [4626, 12593, 20817, 0], [65535, 514, 23387, 128]],
+    ])
+    np.testing.assert_array_equal(backing[:, 1::2], 17)
+
+
 @pytest.mark.parametrize("width,height", [
     (640, 480), (2560, 1920), (1920, 2560), (800, 200), (200, 800),
 ])

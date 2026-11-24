@@ -452,8 +452,6 @@ def _blend_patch(base: np.ndarray, ring: np.ndarray, fill: np.ndarray,
     if base.ndim == 3 and base.shape[2] == 4:
         opaque = base[..., 3] > 0
         touched &= opaque
-        if not touched.any():
-            return
     if not touched.any():
         return
     if base.dtype == np.uint8:
@@ -466,19 +464,17 @@ def _blend_patch(base: np.ndarray, ring: np.ndarray, fill: np.ndarray,
         maximum = float(np.iinfo(base.dtype).max)
     ink = maximum if config.color == "white" else 0.0
     edge = 0.0 if config.color == "white" else maximum
-    work = base.astype(np.float32)
-    if base.ndim == 2:
-        work = work * (1.0 - ring_a) + edge * ring_a
-        work = work * (1.0 - fill_a) + ink * fill_a
-    else:
-        channels = min(3, work.shape[2])
-        for channel in range(channels):
-            plane = work[..., channel]
-            plane *= (1.0 - ring_a)
-            plane += edge * ring_a
-            plane *= (1.0 - fill_a)
-            plane += ink * fill_a
-    values = np.rint(work[touched]).astype(np.float64)
+    # Most of the rotated stamp rectangle has zero coverage. Gather the
+    # touched pixels before converting them and share the weights across channels.
+    work = base[touched].astype(np.float32, copy=False)
+    color = work[:, None] if base.ndim == 2 else work[:, :3]
+    ring_a = ring_a[touched, None]
+    fill_a = fill_a[touched, None]
+    color *= 1.0 - ring_a
+    color += edge * ring_a
+    color *= 1.0 - fill_a
+    color += ink * fill_a
+    values = np.rint(work).astype(np.float64)
     if base.dtype == np.uint8:
         values = np.clip(values, 0, 255)
     elif base.dtype == np.uint16:

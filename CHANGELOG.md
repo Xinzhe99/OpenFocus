@@ -89,6 +89,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   images, preserving their geometry and 16-bit output.
 - Reuse existing decoded frames during whole-image CPU OpenFocus A and C
   without adding single-use frames to disk or memory caches.
+- Blend watermark stamps only over covered pixels, reusing the blend weights
+  across color channels.
 - Choose the PyTorch download order from the network region, with a manual
   override and a server-maintained list of mirrors. Resume interrupted
   transfers on the next source and log why the source changed.
