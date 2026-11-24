@@ -537,20 +537,19 @@ void of_down2_rows_cpp(const ArrayView& image, const ArrayView& output,
                     const int32_t* ib = static_cast<const int32_t*>(image.data);
                     const int32_t* r0 = ib + top * image.stride[0];
                     const int32_t* r1 = ib + bottom * image.stride[0];
-                    if (avx2_ok) {
-                        simd::down2_row_i32_to_i32_avx2(r0, r1, dst, full_w, static_cast<int32_t>(scale));
-                    } else {
-                        for (int64_t x = 0; x < full_w; ++x) {
-                            const int64_t left = 2 * x;
-                            const int32_t tot = r0[left] + r0[left + 1] + r1[left] + r1[left + 1];
-                            dst[x] = (tot * static_cast<int32_t>(scale)) >> 2;
-                        }
+                    // Keep the sum and scaled product wide for int32 inputs.
+                    for (int64_t x = 0; x < full_w; ++x) {
+                        const int64_t left = 2 * x;
+                        const int64_t tot = static_cast<int64_t>(r0[left]) + r0[left + 1]
+                                          + r1[left] + r1[left + 1];
+                        dst[x] = static_cast<int32_t>((tot * scale) >> 2);
                     }
                     for (int64_t x = full_w; x < out_w; ++x) {
                         const int64_t left = 2 * x;
                         const int64_t right = (left + 1 < width) ? (left + 1) : (width - 1);
-                        const int32_t tot = r0[left] + r0[right] + r1[left] + r1[right];
-                        dst[x] = (tot * static_cast<int32_t>(scale)) >> 2;
+                        const int64_t tot = static_cast<int64_t>(r0[left]) + r0[right]
+                                          + r1[left] + r1[right];
+                        dst[x] = static_cast<int32_t>((tot * scale) >> 2);
                     }
                 }
             }

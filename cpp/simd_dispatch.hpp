@@ -76,9 +76,6 @@ void exposure_gain_f32_row_avx2(
 void down2_row_u16_to_i32_avx2(
     const uint16_t* r0, const uint16_t* r1, int32_t* dst, int64_t full_w, int32_t scale);
 
-void down2_row_i32_to_i32_avx2(
-    const int32_t* r0, const int32_t* r1, int32_t* dst, int64_t full_w, int32_t scale);
-
 void gray_rgb_u8_row_avx2(
     const uint8_t* sr, uint16_t* dst16, int32_t* dst32, int64_t width,
     int32_t scale, bool depth_color, bool dst_is_u16);

@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <vector>
 
 #if defined(__x86_64__) || defined(_M_X64)
@@ -807,7 +808,9 @@ void exposure_gain_f32_row_avx2(
     int64_t i = 0;
     for (; i + 8 <= elems; i += 8) {
         __m256 v = _mm256_mul_ps(_mm256_loadu_ps(sr + i), v_gain);
-        v = _mm256_min_ps(_mm256_max_ps(v, v_zero), v_limit);
+        // MINPS and MAXPS return their second operand for ties and NaNs.
+        // Put the sample second to match std::clamp for NaNs and signed zero.
+        v = _mm256_min_ps(v_limit, _mm256_max_ps(v_zero, v));
         _mm256_storeu_ps(dr + i, v);
     }
     for (; i < elems; ++i) {
@@ -831,32 +834,9 @@ void down2_row_u16_to_i32_avx2(
         _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + x), out);
     }
     for (; x < full_w; ++x) {
-        const int32_t left = static_cast<int32_t>(2 * x);
+        const int64_t left = 2 * x;
         const int32_t tot = static_cast<int32_t>(r0[left]) + static_cast<int32_t>(r0[left + 1])
                           + static_cast<int32_t>(r1[left]) + static_cast<int32_t>(r1[left + 1]);
-        dst[x] = (tot * scale) >> 2;
-    }
-}
-
-void down2_row_i32_to_i32_avx2(
-    const int32_t* r0, const int32_t* r1, int32_t* dst, int64_t full_w, int32_t scale
-) {
-    const __m256i v_scale = _mm256_set1_epi32(scale);
-    int64_t x = 0;
-    for (; x + 8 <= full_w; x += 8) {
-        const __m256i a0 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(r0 + 2 * x));
-        const __m256i a1 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(r0 + 2 * x + 8));
-        const __m256i b0 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(r1 + 2 * x));
-        const __m256i b1 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(r1 + 2 * x + 8));
-        const __m256i s0 = _mm256_add_epi32(a0, b0);
-        const __m256i s1 = _mm256_add_epi32(a1, b1);
-        const __m256i h = _mm256_permute4x64_epi64(_mm256_hadd_epi32(s0, s1), 0xD8);
-        const __m256i out = _mm256_srai_epi32(_mm256_mullo_epi32(h, v_scale), 2);
-        _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + x), out);
-    }
-    for (; x < full_w; ++x) {
-        const int64_t left = 2 * x;
-        const int32_t tot = r0[left] + r0[left + 1] + r1[left] + r1[left + 1];
         dst[x] = (tot * scale) >> 2;
     }
 }
@@ -892,7 +872,8 @@ void gray_rgb_u8_row_avx2(
             res = _mm256_mullo_epi32(q, v_scale);
         }
         if (dst_is_u16) {
-            const __m256i p16 = _mm256_permute4x64_epi64(_mm256_packus_epi32(res, res), 0xD8);
+            const __m256i low = _mm256_and_si256(res, _mm256_set1_epi32(0xFFFF));
+            const __m256i p16 = _mm256_permute4x64_epi64(_mm256_packus_epi32(low, low), 0xD8);
             _mm_storeu_si128(reinterpret_cast<__m128i*>(dst16 + x), _mm256_castsi256_si128(p16));
         } else {
             _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst32 + x), res);
@@ -942,7 +923,8 @@ void gray_rgb_u16_row_avx2(
             res = _mm256_mullo_epi32(q, v_scale);
         }
         if (dst_is_u16) {
-            const __m256i p16 = _mm256_permute4x64_epi64(_mm256_packus_epi32(res, res), 0xD8);
+            const __m256i low = _mm256_and_si256(res, _mm256_set1_epi32(0xFFFF));
+            const __m256i p16 = _mm256_permute4x64_epi64(_mm256_packus_epi32(low, low), 0xD8);
             _mm_storeu_si128(reinterpret_cast<__m128i*>(dst16 + x), _mm256_castsi256_si128(p16));
         } else {
             _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst32 + x), res);
@@ -1155,8 +1137,7 @@ void tile_finalize_3c_row_avx2(
             const __m256 w = _mm256_loadu_ps(war + x);
             const __m256 den = _mm256_blendv_ps(w, v_one, _mm256_cmp_ps(w, v_zero, _CMP_EQ_OQ));
             const __m256 raw = _mm256_div_ps(_mm256_loadu_ps(ar + x), den);
-            __m256 v = _mm256_blendv_ps(raw, v_zero, _mm256_cmp_ps(raw, v_zero, _CMP_LE_OQ));
-            v = _mm256_blendv_ps(v, v_255, _mm256_cmp_ps(v, v_255, _CMP_GE_OQ));
+            const __m256 v = _mm256_min_ps(_mm256_max_ps(raw, v_zero), v_255);
             if (out_u8) {
                 const __m256i qi = _mm256_cvtps_epi32(v);
                 const __m256i p16 = _mm256_permute4x64_epi64(_mm256_packs_epi32(qi, qi), 0xD8);
@@ -1194,8 +1175,7 @@ void tile_finalize_3c_row_avx2(
             for (int blk = 0; blk < 3; ++blk) {
                 const int64_t b = off + blk * 8;
                 const __m256 raw = _mm256_div_ps(_mm256_loadu_ps(ar + b), _mm256_load_ps(d_buf + blk * 8));
-                __m256 v = _mm256_blendv_ps(raw, v_zero, _mm256_cmp_ps(raw, v_zero, _CMP_LE_OQ));
-                v = _mm256_blendv_ps(v, v_255, _mm256_cmp_ps(v, v_255, _CMP_GE_OQ));
+                const __m256 v = _mm256_min_ps(_mm256_max_ps(raw, v_zero), v_255);
                 if (out_u8) {
                     const __m256i qi = _mm256_cvtps_epi32(v);
                     const __m256i p16 = _mm256_permute4x64_epi64(_mm256_packs_epi32(qi, qi), 0xD8);
@@ -1362,9 +1342,9 @@ void pyr_output_f32_to_f32_row_avx2(const float* sr, float* dr, int64_t elems) {
         __m256 v = _mm256_loadu_ps(sr + i);
         v = _mm256_blendv_ps(v, v_zero, _mm256_cmp_ps(v, v_zero, _CMP_LT_OQ));
         v = _mm256_blendv_ps(v, v_one, _mm256_cmp_ps(v, v_one, _CMP_GT_OQ));
-        const __m256i qi = _mm256_cvtps_epi32(_mm256_mul_ps(v, v_65535));
-        const __m256 qf = _mm256_mul_ps(_mm256_cvtepi32_ps(qi), v_inv257);
-        _mm256_storeu_ps(dr + i, qf);
+        const __m256 rounded = _mm256_round_ps(_mm256_mul_ps(v, v_65535),
+            _MM_FROUND_CUR_DIRECTION | _MM_FROUND_NO_EXC);
+        _mm256_storeu_ps(dr + i, _mm256_mul_ps(rounded, v_inv257));
     }
     for (; i < elems; ++i) {
         const float v = sr[i] < 0.0f ? 0.0f : (sr[i] > 1.0f ? 1.0f : sr[i]);
@@ -1422,6 +1402,7 @@ void pyr_up_horiz_3c_row_avx2(
     const __m256 vw_b = _mm256_set_m128(_mm_set1_ps(e2), _mm_set1_ps(e1));
     const __m256 vw_c = _mm256_set_m128(_mm_set1_ps(e1), _mm_set1_ps(e2));
     const __m256 vw_d = _mm256_set_m128(_mm_set1_ps(e0), _mm_set1_ps(e3));
+    const __m256 zero = _mm256_setzero_ps();
     int64_t x = ix_start;
     alignas(16) float tmp[8];
     for (; x < safe_stop; x += 2) {
@@ -1436,11 +1417,14 @@ void pyr_up_horiz_3c_row_avx2(
         const __m256 p1 = _mm256_set_m128(c, b);
         const __m256 p2 = _mm256_set_m128(d, c);
         const __m256 p3 = _mm256_set_m128(e, d);
+        // The scalar odd sum starts with +0 and the even sum ends with +0.
+        const __m256 first = _mm256_mul_ps(p0, vw_a);
         __m256 v = _mm256_add_ps(
-            _mm256_add_ps(_mm256_mul_ps(p0, vw_a), _mm256_mul_ps(p1, vw_b)),
+            _mm256_add_ps(_mm256_blend_ps(first, _mm256_add_ps(zero, first), 0xF0),
+                          _mm256_mul_ps(p1, vw_b)),
             _mm256_mul_ps(p2, vw_c));
         v = _mm256_add_ps(v, _mm256_mul_ps(p3, vw_d));
-        _mm256_storeu_ps(tmp, v);
+        _mm256_storeu_ps(tmp, _mm256_blend_ps(v, _mm256_add_ps(v, zero), 0x0F));
         float* d0 = dr + x * 3;
         d0[0] = tmp[0]; d0[1] = tmp[1]; d0[2] = tmp[2];
         d0[3] = tmp[4]; d0[4] = tmp[5]; d0[5] = tmp[6];
@@ -2294,7 +2278,6 @@ void exposure_gain_u16_row_avx2(const uint16_t*, uint16_t*, int64_t, float, floa
 void exposure_gain_u8_row_avx2(const uint8_t*, uint8_t*, int64_t, float, float) {}
 void exposure_gain_f32_row_avx2(const float*, float*, int64_t, float, float) {}
 void down2_row_u16_to_i32_avx2(const uint16_t*, const uint16_t*, int32_t*, int64_t, int32_t) {}
-void down2_row_i32_to_i32_avx2(const int32_t*, const int32_t*, int32_t*, int64_t, int32_t) {}
 void gray_rgb_u8_row_avx2(const uint8_t*, uint16_t*, int32_t*, int64_t, int32_t, bool, bool) {}
 void gray_rgb_u16_row_avx2(const uint16_t*, uint16_t*, int32_t*, int64_t, int32_t, bool, bool) {}
 void merge_recip_packed_row_avx2(const uint16_t*, const void*, bool, void*, bool, int64_t, int64_t, int64_t, int64_t, int64_t, int32_t, int32_t, uint64_t, int32_t) {}

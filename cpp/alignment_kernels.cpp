@@ -260,7 +260,7 @@ void of_align_gray16_rows_cpp(
         && image.ndim == 3 && take >= 3 && w >= 12
         && (image.itemsize == 1 || image.itemsize == 2)
         && image.stride[2] == 1
-        && (image.stride[1] == 3 || image.stride[1] == 4)
+        && (image.stride[1] == 3 || (take >= 4 && image.stride[1] == 4))
         && out.stride[1] == 1;
 
     for (int64_t y = y_start; y < y_stop; ++y) {
@@ -934,7 +934,7 @@ void of_align_warp_alignment_region_int_rows_cpp(
         && rw >= 8
         && src_h <= std::numeric_limits<int32_t>::max()
         && src_w <= std::numeric_limits<int32_t>::max()
-        && (x_off + rw) <= 16777216;
+        && x_off >= -16777216 && x_off <= 16777216 - rw;
     for (int64_t oy = oy_start; oy < oy_stop; ++oy) {
         float v_dy = 0.0f, u_dy = 0.0f;
         map_uv_row(static_cast<float>(y_off + oy), cy, p1c, p0c, v_dy, u_dy);

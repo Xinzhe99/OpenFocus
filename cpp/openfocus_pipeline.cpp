@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <utility>
 #include <vector>
 
 #if defined(__SSE2__) || defined(_M_X64) || defined(_M_AMD64)
@@ -367,13 +368,35 @@ void of_apply_exposure_gain_cpp(
     const bool keep_alpha = (image.ndim == 3 && channels == 4);
     const int64_t color_c = keep_alpha ? 3 : channels;
     const int64_t rows = stop - start;
-    const int64_t total_elems = rows * width * channels;
-    const int threads = (total_elems >= 65536) ? std::max(1, num_threads) : 1;
-
-    const bool packed = (image.ndim == 2 && image.stride[1] == 1 && output.stride[1] == 1)
-                     || (image.ndim == 3 && image.stride[2] == 1 && image.stride[1] == channels
-                         && output.stride[2] == 1 && output.stride[1] == channels);
     const int64_t row_elems = width * channels;
+    const bool packed = image.ndim == output.ndim
+        && ((image.ndim == 2 && image.stride[1] == 1 && output.stride[1] == 1)
+            || (image.ndim == 3 && image.stride[2] == 1 && image.stride[1] == channels
+                && output.stride[2] == 1 && output.stride[1] == channels));
+    int threads = 1;
+    if (num_threads > 1 && rows > 128 && rows * row_elems >= 65536 && packed
+            && (output.stride[0] >= row_elems || output.stride[0] <= -row_elems)) {
+        // Parallel bands may write their own source samples in place, or
+        // write separate storage. Shifted aliases must keep serial row order.
+        const bool in_place = image.data == output.data && image.itemsize == output.itemsize
+            && image.stride[0] == output.stride[0];
+        if (in_place) {
+            threads = num_threads;
+        } else {
+            const auto byte_range = [&](const ArrayView& view) {
+                const auto base = reinterpret_cast<uintptr_t>(view.data);
+                const int64_t first = start * view.stride[0];
+                const int64_t last = (stop - 1) * view.stride[0];
+                return std::pair{base + std::min(first, last) * view.itemsize,
+                                 base + (std::max(first, last) + row_elems) * view.itemsize};
+            };
+            const auto [src_begin, src_end] = byte_range(image);
+            const auto [dst_begin, dst_end] = byte_range(output);
+            if (src_end <= dst_begin || dst_end <= src_begin) {
+                threads = num_threads;
+            }
+        }
+    }
     const bool use_avx2 = packed && (!keep_alpha) && simd::use_avx2() && row_elems >= 8;
 
     if (image.is_float && output.is_float && image.itemsize == 4 && output.itemsize == 4) {
@@ -529,10 +552,12 @@ void of_apply_exposure_gain_cpp(
                 }
             }
             if (keep_alpha) {
+                const double alpha = image.is_float ? read_f64_or_f32(image, y, x, 3)
+                                                    : static_cast<double>(read_u_idx(image, y, x, 3));
                 if (output.is_float) {
-                    write_f32_2d3d(output, y, x, 3, read_f32_2d3d(image, y, x, 3));
+                    write_f32_2d3d(output, y, x, 3, static_cast<float>(alpha));
                 } else {
-                    write_sample(output, y, x, 3, read_u_idx(image, y, x, 3));
+                    write_sample(output, y, x, 3, static_cast<int64_t>(alpha));
                 }
             }
         }

@@ -5,11 +5,6 @@
 #include <cmath>
 #include <cstring>
 
-#if defined(__SSE2__) || defined(_M_X64) || defined(_M_AMD64)
-#include <emmintrin.h>
-#define OPENFOCUS_C_HAS_SSE2 1
-#endif
-
 #if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC optimize("no-math-errno")
 #endif
@@ -926,22 +921,7 @@ void of_pyr_output_f32_cpp(
                 if (use_avx2_out) {
                     simd::pyr_output_f32_to_f32_row_avx2(sr, dr, elems);
                 } else {
-                    int64_t i = 0;
-#ifdef OPENFOCUS_C_HAS_SSE2
-                    const __m128 v_zero = _mm_setzero_ps();
-                    const __m128 v_one = _mm_set1_ps(1.0f);
-                    const __m128 v_65535 = _mm_set1_ps(kF65535);
-                    const __m128 v_inv257 = _mm_set1_ps(kInv257);
-                    for (; i + 4 <= elems; i += 4) {
-                        __m128 v = _mm_loadu_ps(sr + i);
-                        v = _mm_andnot_ps(_mm_cmplt_ps(v, v_zero), v);
-                        const __m128 m_hi = _mm_cmpgt_ps(v, v_one);
-                        v = _mm_or_ps(_mm_and_ps(m_hi, v_one), _mm_andnot_ps(m_hi, v));
-                        const __m128i qi = _mm_cvtps_epi32(_mm_mul_ps(v, v_65535));
-                        _mm_storeu_ps(dr + i, _mm_mul_ps(_mm_cvtepi32_ps(qi), v_inv257));
-                    }
-#endif
-                    for (; i < elems; ++i) {
+                    for (int64_t i = 0; i < elems; ++i) {
                         const float v = sr[i] < 0.0f ? 0.0f : (sr[i] > 1.0f ? 1.0f : sr[i]);
                         dr[i] = std::nearbyintf(v * kF65535) * kInv257;
                     }

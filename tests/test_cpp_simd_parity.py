@@ -154,6 +154,8 @@ def test_exposure_gain_avx2_vs_scalar_bit_exact(w, dtype, channels):
     shape = (h, w) if channels == 1 else (h, w, channels)
     if dtype == np.float32:
         img = rng.uniform(0.0, 260.0, shape).astype(np.float32)
+        if channels == 1 and w >= 8:
+            img[0, :8] = [np.nan, -0.0, np.inf, -np.inf, -1.0, 0.0, 50.0, 255.0]
     else:
         hi = 256 if dtype == np.uint8 else 65536
         img = rng.integers(0, hi, shape, dtype=dtype)
@@ -210,6 +212,33 @@ def test_ab_packed_gray_down2_merge_select_avx2_vs_scalar(w):
         assert np.array_equal(arr_a, arr_s)
 
 
+def test_ab_gray_and_downsample_preserve_wide_codes():
+    mod = _require_avx2()
+    rgb = np.full((2, 17, 3), 40000, dtype=np.uint16)
+    gray = np.empty(rgb.shape[:2], dtype=np.uint16)
+    mod.of_gray_rows(rgb, gray, 0, 2, 2, False)
+    np.testing.assert_array_equal(gray, np.full(gray.shape, 14464, dtype=np.uint16))
+
+    source = np.full((2, 17), 1 << 30, dtype=np.int32)
+    source[:, -1] = -(1 << 30)
+    down = np.empty((1, 9), dtype=np.int32)
+    mod.of_down2_rows(source, down, 0, 1, 1)
+    np.testing.assert_array_equal(down, [[1 << 30] * 8 + [-(1 << 30)]])
+
+
+@pytest.mark.parametrize('channels', [1, 3])
+def test_float_tile_finalize_handles_nan_in_vector_and_tail(channels):
+    mod = _require_avx2()
+    values = np.array([[np.nan, -np.inf, np.inf, -0.0, 1, 2, 3, 4, np.nan]], dtype=np.float32)
+    expected = np.array([[0, 0, 255, 0, 1, 2, 3, 4, 0]], dtype=np.float32)
+    if channels == 3:
+        values = np.repeat(values[..., None], channels, axis=2)
+        expected = np.repeat(expected[..., None], channels, axis=2)
+    output = np.empty_like(values)
+    mod.of_tile_finalize(values, np.ones((1, 9), dtype=np.float32), output, 0, 1)
+    np.testing.assert_array_equal(output.view(np.uint32), expected.view(np.uint32))
+
+
 def test_ab_8k_width_and_500_layer_depth_parity():
     mod = _require_avx2()
     rng = np.random.default_rng(8500)
@@ -256,7 +285,7 @@ def test_ab_8k_width_and_500_layer_depth_parity():
 def test_openfocus_c_full_8k_and_500_layer_simd_parity() -> None:
     mod = _require_avx2()
     rng = np.random.default_rng(202611)
-    for h, w in [(33, 129), (8, 7680)]:
+    for h, w in [(33, 129), (12, 7680)]:
         cw = (w + 1) // 2
         ch = (h + 1) // 2
         fsrc3 = rng.uniform(-50.0, 65600.0, size=(h, w, 3)).astype(np.float32)
@@ -265,13 +294,11 @@ def test_openfocus_c_full_8k_and_500_layer_simd_parity() -> None:
         coarse3 = rng.uniform(0.0, 65535.0, size=(ch, cw, 3)).astype(np.float32)
         coarse1 = rng.uniform(0.0, 65535.0, size=(ch, cw)).astype(np.float32)
         weight_u16 = rng.integers(0, 65535, size=(h, w), dtype=np.uint16)
-        weight_f32 = rng.uniform(0.0, 5000.0, size=(h, w)).astype(np.float32)
         # 500-layer sparse winner case: few pixels improve over existing best
         best_u16_base = np.full((h, w), 60000, dtype=np.uint16)
         weight_u16_sparse = np.zeros((h, w), dtype=np.uint16)
-        weight_u16_sparse[1, 3:71] = np.uint16(61234)
-        best_f32_base = np.full((h, w), 4500.0, dtype=np.float32)
-        weight_f32_sparse = np.where(weight_f32 > 4500.0, weight_f32, np.float32(100.0))
+        weight_u16_sparse[4, 3:71] = 61234
+        weight_u16_sparse[4, -1] = 61234
         fsrc3_unit = rng.uniform(-0.2, 1.2, size=(h, w, 3)).astype(np.float32)
 
         def _run_c() -> tuple[np.ndarray, ...]:
@@ -296,11 +323,13 @@ def test_openfocus_c_full_8k_and_500_layer_simd_parity() -> None:
             mod.of_pyr_level0_merge_from_raw(
                 coarse3, u16_3, weight_u16_sparse, acc0_s, best0_s, win0_s, sc_up, 257.0, False, 499, 0, h
             )
+            assert best0_s[4, -1] == 61234 and win0_s[4, -1] == 499
 
             acc_m = np.zeros((h, w, 3), dtype=np.float32)
-            best_m = best_f32_base.copy()
+            best_m = best_u16_base.copy()
             win_m = np.full((h, w), 77, dtype=np.uint16)
-            mod.of_pyr_merge_f32(fsrc3, weight_f32_sparse, acc_m, best_m, win_m, False, 499, 0, h)
+            mod.of_pyr_merge_f32(fsrc3, weight_u16_sparse, acc_m, best_m, win_m, False, 499, 0, h)
+            assert best_m[4, -1] == 61234 and win_m[4, -1] == 499
 
             rec3 = fsrc3.copy()
             rec1 = fsrc1.copy()
@@ -330,6 +359,24 @@ def test_openfocus_c_full_8k_and_500_layer_simd_parity() -> None:
             assert np.array_equal(arr_a.view(np.uint8), arr_s.view(np.uint8)), f"mismatch at {idx} for {(h, w)}"
 
 
+def test_float_pyramid_output_and_upsample_preserve_special_values():
+    mod = _require_avx2()
+    pixels = np.array([np.nan, -0.0, -np.inf, np.inf, 0.0, -1.0, 1.0, -0.0, np.nan],
+                      dtype=np.float32).reshape(1, 3, 3)
+    output = np.empty_like(pixels)
+    mod.of_pyr_output_f32(pixels, output, False, 0, 1)
+    expected = np.array([np.nan, -0.0, 0.0, 255.0, 0.0, 0.0, 255.0, -0.0, np.nan],
+                        dtype=np.float32).reshape(1, 3, 3)
+    np.testing.assert_array_equal(output, expected)
+    np.testing.assert_array_equal(np.signbit(output), np.signbit(expected))
+
+    coarse = np.full((5, 6, 3), -0.0, dtype=np.float32)
+    target = np.full((9, 11, 3), -0.0, dtype=np.float32)
+    scratch = np.empty((5, 11, 3), dtype=np.float32)
+    mod.of_pyr_reconstruct_f32(coarse, target, scratch, 0, target.shape[0])
+    np.testing.assert_array_equal(target[4, 4:6].view(np.uint32), np.zeros((2, 3), dtype=np.uint32))
+
+
 def test_alignment_kernels_simd_and_8k_parity() -> None:
     mod = _require_avx2()
     rng = np.random.default_rng(112233)
@@ -347,7 +394,7 @@ def test_alignment_kernels_simd_and_8k_parity() -> None:
         w3_u16 = rng.integers(0, 65536, size=(16, w, 3), dtype=np.uint16)
         rw = max(17, min(w, 129))
 
-        def _run_align_clean():
+        def _run_align_clean(*, strided_translations=False):
             g8_3 = np.empty((4, w), dtype=np.uint16)
             g8_4 = np.empty((4, w), dtype=np.uint16)
             g16_3 = np.empty((4, w), dtype=np.uint16)
@@ -370,8 +417,9 @@ def test_alignment_kernels_simd_and_8k_parity() -> None:
             warp_1 = np.empty((16, w), dtype=np.uint8)
             warp_3 = np.empty((16, w, 3), dtype=np.uint16)
             warp_3_bgr = np.empty((16, w, 3), dtype=np.uint16)
-            trans_3 = np.empty((16, w, 3), dtype=np.uint16)
-            trans_reg = np.empty((8, rw, 3), dtype=np.uint16)
+            step = 2 if strided_translations else 1
+            trans_3 = np.empty((16, w * step, 3), dtype=np.uint16)[:, ::step]
+            trans_reg = np.empty((8, rw * step, 3), dtype=np.uint16)[:, ::step]
             mod.of_align_warp_alignment_int_rows(
                 w1, warp_1, 3.25, -1.75, float(w) * 0.5, 8.0, 0.015, 1.002, -0.015, 1.002, 0, 16, False
             )
@@ -405,7 +453,7 @@ def test_alignment_kernels_simd_and_8k_parity() -> None:
             mod.set_force_scalar(False)
             res_avx = _run_align_clean()
             mod.set_force_scalar(True)
-            res_sca = _run_align_clean()
+            res_sca = _run_align_clean(strided_translations=True)
         finally:
             mod.set_force_scalar(False)
 
@@ -469,3 +517,13 @@ def test_alignment_kernels_simd_and_8k_parity() -> None:
     for idx, (arr_a, arr_s) in enumerate(zip(sc_avx, sc_sca)):
         assert np.array_equal(arr_a.view(np.uint8), arr_s.view(np.uint8)), f"score mismatch {idx}"
 
+
+def test_alignment_region_preserves_coordinates_outside_float32_integer_range():
+    mod = _require_avx2()
+    image = np.tile(np.arange(1, 17, dtype=np.uint16), (2, 1))
+    output = np.empty((1, 8), dtype=np.uint16)
+    mod.of_align_warp_alignment_region_int_rows(
+        image, output, 2, 16, 0, -16777217, 0,
+        0.0, 0.0, -16777216.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0, 1, False,
+    )
+    np.testing.assert_array_equal(output, [[1, 1, 2, 3, 4, 5, 6, 7]])

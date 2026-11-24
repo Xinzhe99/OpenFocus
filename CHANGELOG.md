@@ -181,6 +181,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   normalization and OpenCV's reduction for normalized grayscale. Check for
   cancellation between exposure strips. Encode compressed TIFF strips in a
   bounded queue and preserve their output order.
+- Speed up packed OpenFocus A, B, and C fusion, exposure adjustment, tile
+  reduction, and alignment with AVX2 on supported CPUs. Preserve scalar pixel
+  arithmetic for strided views, wide integer sums, and float rounding.
 - Check repeated original paths once when validating a desktop export
   destination, including exports from large image stacks.
 
