@@ -1180,13 +1180,16 @@ def test_deferred_jpeg_perspective_admits_one_full_size_output(tmp_path):
     assert sources.frame_resolution_bytes(warped) < 832 * 1024 ** 2
 
 
-def test_mapped_jpeg_perspective_stages_exact_exposure_under_memory_limit(tmp_path, monkeypatch):
+@pytest.mark.parametrize('budget_mib', [2, 16])
+def test_mapped_jpeg_perspective_stages_exact_exposure_under_memory_limit(tmp_path, monkeypatch, budget_mib):
     from core import frame_resolution_cache, frame_storage, registration, resource_policy
 
     jpeg = pytest.importorskip('imagecodecs')
     if not hasattr(getattr(jpeg.JPEG8, 'CS', None), 'EXT_BGR'):
         pytest.skip('imagecodecs lacks packed BGR JPEG output')
-    first = _jpeg(tmp_path, shape=(768, 1024))
+    first = tmp_path / 'detailed.jpg'
+    pixels = np.random.default_rng(311).integers(0, 256, (768, 1024, 3), dtype=np.uint8)
+    Image.fromarray(pixels).save(first, quality=100, subsampling=0)
     second = tmp_path / 'darker.jpg'
     Image.new('RGB', (1024, 768), (49, 62, 75)).save(second)
     frames = [sources.scan_source(path, header_only=True)[0] for path in (first, second)]
@@ -1216,15 +1219,19 @@ def test_mapped_jpeg_perspective_stages_exact_exposure_under_memory_limit(tmp_pa
 
     monkeypatch.setattr(image_loader, '_decode_jpeg_bgr_into', decode_mapped)
     monkeypatch.setattr(image_loader, 'decode_image', decode_heap)
-    limit = 2 * 1024 ** 2
-    assert limit < frames[0].nbytes < sources.frame_resolution_bytes(warped[0])
-    with (resource_policy.process_budget(resource_policy.ProcessBudget(limit, limit)),
+    mib = 1024 ** 2
+    limit = budget_mib * mib
+    assert frames[0].fingerprint[0] > 2 * mib
+    budget = resource_policy.ProcessBudget(limit, limit, frame_ram=2 * mib)
+    with (resource_policy.process_budget(budget),
           frame_storage.scratch_directory(explicit_directory=str(tmp_path)),
           frame_resolution_cache.render_scope(frames) as scope):
-        matched = sources.match_exposure_frames(warped, reference_index=0)
         with scope.reuse_only(), sources.without_source_cache_growth():
+            matched = sources.match_exposure_frames(warped, reference_index=0)
             staged = sources.materialize_for_repeated_access(matched, required=True)
-        assert paths == [frame.path for frame in frames]
+        # The reference can be resolved again because this job keeps no
+        # one-use aligned inputs in the resolution cache.
+        assert set(paths) == {frame.path for frame in frames}
         for snapshot, pixels in zip(staged, expected):
             assert isinstance(snapshot, sources.PreparedFrame)
             actual = sources.resolve_frame(snapshot)

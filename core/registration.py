@@ -795,12 +795,13 @@ class PerspectiveWarp:
         cancel_fn = _merge_cancel_callbacks(self.should_cancel, should_cancel)
         integer_crop = self._is_integer_crop(image.shape, image.dtype)
         require_memory(128 * 1024 + (0 if integer_crop else _perspective_cpu_tile_bytes(self.dsize)))
-        self.source.validate_pixels(image, cancel_fn)
-        output = create_frame(_perspective_output_shape(image.shape, self.dsize), image.dtype)
-        # Close the written view before the root mapping enters the staged stack.
-        with (frame_region(image) as pixels, frame_region(output, write=True) as destination):
-            _check_cancel(cancel_fn)
-            self._apply_to_image(pixels, should_cancel=cancel_fn, destination=destination)
+        with frame_region(image) as pixels:
+            self.source.validate_pixels(pixels, cancel_fn)
+            output = create_frame(_perspective_output_shape(image.shape, self.dsize), image.dtype)
+            # Close the written view before the root mapping enters the staged stack.
+            with frame_region(output, write=True) as destination:
+                _check_cancel(cancel_fn)
+                self._apply_to_image(pixels, should_cancel=cancel_fn, destination=destination)
         _check_cancel(cancel_fn)
         return output
 

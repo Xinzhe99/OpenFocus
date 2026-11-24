@@ -191,7 +191,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   directly into BGR and stage large deferred stacks one processed frame at a
   time before OpenFocus fusion.
 - Use scratch-backed decode, perspective warps, and exposure matching for
-  eligible full-size JPEGs when the in-memory path exceeds available RAM.
+  eligible full-size JPEGs that exceed the staging RAM budget. Map compressed
+  input read-only and release temporary views after each source pass.
 - Plan OpenFocus B's mapped integer-frame fusion using its bounded RAM
   working set and release source mappings after their depth and merge passes.
 - Release the isolated render worker after a memory error so the next render

@@ -5,6 +5,7 @@
 
 import os
 import math
+import mmap
 import cv2
 import numpy as np
 from dataclasses import dataclass, field
@@ -505,13 +506,13 @@ def _decode_jpeg_bgr_into(path, encoded_bytes, destination):
     except (ImportError, AttributeError):
         return False
     with open(path, 'rb') as stream:
-        data = stream.read(encoded_bytes)
-        if len(data) != encoded_bytes or stream.read(1):
+        if os.fstat(stream.fileno()).st_size != encoded_bytes:
             raise OSError(f'Source changed while decoding; reopen the stack: {path}')
-    try:
-        decoded = imagecodecs.jpeg8_decode(data, outcolorspace=bgr, out=destination)
-    except (ValueError, TypeError, RuntimeError):
-        return False
+        with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
+            try:
+                decoded = imagecodecs.jpeg8_decode(data, outcolorspace=bgr, out=destination)
+            except (ValueError, TypeError, RuntimeError):
+                return False
     return (decoded is not None and decoded.shape == destination.shape
             and decoded.dtype == destination.dtype
             and decoded.ctypes.data == destination.ctypes.data)

@@ -812,15 +812,14 @@ class SourceFrame:
             image = SOURCE_CACHE.get(self._source_cache_key())
         if image is not None:
             return image
-        encoded = self.fingerprint[0]
-        with _admit_source_decode(_jpeg_decode_workspace_bytes(self, encoded), should_cancel), \
+        with _admit_source_decode(_jpeg_scanline_workspace_bytes(self), should_cancel), \
                 log_operation('source_decode', path=self.path, page=self.page, scale=self.scale,
                               cancel_on=(RegistrationCancelled,)), \
                 current_profile().stage('source_decode'):
             image = create_frame(self.shape, self.dtype)
             with frame_region(image, write=True) as destination:
                 _check_resolution_cancel(should_cancel)
-                decoded = _decode_jpeg_bgr_into(self.path, encoded, destination)
+                decoded = _decode_jpeg_bgr_into(self.path, self.fingerprint[0], destination)
             _check_resolution_cancel(should_cancel)
             self.validate_source()
             return image if decoded else None
@@ -1008,28 +1007,33 @@ class ProcessedFrame:
                             return stored
                     _check_resolution_cancel(cancelled)
                     return direct
-            from core.resource_policy import ResourceLimitError, require_memory
-            image = None
-            mapped_exposure = False
+            from core.resource_policy import frame_ram_budget, probe_memory, ram_ceiling, require_memory
+
             required = frame_resolution_bytes(self)
-            try:
-                if required:
-                    require_memory(required)
-            except ResourceLimitError:
-                if _is_mappable_jpeg_warp(self):
-                    source = self.source._mapped_jpeg_pixels(cancelled)
-                    if source is None:
-                        raise
+            jpeg_warp = _is_mappable_jpeg_warp(self)
+            jpeg_exposure = _can_map_exposure(self)
+            snapshot = probe_memory() if jpeg_warp or jpeg_exposure else None
+            # When staging one-use pixels, prefer a mapping as soon as the
+            # heap path outgrows the frame budget. Later frames then have the
+            # same bounded workspace even if the desktop's headroom drops.
+            mapped = snapshot is not None and (
+                required > ram_ceiling(snapshot)
+                or (getattr(cache, 'read_only', False) and required > frame_ram_budget(snapshot)))
+            image = None
+            if mapped and jpeg_warp:
+                source = self.source._mapped_jpeg_pixels(cancelled)
+                if source is not None:
                     observer = _resolution_observer
                     if observer is not None:
                         observer(self.source, source)
                     image = self.processor._call_mapped_jpeg(source, should_cancel=cancelled)
                     del source
-                elif _can_map_exposure(self):
-                    mapped_exposure = True
                 else:
-                    raise
+                    snapshot = None
             if image is None:
+                mapped_exposure = mapped and jpeg_exposure
+                if required and not mapped_exposure:
+                    require_memory(required, snapshot)
                 image = self._resolve_and_process(cancelled, store_result, mapped_exposure)
             if cancelled():
                 raise RegistrationCancelled()
@@ -1710,9 +1714,11 @@ def _exposure_workspace_bytes(frame):
 
 def match_exposure_frames(frames, should_cancel=None, *, reference_index=-1):
     """Resolve the selected target mean once and retain one gain per source."""
+    from core.frame_storage import frame_region
     from utils.image_utils import _exposure_mean
     reference = frames[reference_index]
-    target = _exposure_mean(resolve_frame(reference), should_cancel, normalize_uint16=True)
+    with frame_region(resolve_frame(reference, should_cancel=should_cancel)) as pixels:
+        target = _exposure_mean(pixels, should_cancel, normalize_uint16=True)
 
     # A matched frame is cached for every later reader in the render, so its
     # processed (for example aligned) source is needed again only when the GUI
@@ -1816,8 +1822,8 @@ def frame_resolution_bytes(frame, *, metadata_only=False):
     return 0
 
 
-def _jpeg_decode_workspace_bytes(frame, encoded):
-    return encoded + 128 * max(frame.shape[:2]) + 128 * 1024
+def _jpeg_scanline_workspace_bytes(frame):
+    return 128 * max(frame.shape[:2]) + 128 * 1024
 
 
 def _jpeg_resolution_bytes(frame, encoded):
@@ -1827,7 +1833,7 @@ def _jpeg_resolution_bytes(frame, encoded):
     # The OpenCV fallback can copy its decoded Mat into NumPy, and orientation
     # can allocate a second frame. Neither step overlaps libjpeg's coefficients.
     # The Pillow fallback checks its larger workspace before decoding.
-    return _jpeg_decode_workspace_bytes(frame, encoded) + max(frame.nbytes + coefficients, 2 * frame.nbytes)
+    return encoded + _jpeg_scanline_workspace_bytes(frame) + max(frame.nbytes + coefficients, 2 * frame.nbytes)
 
 
 def select_frame_scratch(frames, *, preferred_size=0, should_cancel=None):
