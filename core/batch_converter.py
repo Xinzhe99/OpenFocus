@@ -644,7 +644,7 @@ def convert_batch(sources, directory, ext, cancelled, item, progress, *, output_
                                             finish(rec)
                                             continue
                                     index, source, count, ram, disk, dest, volume = pending
-                                    snapshot = resource_policy.probe_resources()
+                                    snapshot = resource_policy.probe_memory()
                                     ceiling = resource_policy.ram_ceiling(snapshot)
                                     free_ram = (min(plan.ram_budget - used_ram, ceiling - used_ram)
                                                 if active or ram <= plan.ram_budget else ceiling)

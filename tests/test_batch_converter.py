@@ -1345,8 +1345,8 @@ def test_batch_reports_unknown_memory_instead_of_claiming_shortage(tmp_path, mon
     plan = SimpleNamespace(workers=1, native_threads=1, max_in_flight=1,
                            ram_budget=100, describe=lambda: 'test')
     monkeypatch.setattr(converter.resource_policy, 'plan_execution', lambda *a, **k: plan)
-    monkeypatch.setattr(converter.resource_policy, 'probe_resources', lambda: SimpleNamespace(ram_known=False))
-    monkeypatch.setattr(converter.resource_policy, 'ram_ceiling', lambda *a: 0)
+    monkeypatch.setattr(converter.resource_policy, 'probe_memory',
+                        lambda: converter.resource_policy.ResourceSnapshot(available_ram=0, total_ram=0))
     monkeypatch.setattr(converter, '_estimate_source', lambda *a: (1, 10, 1))
     events = []
     result = converter.convert_batch(['source'], str(tmp_path), '.jpg', lambda: False,
