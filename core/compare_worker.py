@@ -58,7 +58,7 @@ def align_frames(images, alignment, shared, should_cancel, reverse_registration=
     if alignment != "none":
         settings = {"method": alignment, "brightness_reference": shared.get(
             "brightness_reference", "last" if shared.get("exposure_match", False) else "first"),
-            "accelerate_ecc": bool(shared.get('use_gpu', False)),
+            "accelerate_ecc": bool(shared.get('use_gpu', True)),
             "parameters": desktop_registration_parameters(alignment, shared.get('registration_parameters')),
             "defer_warps": defer_warps}
         if shared.get('reg_downscale_width') is not None:
@@ -210,7 +210,7 @@ class PreviewWorker(_CancellableWorker):
         constructor = {
             'algorithm': method,
             'fusion_parameters': resolve_fusion_parameters(method, own),
-            'use_gpu': bool(shared.get('use_gpu', False)),
+            'use_gpu': bool(shared.get('use_gpu', True)),
             'resource_preference': shared.get('resource_preference', 'balanced'),
             'tile_enabled': (False if method in ('openfocus_a', 'openfocus_b', 'openfocus_c')
                              else bool(shared.get('tile_enabled', True))),

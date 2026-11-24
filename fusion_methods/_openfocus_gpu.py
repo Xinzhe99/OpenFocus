@@ -67,6 +67,40 @@ class _PreviewPlaneReader:
             return None
         return self._pixels
 
+    def close(self):
+        _release_buffers(self._buffer)
+        self._buffer = None
+
+
+def _release_buffers(*items):
+    """Explicitly release any OpenCL buffer objects without raising."""
+    seen = set()
+
+    def _walk(item):
+        if item is None:
+            return
+        if isinstance(item, dict):
+            for value in item.values():
+                _walk(value)
+            return
+        if isinstance(item, (list, tuple)):
+            for value in item:
+                _walk(value)
+            return
+        release = getattr(item, 'release', None)
+        if callable(release):
+            obj_id = id(item)
+            if obj_id in seen:
+                return
+            seen.add(obj_id)
+            try:
+                release()
+            except Exception:
+                pass
+
+    for entry in items:
+        _walk(entry)
+
 
 def _prepare_gpu_upload(array, dtype=None):
     """Return (contiguous_host_buffer, bgr_rev) without copying reversed RGB views."""
@@ -257,7 +291,25 @@ DEFINE_MERGE(merge_u8_u16_bgr_rev, uchar, ushort, 0, 1)
 '''
 
 
+def _device_rank(device, index):
+    try:
+        unified = bool(getattr(device, 'host_unified_memory', False))
+    except Exception:
+        unified = False
+    try:
+        mem = int(getattr(device, 'global_mem_size', 0))
+    except Exception:
+        mem = 0
+    try:
+        cus = int(getattr(device, 'max_compute_units', 0))
+    except Exception:
+        cus = 0
+    return (0 if unified else 1, mem, cus, -index)
+
+
 def _device(cl):
+    candidates = []
+    index = 0
     for platform in cl.get_platforms():
         try:
             devices = platform.get_devices(device_type=cl.device_type.GPU)
@@ -266,8 +318,11 @@ def _device(cl):
         for device in devices:
             if (device.type & cl.device_type.GPU and device.available
                     and device.compiler_available):
-                return device
-    return None
+                candidates.append((index, device))
+                index += 1
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: _device_rank(item[1], item[0]))[1]
 
 
 def opencl_device_name(device):
@@ -653,6 +708,7 @@ class Merge:
             self.release()
 
     def activity(self, gray, fine, output):
+        gb = fb = ob = None
         try:
             cl = self.cl
             source = np.ascontiguousarray(gray, dtype=np.uint16)
@@ -669,6 +725,8 @@ class Merge:
                 _invalidate_program_cache()
             self._drain_queue()
             raise GpuError('OpenCL GPU depth activity failed') from exc
+        finally:
+            _release_buffers(gb, fb, ob)
         output[...] = result
 
     def begin_merge(self, depth, shape, should_cancel):
@@ -723,6 +781,7 @@ class Merge:
             if hasattr(self, 'cl') and isinstance(exc, (self.cl.Error, MemoryError)):
                 _invalidate_program_cache()
             self._drain_queue()
+            _release_buffers(self._merge_acc, self._merge_depth, self._merge_src)
             self._merge_acc = self._merge_depth = self._merge_src = None
             self._merge_src_bytes = 0
             self._merge_u16_depth = False
@@ -746,6 +805,7 @@ class Merge:
                 norm_attr = 'merge_u8_i64_kernel' if is_u8 else 'kernel'
             kern = getattr(self, rev_attr if bgr_rev else norm_attr)
             if self._merge_src is None or self._merge_src_bytes != image.nbytes:
+                _release_buffers(self._merge_src)
                 self._merge_src = None
                 self._merge_src_bytes = 0
                 self._merge_src = cl.Buffer(
@@ -791,6 +851,7 @@ class Merge:
     def end_merge(self):
         if getattr(self, '_merge_needs_drain', False):
             self._drain_queue()
+        _release_buffers(self._merge_acc, self._merge_depth, self._merge_src)
         self._merge_acc = self._merge_depth = self._merge_src = None
         self._merge_src_bytes = 0
         self._merge_u16_depth = False
@@ -799,6 +860,7 @@ class Merge:
 
     def band(self, accumulator, image, depth, index, step, scale, first):
         """Merge a band transactionally; failure leaves the accumulator intact."""
+        ab = ib = db = None
         try:
             cl = self.cl
             # Initial accumulation is deliberately not read from an
@@ -824,6 +886,8 @@ class Merge:
                 _invalidate_program_cache()
             self._drain_queue()
             raise GpuError('OpenCL GPU merge failed') from exc
+        finally:
+            _release_buffers(ab, ib, db)
         accumulator[...] = result
 
 
@@ -1301,33 +1365,40 @@ class _ExpandDepth(_HalfResample):
             return b
         H, W = src_shape
         OH, OW = int(dst_shape[0]), int(dst_shape[1])
-        vb = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, OH * W * 4)
-        vix = self.cl.Buffer(self.ctx, self.mf.READ_ONLY | self.mf.COPY_HOST_PTR,
-                             hostbuf=pad(v.indices))
-        vw = self.cl.Buffer(self.ctx, self.mf.READ_ONLY | self.mf.COPY_HOST_PTR,
-                            hostbuf=pad(v.weights))
-        vc = self.cl.Buffer(self.ctx, self.mf.READ_ONLY | self.mf.COPY_HOST_PTR,
-                            hostbuf=v.counts.astype(np.int64))
-        self.kernels['vert'](self.q, (W, OH), None, depth_buf, vb, vix, vw, vc,
-                             np.int32(OH), np.int32(W))
-        ob = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, OH * OW * 2)
-        hix = self.cl.Buffer(self.ctx, self.mf.READ_ONLY | self.mf.COPY_HOST_PTR,
-                             hostbuf=pad(h.indices))
-        hw = self.cl.Buffer(self.ctx, self.mf.READ_ONLY | self.mf.COPY_HOST_PTR,
-                            hostbuf=pad(h.weights))
-        hc = self.cl.Buffer(self.ctx, self.mf.READ_ONLY | self.mf.COPY_HOST_PTR,
-                            hostbuf=h.counts.astype(np.int64))
-        self.kernels['horiz'](self.q, (OW, OH), None, vb, ob, hix, hw, hc,
-                              np.int32(OH), np.int32(OW), np.int32(W))
-        self.q.finish()
-        out = create_transient_frame((OH, OW), np.uint16)
-        self.cl.enqueue_copy(self.q, out, ob, is_blocking=True)
-        return out
+        vb = vix = vw = vc = ob = hix = hw = hc = None
+        try:
+            vb = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, OH * W * 4)
+            vix = self.cl.Buffer(self.ctx, self.mf.READ_ONLY | self.mf.COPY_HOST_PTR,
+                                 hostbuf=pad(v.indices))
+            vw = self.cl.Buffer(self.ctx, self.mf.READ_ONLY | self.mf.COPY_HOST_PTR,
+                                hostbuf=pad(v.weights))
+            vc = self.cl.Buffer(self.ctx, self.mf.READ_ONLY | self.mf.COPY_HOST_PTR,
+                                hostbuf=v.counts.astype(np.int64))
+            self.kernels['vert'](self.q, (W, OH), None, depth_buf, vb, vix, vw, vc,
+                                 np.int32(OH), np.int32(W))
+            ob = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, OH * OW * 2)
+            hix = self.cl.Buffer(self.ctx, self.mf.READ_ONLY | self.mf.COPY_HOST_PTR,
+                                 hostbuf=pad(h.indices))
+            hw = self.cl.Buffer(self.ctx, self.mf.READ_ONLY | self.mf.COPY_HOST_PTR,
+                                hostbuf=pad(h.weights))
+            hc = self.cl.Buffer(self.ctx, self.mf.READ_ONLY | self.mf.COPY_HOST_PTR,
+                                hostbuf=h.counts.astype(np.int64))
+            self.kernels['horiz'](self.q, (OW, OH), None, vb, ob, hix, hw, hc,
+                                  np.int32(OH), np.int32(OW), np.int32(W))
+            self.q.finish()
+            out = create_transient_frame((OH, OW), np.uint16)
+            self.cl.enqueue_copy(self.q, out, ob, is_blocking=True)
+            return out
+        finally:
+            _release_buffers(vb, vix, vw, vc, ob, hix, hw, hc)
 
     def run(self, depth, shape):
         ib = self.cl.Buffer(self.ctx, self.mf.READ_ONLY | self.mf.COPY_HOST_PTR,
                             hostbuf=np.ascontiguousarray(depth))
-        return self.run_buf(ib, depth.shape, shape)
+        try:
+            return self.run_buf(ib, depth.shape, shape)
+        finally:
+            _release_buffers(ib)
 
 
 class _GpuB:
@@ -1425,22 +1496,27 @@ class _GpuB:
 
         completed = False
         prepared_iter = None
+        reader = None
+        allocated = []
         try:
-            gray_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, height * width * 2)
-            pb = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes)
-            sb = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes)
-            d_best_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes)
-            d_second_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes)
-            d_winner_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes)
-            half_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes)
-            fine_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes)
-            act_raw_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes)
-            act_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes)
-            best_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes)
-            depth_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes)
-            votes_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes)
+            def _alloc(buf):
+                allocated.append(buf)
+                return buf
 
-            reader = None
+            gray_buf = _alloc(self.cl.Buffer(self.ctx, self.mf.READ_WRITE, height * width * 2))
+            pb = _alloc(self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes))
+            sb = _alloc(self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes))
+            d_best_buf = _alloc(self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes))
+            d_second_buf = _alloc(self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes))
+            d_winner_buf = _alloc(self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes))
+            half_buf = _alloc(self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes))
+            fine_buf = _alloc(self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes))
+            act_raw_buf = _alloc(self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes))
+            act_buf = _alloc(self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes))
+            best_buf = _alloc(self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes))
+            depth_buf = _alloc(self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes))
+            votes_buf = _alloc(self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes))
+
             if live_preview is not None:
                 reader = _PreviewPlaneReader(self.cl, self.ctx, self.q,
                                              self.kernels['sample_focus_plane'], (oh, ow), np.uint16)
@@ -1513,8 +1589,8 @@ class _GpuB:
             lut = (65535.0 * np.sqrt(np.clip((positions - lo) / span, 0, 1))
                    ).astype(np.float32)
 
-            lb = self.cl.Buffer(self.ctx, self.mf.READ_ONLY | self.mf.COPY_HOST_PTR,
-                                hostbuf=lut)
+            lb = _alloc(self.cl.Buffer(self.ctx, self.mf.READ_ONLY | self.mf.COPY_HOST_PTR,
+                                       hostbuf=lut))
             guide_buf = pb
             self.kernels['guide'](self.q, (m,), None, best_buf, lb, guide_buf, np.int32(m))
             smooth = np.float32(np.float32(smoothing) * np.float32(0.75)
@@ -1533,8 +1609,8 @@ class _GpuB:
             half_step = step >> 1
             if half_step:
                 sl = _snap_lut(feather).astype(np.int64)
-                sb_lut = self.cl.Buffer(self.ctx, self.mf.READ_ONLY | self.mf.COPY_HOST_PTR,
-                                        hostbuf=sl)
+                sb_lut = _alloc(self.cl.Buffer(self.ctx, self.mf.READ_ONLY | self.mf.COPY_HOST_PTR,
+                                               hostbuf=sl))
                 self.kernels['snap'](self.q, (m,), None, depth_buf, sb_lut,
                                      np.int32(step), np.int32(m))
             self.kernels['apply_detail'](self.q, (m,), None, depth_buf, d_second_buf,
@@ -1547,6 +1623,17 @@ class _GpuB:
                 self.gpu._drain_queue()
             if prepared_iter is not None:
                 prepared_iter.close()
+            if reader is not None:
+                reader.close()
+            _release_buffers(
+                allocated,
+                self._cbuf,
+                self.filt._bufs,
+                self.half._cache,
+                self.half._scratch,
+                self.expand._cache,
+                self.expand._scratch,
+            )
             self._cbuf.clear()
             self.filt._bufs.clear()
             self.half._cache.clear()

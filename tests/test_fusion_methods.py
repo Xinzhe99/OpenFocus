@@ -480,8 +480,9 @@ def test_guided_tiled_exposure_matches_whole_frame_preprocessing(dtype, base_fra
     normalized, _ = normalize_fuse_input(frames)
     matched = [apply_exposure_gain(frame, gain)
                for frame, gain in zip(normalized, exposure_gains(normalized))]
-    options = dict(algorithm='guided_filter', tile_enabled=True, tile_block_size=16,
-                   tile_overlap=4, tile_threshold=1, base_frame=base_frame)
+    options = dict(algorithm='guided_filter', use_gpu=False, tile_enabled=True,
+                   tile_block_size=16, tile_overlap=4, tile_threshold=1,
+                   base_frame=base_frame)
     expected = MultiFocusFusion(exposure_match=False, **options).fuse(matched, thread_count=1)
     actual = MultiFocusFusion(exposure_match=True, **options).fuse(frames, thread_count=1)
     np.testing.assert_allclose(actual, expected, atol=1e-4)
@@ -622,8 +623,9 @@ def test_upscaled_tiling_matches_resize_after_normalization_and_exposure(method,
                     for frame, gain in zip(prepared, exposure_gains(prepared))]
     size = (2052, 129)  # Exceeds the default cutoff without a large allocation.
     resized = [cv2.resize(_ensure_color_image(frame), size) for frame in prepared]
-    options = dict(algorithm=method, tile_block_size=256, tile_overlap=32,
-                   fusion_parameters={'kernel_size': 5}, base_frame='none')
+    options = dict(algorithm=method, use_gpu=False, tile_block_size=256,
+                   tile_overlap=32, fusion_parameters={'kernel_size': 5},
+                   base_frame='none')
     expected = MultiFocusFusion(**options, exposure_match=False).fuse(resized, thread_count=1)
     actual = MultiFocusFusion(**options, exposure_match=match_exposure).fuse(
         frames, img_resize=size, thread_count=1)

@@ -454,7 +454,7 @@ def test_odd_size_neural_depth_uses_fusion_probabilities(scale):
     assert probabilities.shape == (3, 17, 19)
     np.testing.assert_allclose(probabilities.sum(axis=0), 1, atol=1e-6)
     expected = (probabilities * np.arange(3, dtype=np.float32)[:, None, None]).sum(0) / 2
-    actual = compute_focus_index(frames, 'stackmffv3', thread_count=1,
+    actual = compute_focus_index(frames, 'stackmffv3', use_gpu=False, thread_count=1,
                                  parameters={'inference_scale': scale})
     np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
 

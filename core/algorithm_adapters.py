@@ -160,7 +160,7 @@ def depth_dtcwt(images, progress_callback=None, should_cancel=None, **parameters
 def depth_neural(images, progress_callback=None, should_cancel=None, **parameters):
     from core.depth_map import _measure_stackmffv3
     return _measure_stackmffv3(images, progress_callback, should_cancel,
-        model_path=parameters.get('model_path'), use_gpu=parameters.get('use_gpu', False),
+        model_path=parameters.get('model_path'), use_gpu=parameters.get('use_gpu', True),
         execution_plan=parameters.get('execution_plan'), mode=parameters['mode'],
         inference_scale=parameters['inference_scale'])
 
@@ -168,7 +168,7 @@ def depth_neural(images, progress_callback=None, should_cancel=None, **parameter
 def depth_stackmffv2(images, progress_callback=None, should_cancel=None, **parameters):
     from core.depth_map import _measure_stackmffv2
     return _measure_stackmffv2(images, progress_callback, should_cancel,
-        model_path=parameters.get('model_path'), use_gpu=parameters.get('use_gpu', False),
+        model_path=parameters.get('model_path'), use_gpu=parameters.get('use_gpu', True),
         execution_plan=parameters.get('execution_plan'),
         thread_count=parameters.get('thread_count'),
         resource_preference=parameters.get('resource_preference', 'balanced'))
@@ -198,7 +198,7 @@ def depth_openfocus_b(images, progress_callback=None, should_cancel=None, **para
                      should_cancel, progress_callback,
                      thread_count=parameters.get('thread_count'), half_resolution=True,
                      preserve_detail=True, feather=parameters['feather'],
-                     use_gpu=parameters.get('use_gpu', False))
+                     use_gpu=parameters.get('use_gpu', True))
 
 
 def depth_openfocus_c(images, progress_callback=None, should_cancel=None, **parameters):

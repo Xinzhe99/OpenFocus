@@ -244,7 +244,7 @@ def _reduce_energy_bands(energy, peak, median, indices, check_cancel, progress_c
             progress_cb(min(height, y + rows) / height)
 
 
-def focus_measures(G, sigma=None, *, cancelled=None, use_gpu=False, progress=None):
+def focus_measures(G, sigma=None, *, cancelled=None, use_gpu=True, progress=None):
     """Per-pixel focus measures from smoothed Laplacian energy E across the stack.
 
     ratio = log10(max E / median E): how much the best frame stands out.
@@ -1698,7 +1698,7 @@ def _replace_background(frames: Sequence[np.ndarray], fused: np.ndarray, *,
                        valid_masks: Optional[Sequence[Optional[np.ndarray]]] = None,
                        aligned: bool | Sequence[bool] = False,
                        composite_onto: Optional[np.ndarray] = None,
-                       use_gpu: bool = False,
+                       use_gpu: bool = True,
                        progress: Optional[Callable[[float, str], None]] = None,
                        cancelled: Optional[Callable[[], bool]] = None) -> BackgroundFillResult:
     """Replace the background of `fused` with one of `frames`.

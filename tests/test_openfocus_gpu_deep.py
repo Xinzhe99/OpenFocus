@@ -522,7 +522,7 @@ def test_gpu_c_logs_fallback_in_application_namespace(monkeypatch, caplog):
             raise _openfocus_gpu.GpuError('need 400 bytes, limit 300 bytes')
 
     frames = [np.full((23, 31, 3), level, dtype=np.uint8) for level in (42, 82)]
-    expected = openfocus_c_impl(frames, thread_count=1)
+    expected = openfocus_c_impl(frames, thread_count=1, use_gpu=False)
     monkeypatch.setattr(_openfocus_gpu_c, 'GpuC', RefusedGpu)
     monkeypatch.setattr(get_logger(), 'propagate', True)
     devices = []

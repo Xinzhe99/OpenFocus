@@ -349,7 +349,7 @@ def _activity_frames(frames, img_resize, kernel_size, thread_count, should_cance
 def depth_map(frames, img_resize, kernel_size, smoothing, should_cancel,
               progress_callback=None, thread_count=1, *, return_codes=False,
               half_resolution=False, preserve_detail=False, feather: int = 0,
-              use_gpu=False, device_callback=None, _gpu=None, _live_preview=None):
+              use_gpu=True, device_callback=None, _gpu=None, _live_preview=None):
     """Estimate depth with the specified integer feather, defaulting to F0."""
     _validate_feather(feather)
     from fusion_methods.openfocus_ab import _check_cancel
