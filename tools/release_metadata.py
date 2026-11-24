@@ -148,10 +148,12 @@ def file_record(path):
 
 def dist_records(directory):
     files = sorted(directory.iterdir())
-    if (len(files) != 2 or any(not p.is_file() for p in files)
-            or sum(p.name.endswith(".whl") for p in files) != 1
-            or sum(p.name.endswith(".tar.gz") for p in files) != 1):
-        raise ReleaseIdentityError("dist must contain one wheel and one source archive")
+    wheel_count = sum(p.name.endswith(".whl") for p in files)
+    sdist_count = sum(p.name.endswith(".tar.gz") for p in files)
+    if (not files or any(not p.is_file() for p in files)
+            or wheel_count < 1 or sdist_count != 1
+            or wheel_count + sdist_count != len(files)):
+        raise ReleaseIdentityError("dist must contain at least one wheel and one source archive")
     records = [file_record(p) for p in files]
     if any(not item["size"] for item in records):
         raise ReleaseIdentityError("empty distribution")

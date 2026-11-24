@@ -61,8 +61,9 @@ def test_dynamic_onnx_checkpoints_are_packaged():
     import hashlib
     from core.inference_worker import _SHIPPED_TORCH_EXPORTS, _TORCH_EXPORTS
 
-    data = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))["tool"]["setuptools"]["package-data"]
-    assert {'*.onnx', '*.pth'} <= set(data['weights'])
+    scikit_build = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))["tool"]["scikit-build"]
+    assert "weights" in scikit_build["wheel"]["packages"]
+    assert "core" in scikit_build["wheel"]["packages"]
     shipped = {}
     for name in ("stackmff_final.onnx", "stackmff_v2_final.onnx", "stackmff_v3_final.onnx"):
         graph = ROOT / "weights" / name

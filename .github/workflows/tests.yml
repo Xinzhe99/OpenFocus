@@ -81,6 +81,11 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt -r requirements-dev.txt
 
+      - name: Build native C++ extension
+        run: |
+          python -m pip install "cmake>=3.18" ninja "nanobind>=2.0"
+          python tools/build_native.py
+
       - name: Check macOS GUI lifecycle and control sockets
         if: runner.os == 'macOS'
         env:
@@ -201,6 +206,7 @@ jobs:
         run: |
           python -m venv "$RUNNER_TEMP/openfocus-headless"
           "$RUNNER_TEMP/openfocus-headless/bin/python" -m pip install "$RUNNER_TEMP"/openfocus-wheel/*.whl
+          "$RUNNER_TEMP/openfocus-headless/bin/python" -I -c "from core import _native; assert _native.native_available(), _native.native_info()"
           "$RUNNER_TEMP/openfocus-headless/bin/python" -I tools/headless_wheel_smoke.py
 
   release-summary:
@@ -257,6 +263,11 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Build native C++ extension
+        run: |
+          python -m pip install "cmake>=3.18" ninja "nanobind>=2.0"
+          python tools/build_native.py
       - name: Gate production fusion A, B and C on the reported 4000 fixture
         timeout-minutes: 10
         shell: bash
@@ -431,6 +442,11 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Build native C++ extension
+        run: |
+          python -m pip install "cmake>=3.18" ninja "nanobind>=2.0"
+          python tools/build_native.py
       - name: Gate real large-source composition and streamed readback
         shell: bash
         run: |
