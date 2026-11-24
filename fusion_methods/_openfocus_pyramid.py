@@ -602,6 +602,10 @@ def _output_rows_flat(source, output, is_u8, row_size, start, stop):
             output[i] = np.float32(np.rint(code)) * _INV257
 
 
+def _as_ndarray(arr):
+    return None if arr is None else (arr if type(arr) is np.ndarray else arr.view(np.ndarray))
+
+
 def _rows(length, function, cancel):
     def run(start, stop):
         cancel()
@@ -623,10 +627,27 @@ def _normalize(source, output, factor, cancel):
 
 
 def _down(source, output, cancel):
+    from core._native import load_native
+
     height, _, channels = source.shape
     out_height, out_width, _ = output.shape
     rows = min(height, 2 * min(out_height, _PYRAMID_BAND) + 2)
     scratch_shape = rows, out_width, channels
+    native = load_native() if (_down_horizontal is _DEFAULT_DOWN_HORIZONTAL
+                               and _down_vertical is _DEFAULT_DOWN_VERTICAL) else None
+    if native is not None and hasattr(native, 'of_pyr_down_f32'):
+        src_nd = _as_ndarray(source)
+        out_nd = _as_ndarray(output)
+
+        def down_native(start, stop, scratch):
+            cancel()
+            native.of_pyr_down_f32(src_nd, out_nd, _as_ndarray(scratch), int(start), int(stop))
+
+        run_bands(out_height, _PYRAMID_BAND, down_native,
+                  scratch_bytes=int(np.prod(scratch_shape)) * 4,
+                  workspace=lambda: np.empty(scratch_shape, np.float32))
+        return
+
     out_flat = output.reshape(out_height, out_width * channels) if output.flags.c_contiguous else None
 
     def down(start, stop, scratch):
@@ -647,10 +668,36 @@ def _down(source, output, cancel):
 
 
 def _synthesize(coarse, target, weight, cancel):
+    from core._native import load_native
+
     coarse_height = coarse.shape[0]
     height, width, channels = target.shape
     rows = min(coarse_height, (_PYRAMID_BAND + 1) // 2 + 4)
     scratch_shape = rows, width, channels
+    native = load_native() if (_up_horizontal is _DEFAULT_UP_HORIZONTAL
+                               and _reconstruct_rows_flat is _DEFAULT_RECONSTRUCT_ROWS_FLAT
+                               and _detail_weight_rows is _DEFAULT_DETAIL_WEIGHT_ROWS
+                               and _synthesis_rows is _DEFAULT_SYNTHESIS_ROWS) else None
+    if (native is not None and hasattr(native, 'of_pyr_detail_weight_f32')
+            and (weight is None or (weight.dtype == np.uint16 and weight.strides[1] == 2))):
+        coarse_nd = _as_ndarray(coarse)
+        target_nd = _as_ndarray(target)
+        weight_nd = _as_ndarray(weight)
+
+        def synth_native(start, stop, scratch):
+            cancel()
+            if weight_nd is not None:
+                native.of_pyr_detail_weight_f32(coarse_nd, target_nd, weight_nd,
+                                                _as_ndarray(scratch), int(start), int(stop))
+            else:
+                native.of_pyr_reconstruct_f32(coarse_nd, target_nd,
+                                              _as_ndarray(scratch), int(start), int(stop))
+
+        run_bands(height, _PYRAMID_BAND, synth_native,
+                  scratch_bytes=int(np.prod(scratch_shape)) * 4,
+                  workspace=lambda: np.empty(scratch_shape, np.float32))
+        return
+
     target_flat = (target.reshape(height, width * channels)
                    if weight is None and target.flags.c_contiguous else None)
 
@@ -673,9 +720,108 @@ def _synthesize(coarse, target, weight, cancel):
               workspace=lambda: np.empty(scratch_shape, np.float32))
 
 
+_DEFAULT_NORMALIZE = _normalize
+_DEFAULT_DOWN = _down
+_DEFAULT_DOWN_HORIZONTAL = _down_horizontal
+_DEFAULT_DOWN_VERTICAL = _down_vertical
+_DEFAULT_SYNTHESIZE = _synthesize
+_DEFAULT_UP_HORIZONTAL = _up_horizontal
+_DEFAULT_RECONSTRUCT_ROWS_FLAT = _reconstruct_rows_flat
+_DEFAULT_DETAIL_WEIGHT_ROWS = _detail_weight_rows
+_DEFAULT_SYNTHESIS_ROWS = _synthesis_rows
+_DEFAULT_MERGE_ROWS = _merge_rows
+_DEFAULT_OUTPUT_ROWS = _output_rows
+_DEFAULT_OUTPUT_ROWS_FLAT = _output_rows_flat
+
+
+def _down_from_raw(native, source, output, factor, cancel):
+    height, _, channels = source.shape
+    out_height, out_width, _ = output.shape
+    rows = min(height, 2 * min(out_height, _PYRAMID_BAND) + 2)
+    scratch_shape = rows, out_width, channels
+    src_nd = _as_ndarray(source)
+    out_nd = _as_ndarray(output)
+    factor_f = float(factor)
+
+    def band(start, stop, scratch):
+        cancel()
+        native.of_pyr_down_from_raw(src_nd, out_nd, _as_ndarray(scratch),
+                                    factor_f, int(start), int(stop))
+
+    run_bands(out_height, _PYRAMID_BAND, band,
+              scratch_bytes=int(np.prod(scratch_shape)) * 4,
+              workspace=lambda: np.empty(scratch_shape, np.float32))
+
+
+def _level0_weights_from_raw(native, coarse, source, weight, factor, cancel):
+    coarse_height = coarse.shape[0]
+    height, width, channels = source.shape
+    rows = min(coarse_height, (_PYRAMID_BAND + 1) // 2 + 4)
+    scratch_shape = rows, width, channels
+    coarse_nd = _as_ndarray(coarse)
+    src_nd = _as_ndarray(source)
+    weight_nd = _as_ndarray(weight)
+    factor_f = float(factor)
+
+    def band(start, stop, scratch):
+        cancel()
+        native.of_pyr_level0_weights_from_raw(coarse_nd, src_nd, weight_nd,
+                                              _as_ndarray(scratch), factor_f,
+                                              int(start), int(stop))
+
+    run_bands(height, _PYRAMID_BAND, band,
+              scratch_bytes=int(np.prod(scratch_shape)) * 4,
+              workspace=lambda: np.empty(scratch_shape, np.float32))
+
+
+def _level0_merge_from_raw(native, coarse, source, weight, accumulator, best,
+                           winner, factor, first, index, cancel):
+    coarse_height = coarse.shape[0]
+    height, width, channels = source.shape
+    rows = min(coarse_height, (_PYRAMID_BAND + 1) // 2 + 4)
+    scratch_shape = rows, width, channels
+    coarse_nd = _as_ndarray(coarse)
+    src_nd = _as_ndarray(source)
+    weight_nd = _as_ndarray(weight)
+    acc_nd = _as_ndarray(accumulator)
+    best_nd = _as_ndarray(best)
+    win_nd = _as_ndarray(winner)
+    factor_f = float(factor)
+    first_b = bool(first)
+    idx_u = int(index)
+
+    def band(start, stop, scratch):
+        cancel()
+        native.of_pyr_level0_merge_from_raw(
+            coarse_nd, src_nd, weight_nd, acc_nd, best_nd, win_nd,
+            _as_ndarray(scratch), factor_f, first_b, idx_u, int(start), int(stop))
+
+    run_bands(height, _PYRAMID_BAND, band,
+              scratch_bytes=int(np.prod(scratch_shape)) * 4,
+              workspace=lambda: np.empty(scratch_shape, np.float32))
+
+
+def _merge_level(native, detail, weights, accumulator, best, winner, first, index, cancel):
+    height = weights.shape[0]
+    if native is not None and weights.strides[1] == 2 and best.strides[1] == 2:
+        d_nd = _as_ndarray(detail)
+        w_nd = _as_ndarray(weights)
+        a_nd = _as_ndarray(accumulator)
+        b_nd = _as_ndarray(best)
+        win_nd = _as_ndarray(winner)
+        first_b = bool(first)
+        idx_u = int(index)
+        _rows(height, lambda a, b: native.of_pyr_merge_f32(
+            d_nd, w_nd, a_nd, b_nd, win_nd, first_b, idx_u, int(a), int(b)), cancel)
+    else:
+        _rows(height, lambda a, b: _merge_rows(
+            detail, weights, accumulator, best, first, a, b, winner, index), cancel)
+
+
 def fuse_pyramid(frames, shape, img_resize, smoothing, should_cancel, progress_callback=None,
                  focus_callback=None, *, live_preview=None):
     """Fuse ordered sources in mapped, cancellable pyramid passes."""
+    from core._native import load_native
     from core.source_frames import without_source_cache_growth
     from fusion_methods.openfocus_ab import _check_cancel
     from fusion_methods.openfocus_bc import _pyramid_levels, _source_codes
@@ -693,11 +839,29 @@ def fuse_pyramid(frames, shape, img_resize, smoothing, should_cancel, progress_c
     maxima = [create_frame((h, w), np.uint16) for h, w in levels[:-1]]
     coarsest = create_frame((*levels[-1], channels), np.float32)
     winner = create_frame(shape[:2], np.uint16) if focus_callback is not None else None
+
+    native = load_native()
+    use_native_pyr = (
+        native is not None
+        and hasattr(native, 'of_pyr_down_from_raw')
+        and _normalize is _DEFAULT_NORMALIZE
+        and _down is _DEFAULT_DOWN
+        and _synthesize is _DEFAULT_SYNTHESIZE
+        and _merge_rows is _DEFAULT_MERGE_ROWS
+    )
     if detail_levels:
-        rolling = [create_frame((h * w * channels,), np.float32) for h, w in levels[:2]]
+        if use_native_pyr:
+            rolling_even = (create_frame((levels[2][0] * levels[2][1] * channels,), np.float32)
+                            if len(levels) >= 3 else None)
+            rolling_odd = create_frame((levels[1][0] * levels[1][1] * channels,), np.float32)
+            rolling = [rolling_even, rolling_odd]
+            full = None
+        else:
+            rolling = [create_frame((h * w * channels,), np.float32) for h, w in levels[:2]]
+            full = rolling[0].reshape((*shape[:2], channels))
         weight_plane = create_frame((shape[0] * shape[1],), np.uint16)
-        full = rolling[0].reshape((*shape[:2], channels))
     else:
+        rolling = None
         full = coarsest
     total = len(frames) + 1
     if progress_callback is not None:
@@ -713,11 +877,38 @@ def fuse_pyramid(frames, shape, img_resize, smoothing, should_cancel, progress_c
         if detail_levels or index == 0:
             source = pixels[:, :, None] if is_gray else pixels
             factor = np.float32(scale / (65280.0 if is_u8 else 65535.0))
-            _normalize(source, full, factor, cancel)
-            del source
-        del pixels
-        fine = full
-        for level, ((height, width), (ch, cw)) in enumerate(detail_levels):
+            if (use_native_pyr and detail_levels
+                    and source.dtype in (np.uint8, np.uint16)):
+                (height0, width0), (ch0, cw0) = detail_levels[0]
+                coarse0 = (coarsest if (index == 0 and len(detail_levels) == 1)
+                           else rolling[1][:ch0 * cw0 * channels].reshape(ch0, cw0, channels))
+                _down_from_raw(native, source, coarse0, factor, cancel)
+                weights0 = weight_plane[:height0 * width0].reshape(height0, width0)
+                _level0_weights_from_raw(native, coarse0, source, weights0, factor, cancel)
+                if parameter > 0:
+                    radius = np.float32(np.float32(max(height0, width0)) * parameter / np.float32(100))
+                    _filter(weights0, radius, cancel, overwrite=True)
+                level_winner = winner
+                _level0_merge_from_raw(
+                    native, coarse0, source, weights0, accumulators[0],
+                    maxima[0], level_winner, factor, index == 0, index, cancel)
+                del source, pixels
+                fine = coarse0
+                start_level = 1
+            else:
+                if full is None:
+                    full = create_frame((*shape[:2], channels), np.float32)
+                _normalize(source, full, factor, cancel)
+                del source, pixels
+                fine = full
+                start_level = 0
+        else:
+            del pixels
+            fine = full
+            start_level = 0
+
+        for level in range(start_level, len(detail_levels)):
+            (height, width), (ch, cw) = detail_levels[level]
             cancel()
             # Coarsest weights depend only on geometry. Keep the first plane.
             coarse = (coarsest if index == 0 and level == len(detail_levels) - 1
@@ -729,8 +920,9 @@ def fuse_pyramid(frames, shape, img_resize, smoothing, should_cancel, progress_c
                 radius = np.float32(np.float32(max(height, width)) * parameter / np.float32(100))
                 _filter(weights, radius, cancel, overwrite=True)
             level_winner = winner if level == 0 else None
-            _rows(height, lambda a, b: _merge_rows(fine, weights, accumulators[level],
-                  maxima[level], index == 0, a, b, level_winner, index), cancel)
+            _merge_level(native if use_native_pyr else None, fine, weights,
+                         accumulators[level], maxima[level], level_winner,
+                         index == 0, index, cancel)
             fine = coarse
         if live_preview is not None:
             if detail_levels:
@@ -741,7 +933,7 @@ def fuse_pyramid(frames, shape, img_resize, smoothing, should_cancel, progress_c
             progress_callback(index + 1, total)
     del maxima, full, fine
     if detail_levels:
-        del rolling, coarse, weights, weight_plane
+        del rolling, weight_plane
     elif winner is not None:
         winner.fill(0)
     result = coarsest
@@ -753,7 +945,14 @@ def fuse_pyramid(frames, shape, img_resize, smoothing, should_cancel, progress_c
         result = detail
     output_shape = (shape[0], shape[1], channels)
     output = create_frame(output_shape, np.uint8 if is_u8 else np.float32)
-    if result.flags.c_contiguous and output.flags.c_contiguous:
+    if (native is not None and hasattr(native, 'of_pyr_output_f32')
+            and _output_rows is _DEFAULT_OUTPUT_ROWS
+            and _output_rows_flat is _DEFAULT_OUTPUT_ROWS_FLAT):
+        res_nd = _as_ndarray(result)
+        out_nd = _as_ndarray(output)
+        _rows(shape[0], lambda a, b: native.of_pyr_output_f32(
+            res_nd, out_nd, bool(is_u8), int(a), int(b)), cancel)
+    elif result.flags.c_contiguous and output.flags.c_contiguous:
         res_flat = result.reshape(-1)
         out_flat = output.reshape(-1)
         _rows(shape[0], lambda a, b: _output_rows_flat(

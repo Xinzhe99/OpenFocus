@@ -14,6 +14,7 @@
 
 #include "ecc_solver.hpp"
 #include "openfocus_ab.hpp"
+#include "openfocus_c.hpp"
 #include "thread_pool.hpp"
 
 namespace nb = nanobind;
@@ -175,7 +176,7 @@ std::tuple<bool, double, nb::ndarray<nb::numpy, float, nb::shape<3, 3>>> ecc_ref
 template <typename NDArray>
 openfocus::ArrayView make_array_view(const NDArray& arr) {
     openfocus::ArrayView view{};
-    view.data = const_cast<void*>(arr.data());
+    view.data = const_cast<void*>(static_cast<const void*>(arr.data()));
     view.ndim = static_cast<int>(arr.ndim());
     if (view.ndim < 1 || view.ndim > 3) {
         throw std::invalid_argument("Unsupported array ndim");
@@ -479,6 +480,122 @@ void of_output_u16_to_f32_rows_py(ConstAnyCpuArray code, AnyCpuArray output,
     openfocus::of_output_u16_to_f32_rows_cpp(cv, ov, start, stop, factor);
 }
 
+void of_pyr_down_from_raw_py(ConstAnyCpuArray source, AnyCpuArray output, AnyCpuArray scratch,
+                             float factor, int64_t start, int64_t stop) {
+    const auto sv = make_array_view(source);
+    const auto ov = make_array_view(output);
+    const auto scv = make_array_view(scratch);
+    nb::gil_scoped_release release;
+    openfocus::of_pyr_down_from_raw_cpp(sv, ov, scv, factor, start, stop);
+}
+
+void of_pyr_down_f32_py(ConstAnyCpuArray source, AnyCpuArray output, AnyCpuArray scratch,
+                        int64_t start, int64_t stop) {
+    const auto sv = make_array_view(source);
+    const auto ov = make_array_view(output);
+    const auto scv = make_array_view(scratch);
+    nb::gil_scoped_release release;
+    openfocus::of_pyr_down_f32_cpp(sv, ov, scv, start, stop);
+}
+
+void of_pyr_level0_weights_from_raw_py(ConstAnyCpuArray coarse, ConstAnyCpuArray source,
+                                       U16_2D weight, AnyCpuArray scratch,
+                                       float factor, int64_t start, int64_t stop) {
+    if (weight.stride(1) != 1) {
+        throw std::invalid_argument("weight must have unit x-stride");
+    }
+    const auto cv = make_array_view(coarse);
+    const auto sv = make_array_view(source);
+    const auto wv = make_array_view(weight);
+    const auto scv = make_array_view(scratch);
+    nb::gil_scoped_release release;
+    openfocus::of_pyr_level0_weights_from_raw_cpp(cv, sv, wv, scv, factor, start, stop);
+}
+
+void of_pyr_level0_merge_from_raw_py(ConstAnyCpuArray coarse, ConstAnyCpuArray source,
+                                     ConstU16_2D weight, AnyCpuArray accumulator, U16_2D best,
+                                     nb::object winner_obj, AnyCpuArray scratch,
+                                     float factor, bool first, uint16_t index,
+                                     int64_t start, int64_t stop) {
+    if (weight.stride(1) != 1 || best.stride(1) != 1) {
+        throw std::invalid_argument("weight and best must have unit x-stride");
+    }
+    uint16_t* win_ptr = nullptr;
+    int64_t win_sy = 0;
+    if (!winner_obj.is_none()) {
+        auto win_arr = nb::cast<U16_2D>(winner_obj);
+        if (win_arr.stride(1) != 1) {
+            throw std::invalid_argument("winner must have unit x-stride");
+        }
+        win_ptr = win_arr.data();
+        win_sy = win_arr.stride(0);
+    }
+    const auto cv = make_array_view(coarse);
+    const auto sv = make_array_view(source);
+    const auto wv = make_array_view(weight);
+    const auto av = make_array_view(accumulator);
+    const auto bv = make_array_view(best);
+    const auto scv = make_array_view(scratch);
+    nb::gil_scoped_release release;
+    openfocus::of_pyr_level0_merge_from_raw_cpp(
+        cv, sv, wv, av, bv, win_ptr, win_sy, scv, factor, first, index, start, stop);
+}
+
+void of_pyr_detail_weight_f32_py(ConstAnyCpuArray coarse, AnyCpuArray target,
+                                 U16_2D weight, AnyCpuArray scratch,
+                                 int64_t start, int64_t stop) {
+    if (weight.stride(1) != 1) {
+        throw std::invalid_argument("weight must have unit x-stride");
+    }
+    const auto cv = make_array_view(coarse);
+    const auto tv = make_array_view(target);
+    const auto wv = make_array_view(weight);
+    const auto scv = make_array_view(scratch);
+    nb::gil_scoped_release release;
+    openfocus::of_pyr_detail_weight_f32_cpp(cv, tv, wv, scv, start, stop);
+}
+
+void of_pyr_merge_f32_py(ConstAnyCpuArray detail, ConstU16_2D weight, AnyCpuArray accumulator,
+                         U16_2D best, nb::object winner_obj, bool first, uint16_t index,
+                         int64_t start, int64_t stop) {
+    if (weight.stride(1) != 1 || best.stride(1) != 1) {
+        throw std::invalid_argument("weight and best must have unit x-stride");
+    }
+    uint16_t* win_ptr = nullptr;
+    int64_t win_sy = 0;
+    if (!winner_obj.is_none()) {
+        auto win_arr = nb::cast<U16_2D>(winner_obj);
+        if (win_arr.stride(1) != 1) {
+            throw std::invalid_argument("winner must have unit x-stride");
+        }
+        win_ptr = win_arr.data();
+        win_sy = win_arr.stride(0);
+    }
+    const auto dv = make_array_view(detail);
+    const auto wv = make_array_view(weight);
+    const auto av = make_array_view(accumulator);
+    const auto bv = make_array_view(best);
+    nb::gil_scoped_release release;
+    openfocus::of_pyr_merge_f32_cpp(dv, wv, av, bv, win_ptr, win_sy, first, index, start, stop);
+}
+
+void of_pyr_reconstruct_f32_py(ConstAnyCpuArray coarse, AnyCpuArray target, AnyCpuArray scratch,
+                               int64_t start, int64_t stop) {
+    const auto cv = make_array_view(coarse);
+    const auto tv = make_array_view(target);
+    const auto scv = make_array_view(scratch);
+    nb::gil_scoped_release release;
+    openfocus::of_pyr_reconstruct_f32_cpp(cv, tv, scv, start, stop);
+}
+
+void of_pyr_output_f32_py(ConstAnyCpuArray source, AnyCpuArray output, bool is_u8,
+                          int64_t start, int64_t stop) {
+    const auto sv = make_array_view(source);
+    const auto ov = make_array_view(output);
+    nb::gil_scoped_release release;
+    openfocus::of_pyr_output_f32_cpp(sv, ov, is_u8, start, stop);
+}
+
 }  // namespace
 
 NB_MODULE(_openfocus_native, m) {
@@ -577,4 +694,39 @@ NB_MODULE(_openfocus_native, m) {
     m.def("of_active_source_rows", &of_active_source_rows_py);
     m.def("of_output_u16_to_u8_rows", &of_output_u16_to_u8_rows_py);
     m.def("of_output_u16_to_f32_rows", &of_output_u16_to_f32_rows_py);
+    m.def("of_pyr_down_from_raw", &of_pyr_down_from_raw_py);
+    m.def("of_pyr_down_f32", &of_pyr_down_f32_py);
+    m.def("of_pyr_level0_weights_from_raw", &of_pyr_level0_weights_from_raw_py);
+    m.def(
+        "of_pyr_level0_merge_from_raw",
+        &of_pyr_level0_merge_from_raw_py,
+        nb::arg("coarse"),
+        nb::arg("source"),
+        nb::arg("weight"),
+        nb::arg("accumulator"),
+        nb::arg("best"),
+        nb::arg("winner").none(),
+        nb::arg("scratch"),
+        nb::arg("factor"),
+        nb::arg("first"),
+        nb::arg("index"),
+        nb::arg("start"),
+        nb::arg("stop")
+    );
+    m.def("of_pyr_detail_weight_f32", &of_pyr_detail_weight_f32_py);
+    m.def(
+        "of_pyr_merge_f32",
+        &of_pyr_merge_f32_py,
+        nb::arg("detail"),
+        nb::arg("weight"),
+        nb::arg("accumulator"),
+        nb::arg("best"),
+        nb::arg("winner").none(),
+        nb::arg("first"),
+        nb::arg("index"),
+        nb::arg("start"),
+        nb::arg("stop")
+    );
+    m.def("of_pyr_reconstruct_f32", &of_pyr_reconstruct_f32_py);
+    m.def("of_pyr_output_f32", &of_pyr_output_f32_py);
 }
