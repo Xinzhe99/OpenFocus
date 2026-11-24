@@ -99,7 +99,7 @@ def _nb_gray_rows(image, output, start, stop, scale, depth_color=False):
 
 
 @njit(nogil=True)
-def table_rows(image, table, output, start, stop):
+def _nb_table_rows(image, table, output, start, stop):
     """Map every sample through its channel's column of an integer table.
 
     A two-dimensional image is one plane of samples that all use column 0.
@@ -130,6 +130,21 @@ def table_rows(image, table, output, start, stop):
             for x in range(width):
                 for channel in range(channels):
                     out[x, channel] = table[row[x, channel], channel]
+
+
+def table_rows(image, table, output, start, stop):
+    """Map every sample through its channel's column of an integer table."""
+    from core._native import load_native
+    native = load_native()
+    if (native is not None and hasattr(native, 'of_table_rows')
+            and image.dtype in (np.uint8, np.uint16)
+            and table.dtype in (np.uint8, np.uint16, np.int32)
+            and output.dtype == table.dtype
+            and image.ndim in (2, 3)):
+        native.of_table_rows(_as_ndarray(image), _as_ndarray(table),
+                             _as_ndarray(output), int(start), int(stop))
+        return
+    _nb_table_rows(image, table, output, start, stop)
 
 
 @njit(nogil=True)

@@ -15,6 +15,7 @@
 #include "ecc_solver.hpp"
 #include "openfocus_ab.hpp"
 #include "openfocus_c.hpp"
+#include "openfocus_pipeline.hpp"
 #include "thread_pool.hpp"
 
 namespace nb = nanobind;
@@ -204,6 +205,10 @@ openfocus::ArrayView make_array_view(const NDArray& arr) {
         view.is_float = false;
     } else if (dt == nb::dtype<float>()) {
         view.itemsize = 4;
+        view.is_signed = true;
+        view.is_float = true;
+    } else if (dt == nb::dtype<double>()) {
+        view.itemsize = 8;
         view.is_signed = true;
         view.is_float = true;
     } else {
@@ -596,6 +601,90 @@ void of_pyr_output_f32_py(ConstAnyCpuArray source, AnyCpuArray output, bool is_u
     openfocus::of_pyr_output_f32_cpp(sv, ov, is_u8, start, stop);
 }
 
+void of_table_rows_py(ConstAnyCpuArray image, ConstAnyCpuArray table, AnyCpuArray output,
+                      int64_t start, int64_t stop) {
+    const auto iv = make_array_view(image);
+    const auto tv = make_array_view(table);
+    const auto ov = make_array_view(output);
+    nb::gil_scoped_release release;
+    openfocus::of_table_rows_cpp(iv, tv, ov, start, stop);
+}
+
+void of_fill_half_axis_py(
+    int64_t source_length,
+    nb::ndarray<int64_t, nb::ndim<2>, nb::c_contig, nb::device::cpu> indices,
+    nb::ndarray<float, nb::ndim<2>, nb::c_contig, nb::device::cpu> weights,
+    nb::ndarray<int64_t, nb::ndim<1>, nb::c_contig, nb::device::cpu> counts
+) {
+    if (indices.shape(1) != 8 || weights.shape(1) != 8
+            || indices.shape(0) != weights.shape(0)
+            || indices.shape(0) != counts.shape(0)) {
+        throw std::invalid_argument("Invalid half axis plan buffers");
+    }
+    const int64_t target_length = static_cast<int64_t>(indices.shape(0));
+    nb::gil_scoped_release release;
+    openfocus::of_fill_half_axis_cpp(
+        source_length, target_length, indices.data(), weights.data(), counts.data());
+}
+
+void of_fill_linear_axis_py(
+    int64_t source_length,
+    nb::ndarray<int64_t, nb::ndim<2>, nb::c_contig, nb::device::cpu> indices,
+    nb::ndarray<float, nb::ndim<2>, nb::c_contig, nb::device::cpu> weights,
+    nb::ndarray<int64_t, nb::ndim<1>, nb::c_contig, nb::device::cpu> counts
+) {
+    if (indices.shape(1) != 2 || weights.shape(1) != 2
+            || indices.shape(0) != weights.shape(0)
+            || indices.shape(0) != counts.shape(0)) {
+        throw std::invalid_argument("Invalid linear axis plan buffers");
+    }
+    const int64_t target_length = static_cast<int64_t>(indices.shape(0));
+    nb::gil_scoped_release release;
+    openfocus::of_fill_linear_axis_cpp(
+        source_length, target_length, indices.data(), weights.data(), counts.data());
+}
+
+double of_exposure_mean_py(ConstAnyCpuArray image, bool normalize_uint16, int num_threads) {
+    const auto iv = make_array_view(image);
+    nb::gil_scoped_release release;
+    return openfocus::of_exposure_mean_cpp(iv, normalize_uint16, num_threads);
+}
+
+void of_apply_exposure_gain_py(ConstAnyCpuArray image, AnyCpuArray output, float gain,
+                               int64_t start, int64_t stop) {
+    const auto iv = make_array_view(image);
+    const auto ov = make_array_view(output);
+    nb::gil_scoped_release release;
+    openfocus::of_apply_exposure_gain_cpp(iv, ov, gain, start, stop);
+}
+
+void of_quantize_output_py(ConstAnyCpuArray src, AnyCpuArray dst, bool is_16bit, int num_threads) {
+    const auto sv = make_array_view(src);
+    const auto dv = make_array_view(dst);
+    nb::gil_scoped_release release;
+    openfocus::of_quantize_output_cpp(sv, dv, is_16bit, num_threads);
+}
+
+void of_tile_accumulate_py(AnyCpuArray acc, AnyCpuArray weight_acc,
+                           ConstAnyCpuArray tile, ConstAnyCpuArray weight2d,
+                           int64_t x0, int64_t y0, int num_threads) {
+    const auto av = make_array_view(acc);
+    const auto wav = make_array_view(weight_acc);
+    const auto tv = make_array_view(tile);
+    const auto w2v = make_array_view(weight2d);
+    nb::gil_scoped_release release;
+    openfocus::of_tile_accumulate_cpp(av, wav, tv, w2v, x0, y0, num_threads);
+}
+
+void of_tile_finalize_py(ConstAnyCpuArray acc, ConstAnyCpuArray weight_acc,
+                         AnyCpuArray out, int64_t start, int64_t stop) {
+    const auto av = make_array_view(acc);
+    const auto wav = make_array_view(weight_acc);
+    const auto ov = make_array_view(out);
+    nb::gil_scoped_release release;
+    openfocus::of_tile_finalize_cpp(av, wav, ov, start, stop);
+}
+
 }  // namespace
 
 NB_MODULE(_openfocus_native, m) {
@@ -729,4 +818,16 @@ NB_MODULE(_openfocus_native, m) {
     );
     m.def("of_pyr_reconstruct_f32", &of_pyr_reconstruct_f32_py);
     m.def("of_pyr_output_f32", &of_pyr_output_f32_py);
+    m.def("of_table_rows", &of_table_rows_py);
+    m.def("of_fill_half_axis", &of_fill_half_axis_py);
+    m.def("of_fill_linear_axis", &of_fill_linear_axis_py);
+    m.def("of_exposure_mean", &of_exposure_mean_py,
+          nb::arg("image"), nb::arg("normalize_uint16"), nb::arg("num_threads") = 4);
+    m.def("of_apply_exposure_gain", &of_apply_exposure_gain_py);
+    m.def("of_quantize_output", &of_quantize_output_py,
+          nb::arg("src"), nb::arg("dst"), nb::arg("is_16bit"), nb::arg("num_threads") = 4);
+    m.def("of_tile_accumulate", &of_tile_accumulate_py,
+          nb::arg("acc"), nb::arg("weight_acc"), nb::arg("tile"), nb::arg("weight2d"),
+          nb::arg("x0"), nb::arg("y0"), nb::arg("num_threads") = 4);
+    m.def("of_tile_finalize", &of_tile_finalize_py);
 }

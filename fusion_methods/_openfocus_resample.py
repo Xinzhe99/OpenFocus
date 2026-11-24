@@ -124,16 +124,33 @@ def _fill_linear_axis(source_length, indices, weights, counts):
         counts[position] = 2
 
 
+_DEFAULT_FILL_HALF_AXIS = _fill_half_axis
+_DEFAULT_FILL_LINEAR_AXIS = _fill_linear_axis
+
+
 def _axis_plan(source_length, target_length, linear=False):
+    from core._native import load_native
+
     taps = 2 if linear else 8
     fill = _fill_linear_axis if linear else _fill_half_axis
+    native = load_native() if (_fill_half_axis is _DEFAULT_FILL_HALF_AXIS
+                               and _fill_linear_axis is _DEFAULT_FILL_LINEAR_AXIS) else None
+    use_native = (native is not None
+                  and hasattr(native, 'of_fill_half_axis')
+                  and hasattr(native, 'of_fill_linear_axis'))
     # Construction arrays and immutable byte-backed copies coexist briefly.
     size = target_length * (taps * (8 + 4) + 8)
-    require_memory(2 * size + (0 if fill.signatures else DEPTH_KERNEL_STARTUP_BYTES))
+    require_memory(2 * size + (0 if (use_native or fill.signatures) else DEPTH_KERNEL_STARTUP_BYTES))
     indices = np.zeros((target_length, taps), dtype=np.int64)
     weights = np.zeros((target_length, taps), dtype=np.float32)
     counts = np.empty(target_length, dtype=np.int64)
-    fill(source_length, indices, weights, counts)
+    if use_native:
+        if linear:
+            native.of_fill_linear_axis(int(source_length), indices, weights, counts)
+        else:
+            native.of_fill_half_axis(int(source_length), indices, weights, counts)
+    else:
+        fill(source_length, indices, weights, counts)
     # Byte owners make immutability permanent, including setflags(write=True).
     return _AxisPlan(
         source_length,
