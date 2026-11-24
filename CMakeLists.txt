@@ -49,7 +49,7 @@ else()
   # The pyramid and axis resampling kernels round each multiplication and addition separately.
   set_property(SOURCE cpp/openfocus_c.cpp cpp/openfocus_pipeline.cpp cpp/alignment_kernels.cpp APPEND PROPERTY COMPILE_OPTIONS -ffp-contract=off)
   if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
-    set_property(SOURCE cpp/simd_avx2.cpp APPEND PROPERTY COMPILE_OPTIONS -mavx2 -ffp-contract=off)
+    set_property(SOURCE cpp/simd_avx2.cpp APPEND PROPERTY COMPILE_OPTIONS -mavx2 -mfma -ffp-contract=off)
   endif()
 endif()
 

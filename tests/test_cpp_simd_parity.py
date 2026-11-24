@@ -27,7 +27,7 @@ def _require_avx2():
     mod = _native.load_native()
     assert mod is not None
     mod.set_force_scalar(False)
-    if mod.simd_info() != "AVX2":
+    if mod.simd_info() not in ("AVX2", "AVX2+FMA"):
         pytest.skip(f"Host CPU/OS reports {mod.simd_info()}, not AVX2")
     return mod
 
@@ -35,11 +35,11 @@ def _require_avx2():
 def test_simd_info_and_force_scalar_toggle():
     mod = _require_avx2()
     try:
-        assert mod.simd_info() == "AVX2"
+        assert mod.simd_info() in ("AVX2", "AVX2+FMA")
         mod.set_force_scalar(True)
         assert mod.simd_info() == "Scalar"
         mod.set_force_scalar(False)
-        assert mod.simd_info() == "AVX2"
+        assert mod.simd_info() in ("AVX2", "AVX2+FMA")
     finally:
         mod.set_force_scalar(False)
 

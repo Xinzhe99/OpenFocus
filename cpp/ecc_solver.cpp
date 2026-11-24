@@ -1,4 +1,5 @@
 #include "ecc_solver.hpp"
+#include "simd_dispatch.hpp"
 #include "thread_pool.hpp"
 
 #include <algorithm>
@@ -357,6 +358,14 @@ void prepare_level_impl(
             float* dst_gx = out.gx.data() + ry * rw;
             float* dst_gy = out.gy.data() + ry * rw;
 
+            if (simd::use_avx2() && rw >= 8) {
+                simd::ecc_prepare_level_row_avx2(
+                    rm1, r0, rp1, x0, rw, cx, inv_s, mean_t, g_scale, v,
+                    P, sample_h_row, stride2, dst_t0, dst_gx, dst_gy,
+                    local.norm_T2, local.js, local.tv, local.H);
+                continue;
+            }
+
             for (int rx = 0; rx < rw; ++rx) {
                 const int x = x0 + rx;
                 const double u = (static_cast<double>(x) - cx) * inv_s;
@@ -505,7 +514,13 @@ IcPassAccum<P> ic_pass_impl(
                 const double dsx = m00;
                 const double dsy = m10;
                 if (all_in) {
-                    for (int rx = 0; rx < rw; ++rx) {
+                    if (simd::use_avx2() && rw >= 8) {
+                        simd::ecc_ic_pass_all_in_row_p6_avx2(
+                            src.data, w, h, t0_row, gx_row, gy_row, rw,
+                            sx, sy, dsx, dsy, u0, inv_s, v,
+                            rs_iw, rs_iw2, rs_tiw, local.raw_g);
+                    } else {
+                        for (int rx = 0; rx < rw; ++rx) {
                         int ix = static_cast<int>(sx);
                         int iy = static_cast<int>(sy);
                         if (ix >= w - 1) ix = w - 2; else if (ix < 0) ix = 0;
@@ -533,6 +548,7 @@ IcPassAccum<P> ic_pass_impl(
                         sx += dsx;
                         sy += dsy;
                         u += inv_s;
+                        }
                     }
                     local.cnt += rw;
                 } else {
@@ -587,7 +603,13 @@ IcPassAccum<P> ic_pass_impl(
                 double nsx = (m00 * u0 + m01 * v + m02) * s + cx * den;
                 double nsy = (m10 * u0 + m11 * v + m12) * s + cy * den;
                 if (all_in) {
-                    for (int rx = 0; rx < rw; ++rx) {
+                    if (simd::use_avx2() && rw >= 8) {
+                        simd::ecc_ic_pass_all_in_row_p8_avx2(
+                            src.data, w, h, t0_row, gx_row, gy_row, rw,
+                            nsx, nsy, den, d_nsx, d_nsy, d_den, u0, inv_s, v,
+                            rs_iw, rs_iw2, rs_tiw, local.raw_g);
+                    } else {
+                        for (int rx = 0; rx < rw; ++rx) {
                         const double inv_d = 1.0 / den;
                         const double sx = nsx * inv_d;
                         const double sy = nsy * inv_d;
@@ -622,6 +644,7 @@ IcPassAccum<P> ic_pass_impl(
                         nsy += d_nsy;
                         den += d_den;
                         u += inv_s;
+                        }
                     }
                     local.cnt += rw;
                 } else {

@@ -709,13 +709,17 @@ void of_tile_accumulate_cpp(
                 if (use_avx2_1c) {
                     simd::tile_accumulate_f32_1c_row_avx2(tr, wr, ar, war, fw);
                 } else if (channels == 3) {
-                    for (int64_t dx = 0; dx < fw; ++dx) {
-                        const float w = wr[dx];
-                        war[dx] += w;
-                        const int64_t o = dx * 3;
-                        ar[o] += tr[o] * w;
-                        ar[o + 1] += tr[o + 1] * w;
-                        ar[o + 2] += tr[o + 2] * w;
+                    if (simd::use_avx2() && fw >= 8) {
+                        simd::tile_accumulate_3c_row_avx2(tr, 0, wr, ar, war, fw);
+                    } else {
+                        for (int64_t dx = 0; dx < fw; ++dx) {
+                            const float w = wr[dx];
+                            war[dx] += w;
+                            const int64_t o = dx * 3;
+                            ar[o] += tr[o] * w;
+                            ar[o + 1] += tr[o + 1] * w;
+                            ar[o + 2] += tr[o + 2] * w;
+                        }
                     }
                 } else {
                     for (int64_t dx = 0; dx < fw; ++dx) {
@@ -727,18 +731,25 @@ void of_tile_accumulate_cpp(
                     }
                 }
             } else if (packed_all && !tile.is_float && (tile.itemsize == 1 || tile.itemsize == 2)) {
-                for (int64_t dx = 0; dx < fw; ++dx) {
-                    const float w = wr[dx];
-                    war[dx] += w;
-                    if (tile.itemsize == 1) {
-                        const uint8_t* tr = static_cast<const uint8_t*>(tile.data) + dy * tile.stride[0] + dx * channels;
-                        for (int64_t c = 0; c < channels; ++c) {
-                            ar[dx * channels + c] += static_cast<float>(tr[c]) * w;
-                        }
-                    } else {
-                        const uint16_t* tr = static_cast<const uint16_t*>(tile.data) + dy * tile.stride[0] + dx * channels;
-                        for (int64_t c = 0; c < channels; ++c) {
-                            ar[dx * channels + c] += static_cast<float>(tr[c]) * w;
+                if (channels == 3 && simd::use_avx2() && fw >= 8) {
+                    const void* tr = (tile.itemsize == 1)
+                        ? static_cast<const void*>(static_cast<const uint8_t*>(tile.data) + dy * tile.stride[0])
+                        : static_cast<const void*>(static_cast<const uint16_t*>(tile.data) + dy * tile.stride[0]);
+                    simd::tile_accumulate_3c_row_avx2(tr, tile.itemsize == 1 ? 1 : 2, wr, ar, war, fw);
+                } else {
+                    for (int64_t dx = 0; dx < fw; ++dx) {
+                        const float w = wr[dx];
+                        war[dx] += w;
+                        if (tile.itemsize == 1) {
+                            const uint8_t* tr = static_cast<const uint8_t*>(tile.data) + dy * tile.stride[0] + dx * channels;
+                            for (int64_t c = 0; c < channels; ++c) {
+                                ar[dx * channels + c] += static_cast<float>(tr[c]) * w;
+                            }
+                        } else {
+                            const uint16_t* tr = static_cast<const uint16_t*>(tile.data) + dy * tile.stride[0] + dx * channels;
+                            for (int64_t c = 0; c < channels; ++c) {
+                                ar[dx * channels + c] += static_cast<float>(tr[c]) * w;
+                            }
                         }
                     }
                 }
