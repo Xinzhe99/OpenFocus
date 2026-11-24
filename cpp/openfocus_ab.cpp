@@ -1315,12 +1315,17 @@ void of_activity_rows_cpp(const uint16_t* gray, int64_t g_sy,
                           const uint16_t* fine, int64_t f_sy,
                           uint16_t* out, int64_t o_sy,
                           int64_t w, int64_t start, int64_t stop) {
+    const bool use_simd = simd::use_avx2() && w >= 8;
     for (int64_t y = start; y < stop; ++y) {
         const uint16_t* gr = gray + y * g_sy;
         const uint16_t* fr = fine + y * f_sy;
         uint16_t* orow = out + y * o_sy;
-        for (int64_t x = 0; x < w; ++x) {
-            orow[x] = normalized_diff_u16(gr[x], fr[x]);
+        if (use_simd) {
+            simd::activity_row_u16_avx2(gr, fr, orow, w);
+        } else {
+            for (int64_t x = 0; x < w; ++x) {
+                orow[x] = normalized_diff_u16(gr[x], fr[x]);
+            }
         }
     }
 }
@@ -1332,6 +1337,7 @@ void of_detail_rows_cpp(const uint16_t* gray, int64_t g_sy, int64_t gh, int64_t 
         return;
     }
     const int64_t full_w = std::min(gw / 2, ow);
+    const bool use_simd = simd::use_avx2() && full_w >= 8;
     for (int64_t y = 0; y < oh; ++y) {
         int64_t y0 = 2 * (y + row_offset);
         if (y0 >= gh) {
@@ -1341,15 +1347,19 @@ void of_detail_rows_cpp(const uint16_t* gray, int64_t g_sy, int64_t gh, int64_t 
         const uint16_t* r0 = gray + y0 * g_sy;
         const uint16_t* r1 = gray + y1 * g_sy;
         uint16_t* orow = out + y * o_sy;
-        for (int64_t x = 0; x < full_w; ++x) {
-            const int64_t x0 = 2 * x;
-            const int64_t a = r0[x0], b = r0[x0 + 1], c = r1[x0], d = r1[x0 + 1];
-            const int64_t mean = (a + b + c + d) >> 2;
-            const int64_t e = static_cast<int64_t>(normalized_diff_u16(a, mean))
-                            + normalized_diff_u16(b, mean)
-                            + normalized_diff_u16(c, mean)
-                            + normalized_diff_u16(d, mean);
-            orow[x] = static_cast<uint16_t>(e >> 2);
+        if (use_simd) {
+            simd::detail_row_u16_avx2(r0, r1, orow, full_w);
+        } else {
+            for (int64_t x = 0; x < full_w; ++x) {
+                const int64_t x0 = 2 * x;
+                const int64_t a = r0[x0], b = r0[x0 + 1], c = r1[x0], d = r1[x0 + 1];
+                const int64_t mean = (a + b + c + d) >> 2;
+                const int64_t e = static_cast<int64_t>(normalized_diff_u16(a, mean))
+                                + normalized_diff_u16(b, mean)
+                                + normalized_diff_u16(c, mean)
+                                + normalized_diff_u16(d, mean);
+                orow[x] = static_cast<uint16_t>(e >> 2);
+            }
         }
         for (int64_t x = full_w; x < ow; ++x) {
             int64_t x0 = 2 * x;
@@ -1381,15 +1391,49 @@ void of_smooth_detail_rows_cpp(const ArrayView& detail, const ArrayView& output,
     const int64_t y2 = start;
     const int64_t y3 = reflect_idx(start + 1, height);
     const int64_t y4 = reflect_idx(start + 2, height);
-    for (int64_t x = 0; x < width; ++x) {
-        columns[x] = static_cast<int32_t>(
-            read_2d(detail, y0, x) + read_2d(detail, y1, x) + read_2d(detail, y2, x)
-            + read_2d(detail, y3, x) + read_2d(detail, y4, x));
+    const bool packed_u16 = (detail.itemsize == 2 && output.itemsize == 2
+                             && detail.stride[1] == 1 && output.stride[1] == 1);
+    const uint16_t* db = packed_u16 ? static_cast<const uint16_t*>(detail.data) : nullptr;
+    uint16_t* ob = packed_u16 ? static_cast<uint16_t*>(output.data) : nullptr;
+    if (packed_u16) {
+        const uint16_t* r0 = db + y0 * detail.stride[0];
+        const uint16_t* r1 = db + y1 * detail.stride[0];
+        const uint16_t* r2 = db + y2 * detail.stride[0];
+        const uint16_t* r3 = db + y3 * detail.stride[0];
+        const uint16_t* r4 = db + y4 * detail.stride[0];
+        for (int64_t x = 0; x < width; ++x) {
+            columns[x] = static_cast<int32_t>(r0[x] + r1[x] + r2[x] + r3[x] + r4[x]);
+        }
+    } else {
+        for (int64_t x = 0; x < width; ++x) {
+            columns[x] = static_cast<int32_t>(
+                read_2d(detail, y0, x) + read_2d(detail, y1, x) + read_2d(detail, y2, x)
+                + read_2d(detail, y3, x) + read_2d(detail, y4, x));
+        }
     }
     const bool use_u64 = (detail.itemsize == 1 || detail.itemsize == 2);
     constexpr uint64_t recip25 = 0x51EB851FULL;
     for (int64_t y = start; y < stop; ++y) {
-        if (width >= 5 && use_u64) {
+        if (packed_u16 && width >= 5) {
+            uint16_t* orow = ob + y * output.stride[0];
+            int32_t total = columns[2] + columns[1] + columns[0] + columns[1] + columns[2];
+            orow[0] = static_cast<uint16_t>((static_cast<uint64_t>(total) * recip25) >> 35u);
+            total += columns[3] - columns[2];
+            orow[1] = static_cast<uint16_t>((static_cast<uint64_t>(total) * recip25) >> 35u);
+            total += columns[4] - columns[1];
+            for (int64_t x = 2; x < width - 3; ++x) {
+                orow[x] = static_cast<uint16_t>((static_cast<uint64_t>(total) * recip25) >> 35u);
+                total += columns[x + 3] - columns[x - 2];
+            }
+            for (int64_t x = width - 3; x < width; ++x) {
+                orow[x] = static_cast<uint16_t>((static_cast<uint64_t>(total) * recip25) >> 35u);
+                if (x + 1 < width) {
+                    const int64_t ent = (x + 3 < width) ? (x + 3) : reflect_idx(x + 3, width);
+                    const int64_t leav = (x >= 2) ? (x - 2) : reflect_idx(x - 2, width);
+                    total += columns[ent] - columns[leav];
+                }
+            }
+        } else if (width >= 5 && use_u64) {
             int32_t total = columns[2] + columns[1] + columns[0] + columns[1] + columns[2];
             write_2d(output, y, 0, static_cast<int64_t>((static_cast<uint64_t>(total) * recip25) >> 35u));
             total += columns[3] - columns[2];
@@ -1424,8 +1468,16 @@ void of_smooth_detail_rows_cpp(const ArrayView& detail, const ArrayView& output,
         if (y + 1 < stop) {
             const int64_t ye = reflect_idx(y + 3, height);
             const int64_t yl = reflect_idx(y - 2, height);
-            for (int64_t x = 0; x < width; ++x) {
-                columns[x] += static_cast<int32_t>(read_2d(detail, ye, x) - read_2d(detail, yl, x));
+            if (packed_u16) {
+                const uint16_t* re = db + ye * detail.stride[0];
+                const uint16_t* rl = db + yl * detail.stride[0];
+                for (int64_t x = 0; x < width; ++x) {
+                    columns[x] += static_cast<int32_t>(re[x]) - static_cast<int32_t>(rl[x]);
+                }
+            } else {
+                for (int64_t x = 0; x < width; ++x) {
+                    columns[x] += static_cast<int32_t>(read_2d(detail, ye, x) - read_2d(detail, yl, x));
+                }
             }
         }
     }
@@ -1445,19 +1497,24 @@ void of_select_detail_rows_cpp(const uint16_t* activity, int64_t a_sy,
                                uint16_t* second, int64_t s_sy,
                                uint16_t* winner, int64_t w_sy,
                                int64_t w, uint16_t code, int64_t start, int64_t stop) {
+    const bool use_simd = simd::use_avx2() && w >= 16;
     for (int64_t y = start; y < stop; ++y) {
         const uint16_t* ar = activity + y * a_sy;
         uint16_t* br = best + y * b_sy;
         uint16_t* sr = second + y * s_sy;
         uint16_t* wr = winner + y * w_sy;
-        for (int64_t x = 0; x < w; ++x) {
-            const uint16_t val = ar[x];
-            if (val > br[x]) {
-                sr[x] = br[x];
-                br[x] = val;
-                wr[x] = code;
-            } else if (val > sr[x]) {
-                sr[x] = val;
+        if (use_simd) {
+            simd::select_detail_row_u16_avx2(ar, br, sr, wr, w, code);
+        } else {
+            for (int64_t x = 0; x < w; ++x) {
+                const uint16_t val = ar[x];
+                if (val > br[x]) {
+                    sr[x] = br[x];
+                    br[x] = val;
+                    wr[x] = code;
+                } else if (val > sr[x]) {
+                    sr[x] = val;
+                }
             }
         }
     }
@@ -1518,12 +1575,17 @@ void of_select_activity_rows_cpp(const uint16_t* activity, int64_t a_sy,
                                  uint16_t* votes, int64_t v_sy,
                                  int64_t w, uint16_t code, int64_t reciprocal,
                                  int64_t start, int64_t stop) {
+    const bool use_simd = simd::use_avx2() && w >= 16
+        && (votes == nullptr || (reciprocal >= 0 && reciprocal <= int64_t{0xFFFFFFFFLL}));
+    const uint32_t recip_u32 = static_cast<uint32_t>(reciprocal);
     for (int64_t y = start; y < stop; ++y) {
         const uint16_t* ar = activity + y * a_sy;
         uint16_t* br = best + y * b_sy;
         uint16_t* dr = depth + y * d_sy;
-        if (votes != nullptr) {
-            uint16_t* vr = votes + y * v_sy;
+        uint16_t* vr = (votes != nullptr) ? (votes + y * v_sy) : nullptr;
+        if (use_simd) {
+            simd::select_activity_row_u16_avx2(ar, br, dr, vr, w, code, recip_u32);
+        } else if (vr != nullptr) {
             for (int64_t x = 0; x < w; ++x) {
                 const uint16_t val = ar[x];
                 vr[x] = static_cast<uint16_t>(vr[x] + ((static_cast<int64_t>(val) * reciprocal) >> 32));
@@ -1662,6 +1724,7 @@ void of_resample_rows_u16_cpp(
 
     std::vector<float> row_buf(static_cast<size_t>(sw));
     std::vector<float> sums_buf(static_cast<size_t>(std::max<int64_t>(0, last - first)));
+    const bool use_fma = simd::use_avx2_fma();
 
     for (int64_t y = start; y < stop; ++y) {
         std::fill(row_buf.begin(), row_buf.end(), 0.0f);
@@ -1671,8 +1734,12 @@ void of_resample_rows_u16_cpp(
         for (int32_t tap = 0; tap < vc; ++tap) {
             const float wval = vw_row[tap];
             const uint16_t* sline = src + static_cast<int64_t>(vi_row[tap]) * s_sy;
-            for (int64_t x = 0; x < sw; ++x) {
-                row_buf[x] = std::fmaf(wval, static_cast<float>(sline[x]), row_buf[x]);
+            if (use_fma && sw >= 8) {
+                simd::resample_u16_vert_acc_row_avx2_fma(sline, row_buf.data(), sw, wval);
+            } else {
+                for (int64_t x = 0; x < sw; ++x) {
+                    row_buf[x] = std::fmaf(wval, static_cast<float>(sline[x]), row_buf[x]);
+                }
             }
         }
         uint16_t* orow = out + y * o_sy;
@@ -1698,18 +1765,24 @@ void of_resample_rows_u16_cpp(
         }
         if (last > first) {
             const int64_t nrep = last - first;
-            std::fill(sums_buf.begin(), sums_buf.end(), 0.0f);
-            for (int64_t tap = 0; tap < h_taps; tap += 2) {
-                const float even = h_w[first * hw_sy + tap];
-                const float odd = h_w[first * hw_sy + tap + 1];
-                const float* line = row_buf.data() + h_idx[first * hi_sy + tap];
-                for (int64_t x = 0; x < nrep; ++x) {
-                    sums_buf[x] = std::fmaf(odd, line[2 * x + 1],
-                                            std::fmaf(even, line[2 * x], sums_buf[x]));
+            if (use_fma && nrep >= 8) {
+                simd::resample_u16_horiz_rep_row_avx2_fma(
+                    row_buf.data(), sums_buf.data(), orow, first, nrep,
+                    h_idx + first * hi_sy, h_w + first * hw_sy, h_taps, hi_sy, hw_sy);
+            } else {
+                std::fill(sums_buf.begin(), sums_buf.end(), 0.0f);
+                for (int64_t tap = 0; tap < h_taps; tap += 2) {
+                    const float even = h_w[first * hw_sy + tap];
+                    const float odd = h_w[first * hw_sy + tap + 1];
+                    const float* line = row_buf.data() + h_idx[first * hi_sy + tap];
+                    for (int64_t x = 0; x < nrep; ++x) {
+                        sums_buf[x] = std::fmaf(odd, line[2 * x + 1],
+                                                std::fmaf(even, line[2 * x], sums_buf[x]));
+                    }
                 }
-            }
-            for (int64_t x = 0; x < nrep; ++x) {
-                orow[first + x] = store_f32_code(sums_buf[x]);
+                for (int64_t x = 0; x < nrep; ++x) {
+                    orow[first + x] = store_f32_code(sums_buf[x]);
+                }
             }
         }
     }
@@ -1893,13 +1966,23 @@ void of_output_u16_to_u8_rows_cpp(
     const int64_t channels = (code.ndim == 2) ? 1 : code.shape[2];
     const uint16_t* cd = static_cast<const uint16_t*>(code.data);
     uint8_t* od = static_cast<uint8_t*>(output.data);
+    const bool packed = (code.ndim == 2 && code.stride[1] == 1 && output.stride[1] == 1)
+                     || (code.ndim == 3 && output.ndim == 3 && code.stride[2] == 1
+                         && output.stride[2] == 1 && code.stride[1] == channels
+                         && output.stride[1] == channels);
+    const int64_t elems = width * channels;
+    const bool use_simd = packed && simd::use_avx2() && elems >= 16 && (!e37 || channels <= 3);
+
     for (int64_t y = start; y < stop; ++y) {
-        if (code.ndim == 2) {
+        if (use_simd) {
+            simd::output_u16_to_u8_row_avx2(
+                cd + y * code.stride[0], od + y * output.stride[0], elems, e37);
+        } else if (code.ndim == 2) {
             const uint16_t* cr = cd + y * code.stride[0];
             uint8_t* orow = od + y * output.stride[0];
             for (int64_t x = 0; x < width; ++x) {
-                uint16_t v = cr[x] >> 8u;
-                orow[x] = static_cast<uint8_t>((e37 && v > 0) ? (v - 1) : v);
+                uint16_t v = cr[x * code.stride[1]] >> 8u;
+                orow[x * output.stride[1]] = static_cast<uint8_t>((e37 && v > 0) ? (v - 1) : v);
             }
         } else {
             for (int64_t x = 0; x < width; ++x) {
@@ -1924,12 +2007,22 @@ void of_output_u16_to_f32_rows_cpp(
     const int64_t channels = (code.ndim == 2) ? 1 : code.shape[2];
     const uint16_t* cd = static_cast<const uint16_t*>(code.data);
     float* od = static_cast<float*>(output.data);
+    const bool packed = (code.ndim == 2 && code.stride[1] == 1 && output.stride[1] == 1)
+                     || (code.ndim == 3 && output.ndim == 3 && code.stride[2] == 1
+                         && output.stride[2] == 1 && code.stride[1] == channels
+                         && output.stride[1] == channels);
+    const int64_t elems = width * channels;
+    const bool use_simd = packed && simd::use_avx2() && elems >= 8;
+
     for (int64_t y = start; y < stop; ++y) {
-        if (code.ndim == 2) {
+        if (use_simd) {
+            simd::output_u16_to_f32_row_avx2(
+                cd + y * code.stride[0], od + y * output.stride[0], elems, factor);
+        } else if (code.ndim == 2) {
             const uint16_t* cr = cd + y * code.stride[0];
             float* orow = od + y * output.stride[0];
             for (int64_t x = 0; x < width; ++x) {
-                orow[x] = static_cast<float>(cr[x]) * factor;
+                orow[x * output.stride[1]] = static_cast<float>(cr[x * code.stride[1]]) * factor;
             }
         } else {
             for (int64_t x = 0; x < width; ++x) {

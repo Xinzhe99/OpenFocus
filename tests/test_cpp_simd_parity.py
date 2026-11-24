@@ -27,7 +27,7 @@ def _require_avx2():
     mod = _native.load_native()
     assert mod is not None
     mod.set_force_scalar(False)
-    if mod.simd_info() != "AVX2":
+    if mod.simd_info() not in ("AVX2", "AVX2+FMA"):
         pytest.skip(f"Host CPU/OS reports {mod.simd_info()}, not AVX2")
     return mod
 
@@ -35,11 +35,11 @@ def _require_avx2():
 def test_simd_info_and_force_scalar_toggle():
     mod = _require_avx2()
     try:
-        assert mod.simd_info() == "AVX2"
+        assert mod.simd_info() in ("AVX2", "AVX2+FMA")
         mod.set_force_scalar(True)
         assert mod.simd_info() == "Scalar"
         mod.set_force_scalar(False)
-        assert mod.simd_info() == "AVX2"
+        assert mod.simd_info() in ("AVX2", "AVX2+FMA")
     finally:
         mod.set_force_scalar(False)
 
@@ -468,4 +468,104 @@ def test_alignment_kernels_simd_and_8k_parity() -> None:
 
     for idx, (arr_a, arr_s) in enumerate(zip(sc_avx, sc_sca)):
         assert np.array_equal(arr_a.view(np.uint8), arr_s.view(np.uint8)), f"score mismatch {idx}"
+
+
+def test_ab_depth_resample_and_8k_tile_acc_parity() -> None:
+    mod = _require_avx2()
+    rng = np.random.default_rng(121212)
+
+    for w in [19, 129, 7680]:
+        h = 12
+        # 1. Activity, detail, smooth detail, sparse 500-layer activity/detail selection
+        g16 = rng.integers(0, 65536, size=(h, w), dtype=np.uint16)
+        f16 = rng.integers(0, 65536, size=(h, w), dtype=np.uint16)
+        g16[0, :8] = 65535
+        f16[0, :8] = 0
+        best_a_init = np.full((h, w), 60000, dtype=np.uint16)
+        act_sparse = np.zeros((h, w), dtype=np.uint16)
+        act_sparse[3, 5:45] = np.uint16(62500)
+        sec_init = np.full((h, w), 50000, dtype=np.uint16)
+        act_det_sparse = np.full((h // 2, w // 2), 10000, dtype=np.uint16)
+        act_det_sparse[1, 3:40] = np.uint16(55000)
+        act_det_sparse[2, 3:40] = np.uint16(63000)
+
+        # 2. Half-axis u16 resample with repeating columns
+        src_r = rng.integers(0, 65536, size=(h, w), dtype=np.uint16)
+        ow = max(4, (w - 4) // 2)
+        oh = 4
+        v_idx = np.zeros((oh, 4), dtype=np.int32)
+        v_w = np.zeros((oh, 4), dtype=np.float32)
+        v_cnt = np.full(oh, 4, dtype=np.int32)
+        for y in range(oh):
+            v_idx[y] = np.clip(np.arange(4) + y, 0, h - 1)
+            v_w[y] = np.array([0.1, 0.4, 0.4, 0.1], dtype=np.float32)
+        h_idx = np.zeros((ow, 4), dtype=np.int32)
+        h_w = np.zeros((ow, 4), dtype=np.float32)
+        h_cnt = np.full(ow, 4, dtype=np.int32)
+        for x in range(ow):
+            h_idx[x] = np.arange(4) + 2 * x
+            h_w[x] = np.array([0.125, 0.375, 0.375, 0.125], dtype=np.float32)
+
+        # 3. Output u16->u8 / f32 + 3ch tile_accumulate (f32, u8, u16)
+        code3 = rng.integers(0, 65536, size=(4, w, 3), dtype=np.uint16)
+        code4 = rng.integers(0, 65536, size=(4, w, 4), dtype=np.uint16)
+        tile_f32 = rng.uniform(0.0, 255.0, size=(4, w, 3)).astype(np.float32)
+        tile_u8 = rng.integers(0, 256, size=(4, w, 3), dtype=np.uint8)
+        tile_u16 = rng.integers(0, 65536, size=(4, w, 3), dtype=np.uint16)
+        w2d = rng.uniform(0.1, 1.0, size=(4, w)).astype(np.float32)
+
+        def _run():
+            act = np.empty((h, w), dtype=np.uint16)
+            mod.of_activity_rows(g16, f16, act, 0, h)
+            det = np.empty((h // 2, w // 2), dtype=np.uint16)
+            mod.of_detail_rows(g16, det, 0)
+            sm_det = np.empty((h // 2, w // 2), dtype=np.uint16)
+            mod.of_smooth_detail_rows(det, sm_det, 0, h // 2)
+
+            b_act = best_a_init.copy()
+            d_act = np.full((h, w), 7, dtype=np.uint16)
+            v_act = rng.integers(0, 65536, size=(h, w), dtype=np.uint16)
+            # Force deterministic votes input across AVX2/Scalar
+            v_act[:] = g16
+            mod.of_select_activity_rows(act_sparse, b_act, d_act, v_act, 499, 1073741824, 0, h)
+
+            b_det = best_a_init[: h // 2, : w // 2].copy()
+            s_det = sec_init[: h // 2, : w // 2].copy()
+            w_det = np.full((h // 2, w // 2), 9, dtype=np.uint16)
+            mod.of_select_detail_rows(act_det_sparse, b_det, s_det, w_det, 499, 0, h // 2)
+
+            out_res = np.empty((oh, ow), dtype=np.uint16)
+            mod.of_resample_rows_u16(src_r, out_res, v_idx, v_w, v_cnt, h_idx, h_w, h_cnt, 0, oh)
+
+            u8_3_f = np.empty((4, w, 3), dtype=np.uint8)
+            u8_3_t = np.empty((4, w, 3), dtype=np.uint8)
+            u8_4_t = np.empty((4, w, 4), dtype=np.uint8)
+            f32_3 = np.empty((4, w, 3), dtype=np.float32)
+            mod.of_output_u16_to_u8_rows(code3, u8_3_f, 0, 4, False)
+            mod.of_output_u16_to_u8_rows(code3, u8_3_t, 0, 4, True)
+            mod.of_output_u16_to_u8_rows(code4, u8_4_t, 0, 4, True)
+            mod.of_output_u16_to_f32_rows(code3, f32_3, 0, 4, 1.0 / 257.0)
+
+            acc_f = np.zeros((4, w, 3), dtype=np.float32)
+            w_f = np.zeros((4, w), dtype=np.float32)
+            acc_8 = np.zeros((4, w, 3), dtype=np.float32)
+            w_8 = np.zeros((4, w), dtype=np.float32)
+            acc_16 = np.zeros((4, w, 3), dtype=np.float32)
+            w_16 = np.zeros((4, w), dtype=np.float32)
+            mod.of_tile_accumulate(acc_f, w_f, tile_f32, w2d, 0, 0, 2)
+            mod.of_tile_accumulate(acc_8, w_8, tile_u8, w2d, 0, 0, 2)
+            mod.of_tile_accumulate(acc_16, w_16, tile_u16, w2d, 0, 0, 2)
+
+            return act, det, sm_det, b_act, d_act, v_act, b_det, s_det, w_det, out_res, u8_3_f, u8_3_t, u8_4_t, f32_3, acc_f, w_f, acc_8, w_8, acc_16, w_16
+
+        try:
+            mod.set_force_scalar(False)
+            res_a = _run()
+            mod.set_force_scalar(True)
+            res_s = _run()
+        finally:
+            mod.set_force_scalar(False)
+
+        for idx, (arr_a, arr_s) in enumerate(zip(res_a, res_s)):
+            assert np.array_equal(arr_a.view(np.uint8), arr_s.view(np.uint8)), f"pr12 mismatch {idx} w={w}"
 
