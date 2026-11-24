@@ -187,6 +187,40 @@ def test_recovery_sidecar_copy_survives_slot_cleanup(tmp_path, monkeypatch):
     np.testing.assert_array_equal(resolve_frame(scan_source(saved["resolved_sources"][0])[0]), image)
 
 
+def test_save_as_copies_owned_sidecars_from_multiple_projects(tmp_path):
+    from pathlib import Path
+
+    sources = []
+    owners = [str(tmp_path / name) for name in ("first.ofproj", "second.ofproj")]
+    for owner, levels in zip(owners, ((12, 27), (31, 56))):
+        window = _window([], str(tmp_path))
+        window.raw_images = [np.full((5, 6, 3), level, np.uint8) for level in levels]
+        window.image_filenames = ["first frame", "second frame"]
+        ok, error = project_file.save_project(window, owner)
+        assert ok, error
+        ok, error, state = project_file.validate_project(owner)
+        assert ok, error
+        sources.extend(state["resolved_sources"])
+
+    unmanaged = Path(sources[0]).with_name("unmanaged.tif")
+    unmanaged.write_bytes(Path(sources[0]).read_bytes())
+    sources.append(str(unmanaged))
+    window = _window(sources, str(tmp_path))
+    window.raw_images = [scan_source(source, header_only=True)[0] for source in sources]
+    destination = str(tmp_path / "combined.ofproj")
+    ok, error = project_file.save_project(window, destination)
+    assert ok, error
+
+    ok, error, state = project_file.validate_project(destination)
+    assert ok, error
+    saved = state["resolved_sources"]
+    assert len(saved) == len(sources)
+    assert saved[-1] == str(unmanaged)
+    sidecar_root = Path(destination + ".sources")
+    assert all(Path(path).is_relative_to(sidecar_root) for path in saved[:-1])
+    assert [Path(path).read_bytes() for path in saved] == [Path(path).read_bytes() for path in sources]
+
+
 def test_recovery_cleanup_keeps_unowned_files(tmp_path, monkeypatch):
     from utils import frame_pixels
     monkeypatch.setattr(frame_pixels, "run_pixel_worker", lambda parent, title, operation: operation())

@@ -98,6 +98,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   precompilation when a render starts and let the render compile as needed.
 - Continue compilation without the disk cache when another process holds its
   lock on Windows, avoiding repeated waits during a cold render.
+- Read each source project's ownership manifest once when saving a copy with
+  linked project-owned images.
 - Reduce OpenFocus A/B/C CPU and OpenCL working sets with bounded row processing,
   reusable pyramid storage, and fewer full-image operations. Expand exact
   OpenCL ECC resize coverage and reuse successful repeated pair solves.
