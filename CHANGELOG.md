@@ -117,6 +117,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   device and compiled kernel support the work-group size.
 - Refresh Batch Image Converter's queue controls once per removal and share
   the pending thumbnail icon across rows.
+- Keep wipe divider repaints on the canvas with desktop stylesheets applied.
 - Stream whole-image OpenFocus B when optional stack snapshots do not fit
   on disk and the streamed job fits the available RAM.
 - Reuse undecorated opaque source pixmaps when switching frames in the desktop
