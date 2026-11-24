@@ -27,7 +27,7 @@ def _require_avx2():
     mod = _native.load_native()
     assert mod is not None
     mod.set_force_scalar(False)
-    if mod.simd_info() != "AVX2":
+    if mod.simd_info() not in ("AVX2", "AVX2+FMA"):
         pytest.skip(f"Host CPU/OS reports {mod.simd_info()}, not AVX2")
     return mod
 
@@ -35,11 +35,11 @@ def _require_avx2():
 def test_simd_info_and_force_scalar_toggle():
     mod = _require_avx2()
     try:
-        assert mod.simd_info() == "AVX2"
+        assert mod.simd_info() in ("AVX2", "AVX2+FMA")
         mod.set_force_scalar(True)
         assert mod.simd_info() == "Scalar"
         mod.set_force_scalar(False)
-        assert mod.simd_info() == "AVX2"
+        assert mod.simd_info() in ("AVX2", "AVX2+FMA")
     finally:
         mod.set_force_scalar(False)
 
@@ -527,3 +527,214 @@ def test_alignment_region_preserves_coordinates_outside_float32_integer_range():
         0.0, 0.0, -16777216.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0, 1, False,
     )
     np.testing.assert_array_equal(output, [[1, 1, 2, 3, 4, 5, 6, 7]])
+
+
+def test_ab_depth_resample_and_8k_tile_acc_parity() -> None:
+    mod = _require_avx2()
+    rng = np.random.default_rng(121212)
+
+    for w in [19, 129, 7680]:
+        h = 12
+        # 1. Activity, detail, smooth detail, sparse 500-layer activity/detail selection
+        g16 = rng.integers(0, 65536, size=(h, w), dtype=np.uint16)
+        f16 = rng.integers(0, 65536, size=(h, w), dtype=np.uint16)
+        g16[0, :8] = 65535
+        f16[0, :8] = 0
+        best_a_init = np.full((h, w), 60000, dtype=np.uint16)
+        act_sparse = np.zeros((h, w), dtype=np.uint16)
+        act_sparse[3, 5:45] = np.uint16(62500)
+        sec_init = np.full((h, w), 50000, dtype=np.uint16)
+        act_det_sparse = np.full((h // 2, w // 2), 10000, dtype=np.uint16)
+        act_det_sparse[1, 3:40] = np.uint16(55000)
+        act_det_sparse[2, 3:40] = np.uint16(63000)
+        sec_init[4, : w // 2] = 64000
+        act_det_sparse[4] = 62000
+
+        # 2. Half-axis u16 resample with repeating columns
+        src_r = rng.integers(0, 65536, size=(h, w), dtype=np.uint16)
+        ow = max(4, (w - 4) // 2)
+        oh = 4
+        v_idx = np.zeros((oh, 4), dtype=np.int32)
+        v_w = np.zeros((oh, 4), dtype=np.float32)
+        v_cnt = np.full(oh, 4, dtype=np.int32)
+        for y in range(oh):
+            v_idx[y] = np.clip(np.arange(4) + y, 0, h - 1)
+            v_w[y] = np.array([0.1, 0.4, 0.4, 0.1], dtype=np.float32)
+        h_idx = np.zeros((ow, 4), dtype=np.int32)
+        h_w = np.zeros((ow, 4), dtype=np.float32)
+        h_cnt = np.full(ow, 4, dtype=np.int32)
+        for x in range(ow):
+            h_idx[x] = np.arange(4) + 2 * x
+            h_w[x] = np.array([0.125, 0.375, 0.375, 0.125], dtype=np.float32)
+
+        # 3. Output u16->u8 / f32 + 3ch tile_accumulate (f32, u8, u16)
+        code3 = rng.integers(0, 65536, size=(4, w, 3), dtype=np.uint16)
+        code4 = rng.integers(0, 65536, size=(4, w, 4), dtype=np.uint16)
+        tile_f32 = rng.uniform(0.0, 255.0, size=(4, w, 3)).astype(np.float32)
+        tile_u8 = rng.integers(0, 256, size=(4, w, 3), dtype=np.uint8)
+        tile_u16 = rng.integers(0, 65536, size=(4, w, 3), dtype=np.uint16)
+        w2d = rng.uniform(0.1, 1.0, size=(4, w)).astype(np.float32)
+
+        def _run():
+            act = np.empty((h, w), dtype=np.uint16)
+            mod.of_activity_rows(g16, f16, act, 0, h)
+            det = np.empty((h // 2, w // 2), dtype=np.uint16)
+            mod.of_detail_rows(g16, det, 0)
+            sm_det = np.empty((h // 2, w // 2), dtype=np.uint16)
+            mod.of_smooth_detail_rows(det, sm_det, 0, h // 2)
+
+            b_act = best_a_init.copy()
+            d_act = np.full((h, w), 7, dtype=np.uint16)
+            v_act = g16.copy()
+            mod.of_select_activity_rows(act_sparse, b_act, d_act, v_act, 499, 1073741824, 0, h)
+
+            b_det = best_a_init[: h // 2, : w // 2].copy()
+            s_det = sec_init[: h // 2, : w // 2].copy()
+            w_det = np.full((h // 2, w // 2), 9, dtype=np.uint16)
+            mod.of_select_detail_rows(act_det_sparse, b_det, s_det, w_det, 499, 0, h // 2)
+
+            out_res = np.empty((oh, ow), dtype=np.uint16)
+            mod.of_resample_rows_u16(src_r, out_res, v_idx, v_w, v_cnt, h_idx, h_w, h_cnt, 0, oh)
+
+            u8_3_f = np.empty((4, w, 3), dtype=np.uint8)
+            u8_3_t = np.empty((4, w, 3), dtype=np.uint8)
+            u8_4_t = np.empty((4, w, 4), dtype=np.uint8)
+            f32_3 = np.empty((4, w, 3), dtype=np.float32)
+            mod.of_output_u16_to_u8_rows(code3, u8_3_f, 0, 4, False)
+            mod.of_output_u16_to_u8_rows(code3, u8_3_t, 0, 4, True)
+            mod.of_output_u16_to_u8_rows(code4, u8_4_t, 0, 4, True)
+            mod.of_output_u16_to_f32_rows(code3, f32_3, 0, 4, 1.0 / 257.0)
+
+            acc_f = np.zeros((4, w, 3), dtype=np.float32)
+            w_f = np.zeros((4, w), dtype=np.float32)
+            acc_8 = np.zeros((4, w, 3), dtype=np.float32)
+            w_8 = np.zeros((4, w), dtype=np.float32)
+            acc_16 = np.zeros((4, w, 3), dtype=np.float32)
+            w_16 = np.zeros((4, w), dtype=np.float32)
+            for weights in (w2d, w2d[::-1]):
+                mod.of_tile_accumulate(acc_f, w_f, tile_f32, weights, 0, 0, 2)
+                mod.of_tile_accumulate(acc_8, w_8, tile_u8, weights, 0, 0, 2)
+                mod.of_tile_accumulate(acc_16, w_16, tile_u16, weights, 0, 0, 2)
+
+            return act, det, sm_det, b_act, d_act, v_act, b_det, s_det, w_det, out_res, u8_3_f, u8_3_t, u8_4_t, f32_3, acc_f, w_f, acc_8, w_8, acc_16, w_16
+
+        try:
+            mod.set_force_scalar(False)
+            res_a = _run()
+            mod.set_force_scalar(True)
+            res_s = _run()
+        finally:
+            mod.set_force_scalar(False)
+
+        for idx, (arr_a, arr_s) in enumerate(zip(res_a, res_s)):
+            assert np.array_equal(arr_a.view(np.uint8), arr_s.view(np.uint8)), f"depth/tile mismatch {idx} w={w}"
+
+
+def test_activity_preserves_shifted_input_view() -> None:
+    mod = _require_avx2()
+    gray = np.zeros((1, 8), dtype=np.uint16)
+    inputs = np.zeros((1, 9), dtype=np.uint16)
+    inputs[0, 0] = 1
+    actual = inputs.copy()
+    try:
+        mod.set_force_scalar(False)
+        mod.of_activity_rows(gray, actual[:, :8], actual[:, 1:], 0, 1)
+        mod.set_force_scalar(True)
+        mod.of_activity_rows(gray, inputs[:, :8], inputs[:, 1:], 0, 1)
+    finally:
+        mod.set_force_scalar(False)
+    np.testing.assert_array_equal(actual, inputs)
+
+
+def test_rgb_tile_accumulation_preserves_shifted_input_view() -> None:
+    mod = _require_avx2()
+    acc = np.zeros((1, 9, 3), dtype=np.float32)
+    acc[:, 0] = 1
+    weights = np.ones((1, 8), dtype=np.float32)
+    weight_acc = np.zeros((1, 9), dtype=np.float32)
+
+    mod.of_tile_accumulate(acc, weight_acc, acc[:, :8], weights, 1, 0, 1)
+
+    np.testing.assert_array_equal(acc, np.ones_like(acc))
+
+
+def test_ecc_solver_avx2_parity() -> None:
+    import cv2
+    from core._ecc_native import find_transform_ecc_homography
+
+    mod = _require_avx2()
+    rng = np.random.default_rng(131313)
+
+    for (h, w), (tx, ty, scale, ang, px, py) in [
+        ((163, 251), (2.4, -1.7, 1.006, 0.35, 0.0, 0.0)),
+        ((576, 1024), (1.8, 1.2, 1.004, -0.25, 6e-6, -5e-6)),
+    ]:
+        yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+        base = (
+            0.5
+            + 0.2 * np.sin(xx * (2.0 * np.pi / 43.0)) * np.cos(yy * (2.0 * np.pi / 37.0))
+            + 0.12 * np.cos((xx * 0.7 + yy * 1.2) * (2.0 * np.pi / 19.0))
+            + 0.08 * rng.normal(0.0, 1.0, size=(h, w)).astype(np.float32)
+        )
+        tpl = np.clip(cv2.GaussianBlur(base, (0, 0), 1.4), 0.0, 1.0).astype(np.float32)
+        cx, cy = (w - 1) * 0.5, (h - 1) * 0.5
+        th = np.deg2rad(ang)
+        c, s = np.cos(th) * scale, np.sin(th) * scale
+        M = np.array(
+            [
+                [c, -s, tx + cx - (c * cx - s * cy)],
+                [s, c, ty + cy - (s * cx + c * cy)],
+                [px, py, 1.0],
+            ],
+            dtype=np.float64,
+        )
+        src = cv2.warpPerspective(
+            tpl, M, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT
+        ).astype(np.float32)
+
+        try:
+            mod.set_force_scalar(False)
+            cc_a, W_a = find_transform_ecc_homography(tpl, src, max_iter=50, eps=1e-4, num_threads=2)
+            mod.set_force_scalar(True)
+            cc_s, W_s = find_transform_ecc_homography(tpl, src, max_iter=50, eps=1e-4, num_threads=2)
+        finally:
+            mod.set_force_scalar(False)
+
+        assert cc_a is not None and cc_s is not None
+        assert W_a is not None and W_s is not None
+        assert abs(cc_a - cc_s) < 1e-8
+        corners = np.array([[0.0, 0.0, 1.0], [w - 1.0, 0.0, 1.0], [w - 1.0, h - 1.0, 1.0], [0.0, h - 1.0, 1.0]])
+        pa = (corners @ W_a.astype(np.float64).T)
+        pa = pa[:, :2] / pa[:, 2:3]
+        ps = (corners @ W_s.astype(np.float64).T)
+        ps = ps[:, :2] / ps[:, 2:3]
+        max_corner_diff = float(np.sqrt(np.sum((pa - ps) ** 2, axis=1)).max())
+        assert max_corner_diff < 1e-5, f"shape={(h, w)} corner diff={max_corner_diff}"
+
+
+def test_ecc_preserves_scalar_variance_cutoff_decision() -> None:
+    mod = _require_avx2()
+    tpl = np.repeat((np.arange(16, dtype=np.float32) / 16)[:, None], 1024, axis=1)
+    src = np.full_like(tpl, 0.75)
+    src[1, 513:529] -= 3 * 2.0**-24
+    src[14, 513:529] += 3 * 2.0**-24
+    src[0, :] -= 2.0**-8
+    src[-1, :] += 2.0**-8
+    src[0, 1000:] = 1.0
+    src[-1, 1000:] = 0.5
+    _, _, _, rho_identity = mod.ecc_check_identical_and_stats(tpl, src, 1)
+    seed = np.eye(3, dtype=np.float64)
+
+    try:
+        mod.set_force_scalar(True)
+        scalar_ok, scalar_cc, scalar_warp = mod.ecc_refine_pyramids(
+            [tpl], [src], seed, rho_identity, 1, 1e-4, 1)
+        mod.set_force_scalar(False)
+        simd_ok, simd_cc, simd_warp = mod.ecc_refine_pyramids(
+            [tpl], [src], seed, rho_identity, 1, 1e-4, 1)
+    finally:
+        mod.set_force_scalar(False)
+
+    assert scalar_ok and simd_ok
+    assert simd_cc == pytest.approx(scalar_cc, abs=1e-8)
+    np.testing.assert_allclose(simd_warp, scalar_warp, rtol=0, atol=1e-7)

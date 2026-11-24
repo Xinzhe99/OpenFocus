@@ -7,6 +7,7 @@ namespace openfocus {
 namespace simd {
 
 bool use_avx2();
+bool use_avx2_fma();
 void set_force_scalar(bool force);
 std::string simd_info();
 
@@ -176,6 +177,61 @@ void align_score_grid_4d_packed_avx2(
     int64_t n0, int64_t n1, int64_t n2, int64_t n3,
     int64_t k_start, int64_t k_stop,
     int64_t* out_best_k, float* out_best_sc, int64_t slot);
+
+void resample_u16_vert_acc_row_avx2_fma(
+    const uint16_t* sline, float* row_buf, int64_t sw, float wval);
+
+void resample_u16_horiz_rep_row_avx2_fma(
+    const float* row_buf, float* sums_buf, uint16_t* orow,
+    int64_t first, int64_t nrep,
+    const int32_t* h_idx_first, const float* h_w_first,
+    int64_t h_taps, int64_t hi_sy, int64_t hw_sy);
+
+void activity_row_u16_avx2(
+    const uint16_t* gr, const uint16_t* fr, uint16_t* orow, int64_t w);
+
+void detail_row_u16_avx2(
+    const uint16_t* r0, const uint16_t* r1, uint16_t* orow, int64_t full_w);
+
+void select_activity_row_u16_avx2(
+    const uint16_t* ar, uint16_t* br, uint16_t* dr, uint16_t* vr,
+    int64_t w, uint16_t code, uint32_t reciprocal_u32);
+
+void select_detail_row_u16_avx2(
+    const uint16_t* ar, uint16_t* br, uint16_t* sr, uint16_t* wr,
+    int64_t w, uint16_t code);
+
+void output_u16_to_u8_row_avx2(
+    const uint16_t* cr, uint8_t* orow, int64_t elems, bool e37);
+
+void output_u16_to_f32_row_avx2(
+    const uint16_t* cr, float* orow, int64_t elems, float factor);
+
+void tile_accumulate_3c_row_avx2(
+    const void* tr, int src_kind, const float* wr,
+    float* ar, float* war, int64_t fw);
+
+void ecc_prepare_level_row_avx2(
+    const float* rm1, const float* r0, const float* rp1,
+    int x0, int rw, double cx, double inv_s, double mean_t, double g_scale, double v,
+    int p_count, bool sample_h_row, bool stride2,
+    float* dst_t0, float* dst_gx, float* dst_gy,
+    double& norm_T2, double* js, double* tv, double* H_tri);
+
+void ecc_ic_pass_all_in_row_p6_avx2(
+    const float* src_data, int w, int h,
+    const float* t0_row, const float* gx_row, const float* gy_row, int rw,
+    double sx0, double sy0, double dsx, double dsy,
+    double u0, double inv_s, double v,
+    double& rs_iw, double& rs_iw2, double& rs_tiw, double* raw_g);
+
+void ecc_ic_pass_all_in_row_p8_avx2(
+    const float* src_data, int w, int h,
+    const float* t0_row, const float* gx_row, const float* gy_row, int rw,
+    double nsx0, double nsy0, double den0,
+    double d_nsx, double d_nsy, double d_den,
+    double u0, double inv_s, double v,
+    double& rs_iw, double& rs_iw2, double& rs_tiw, double* raw_g);
 
 }  // namespace simd
 }  // namespace openfocus

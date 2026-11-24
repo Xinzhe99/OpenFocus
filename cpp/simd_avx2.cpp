@@ -1,6 +1,7 @@
 #include "simd_dispatch.hpp"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <cstring>
@@ -25,20 +26,25 @@ namespace {
 
 std::atomic<bool> g_force_scalar{false};
 
-bool detect_avx2_hw() {
+struct CpuFeatures {
+    bool avx2 = false;
+    bool fma = false;
+};
+
+CpuFeatures detect_cpu_features() {
 #if OPENFOCUS_X86_64
     int info1[4] = {0, 0, 0, 0};
 #if defined(_MSC_VER)
     __cpuid(info1, 0);
     const int max_leaf = info1[0];
     if (max_leaf < 7) {
-        return false;
+        return {};
     }
     __cpuidex(info1, 1, 0);
 #else
     unsigned int eax = 0, ebx = 0, ecx = 0, edx = 0;
     if (!__get_cpuid(0, &eax, &ebx, &ecx, &edx) || eax < 7) {
-        return false;
+        return {};
     }
     __cpuid_count(1, 0, eax, ebx, ecx, edx);
     info1[0] = static_cast<int>(eax);
@@ -49,7 +55,7 @@ bool detect_avx2_hw() {
     const uint32_t ecx1 = static_cast<uint32_t>(info1[2]);
     // Bit 27 = OSXSAVE, Bit 28 = AVX
     if ((ecx1 & (1u << 27)) == 0 || (ecx1 & (1u << 28)) == 0) {
-        return false;
+        return {};
     }
     uint64_t xcr0 = 0;
 #if defined(_MSC_VER)
@@ -61,7 +67,7 @@ bool detect_avx2_hw() {
 #endif
     // XMM (bit 1) + YMM (bit 2) state enabled by OS
     if ((xcr0 & 0x6ull) != 0x6ull) {
-        return false;
+        return {};
     }
     uint32_t ebx7 = 0;
 #if defined(_MSC_VER)
@@ -72,16 +78,18 @@ bool detect_avx2_hw() {
     __cpuid_count(7, 0, eax, ebx, ecx, edx);
     ebx7 = ebx;
 #endif
-    // Leaf 7 EBX bit 5 = AVX2
-    return (ebx7 & (1u << 5)) != 0;
+    // Leaf 7 EBX bit 5 = AVX2, Leaf 1 ECX bit 12 = FMA3
+    const bool has_avx2 = (ebx7 & (1u << 5)) != 0;
+    const bool has_fma = has_avx2 && ((ecx1 & (1u << 12)) != 0);
+    return {has_avx2, has_fma};
 #else
-    return false;
+    return {};
 #endif
 }
 
-bool cpu_has_avx2() {
-    static const bool kSupported = detect_avx2_hw();
-    return kSupported;
+const CpuFeatures& cpu_features() {
+    static const CpuFeatures kFeatures = detect_cpu_features();
+    return kFeatures;
 }
 
 #if OPENFOCUS_X86_64
@@ -103,7 +111,11 @@ inline uint16_t encode_weight_scalar(float strength, bool is_border, float w_sca
 }  // namespace
 
 bool use_avx2() {
-    return !g_force_scalar.load(std::memory_order_relaxed) && cpu_has_avx2();
+    return !g_force_scalar.load(std::memory_order_relaxed) && cpu_features().avx2;
+}
+
+bool use_avx2_fma() {
+    return !g_force_scalar.load(std::memory_order_relaxed) && cpu_features().fma;
 }
 
 void set_force_scalar(bool force) {
@@ -111,6 +123,9 @@ void set_force_scalar(bool force) {
 }
 
 std::string simd_info() {
+    if (use_avx2_fma()) {
+        return "AVX2+FMA";
+    }
     return use_avx2() ? "AVX2" : "Scalar";
 }
 
@@ -2262,6 +2277,842 @@ void align_score_grid_4d_packed_avx2(
     out_best_sc[slot] = best_sc;
 }
 
+namespace {
+
+constexpr std::array<uint32_t, 101> make_activity_recip_u32() {
+    std::array<uint32_t, 101> arr{};
+    for (int i = 0; i < 101; ++i) {
+        const uint64_t d = static_cast<uint64_t>(10 + i);
+        arr[static_cast<size_t>(i)] = static_cast<uint32_t>(((uint64_t{1} << 32) + d - 1u) / d);
+    }
+    return arr;
+}
+
+constexpr std::array<uint32_t, 101> kActivityRecipU32 = make_activity_recip_u32();
+
+inline __m256i normalized_diff_8_avx2(__m256i v_val, __m256i v_mean) {
+    const __m256i vmax = _mm256_max_epu32(v_val, v_mean);
+    const __m256i v100 = _mm256_mullo_epi32(vmax, _mm256_set1_epi32(100));
+    const __m256i vm = _mm256_set1_epi32(static_cast<int32_t>(0x80008001u));
+    const __m256i m_even = _mm256_mul_epu32(v100, vm);
+    const __m256i m_odd = _mm256_mul_epu32(_mm256_srli_epi64(v100, 32), vm);
+    const __m256i denom = _mm256_blend_epi32(
+        _mm256_srli_epi64(m_even, 47), _mm256_srli_epi64(m_odd, 15), 0xAA);
+    const __m256i recip = _mm256_i32gather_epi32(
+        reinterpret_cast<const int32_t*>(kActivityRecipU32.data()), denom, 4);
+    const __m256i vdiff = _mm256_abs_epi32(_mm256_sub_epi32(v_val, v_mean));
+    const __m256i vnum = _mm256_mullo_epi32(vdiff, _mm256_set1_epi32(110));
+    const __m256i q_even = _mm256_srli_epi64(_mm256_mul_epu32(vnum, recip), 32);
+    const __m256i q_odd = _mm256_mul_epu32(
+        _mm256_srli_epi64(vnum, 32), _mm256_srli_epi64(recip, 32));
+    const __m256i res = _mm256_blend_epi32(q_even, q_odd, 0xAA);
+    return _mm256_min_epu32(res, _mm256_set1_epi32(65535));
+}
+
+}  // namespace
+
+// Only callers that checked FMA support may enter these two functions.
+#if !defined(_MSC_VER)
+__attribute__((target("fma")))
+#endif
+void resample_u16_vert_acc_row_avx2_fma(
+    const uint16_t* sline, float* row_buf, int64_t sw, float wval
+) {
+    const __m256 vw = _mm256_set1_ps(wval);
+    int64_t x = 0;
+    for (; x + 8 <= sw; x += 8) {
+        const __m256 vs = _mm256_cvtepi32_ps(
+            _mm256_cvtepu16_epi32(_mm_loadu_si128(reinterpret_cast<const __m128i*>(sline + x))));
+        const __m256 acc = _mm256_loadu_ps(row_buf + x);
+        _mm256_storeu_ps(row_buf + x, _mm256_fmadd_ps(vw, vs, acc));
+    }
+    for (; x < sw; ++x) {
+        row_buf[x] = std::fmaf(wval, static_cast<float>(sline[x]), row_buf[x]);
+    }
+}
+
+#if !defined(_MSC_VER)
+__attribute__((target("fma")))
+#endif
+void resample_u16_horiz_rep_row_avx2_fma(
+    const float* row_buf, float* sums_buf, uint16_t* orow,
+    int64_t first, int64_t nrep,
+    const int32_t* h_idx_first, const float* h_w_first,
+    int64_t h_taps, int64_t hi_sy, int64_t hw_sy
+) {
+    (void)hi_sy;
+    (void)hw_sy;
+    std::memset(sums_buf, 0, static_cast<size_t>(nrep) * sizeof(float));
+    for (int64_t tap = 0; tap < h_taps; tap += 2) {
+        const __m256 v_even = _mm256_set1_ps(h_w_first[tap]);
+        const __m256 v_odd = _mm256_set1_ps(h_w_first[tap + 1]);
+        const float even_s = h_w_first[tap];
+        const float odd_s = h_w_first[tap + 1];
+        const float* line = row_buf + h_idx_first[tap];
+        int64_t x = 0;
+        for (; x + 8 <= nrep; x += 8) {
+            const __m256 a = _mm256_loadu_ps(line + 2 * x);
+            const __m256 b = _mm256_loadu_ps(line + 2 * x + 8);
+            const __m256 even_v = _mm256_castsi256_ps(_mm256_permute4x64_epi64(
+                _mm256_castps_si256(_mm256_shuffle_ps(a, b, 0x88)), 0xD8));
+            const __m256 odd_v = _mm256_castsi256_ps(_mm256_permute4x64_epi64(
+                _mm256_castps_si256(_mm256_shuffle_ps(a, b, 0xDD)), 0xD8));
+            const __m256 prev = _mm256_loadu_ps(sums_buf + x);
+            const __m256 next = _mm256_fmadd_ps(
+                v_odd, odd_v, _mm256_fmadd_ps(v_even, even_v, prev));
+            _mm256_storeu_ps(sums_buf + x, next);
+        }
+        for (; x < nrep; ++x) {
+            sums_buf[x] = std::fmaf(
+                odd_s, line[2 * x + 1], std::fmaf(even_s, line[2 * x], sums_buf[x]));
+        }
+    }
+    const __m256 v_half = _mm256_set1_ps(0.5f);
+    const __m256 v_zero = _mm256_setzero_ps();
+    const __m256 v_max = _mm256_set1_ps(65535.0f);
+    uint16_t* dst = orow + first;
+    int64_t x = 0;
+    for (; x + 8 <= nrep; x += 8) {
+        const __m256 r = _mm256_add_ps(_mm256_loadu_ps(sums_buf + x), v_half);
+        __m256 c = _mm256_blendv_ps(r, v_zero, _mm256_cmp_ps(r, v_zero, _CMP_LE_OQ));
+        c = _mm256_blendv_ps(c, v_max, _mm256_cmp_ps(c, v_max, _CMP_GE_OQ));
+        store_u32x8_as_u16(_mm256_cvttps_epi32(c), dst + x);
+    }
+    for (; x < nrep; ++x) {
+        const float rounded = sums_buf[x] + 0.5f;
+        if (rounded <= 0.0f) {
+            dst[x] = 0;
+        } else if (rounded >= 65535.0f) {
+            dst[x] = 65535;
+        } else {
+            dst[x] = static_cast<uint16_t>(static_cast<int32_t>(rounded));
+        }
+    }
+}
+
+void activity_row_u16_avx2(
+    const uint16_t* gr, const uint16_t* fr, uint16_t* orow, int64_t w
+) {
+    int64_t x = 0;
+    for (; x + 8 <= w; x += 8) {
+        const __m256i vg = _mm256_cvtepu16_epi32(_mm_loadu_si128(reinterpret_cast<const __m128i*>(gr + x)));
+        const __m256i vf = _mm256_cvtepu16_epi32(_mm_loadu_si128(reinterpret_cast<const __m128i*>(fr + x)));
+        store_u32x8_as_u16(normalized_diff_8_avx2(vg, vf), orow + x);
+    }
+    for (; x < w; ++x) {
+        const int64_t value = gr[x];
+        const int64_t mean = fr[x];
+        const int64_t maximum = value > mean ? value : mean;
+        const int64_t denom = (maximum * 100LL * int64_t{0x80008001LL}) >> 47;
+        const int64_t num = 110LL * std::abs(value - mean);
+        const int64_t res = (num * static_cast<int64_t>(kActivityRecipU32[static_cast<size_t>(denom)])) >> 32;
+        orow[x] = static_cast<uint16_t>(res < 65535LL ? res : 65535LL);
+    }
+}
+
+void detail_row_u16_avx2(
+    const uint16_t* r0, const uint16_t* r1, uint16_t* orow, int64_t full_w
+) {
+    const __m256i m16 = _mm256_set1_epi32(0xFFFF);
+    int64_t x = 0;
+    for (; x + 8 <= full_w; x += 8) {
+        const __m256i p0 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(r0 + 2 * x));
+        const __m256i p1 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(r1 + 2 * x));
+        const __m256i va = _mm256_and_si256(p0, m16);
+        const __m256i vb = _mm256_srli_epi32(p0, 16);
+        const __m256i vc = _mm256_and_si256(p1, m16);
+        const __m256i vd = _mm256_srli_epi32(p1, 16);
+        const __m256i sum = _mm256_add_epi32(_mm256_add_epi32(va, vb), _mm256_add_epi32(vc, vd));
+        const __m256i vmean = _mm256_srli_epi32(sum, 2);
+        const __m256i ea = normalized_diff_8_avx2(va, vmean);
+        const __m256i eb = normalized_diff_8_avx2(vb, vmean);
+        const __m256i ec = normalized_diff_8_avx2(vc, vmean);
+        const __m256i ed = normalized_diff_8_avx2(vd, vmean);
+        const __m256i etot = _mm256_add_epi32(_mm256_add_epi32(ea, eb), _mm256_add_epi32(ec, ed));
+        store_u32x8_as_u16(_mm256_srli_epi32(etot, 2), orow + x);
+    }
+    for (; x < full_w; ++x) {
+        const int64_t x0 = 2 * x;
+        const int64_t a = r0[x0], b = r0[x0 + 1], c = r1[x0], d = r1[x0 + 1];
+        const int64_t mean = (a + b + c + d) >> 2;
+        auto ndiff = [mean](int64_t v) -> int64_t {
+            const int64_t maximum = v > mean ? v : mean;
+            const int64_t denom = (maximum * 100LL * int64_t{0x80008001LL}) >> 47;
+            const int64_t num = 110LL * std::abs(v - mean);
+            const int64_t res = (num * static_cast<int64_t>(kActivityRecipU32[static_cast<size_t>(denom)])) >> 32;
+            return res < 65535LL ? res : 65535LL;
+        };
+        orow[x] = static_cast<uint16_t>((ndiff(a) + ndiff(b) + ndiff(c) + ndiff(d)) >> 2);
+    }
+}
+
+void select_activity_row_u16_avx2(
+    const uint16_t* ar, uint16_t* br, uint16_t* dr, uint16_t* vr,
+    int64_t w, uint16_t code, uint32_t reciprocal_u32
+) {
+    const __m256i all_ones = _mm256_set1_epi32(-1);
+    const __m256i v_code = _mm256_set1_epi16(static_cast<int16_t>(code));
+    const __m256i v_recip = _mm256_set1_epi32(static_cast<int32_t>(reciprocal_u32));
+    int64_t x = 0;
+    for (; x + 16 <= w; x += 16) {
+        const __m256i va = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(ar + x));
+        if (vr != nullptr) {
+            const __m256i lo32 = _mm256_cvtepu16_epi32(_mm256_castsi256_si128(va));
+            const __m256i hi32 = _mm256_cvtepu16_epi32(_mm256_extracti128_si256(va, 1));
+            auto mul_r = [&](__m256i v) -> __m256i {
+                const __m256i qe = _mm256_srli_epi64(_mm256_mul_epu32(v, v_recip), 32);
+                const __m256i qo = _mm256_mul_epu32(_mm256_srli_epi64(v, 32), v_recip);
+                return _mm256_blend_epi32(qe, qo, 0xAA);
+            };
+            const __m256i add16 = _mm256_permute4x64_epi64(
+                _mm256_packus_epi32(mul_r(lo32), mul_r(hi32)), 0xD8);
+            const __m256i prev_v = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(vr + x));
+            _mm256_storeu_si256(
+                reinterpret_cast<__m256i*>(vr + x), _mm256_add_epi16(prev_v, add16));
+        }
+        const __m256i vb = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(br + x));
+        const __m256i le_b = _mm256_cmpeq_epi16(_mm256_max_epu16(va, vb), vb);
+        if (!_mm256_testc_si256(le_b, all_ones)) {
+            const __m256i vd = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(dr + x));
+            _mm256_storeu_si256(reinterpret_cast<__m256i*>(br + x), _mm256_blendv_epi8(va, vb, le_b));
+            _mm256_storeu_si256(reinterpret_cast<__m256i*>(dr + x), _mm256_blendv_epi8(v_code, vd, le_b));
+        }
+    }
+    for (; x < w; ++x) {
+        const uint16_t val = ar[x];
+        if (vr != nullptr) {
+            vr[x] = static_cast<uint16_t>(
+                vr[x] + ((static_cast<uint64_t>(val) * reciprocal_u32) >> 32u));
+        }
+        if (val > br[x]) {
+            br[x] = val;
+            dr[x] = code;
+        }
+    }
+}
+
+void select_detail_row_u16_avx2(
+    const uint16_t* ar, uint16_t* br, uint16_t* sr, uint16_t* wr,
+    int64_t w, uint16_t code
+) {
+    const __m256i all_ones = _mm256_set1_epi32(-1);
+    const __m256i v_code = _mm256_set1_epi16(static_cast<int16_t>(code));
+    int64_t x = 0;
+    for (; x + 16 <= w; x += 16) {
+        const __m256i va = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(ar + x));
+        const __m256i vs = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(sr + x));
+        const __m256i max_s = _mm256_max_epu16(va, vs);
+        const __m256i vb = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(br + x));
+        const __m256i le_b = _mm256_cmpeq_epi16(_mm256_max_epu16(va, vb), vb);
+        if (_mm256_testc_si256(le_b, all_ones)) {
+            const __m256i le_s = _mm256_cmpeq_epi16(max_s, vs);
+            if (!_mm256_testc_si256(le_s, all_ones)) {
+                _mm256_storeu_si256(reinterpret_cast<__m256i*>(sr + x), max_s);
+            }
+            continue;
+        }
+        const __m256i vw = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(wr + x));
+        const __m256i new_sr = _mm256_blendv_epi8(vb, max_s, le_b);
+        const __m256i new_br = _mm256_blendv_epi8(va, vb, le_b);
+        const __m256i new_wr = _mm256_blendv_epi8(v_code, vw, le_b);
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(sr + x), new_sr);
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(br + x), new_br);
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(wr + x), new_wr);
+    }
+    for (; x < w; ++x) {
+        const uint16_t val = ar[x];
+        if (val > br[x]) {
+            sr[x] = br[x];
+            br[x] = val;
+            wr[x] = code;
+        } else if (val > sr[x]) {
+            sr[x] = val;
+        }
+    }
+}
+
+void output_u16_to_u8_row_avx2(
+    const uint16_t* cr, uint8_t* orow, int64_t elems, bool e37
+) {
+    const __m256i v_one = _mm256_set1_epi16(1);
+    int64_t x = 0;
+    for (; x + 16 <= elems; x += 16) {
+        __m256i v = _mm256_srli_epi16(
+            _mm256_loadu_si256(reinterpret_cast<const __m256i*>(cr + x)), 8);
+        if (e37) {
+            v = _mm256_subs_epu16(v, v_one);
+        }
+        const __m256i p = _mm256_permute4x64_epi64(_mm256_packus_epi16(v, v), 0xD8);
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(orow + x), _mm256_castsi256_si128(p));
+    }
+    for (; x < elems; ++x) {
+        uint16_t v = cr[x] >> 8u;
+        if (e37 && v > 0) {
+            v -= 1;
+        }
+        orow[x] = static_cast<uint8_t>(v);
+    }
+}
+
+void output_u16_to_f32_row_avx2(
+    const uint16_t* cr, float* orow, int64_t elems, float factor
+) {
+    const __m256 v_fac = _mm256_set1_ps(factor);
+    int64_t x = 0;
+    for (; x + 8 <= elems; x += 8) {
+        const __m256 vf = _mm256_cvtepi32_ps(
+            _mm256_cvtepu16_epi32(_mm_loadu_si128(reinterpret_cast<const __m128i*>(cr + x))));
+        _mm256_storeu_ps(orow + x, _mm256_mul_ps(vf, v_fac));
+    }
+    for (; x < elems; ++x) {
+        orow[x] = static_cast<float>(cr[x]) * factor;
+    }
+}
+
+void tile_accumulate_3c_row_avx2(
+    const void* tr, int src_kind, const float* wr,
+    float* ar, float* war, int64_t fw
+) {
+    const __m256i perm0 = _mm256_setr_epi32(0, 0, 0, 1, 1, 1, 2, 2);
+    const __m256i perm1 = _mm256_setr_epi32(2, 3, 3, 3, 4, 4, 4, 5);
+    const __m256i perm2 = _mm256_setr_epi32(5, 5, 6, 6, 6, 7, 7, 7);
+    int64_t dx = 0;
+    for (; dx + 8 <= fw; dx += 8) {
+        const __m256 w = _mm256_loadu_ps(wr + dx);
+        _mm256_storeu_ps(war + dx, _mm256_add_ps(_mm256_loadu_ps(war + dx), w));
+        const __m256 w_blk0 = _mm256_permutevar8x32_ps(w, perm0);
+        const __m256 w_blk1 = _mm256_permutevar8x32_ps(w, perm1);
+        const __m256 w_blk2 = _mm256_permutevar8x32_ps(w, perm2);
+
+        __m256 t0, t1, t2;
+        if (src_kind == 0) {
+            const float* src = static_cast<const float*>(tr) + dx * 3;
+            t0 = _mm256_loadu_ps(src);
+            t1 = _mm256_loadu_ps(src + 8);
+            t2 = _mm256_loadu_ps(src + 16);
+        } else if (src_kind == 1) {
+            const uint8_t* src = static_cast<const uint8_t*>(tr) + dx * 3;
+            const __m128i b01 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src));
+            const __m128i b2 = _mm_loadl_epi64(reinterpret_cast<const __m128i*>(src + 16));
+            t0 = _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(b01));
+            t1 = _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(_mm_srli_si128(b01, 8)));
+            t2 = _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(b2));
+        } else {
+            const uint16_t* src = static_cast<const uint16_t*>(tr) + dx * 3;
+            t0 = _mm256_cvtepi32_ps(_mm256_cvtepu16_epi32(_mm_loadu_si128(reinterpret_cast<const __m128i*>(src))));
+            t1 = _mm256_cvtepi32_ps(_mm256_cvtepu16_epi32(_mm_loadu_si128(reinterpret_cast<const __m128i*>(src + 8))));
+            t2 = _mm256_cvtepi32_ps(_mm256_cvtepu16_epi32(_mm_loadu_si128(reinterpret_cast<const __m128i*>(src + 16))));
+        }
+
+        float* dst = ar + dx * 3;
+        _mm256_storeu_ps(dst, _mm256_add_ps(_mm256_loadu_ps(dst), _mm256_mul_ps(t0, w_blk0)));
+        _mm256_storeu_ps(dst + 8, _mm256_add_ps(_mm256_loadu_ps(dst + 8), _mm256_mul_ps(t1, w_blk1)));
+        _mm256_storeu_ps(dst + 16, _mm256_add_ps(_mm256_loadu_ps(dst + 16), _mm256_mul_ps(t2, w_blk2)));
+    }
+    for (; dx < fw; ++dx) {
+        const float w = wr[dx];
+        war[dx] += w;
+        const int64_t o = dx * 3;
+        if (src_kind == 0) {
+            const float* src = static_cast<const float*>(tr) + o;
+            ar[o] += src[0] * w;
+            ar[o + 1] += src[1] * w;
+            ar[o + 2] += src[2] * w;
+        } else if (src_kind == 1) {
+            const uint8_t* src = static_cast<const uint8_t*>(tr) + o;
+            ar[o] += static_cast<float>(src[0]) * w;
+            ar[o + 1] += static_cast<float>(src[1]) * w;
+            ar[o + 2] += static_cast<float>(src[2]) * w;
+        } else {
+            const uint16_t* src = static_cast<const uint16_t*>(tr) + o;
+            ar[o] += static_cast<float>(src[0]) * w;
+            ar[o + 1] += static_cast<float>(src[1]) * w;
+            ar[o + 2] += static_cast<float>(src[2]) * w;
+        }
+    }
+}
+
+namespace {
+
+inline double hsum_pd4(__m256d v) {
+    const __m128d lo = _mm256_castpd256_pd128(v);
+    const __m128d hi = _mm256_extractf128_pd(v, 1);
+    const __m128d s = _mm_add_pd(lo, hi);
+    return _mm_cvtsd_f64(_mm_hadd_pd(s, s));
+}
+
+template <int P>
+inline void ecc_prepare_level_row_impl(
+    const float* rm1, const float* r0, const float* rp1,
+    int x0, int rw, double cx, double inv_s, double mean_t, double g_scale, double v,
+    bool sample_h_row, bool stride2,
+    float* dst_t0, float* dst_gx, float* dst_gy,
+    double& norm_T2, double* js, double* tv, double* H_tri
+) {
+    const __m256d v_mean = _mm256_set1_pd(mean_t);
+    const __m256d v_gs = _mm256_set1_pd(g_scale);
+    const __m256d v_two = _mm256_set1_pd(2.0);
+    const __m256d v_vv = _mm256_set1_pd(v);
+    const __m256d v_cx = _mm256_set1_pd(cx);
+    const __m256d v_invs = _mm256_set1_pd(inv_s);
+    const __m256d v_step = _mm256_set1_pd(4.0);
+    __m256d vx = _mm256_setr_pd(
+        static_cast<double>(x0), static_cast<double>(x0 + 1),
+        static_cast<double>(x0 + 2), static_cast<double>(x0 + 3));
+
+    __m256d v_norm = _mm256_setzero_pd();
+    __m256d v_js[P];
+    __m256d v_tv[P];
+    for (int r = 0; r < P; ++r) {
+        v_js[r] = _mm256_setzero_pd();
+        v_tv[r] = _mm256_setzero_pd();
+    }
+    constexpr int kTri = (P * (P + 1)) / 2;
+    __m256d v_h256[kTri];
+    __m128d v_h128[kTri];
+    if (sample_h_row) {
+        for (int k = 0; k < kTri; ++k) {
+            v_h256[k] = _mm256_setzero_pd();
+            v_h128[k] = _mm_setzero_pd();
+        }
+    }
+
+    int rx = 0;
+    for (; rx + 4 <= rw; rx += 4) {
+        const int x = x0 + rx;
+        const __m256d u = _mm256_mul_pd(_mm256_sub_pd(vx, v_cx), v_invs);
+        vx = _mm256_add_pd(vx, v_step);
+
+        const __m256d tl = _mm256_cvtps_pd(_mm_loadu_ps(rm1 + x - 1));
+        const __m256d tc = _mm256_cvtps_pd(_mm_loadu_ps(rm1 + x));
+        const __m256d tr = _mm256_cvtps_pd(_mm_loadu_ps(rm1 + x + 1));
+
+        const __m256d ml = _mm256_cvtps_pd(_mm_loadu_ps(r0 + x - 1));
+        const __m256d c0 = _mm256_cvtps_pd(_mm_loadu_ps(r0 + x));
+        const __m256d mr = _mm256_cvtps_pd(_mm_loadu_ps(r0 + x + 1));
+
+        const __m256d bl = _mm256_cvtps_pd(_mm_loadu_ps(rp1 + x - 1));
+        const __m256d bc = _mm256_cvtps_pd(_mm_loadu_ps(rp1 + x));
+        const __m256d br = _mm256_cvtps_pd(_mm_loadu_ps(rp1 + x + 1));
+
+        const __m256d t0 = _mm256_sub_pd(c0, v_mean);
+        const __m256d gx_pos = _mm256_add_pd(_mm256_add_pd(tr, _mm256_mul_pd(v_two, mr)), br);
+        const __m256d gx_neg = _mm256_add_pd(_mm256_add_pd(tl, _mm256_mul_pd(v_two, ml)), bl);
+        const __m256d gx = _mm256_mul_pd(_mm256_sub_pd(gx_pos, gx_neg), v_gs);
+
+        const __m256d gy_pos = _mm256_add_pd(_mm256_add_pd(bl, _mm256_mul_pd(v_two, bc)), br);
+        const __m256d gy_neg = _mm256_add_pd(_mm256_add_pd(tl, _mm256_mul_pd(v_two, tc)), tr);
+        const __m256d gy = _mm256_mul_pd(_mm256_sub_pd(gy_pos, gy_neg), v_gs);
+
+        _mm_storeu_ps(dst_t0 + rx, _mm256_cvtpd_ps(t0));
+        _mm_storeu_ps(dst_gx + rx, _mm256_cvtpd_ps(gx));
+        _mm_storeu_ps(dst_gy + rx, _mm256_cvtpd_ps(gy));
+
+        v_norm = _mm256_add_pd(v_norm, _mm256_mul_pd(t0, t0));
+
+        __m256d J[P];
+        if constexpr (P == 6) {
+            J[0] = _mm256_mul_pd(gx, u);
+            J[1] = _mm256_mul_pd(gy, u);
+            J[2] = _mm256_mul_pd(gx, v_vv);
+            J[3] = _mm256_mul_pd(gy, v_vv);
+            J[4] = gx;
+            J[5] = gy;
+        } else {
+            const __m256d guv = _mm256_add_pd(_mm256_mul_pd(gx, u), _mm256_mul_pd(gy, v_vv));
+            const __m256d neg_guv = _mm256_sub_pd(_mm256_setzero_pd(), guv);
+            J[0] = _mm256_mul_pd(gx, u);
+            J[1] = _mm256_mul_pd(gy, u);
+            J[2] = _mm256_mul_pd(u, neg_guv);
+            J[3] = _mm256_mul_pd(gx, v_vv);
+            J[4] = _mm256_mul_pd(gy, v_vv);
+            J[5] = _mm256_mul_pd(v_vv, neg_guv);
+            J[6] = gx;
+            J[7] = gy;
+        }
+
+        for (int r = 0; r < P; ++r) {
+            v_js[r] = _mm256_add_pd(v_js[r], J[r]);
+            v_tv[r] = _mm256_add_pd(v_tv[r], _mm256_mul_pd(J[r], t0));
+        }
+
+        if (sample_h_row) {
+            if (!stride2) {
+                int idx = 0;
+                for (int r = 0; r < P; ++r) {
+                    const __m256d jr = J[r];
+                    for (int c = r; c < P; ++c) {
+                        v_h256[idx] = _mm256_add_pd(v_h256[idx], _mm256_mul_pd(jr, J[c]));
+                        ++idx;
+                    }
+                }
+            } else {
+                // Sample even rx lanes (0 and 2) when stride2 is active.
+                __m128d j_even[P];
+                for (int r = 0; r < P; ++r) {
+                    j_even[r] = _mm_shuffle_pd(
+                        _mm256_castpd256_pd128(J[r]), _mm256_extractf128_pd(J[r], 1), 0);
+                }
+                int idx = 0;
+                for (int r = 0; r < P; ++r) {
+                    const __m128d jr = j_even[r];
+                    for (int c = r; c < P; ++c) {
+                        v_h128[idx] = _mm_add_pd(v_h128[idx], _mm_mul_pd(jr, j_even[c]));
+                        ++idx;
+                    }
+                }
+            }
+        }
+    }
+
+    double s_norm = hsum_pd4(v_norm);
+    double s_js[P];
+    double s_tv[P];
+    for (int r = 0; r < P; ++r) {
+        s_js[r] = hsum_pd4(v_js[r]);
+        s_tv[r] = hsum_pd4(v_tv[r]);
+    }
+    double s_h[kTri]{};
+    if (sample_h_row) {
+        if (!stride2) {
+            for (int k = 0; k < kTri; ++k) {
+                s_h[k] = hsum_pd4(v_h256[k]);
+            }
+        } else {
+            for (int k = 0; k < kTri; ++k) {
+                s_h[k] = _mm_cvtsd_f64(_mm_hadd_pd(v_h128[k], v_h128[k]));
+            }
+        }
+    }
+
+    for (; rx < rw; ++rx) {
+        const int x = x0 + rx;
+        const double u = (static_cast<double>(x) - cx) * inv_s;
+        const double t0 = static_cast<double>(r0[x]) - mean_t;
+        const double tl = static_cast<double>(rm1[x - 1]);
+        const double tc = static_cast<double>(rm1[x]);
+        const double tr = static_cast<double>(rm1[x + 1]);
+        const double ml = static_cast<double>(r0[x - 1]);
+        const double mr = static_cast<double>(r0[x + 1]);
+        const double bl = static_cast<double>(rp1[x - 1]);
+        const double bc = static_cast<double>(rp1[x]);
+        const double br = static_cast<double>(rp1[x + 1]);
+        const double gx = ((tr + 2.0 * mr + br) - (tl + 2.0 * ml + bl)) * g_scale;
+        const double gy = ((bl + 2.0 * bc + br) - (tl + 2.0 * tc + tr)) * g_scale;
+        dst_t0[rx] = static_cast<float>(t0);
+        dst_gx[rx] = static_cast<float>(gx);
+        dst_gy[rx] = static_cast<float>(gy);
+        s_norm += t0 * t0;
+
+        double J[P];
+        if constexpr (P == 6) {
+            J[0] = gx * u; J[1] = gy * u; J[2] = gx * v;
+            J[3] = gy * v; J[4] = gx;     J[5] = gy;
+        } else {
+            const double guv = gx * u + gy * v;
+            J[0] = gx * u; J[1] = gy * u; J[2] = -u * guv;
+            J[3] = gx * v; J[4] = gy * v; J[5] = -v * guv;
+            J[6] = gx;     J[7] = gy;
+        }
+        for (int r = 0; r < P; ++r) {
+            s_js[r] += J[r];
+            s_tv[r] += J[r] * t0;
+        }
+        if (sample_h_row && ((rx & 1) == 0 || !stride2)) {
+            int idx = 0;
+            for (int r = 0; r < P; ++r) {
+                const double jr = J[r];
+                for (int c = r; c < P; ++c) {
+                    s_h[idx++] += jr * J[c];
+                }
+            }
+        }
+    }
+
+    norm_T2 += s_norm;
+    for (int r = 0; r < P; ++r) {
+        js[r] += s_js[r];
+        tv[r] += s_tv[r];
+    }
+    if (sample_h_row) {
+        for (int k = 0; k < kTri; ++k) {
+            H_tri[k] += s_h[k];
+        }
+    }
+}
+
+inline __m256d ecc_bilinear_4_avx2(
+    const float* src_data, int w, int h, __m256d sx, __m256d sy
+) {
+    const __m128i vi_zero = _mm_setzero_si128();
+    const __m128i vi_wm2 = _mm_set1_epi32(std::max(0, w - 2));
+    const __m128i vi_hm2 = _mm_set1_epi32(std::max(0, h - 2));
+    const __m128i ix_v = _mm_min_epi32(_mm_max_epi32(_mm256_cvttpd_epi32(sx), vi_zero), vi_wm2);
+    const __m128i iy_v = _mm_min_epi32(_mm_max_epi32(_mm256_cvttpd_epi32(sy), vi_zero), vi_hm2);
+    alignas(16) int32_t ix[4], iy[4];
+    _mm_store_si128(reinterpret_cast<__m128i*>(ix), ix_v);
+    _mm_store_si128(reinterpret_cast<__m128i*>(iy), iy_v);
+
+    const __m256d fx = _mm256_sub_pd(sx, _mm256_cvtepi32_pd(ix_v));
+    const __m256d fy = _mm256_sub_pd(sy, _mm256_cvtepi32_pd(iy_v));
+
+    alignas(16) float q00[4], q01[4], q10[4], q11[4];
+    for (int m = 0; m < 4; ++m) {
+        const float* p0 = src_data + static_cast<int64_t>(iy[m]) * w + ix[m];
+        const float* p1 = p0 + w;
+        q00[m] = p0[0];
+        q01[m] = p0[1];
+        q10[m] = p1[0];
+        q11[m] = p1[1];
+    }
+    const __m256d v00 = _mm256_cvtps_pd(_mm_load_ps(q00));
+    const __m256d v01 = _mm256_cvtps_pd(_mm_load_ps(q01));
+    const __m256d v10 = _mm256_cvtps_pd(_mm_load_ps(q10));
+    const __m256d v11 = _mm256_cvtps_pd(_mm_load_ps(q11));
+
+    const __m256d v_one = _mm256_set1_pd(1.0);
+    const __m256d top = _mm256_add_pd(v00, _mm256_mul_pd(fx, _mm256_sub_pd(v01, v00)));
+    const __m256d bot = _mm256_add_pd(v10, _mm256_mul_pd(fx, _mm256_sub_pd(v11, v10)));
+    return _mm256_add_pd(
+        _mm256_mul_pd(top, _mm256_sub_pd(v_one, fy)),
+        _mm256_mul_pd(bot, fy));
+}
+
+}  // namespace
+
+void ecc_prepare_level_row_avx2(
+    const float* rm1, const float* r0, const float* rp1,
+    int x0, int rw, double cx, double inv_s, double mean_t, double g_scale, double v,
+    int p_count, bool sample_h_row, bool stride2,
+    float* dst_t0, float* dst_gx, float* dst_gy,
+    double& norm_T2, double* js, double* tv, double* H_tri
+) {
+    if (p_count == 6) {
+        ecc_prepare_level_row_impl<6>(
+            rm1, r0, rp1, x0, rw, cx, inv_s, mean_t, g_scale, v,
+            sample_h_row, stride2, dst_t0, dst_gx, dst_gy, norm_T2, js, tv, H_tri);
+    } else {
+        ecc_prepare_level_row_impl<8>(
+            rm1, r0, rp1, x0, rw, cx, inv_s, mean_t, g_scale, v,
+            sample_h_row, stride2, dst_t0, dst_gx, dst_gy, norm_T2, js, tv, H_tri);
+    }
+}
+
+void ecc_ic_pass_all_in_row_p6_avx2(
+    const float* src_data, int w, int h,
+    const float* t0_row, const float* gx_row, const float* gy_row, int rw,
+    double sx0, double sy0, double dsx, double dsy,
+    double u0, double inv_s, double v,
+    double& rs_iw, double& rs_iw2, double& rs_tiw, double* raw_g
+) {
+    __m256d v_iw = _mm256_setzero_pd();
+    __m256d v_iw2 = _mm256_setzero_pd();
+    __m256d v_tiw = _mm256_setzero_pd();
+    __m256d v_rg[6];
+    for (int k = 0; k < 6; ++k) {
+        v_rg[k] = _mm256_setzero_pd();
+    }
+    const __m256d v_offsets = _mm256_setr_pd(0.0, 1.0, 2.0, 3.0);
+    const __m256d v_dsx = _mm256_set1_pd(dsx);
+    const __m256d v_dsy = _mm256_set1_pd(dsy);
+    const __m256d v_invs = _mm256_set1_pd(inv_s);
+    const __m256d v_vv = _mm256_set1_pd(v);
+    __m256d v_sx = _mm256_add_pd(_mm256_set1_pd(sx0), _mm256_mul_pd(v_offsets, v_dsx));
+    __m256d v_sy = _mm256_add_pd(_mm256_set1_pd(sy0), _mm256_mul_pd(v_offsets, v_dsy));
+    __m256d v_u = _mm256_add_pd(_mm256_set1_pd(u0), _mm256_mul_pd(v_offsets, v_invs));
+    const __m256d v_dsx4 = _mm256_set1_pd(dsx * 4.0);
+    const __m256d v_dsy4 = _mm256_set1_pd(dsy * 4.0);
+    const __m256d v_invs4 = _mm256_set1_pd(inv_s * 4.0);
+
+    int rx = 0;
+    for (; rx + 4 <= rw; rx += 4) {
+        const __m256d iw = ecc_bilinear_4_avx2(src_data, w, h, v_sx, v_sy);
+        const __m256d t0 = _mm256_cvtps_pd(_mm_loadu_ps(t0_row + rx));
+        const __m256d gxw = _mm256_mul_pd(_mm256_cvtps_pd(_mm_loadu_ps(gx_row + rx)), iw);
+        const __m256d gyw = _mm256_mul_pd(_mm256_cvtps_pd(_mm_loadu_ps(gy_row + rx)), iw);
+
+        v_iw = _mm256_add_pd(v_iw, iw);
+        v_iw2 = _mm256_add_pd(v_iw2, _mm256_mul_pd(iw, iw));
+        v_tiw = _mm256_add_pd(v_tiw, _mm256_mul_pd(t0, iw));
+
+        v_rg[0] = _mm256_add_pd(v_rg[0], _mm256_mul_pd(gxw, v_u));
+        v_rg[1] = _mm256_add_pd(v_rg[1], _mm256_mul_pd(gyw, v_u));
+        v_rg[2] = _mm256_add_pd(v_rg[2], _mm256_mul_pd(gxw, v_vv));
+        v_rg[3] = _mm256_add_pd(v_rg[3], _mm256_mul_pd(gyw, v_vv));
+        v_rg[4] = _mm256_add_pd(v_rg[4], gxw);
+        v_rg[5] = _mm256_add_pd(v_rg[5], gyw);
+
+        v_sx = _mm256_add_pd(v_sx, v_dsx4);
+        v_sy = _mm256_add_pd(v_sy, v_dsy4);
+        v_u = _mm256_add_pd(v_u, v_invs4);
+    }
+
+    double s_iw = hsum_pd4(v_iw);
+    double s_iw2 = hsum_pd4(v_iw2);
+    double s_tiw = hsum_pd4(v_tiw);
+    double s_rg[6];
+    for (int k = 0; k < 6; ++k) {
+        s_rg[k] = hsum_pd4(v_rg[k]);
+    }
+
+    double sx = sx0 + static_cast<double>(rx) * dsx;
+    double sy = sy0 + static_cast<double>(rx) * dsy;
+    double u = u0 + static_cast<double>(rx) * inv_s;
+    for (; rx < rw; ++rx) {
+        int ix = static_cast<int>(sx);
+        int iy = static_cast<int>(sy);
+        if (ix >= w - 1) ix = w - 2; else if (ix < 0) ix = 0;
+        if (iy >= h - 1) iy = h - 2; else if (iy < 0) iy = 0;
+        const double fx = sx - static_cast<double>(ix);
+        const double fy = sy - static_cast<double>(iy);
+        const float* p0 = src_data + static_cast<int64_t>(iy) * w + ix;
+        const float* p1 = p0 + w;
+        const double v00 = p0[0], v01 = p0[1], v10 = p1[0], v11 = p1[1];
+        const double iw = (v00 + fx * (v01 - v00)) * (1.0 - fy)
+                        + (v10 + fx * (v11 - v10)) * fy;
+        const double t0 = t0_row[rx];
+        const double gxw = static_cast<double>(gx_row[rx]) * iw;
+        const double gyw = static_cast<double>(gy_row[rx]) * iw;
+        s_iw += iw;
+        s_iw2 += iw * iw;
+        s_tiw += t0 * iw;
+        s_rg[0] += gxw * u;
+        s_rg[1] += gyw * u;
+        s_rg[2] += gxw * v;
+        s_rg[3] += gyw * v;
+        s_rg[4] += gxw;
+        s_rg[5] += gyw;
+        sx += dsx;
+        sy += dsy;
+        u += inv_s;
+    }
+
+    rs_iw += s_iw;
+    rs_iw2 += s_iw2;
+    rs_tiw += s_tiw;
+    for (int k = 0; k < 6; ++k) {
+        raw_g[k] += s_rg[k];
+    }
+}
+
+void ecc_ic_pass_all_in_row_p8_avx2(
+    const float* src_data, int w, int h,
+    const float* t0_row, const float* gx_row, const float* gy_row, int rw,
+    double nsx0, double nsy0, double den0,
+    double d_nsx, double d_nsy, double d_den,
+    double u0, double inv_s, double v,
+    double& rs_iw, double& rs_iw2, double& rs_tiw, double* raw_g
+) {
+    __m256d v_iw = _mm256_setzero_pd();
+    __m256d v_iw2 = _mm256_setzero_pd();
+    __m256d v_tiw = _mm256_setzero_pd();
+    __m256d v_rg[8];
+    for (int k = 0; k < 8; ++k) {
+        v_rg[k] = _mm256_setzero_pd();
+    }
+    const __m256d v_one = _mm256_set1_pd(1.0);
+    const __m256d v_offsets = _mm256_setr_pd(0.0, 1.0, 2.0, 3.0);
+    const __m256d v_dnsx = _mm256_set1_pd(d_nsx);
+    const __m256d v_dnsy = _mm256_set1_pd(d_nsy);
+    const __m256d v_dden = _mm256_set1_pd(d_den);
+    const __m256d v_invs = _mm256_set1_pd(inv_s);
+    const __m256d v_vv = _mm256_set1_pd(v);
+    __m256d v_nsx = _mm256_add_pd(_mm256_set1_pd(nsx0), _mm256_mul_pd(v_offsets, v_dnsx));
+    __m256d v_nsy = _mm256_add_pd(_mm256_set1_pd(nsy0), _mm256_mul_pd(v_offsets, v_dnsy));
+    __m256d v_den = _mm256_add_pd(_mm256_set1_pd(den0), _mm256_mul_pd(v_offsets, v_dden));
+    __m256d v_u = _mm256_add_pd(_mm256_set1_pd(u0), _mm256_mul_pd(v_offsets, v_invs));
+    const __m256d v_dnsx4 = _mm256_set1_pd(d_nsx * 4.0);
+    const __m256d v_dnsy4 = _mm256_set1_pd(d_nsy * 4.0);
+    const __m256d v_dden4 = _mm256_set1_pd(d_den * 4.0);
+    const __m256d v_invs4 = _mm256_set1_pd(inv_s * 4.0);
+
+    int rx = 0;
+    for (; rx + 4 <= rw; rx += 4) {
+        const __m256d inv_d = _mm256_div_pd(v_one, v_den);
+        const __m256d sx = _mm256_mul_pd(v_nsx, inv_d);
+        const __m256d sy = _mm256_mul_pd(v_nsy, inv_d);
+        const __m256d iw = ecc_bilinear_4_avx2(src_data, w, h, sx, sy);
+
+        const __m256d t0 = _mm256_cvtps_pd(_mm_loadu_ps(t0_row + rx));
+        const __m256d gxw = _mm256_mul_pd(_mm256_cvtps_pd(_mm_loadu_ps(gx_row + rx)), iw);
+        const __m256d gyw = _mm256_mul_pd(_mm256_cvtps_pd(_mm_loadu_ps(gy_row + rx)), iw);
+        const __m256d guvw = _mm256_add_pd(_mm256_mul_pd(gxw, v_u), _mm256_mul_pd(gyw, v_vv));
+
+        v_iw = _mm256_add_pd(v_iw, iw);
+        v_iw2 = _mm256_add_pd(v_iw2, _mm256_mul_pd(iw, iw));
+        v_tiw = _mm256_add_pd(v_tiw, _mm256_mul_pd(t0, iw));
+
+        v_rg[0] = _mm256_add_pd(v_rg[0], _mm256_mul_pd(gxw, v_u));
+        v_rg[1] = _mm256_add_pd(v_rg[1], _mm256_mul_pd(gyw, v_u));
+        v_rg[2] = _mm256_sub_pd(v_rg[2], _mm256_mul_pd(v_u, guvw));
+        v_rg[3] = _mm256_add_pd(v_rg[3], _mm256_mul_pd(gxw, v_vv));
+        v_rg[4] = _mm256_add_pd(v_rg[4], _mm256_mul_pd(gyw, v_vv));
+        v_rg[5] = _mm256_sub_pd(v_rg[5], _mm256_mul_pd(v_vv, guvw));
+        v_rg[6] = _mm256_add_pd(v_rg[6], gxw);
+        v_rg[7] = _mm256_add_pd(v_rg[7], gyw);
+
+        v_nsx = _mm256_add_pd(v_nsx, v_dnsx4);
+        v_nsy = _mm256_add_pd(v_nsy, v_dnsy4);
+        v_den = _mm256_add_pd(v_den, v_dden4);
+        v_u = _mm256_add_pd(v_u, v_invs4);
+    }
+
+    double s_iw = hsum_pd4(v_iw);
+    double s_iw2 = hsum_pd4(v_iw2);
+    double s_tiw = hsum_pd4(v_tiw);
+    double s_rg[8];
+    for (int k = 0; k < 8; ++k) {
+        s_rg[k] = hsum_pd4(v_rg[k]);
+    }
+
+    double nsx = nsx0 + static_cast<double>(rx) * d_nsx;
+    double nsy = nsy0 + static_cast<double>(rx) * d_nsy;
+    double den = den0 + static_cast<double>(rx) * d_den;
+    double u = u0 + static_cast<double>(rx) * inv_s;
+    for (; rx < rw; ++rx) {
+        const double inv_d = 1.0 / den;
+        const double sx = nsx * inv_d;
+        const double sy = nsy * inv_d;
+        int ix = static_cast<int>(sx);
+        int iy = static_cast<int>(sy);
+        if (ix >= w - 1) ix = w - 2; else if (ix < 0) ix = 0;
+        if (iy >= h - 1) iy = h - 2; else if (iy < 0) iy = 0;
+        const double fx = sx - static_cast<double>(ix);
+        const double fy = sy - static_cast<double>(iy);
+        const float* p0 = src_data + static_cast<int64_t>(iy) * w + ix;
+        const float* p1 = p0 + w;
+        const double v00 = p0[0], v01 = p0[1], v10 = p1[0], v11 = p1[1];
+        const double iw = (v00 + fx * (v01 - v00)) * (1.0 - fy)
+                        + (v10 + fx * (v11 - v10)) * fy;
+        const double t0 = t0_row[rx];
+        const double gxw = static_cast<double>(gx_row[rx]) * iw;
+        const double gyw = static_cast<double>(gy_row[rx]) * iw;
+        const double guvw = gxw * u + gyw * v;
+        s_iw += iw;
+        s_iw2 += iw * iw;
+        s_tiw += t0 * iw;
+        s_rg[0] += gxw * u;
+        s_rg[1] += gyw * u;
+        s_rg[2] -= u * guvw;
+        s_rg[3] += gxw * v;
+        s_rg[4] += gyw * v;
+        s_rg[5] -= v * guvw;
+        s_rg[6] += gxw;
+        s_rg[7] += gyw;
+        nsx += d_nsx;
+        nsy += d_nsy;
+        den += d_den;
+        u += inv_s;
+    }
+
+    rs_iw += s_iw;
+    rs_iw2 += s_iw2;
+    rs_tiw += s_tiw;
+    for (int k = 0; k < 8; ++k) {
+        raw_g[k] += s_rg[k];
+    }
+}
+
 #else
 
 void pyr_down_vertical_row_f32_avx2(const float*, const float*, const float*, const float*, float*, int64_t, float, float) {}
@@ -2300,6 +3151,18 @@ void align_fast_downsize_u16_row_avx2(const uint16_t*, const uint16_t*, uint16_t
 void align_warp_alignment_row_avx2(const void*, int64_t, int64_t, bool, void*, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, bool, float, float, float, float, float, float, float) {}
 void align_score_chunk_packed_avx2(const uint16_t*, int64_t, const uint16_t*, int64_t, int64_t, int64_t, const float*, int64_t, const float*, int64_t, const float*, const float*, const float*, const float*, const float*, const float*, const float*, const float*, const int64_t*, int64_t, int64_t, int64_t*, int64_t*, int64_t*) {}
 void align_score_grid_4d_packed_avx2(const uint16_t*, int64_t, const uint16_t*, int64_t, int64_t, int64_t, const float*, int64_t, const float*, int64_t, float, float, const float*, const float*, const float*, int64_t, int64_t, const float*, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t*, float*, int64_t) {}
+void resample_u16_vert_acc_row_avx2_fma(const uint16_t*, float*, int64_t, float) {}
+void resample_u16_horiz_rep_row_avx2_fma(const float*, float*, uint16_t*, int64_t, int64_t, const int32_t*, const float*, int64_t, int64_t, int64_t) {}
+void activity_row_u16_avx2(const uint16_t*, const uint16_t*, uint16_t*, int64_t) {}
+void detail_row_u16_avx2(const uint16_t*, const uint16_t*, uint16_t*, int64_t) {}
+void select_activity_row_u16_avx2(const uint16_t*, uint16_t*, uint16_t*, uint16_t*, int64_t, uint16_t, uint32_t) {}
+void select_detail_row_u16_avx2(const uint16_t*, uint16_t*, uint16_t*, uint16_t*, int64_t, uint16_t) {}
+void output_u16_to_u8_row_avx2(const uint16_t*, uint8_t*, int64_t, bool) {}
+void output_u16_to_f32_row_avx2(const uint16_t*, float*, int64_t, float) {}
+void tile_accumulate_3c_row_avx2(const void*, int, const float*, float*, float*, int64_t) {}
+void ecc_prepare_level_row_avx2(const float*, const float*, const float*, int, int, double, double, double, double, double, int, bool, bool, float*, float*, float*, double&, double*, double*, double*) {}
+void ecc_ic_pass_all_in_row_p6_avx2(const float*, int, int, const float*, const float*, const float*, int, double, double, double, double, double, double, double, double&, double&, double&, double*) {}
+void ecc_ic_pass_all_in_row_p8_avx2(const float*, int, int, const float*, const float*, const float*, int, double, double, double, double, double, double, double, double, double, double&, double&, double&, double*) {}
 
 #endif
 
