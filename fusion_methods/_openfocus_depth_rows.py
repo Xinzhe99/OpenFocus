@@ -7,7 +7,7 @@ Q12 state and guided forward history independently of these planes.
 import numpy as np
 
 from fusion_methods._depth_kernel import njit
-from fusion_methods._openfocus_kernels import merge_rows
+from fusion_methods._openfocus_kernels import merge_rows, _nb_merge_rows
 
 
 def reciprocal32(divisor):
@@ -30,7 +30,7 @@ def _normalized_difference(value, mean):
 
 
 @njit(nogil=True)
-def activity_rows(gray, fine, output, start, stop):
+def _nb_activity_rows(gray, fine, output, start, stop):
     if start >= stop or gray.size == 0:
         return
     width = gray.shape[1]
@@ -53,7 +53,7 @@ def _reflect(position, length):
 
 
 @njit(nogil=True)
-def detail_rows(gray, output, row_offset):
+def _nb_detail_rows(gray, output, row_offset):
     """Pool normalized full-resolution high-frequency energy onto the depth grid."""
     if output.size == 0 or gray.size == 0:
         return
@@ -100,7 +100,7 @@ def detail_rows(gray, output, row_offset):
 
 
 @njit(nogil=True)
-def smooth_detail_rows(detail, output, start, stop, columns=None):
+def _nb_smooth_detail_rows(detail, output, start, stop, columns=None):
     """Slide an integer sum vertically and horizontally over reflected edges."""
     if start >= stop or detail.size == 0:
         return
@@ -153,7 +153,7 @@ def smooth_detail_rows(detail, output, start, stop, columns=None):
 
 
 @njit(nogil=True)
-def initialize_detail_rows(second, winner, start, stop):
+def _nb_initialize_detail_rows(second, winner, start, stop):
     width = second.shape[1]
     for y in range(start, stop):
         s_row = second[y]
@@ -164,7 +164,7 @@ def initialize_detail_rows(second, winner, start, stop):
 
 
 @njit(nogil=True)
-def select_detail_rows(activity, best, second, winner, code, start, stop):
+def _nb_select_detail_rows(activity, best, second, winner, code, start, stop):
     width = activity.shape[1]
     for y in range(start, stop):
         a_row = activity[y]
@@ -182,7 +182,7 @@ def select_detail_rows(activity, best, second, winner, code, start, stop):
 
 
 @njit(nogil=True)
-def detail_confidence_rows(coarse, best, second, start, stop):
+def _nb_detail_confidence_rows(coarse, best, second, start, stop):
     width = coarse.shape[1]
     for y in range(start, stop):
         c_row = coarse[y]
@@ -196,7 +196,7 @@ def detail_confidence_rows(coarse, best, second, start, stop):
 
 
 @njit(nogil=True)
-def apply_detail_rows(depth, mask, winner, start, stop):
+def _nb_apply_detail_rows(depth, mask, winner, start, stop):
     width = depth.shape[1]
     for y in range(start, stop):
         d_row = depth[y]
@@ -208,7 +208,7 @@ def apply_detail_rows(depth, mask, winner, start, stop):
 
 
 @njit(nogil=True)
-def initialize_activity_rows(activity, depth, votes, reciprocal, start, stop):
+def _nb_initialize_activity_rows(activity, depth, votes, reciprocal, start, stop):
     width = activity.shape[1]
     if votes is not None:
         r64 = np.int64(reciprocal)
@@ -228,7 +228,7 @@ def initialize_activity_rows(activity, depth, votes, reciprocal, start, stop):
 
 
 @njit(nogil=True)
-def select_activity_rows(activity, best, depth, votes, code, reciprocal, start, stop):
+def _nb_select_activity_rows(activity, best, depth, votes, code, reciprocal, start, stop):
     width = activity.shape[1]
     if votes is not None:
         r64 = np.int64(reciprocal)
@@ -256,7 +256,7 @@ def select_activity_rows(activity, best, depth, votes, code, reciprocal, start, 
 
 
 @njit(nogil=True)
-def confidence_hist_rows(best, votes, histogram, start, stop):
+def _nb_confidence_hist_rows(best, votes, histogram, start, stop):
     width = best.shape[1]
     for y in range(start, stop):
         b_row = best[y]
@@ -270,7 +270,7 @@ def confidence_hist_rows(best, votes, histogram, start, stop):
 
 
 @njit(nogil=True)
-def guide_rows(best, lut, start, stop):
+def _nb_guide_rows(best, lut, start, stop):
     ratio = np.float32(4095.0 / 65535.0)
     one = np.float32(1)
     width = best.shape[1]
@@ -287,7 +287,7 @@ def guide_rows(best, lut, start, stop):
 
 
 @njit(nogil=True)
-def snap_rows(depth, lut, step, start, stop):
+def _nb_snap_rows(depth, lut, step, start, stop):
     if start >= stop or depth.size == 0:
         return
     half = step >> 1
@@ -330,7 +330,7 @@ def snap_rows(depth, lut, step, start, stop):
 
 
 @njit(nogil=True)
-def merge_active_rows(accumulator, image, depth, index, step, scale, active, tile_width):
+def _nb_merge_active_rows(accumulator, image, depth, index, step, scale, active, tile_width):
     """Merge each contiguous run of active tiles in a row band."""
     col = 0
     while col < active.size:
@@ -341,5 +341,180 @@ def merge_active_rows(accumulator, image, depth, index, step, scale, active, til
         while col < active.size and active[col]:
             col += 1
         right = min(col * tile_width, depth.shape[1])
-        merge_rows(accumulator[:, left:right], image[:, left:right], depth[:, left:right],
-                   index, step, 0, depth.shape[0], scale, False, False)
+        _nb_merge_rows(accumulator[:, left:right], image[:, left:right], depth[:, left:right],
+                       index, step, 0, depth.shape[0], scale, False, False)
+
+
+def merge_active_rows(accumulator, image, depth, index, step, scale, active, tile_width):
+    """Merge each contiguous run of active tiles in a row band."""
+    from core._native import load_native
+    native = load_native()
+    if native is not None and hasattr(native, 'of_merge_rows'):
+        col = 0
+        active_arr = np.asarray(active)
+        total_active = active_arr.size
+        width = depth.shape[1]
+        height = depth.shape[0]
+        while col < total_active:
+            if not active_arr[col]:
+                col += 1
+                continue
+            left = col * tile_width
+            while col < total_active and active_arr[col]:
+                col += 1
+            right = min(col * tile_width, width)
+            merge_rows(accumulator[:, left:right], image[:, left:right], depth[:, left:right],
+                       index, step, 0, height, scale, False, False)
+        return
+    _nb_merge_active_rows(accumulator, image, depth, index, step, scale, active, tile_width)
+
+
+def _as_ndarray(arr):
+    return None if arr is None else (arr if type(arr) is np.ndarray else arr.view(np.ndarray))
+
+
+def _u16_rows_2d(*arrays):
+    return all(arr.dtype == np.uint16 and arr.ndim == 2 and arr.strides[1] == 2 for arr in arrays)
+
+
+def activity_rows(gray, fine, output, start, stop):
+    from core._native import load_native
+    native = load_native()
+    if (native is not None and hasattr(native, 'of_activity_rows')
+            and _u16_rows_2d(gray, fine, output)):
+        native.of_activity_rows(_as_ndarray(gray), _as_ndarray(fine),
+                                _as_ndarray(output), int(start), int(stop))
+        return
+    _nb_activity_rows(gray, fine, output, start, stop)
+
+
+def detail_rows(gray, output, row_offset):
+    from core._native import load_native
+    native = load_native()
+    if (native is not None and hasattr(native, 'of_detail_rows')
+            and _u16_rows_2d(gray, output)):
+        native.of_detail_rows(_as_ndarray(gray), _as_ndarray(output), int(row_offset))
+        return
+    _nb_detail_rows(gray, output, row_offset)
+
+
+def smooth_detail_rows(detail, output, start, stop, columns=None):
+    from core._native import load_native
+    native = load_native()
+    if (native is not None and hasattr(native, 'of_smooth_detail_rows')
+            and columns is None
+            and detail.dtype in (np.uint16, np.int32)
+            and output.dtype in (np.uint16, np.int32)
+            and detail.ndim == 2 and output.ndim == 2
+            and detail.strides[1] == detail.itemsize
+            and output.strides[1] == output.itemsize):
+        native.of_smooth_detail_rows(_as_ndarray(detail), _as_ndarray(output),
+                                     int(start), int(stop))
+        return
+    _nb_smooth_detail_rows(detail, output, start, stop, columns)
+
+
+def initialize_detail_rows(second, winner, start, stop):
+    from core._native import load_native
+    native = load_native()
+    if (native is not None and hasattr(native, 'of_initialize_detail_rows')
+            and _u16_rows_2d(second, winner)):
+        native.of_initialize_detail_rows(_as_ndarray(second), _as_ndarray(winner),
+                                         int(start), int(stop))
+        return
+    _nb_initialize_detail_rows(second, winner, start, stop)
+
+
+def select_detail_rows(activity, best, second, winner, code, start, stop):
+    from core._native import load_native
+    native = load_native()
+    if (native is not None and hasattr(native, 'of_select_detail_rows')
+            and _u16_rows_2d(activity, best, second, winner)):
+        native.of_select_detail_rows(_as_ndarray(activity), _as_ndarray(best),
+                                     _as_ndarray(second), _as_ndarray(winner),
+                                     int(code), int(start), int(stop))
+        return
+    _nb_select_detail_rows(activity, best, second, winner, code, start, stop)
+
+
+def detail_confidence_rows(coarse, best, second, start, stop):
+    from core._native import load_native
+    native = load_native()
+    if (native is not None and hasattr(native, 'of_detail_confidence_rows')
+            and _u16_rows_2d(coarse, best, second)):
+        native.of_detail_confidence_rows(_as_ndarray(coarse), _as_ndarray(best),
+                                         _as_ndarray(second), int(start), int(stop))
+        return
+    _nb_detail_confidence_rows(coarse, best, second, start, stop)
+
+
+def apply_detail_rows(depth, mask, winner, start, stop):
+    from core._native import load_native
+    native = load_native()
+    if (native is not None and hasattr(native, 'of_apply_detail_rows')
+            and _u16_rows_2d(depth, mask, winner)):
+        native.of_apply_detail_rows(_as_ndarray(depth), _as_ndarray(mask),
+                                    _as_ndarray(winner), int(start), int(stop))
+        return
+    _nb_apply_detail_rows(depth, mask, winner, start, stop)
+
+
+def initialize_activity_rows(activity, depth, votes, reciprocal, start, stop):
+    from core._native import load_native
+    native = load_native()
+    if (native is not None and hasattr(native, 'of_initialize_activity_rows')
+            and _u16_rows_2d(activity, depth)
+            and (votes is None or _u16_rows_2d(votes))):
+        native.of_initialize_activity_rows(_as_ndarray(activity), _as_ndarray(depth),
+                                           _as_ndarray(votes), int(reciprocal),
+                                           int(start), int(stop))
+        return
+    _nb_initialize_activity_rows(activity, depth, votes, reciprocal, start, stop)
+
+
+def select_activity_rows(activity, best, depth, votes, code, reciprocal, start, stop):
+    from core._native import load_native
+    native = load_native()
+    if (native is not None and hasattr(native, 'of_select_activity_rows')
+            and _u16_rows_2d(activity, best, depth)
+            and (votes is None or _u16_rows_2d(votes))):
+        native.of_select_activity_rows(_as_ndarray(activity), _as_ndarray(best),
+                                       _as_ndarray(depth), _as_ndarray(votes),
+                                       int(code), int(reciprocal), int(start), int(stop))
+        return
+    _nb_select_activity_rows(activity, best, depth, votes, code, reciprocal, start, stop)
+
+
+def confidence_hist_rows(best, votes, histogram, start, stop):
+    from core._native import load_native
+    native = load_native()
+    if (native is not None and hasattr(native, 'of_confidence_hist_rows')
+            and _u16_rows_2d(best, votes)
+            and histogram.dtype == np.int64 and histogram.ndim == 1
+            and histogram.strides[0] == 8):
+        native.of_confidence_hist_rows(_as_ndarray(best), _as_ndarray(votes),
+                                       _as_ndarray(histogram), int(start), int(stop))
+        return
+    _nb_confidence_hist_rows(best, votes, histogram, start, stop)
+
+
+def guide_rows(best, lut, start, stop):
+    from core._native import load_native
+    native = load_native()
+    if (native is not None and hasattr(native, 'of_guide_rows')
+            and _u16_rows_2d(best)):
+        lut_f32 = lut if (lut.dtype == np.float32 and lut.strides[0] == 4) else np.ascontiguousarray(lut, dtype=np.float32)
+        native.of_guide_rows(_as_ndarray(best), _as_ndarray(lut_f32), int(start), int(stop))
+        return
+    _nb_guide_rows(best, lut, start, stop)
+
+
+def snap_rows(depth, lut, step, start, stop):
+    from core._native import load_native
+    native = load_native()
+    if (native is not None and hasattr(native, 'of_snap_rows')
+            and _u16_rows_2d(depth)):
+        lut_i32 = lut if (lut.dtype == np.int32 and lut.strides[0] == 4) else np.ascontiguousarray(lut, dtype=np.int32)
+        native.of_snap_rows(_as_ndarray(depth), _as_ndarray(lut_i32), int(step), int(start), int(stop))
+        return
+    _nb_snap_rows(depth, lut, step, start, stop)

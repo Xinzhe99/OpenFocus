@@ -258,13 +258,41 @@ def _resample_rows(source, output, vertical_indices, vertical_weights,
                 _store_code(repeated, x, sums[x])
 
 
+_DEFAULT_RESAMPLE_ROWS = _resample_rows
+
+
 def _resample(source, axes, should_cancel):
+    from core._native import load_native
     from fusion_methods.openfocus_ab import _check_cancel
 
     check = cancellation_check(lambda: _check_cancel(should_cancel))
     check()
     vertical, horizontal = axes
     height, width = vertical.indices.shape[0], horizontal.indices.shape[0]
+    native = load_native() if (_resample_rows is _DEFAULT_RESAMPLE_ROWS
+                               and source.dtype == np.uint16
+                               and source.ndim == 2
+                               and source.strides[1] == 2) else None
+    if native is not None and hasattr(native, 'of_resample_rows_u16'):
+        output = create_transient_frame((height, width), np.uint16)
+        src_nd = source if type(source) is np.ndarray else source.view(np.ndarray)
+        out_nd = output if type(output) is np.ndarray else output.view(np.ndarray)
+
+        def native_rows(start, stop):
+            check()
+            native.of_resample_rows_u16(
+                src_nd, out_nd,
+                vertical.indices, vertical.weights, vertical.counts,
+                horizontal.indices, horizontal.weights, horizontal.counts,
+                start, stop,
+            )
+            check()
+
+        run_bands(height, _BAND_ROWS, native_rows,
+                  scratch_bytes=source.shape[1] * 4 + width * 4)
+        check()
+        return output
+
     if not _resample_rows.signatures:
         require_memory(DEPTH_KERNEL_STARTUP_BYTES)
     output = create_transient_frame((height, width), np.uint16)

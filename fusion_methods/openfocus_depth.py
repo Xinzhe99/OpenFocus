@@ -59,11 +59,48 @@ _AXIS_BLOCK_ROWS = 2048
 
 
 def _axis(src, guide, main, low, count, axis, cancel, allocate, *, output=None):
+    from core._native import load_native
+    from fusion_methods import _depth_kernel
     from fusion_methods._depth_kernel import axis_block, _pack_rows_T, _unpack_rows_T
+    from fusion_methods._openfocus_execution import _current
     cancel = cancellation_check(cancel)
 
-    src = np.asarray(src)
-    guide = None if guide is None else np.asarray(guide)
+    src_arr = np.asarray(src)
+    if type(src_arr) is not np.ndarray:
+        src_arr = src_arr.view(np.ndarray)
+    guide_arr = None if guide is None else np.asarray(guide)
+    if guide_arr is not None and type(guide_arr) is not np.ndarray:
+        guide_arr = guide_arr.view(np.ndarray)
+    native = (load_native()
+              if axis_block is getattr(_depth_kernel, '_DEFAULT_AXIS_BLOCK', axis_block)
+              else None)
+    if (native is not None and hasattr(native, 'of_depth_axis_iir')
+            and src_arr.ndim == 2 and src_arr.dtype == np.uint16 and src_arr.flags.c_contiguous
+            and (guide_arr is None or (guide_arr.ndim == 2 and guide_arr.dtype == np.uint16
+                                       and guide_arr.flags.c_contiguous))):
+        h, w = src_arr.shape
+        out_arr = allocate((h, w), np.uint16) if output is None else output
+        out_pixels = np.asarray(out_arr)
+        if type(out_pixels) is not np.ndarray:
+            out_pixels = out_pixels.view(np.ndarray)
+        if out_pixels.ndim == 2 and out_pixels.dtype == np.uint16 and out_pixels.flags.c_contiguous:
+            q = t = tm = tl = 0
+            if guide_arr is None:
+                q = _weight(main)
+                t = (4096 - q) >> 1
+            else:
+                tm = (4096 - _weight(main)) >> 1
+                tl = (4096 - _weight(low)) >> 1
+            job = _current.get()
+            n_threads = job.workers if (job is not None and job.row_mode) else 1
+            cancel()
+            native.of_depth_axis_iir(src_arr, guide_arr, out_pixels, q, t, tm, tl,
+                                     int(count), 1 if axis else 0, max(1, int(n_threads)))
+            cancel()
+            return out_arr
+
+    src = src_arr
+    guide = guide_arr
     if axis:
         orig_src = src
         orig_guide = guide

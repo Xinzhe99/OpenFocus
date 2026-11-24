@@ -18,7 +18,7 @@ _BURT_CACHE_MIN_PIXELS = 512 * 512
 
 
 @njit(nogil=True)
-def gray_rows(image, output, start, stop, scale, depth_color=False):
+def _nb_gray_rows(image, output, start, stop, scale, depth_color=False):
     if start >= stop or image.size == 0:
         return
     width = image.shape[1]
@@ -133,7 +133,7 @@ def table_rows(image, table, output, start, stop):
 
 
 @njit(nogil=True)
-def down2_rows(image, output, start, stop, scale=1):
+def _nb_down2_rows(image, output, start, stop, scale=1):
     if start >= stop or image.size == 0 or output.size == 0:
         return
     height, width = image.shape[:2]
@@ -250,7 +250,7 @@ def _burt_laplacian_row(gray, reduced, output, y):
 
 
 @njit(nogil=True)
-def burt_laplacian_rows(gray, reduced, output, start, stop):
+def _nb_burt_laplacian_rows(gray, reduced, output, start, stop):
     for y in range(start, stop):
         _burt_laplacian_row(gray, reduced, output[y], y)
 
@@ -836,11 +836,72 @@ def burt_cache_bytes(gray, levels):
     return 4 * (16 * half_width + 10)
 
 
+def _as_ndarray(arr):
+    return arr if type(arr) is np.ndarray else arr.view(np.ndarray)
+
+
+def _native_ok_arr(arr):
+    return isinstance(arr, np.ndarray) and arr.dtype in (np.uint8, np.uint16, np.int32, np.uint32, np.float32)
+
+
+def gray_rows(image, output, start, stop, scale, depth_color=False):
+    from core._native import load_native
+    native = load_native()
+    if (native is not None and hasattr(native, 'of_gray_rows')
+            and _native_ok_arr(image) and _native_ok_arr(output)):
+        native.of_gray_rows(_as_ndarray(image), _as_ndarray(output),
+                            int(start), int(stop), int(scale), bool(depth_color))
+        return
+    _nb_gray_rows(image, output, start, stop, scale, depth_color)
+
+
+def down2_rows(image, output, start, stop, scale=1):
+    from core._native import load_native
+    native = load_native()
+    if (native is not None and hasattr(native, 'of_down2_rows')
+            and _native_ok_arr(image) and _native_ok_arr(output)):
+        native.of_down2_rows(_as_ndarray(image), _as_ndarray(output),
+                             int(start), int(stop), int(scale))
+        return
+    _nb_down2_rows(image, output, start, stop, scale)
+
+
+def burt_laplacian_rows(gray, reduced, output, start, stop):
+    from core._native import load_native
+    native = load_native()
+    if (native is not None and hasattr(native, 'of_burt_laplacian_rows')
+            and gray.dtype in (np.uint16, np.int32)
+            and reduced.dtype in (np.uint16, np.int32)
+            and output.dtype in (np.uint16, np.int32)):
+        native.of_burt_laplacian_rows(_as_ndarray(gray), _as_ndarray(reduced),
+                                      _as_ndarray(output), int(start), int(stop))
+        return
+    _nb_burt_laplacian_rows(gray, reduced, output, start, stop)
+
+
 def select_rows(image, gray, half_gray, laplacians, levels, response, best, output,
                 start, stop, scale, first, background):
     """Choose the native kernel before compiling a signature."""
     if start >= stop or response.size == 0 or gray.size == 0:
         return A_SATURATED
+    from core._native import load_native
+    native = load_native()
+    if (native is not None and hasattr(native, 'of_select_rows_a')
+            and image.dtype in (np.uint8, np.uint16)
+            and gray.dtype in (np.uint16, np.int32)
+            and half_gray.dtype == np.int32
+            and (laplacians.size == 0 or laplacians.dtype == np.int32)
+            and best.dtype == np.int32
+            and output.dtype == np.uint16
+            and background.dtype == np.float32
+            and gray.strides[-1] == gray.itemsize
+            and half_gray.strides[-1] == half_gray.itemsize):
+        return int(native.of_select_rows_a(
+            _as_ndarray(image), _as_ndarray(gray), _as_ndarray(half_gray),
+            _as_ndarray(laplacians), int(levels), _as_ndarray(best),
+            _as_ndarray(output), int(start), int(stop), int(scale),
+            bool(first), _as_ndarray(background),
+        ))
     if burt_cache_bytes(gray, levels):
         if (image.ndim == 3 and image.shape[2] == 3 and scale == 1
                 and output.ndim == 3 and (background.shape[0] > 0 or not first)):
@@ -938,7 +999,7 @@ def _select_rows_scalar(image, gray, half_gray, laplacians, levels, response, be
 
 
 @njit(nogil=True)
-def blend_low_response_rows(output, best, background, start, stop):
+def _nb_blend_low_response_rows(output, best, background, start, stop):
     width = best.shape[1]
     statistics = background.view(np.uint32)
     if output.ndim == 2:
@@ -1001,8 +1062,8 @@ def blend_low_response_rows(output, best, background, start, stop):
 
 
 @njit(nogil=True)
-def merge_rows(accumulator, image, depth, index, step, start, stop,
-               scale, first, reverse):
+def _nb_merge_rows(accumulator, image, depth, index, step, start, stop,
+                   scale, first, reverse):
     width = depth.shape[1]
     if first:
         if image.ndim == 2:
@@ -1152,7 +1213,7 @@ def merge_rows(accumulator, image, depth, index, step, start, stop,
 
 
 @njit(nogil=True)
-def active_source_rows(depth, step, active, start, stop):
+def _nb_active_source_rows(depth, step, active, start, stop):
     """Mark every source that a depth code in these rows gives merge weight.
 
     A code selects source code // step (clipped to the stack), and also the
@@ -1188,7 +1249,7 @@ def active_source_rows(depth, step, active, start, stop):
 
 
 @njit(nogil=True)
-def output_u16_to_f32_rows(code, output, start, stop, factor):
+def _nb_output_u16_to_f32_rows(code, output, start, stop, factor):
     """Convert uint16 code bands into float32 output without extra band copies."""
     width = code.shape[1]
     f32 = np.float32(factor)
@@ -1217,7 +1278,7 @@ def output_u16_to_f32_rows(code, output, start, stop, factor):
 
 
 @njit(nogil=True)
-def output_u16_to_u8_rows(code, output, start, stop, e37=False):
+def _nb_output_u16_to_u8_rows(code, output, start, stop, e37=False):
     """Quantize uint16 code bands into uint8 output with optional E-37 offset."""
     width = code.shape[1]
     if code.ndim == 2:
@@ -1273,3 +1334,68 @@ def output_u16_to_u8_rows(code, output, start, stop, e37=False):
                 for x in range(width):
                     for ch in range(channels):
                         o_row[x, ch] = c_row[x, ch] >> np.uint16(8)
+
+
+def blend_low_response_rows(output, best, background, start, stop):
+    from core._native import load_native
+    native = load_native()
+    if (native is not None and hasattr(native, 'of_blend_low_response_rows')
+            and output.dtype == np.uint16 and best.dtype == np.int32
+            and background.dtype == np.float32):
+        native.of_blend_low_response_rows(_as_ndarray(output), _as_ndarray(best),
+                                          _as_ndarray(background), int(start), int(stop))
+        return
+    _nb_blend_low_response_rows(output, best, background, start, stop)
+
+
+def merge_rows(accumulator, image, depth, index, step, start, stop,
+               scale, first, reverse):
+    from core._native import load_native
+    native = load_native()
+    if (native is not None and hasattr(native, 'of_merge_rows')
+            and accumulator.dtype == np.uint16
+            and image.dtype in (np.uint8, np.uint16)
+            and depth.dtype == np.uint16 and depth.strides[1] == 2):
+        native.of_merge_rows(_as_ndarray(accumulator), _as_ndarray(image),
+                             _as_ndarray(depth), int(index), int(step),
+                             int(start), int(stop), int(scale), bool(first), bool(reverse))
+        return
+    _nb_merge_rows(accumulator, image, depth, index, step, start, stop,
+                   scale, first, reverse)
+
+
+def active_source_rows(depth, step, active, start, stop):
+    from core._native import load_native
+    native = load_native()
+    if (native is not None and hasattr(native, 'of_active_source_rows')
+            and depth.dtype == np.uint16 and depth.strides[1] == 2
+            and active.dtype == np.bool_ and active.flags.c_contiguous):
+        native.of_active_source_rows(_as_ndarray(depth), int(step),
+                                     _as_ndarray(active.view(np.uint8)),
+                                     int(start), int(stop))
+        return
+    _nb_active_source_rows(depth, step, active, start, stop)
+
+
+def output_u16_to_f32_rows(code, output, start, stop, factor):
+    from core._native import load_native
+    native = load_native()
+    if (native is not None and hasattr(native, 'of_output_u16_to_f32_rows')
+            and code.dtype == np.uint16 and output.dtype == np.float32
+            and (code.ndim != 2 or (code.strides[1] == 2 and output.strides[1] == 4))):
+        native.of_output_u16_to_f32_rows(_as_ndarray(code), _as_ndarray(output),
+                                         int(start), int(stop), float(factor))
+        return
+    _nb_output_u16_to_f32_rows(code, output, start, stop, factor)
+
+
+def output_u16_to_u8_rows(code, output, start, stop, e37=False):
+    from core._native import load_native
+    native = load_native()
+    if (native is not None and hasattr(native, 'of_output_u16_to_u8_rows')
+            and code.dtype == np.uint16 and output.dtype == np.uint8
+            and (code.ndim != 2 or (code.strides[1] == 2 and output.strides[1] == 1))):
+        native.of_output_u16_to_u8_rows(_as_ndarray(code), _as_ndarray(output),
+                                        int(start), int(stop), bool(e37))
+        return
+    _nb_output_u16_to_u8_rows(code, output, start, stop, e37)
