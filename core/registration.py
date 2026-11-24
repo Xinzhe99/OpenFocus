@@ -2282,6 +2282,8 @@ class ImageRegistration:
 
         with heavy_job(should_cancel), scratch_directory():
             _check_cancel(should_cancel)
+            from core.source_frames import SOURCE_CACHE
+            SOURCE_CACHE.adapt_to_memory()
             self.alignment_plan = None
             self._perspective_stages = []
             self._dispatch.clear()

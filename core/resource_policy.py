@@ -27,6 +27,7 @@ from typing import Optional
 import numpy as np
 
 from constants import FRAME_RAM_BUDGET_BYTES
+_DEFAULT_FRAME_RAM_BUDGET_BYTES = FRAME_RAM_BUDGET_BYTES
 from utils import memory
 from utils.logging_setup import debug_enabled, log_action, log_debug
 from utils.platform_utils import cpu_limits
@@ -572,6 +573,15 @@ def require_memory(required_bytes: int, snapshot: Optional[ResourceSnapshot] = N
         admission=_memory_rejection_details(required_bytes, snapshot, ceiling))
 
 
+def _adaptive_frame_ram_cap(snapshot: ResourceSnapshot) -> int:
+    """Scale transient frame RAM limit on >16 GiB workstations cleanly."""
+    total_ram = getattr(snapshot, 'total_ram', 0) or 0
+    if (FRAME_RAM_BUDGET_BYTES != _DEFAULT_FRAME_RAM_BUDGET_BYTES
+            or total_ram <= 16 * 1024 ** 3):
+        return int(FRAME_RAM_BUDGET_BYTES)
+    return min(2 * 1024 ** 3, max(int(FRAME_RAM_BUDGET_BYTES), int(total_ram) // 32))
+
+
 def make_process_budget(parent_frame_bytes: int = 0,
                         snapshot: Optional[ResourceSnapshot] = None) -> ProcessBudget:
     """Freeze the envelope for one isolated child job before it starts work.
@@ -594,7 +604,7 @@ def make_process_budget(parent_frame_bytes: int = 0,
         snapshot = replace(snapshot, process_commit_headroom=None)
     comfortable = _detected_ram_budget(snapshot)
     maximum = _detected_ram_ceiling(snapshot)
-    frame = (min(FRAME_RAM_BUDGET_BYTES, comfortable // 2)
+    frame = (min(_adaptive_frame_ram_cap(snapshot), comfortable // 2)
              if snapshot.ram_known else 0)
     return ProcessBudget(comfortable_ram=comfortable, maximum_ram=maximum,
                          frame_ram=max(0, frame - int(parent_frame_bytes)))
@@ -645,13 +655,13 @@ def process_budget(budget: Optional[ProcessBudget] = None):
 def frame_ram_budget(snapshot: ResourceSnapshot) -> int:
     """Managed frame RAM this process may hold in RAM right now.
 
-    Snapshots and numerical scratch share ``FRAME_RAM_BUDGET_BYTES`` and at
+    Snapshots and numerical scratch share the machine-scaled frame cap and at
     most half the comfortable budget; an active child job's slice is the
     tighter bound. Unknown memory keeps the disk-mapping fallback (zero).
     """
     if not snapshot.ram_known:
         return 0
-    cap = min(FRAME_RAM_BUDGET_BYTES, max(0, ram_budget(snapshot)) // 2)
+    cap = min(_adaptive_frame_ram_cap(snapshot), max(0, ram_budget(snapshot)) // 2)
     active = _active_process_budget()
     if active is not None:
         cap = min(cap, max(0, int(active.frame_ram)))

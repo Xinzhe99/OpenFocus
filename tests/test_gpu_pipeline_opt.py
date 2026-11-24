@@ -400,3 +400,171 @@ def test_active_sources_parallel_matches_tiled():
     tiled = _active_sources(depth, count, None, tiles=tiles)
     parallel = _active_sources(depth, count, None, tiles=None)
     np.testing.assert_array_equal(parallel, tiled)
+
+
+def test_adaptive_frame_ram_budget_scales_by_machine_tier(monkeypatch):
+    GiB = 1024 ** 3
+    MiB = 1024 ** 2
+
+    snap_8g_tight = resource_policy.ResourceSnapshot(
+        available_ram=1600 * MiB, total_ram=8 * GiB, physical_cores=4, logical_cpus=8,
+    )
+    snap_16g = resource_policy.ResourceSnapshot(
+        available_ram=10 * GiB, total_ram=16 * GiB, physical_cores=8, logical_cpus=16,
+    )
+    snap_32g = resource_policy.ResourceSnapshot(
+        available_ram=20 * GiB, total_ram=32 * GiB, physical_cores=12, logical_cpus=24,
+    )
+    snap_64g = resource_policy.ResourceSnapshot(
+        available_ram=48 * GiB, total_ram=64 * GiB, physical_cores=16, logical_cpus=32,
+    )
+    snap_128g = resource_policy.ResourceSnapshot(
+        available_ram=96 * GiB, total_ram=128 * GiB, physical_cores=32, logical_cpus=64,
+    )
+
+    assert resource_policy.frame_ram_budget(snap_8g_tight) < 384 * MiB
+    assert resource_policy.frame_ram_budget(snap_16g) == 384 * MiB
+    assert resource_policy.frame_ram_budget(snap_32g) == 1024 * MiB
+    assert resource_policy.frame_ram_budget(snap_64g) == 2048 * MiB
+    assert resource_policy.frame_ram_budget(snap_128g) == 2048 * MiB
+
+    monkeypatch.setattr(resource_policy, 'probe_memory', lambda: snap_64g)
+    proc_64g = resource_policy.make_process_budget(snapshot=snap_64g)
+    assert proc_64g.frame_ram == 2048 * MiB
+
+    monkeypatch.setattr(resource_policy, 'FRAME_RAM_BUDGET_BYTES', 256 * MiB)
+    assert resource_policy.frame_ram_budget(snap_64g) == 256 * MiB
+
+
+def test_adaptive_source_cache_trims_on_low_ram_and_grows_on_high_ram():
+    from core.source_frames import FrameCache
+
+    GiB = 1024 ** 3
+    MiB = 1024 ** 2
+    cache = FrameCache()
+
+    for idx in range(2):
+        cache.put(('frame', idx), np.empty((40, 1024, 1024), dtype=np.uint8))
+    assert cache.bytes == 80 * MiB
+
+    low_snap = resource_policy.ResourceSnapshot(
+        available_ram=1500 * MiB, total_ram=8 * GiB, physical_cores=4, logical_cpus=8,
+    )
+    adapted_low = cache.adapt_to_memory(low_snap)
+    assert adapted_low == 64 * MiB
+    assert cache.max_bytes == 64 * MiB
+    assert cache.bytes <= 64 * MiB
+
+    high_snap = resource_policy.ResourceSnapshot(
+        available_ram=48 * GiB, total_ram=64 * GiB, physical_cores=16, logical_cpus=32,
+    )
+    adapted_high = cache.adapt_to_memory(high_snap)
+    assert adapted_high == GiB
+    assert cache.max_bytes == GiB
+
+    # Explicit max_bytes override pins capacity and is not overwritten.
+    cache.max_bytes = 128 * MiB
+    assert cache.adapt_to_memory(high_snap) == 128 * MiB
+
+
+def test_openfocus_alignment_low_ram_spill_degrade_and_zero_budget_reject(monkeypatch):
+    from core import frame_storage
+    from utils import logging_setup
+
+    GiB = 1024 ** 3
+    MiB = 1024 ** 2
+
+    # 1500x1500 uint8 pair: unspilled estimate ~52 MiB; clamped spillable estimate ~25 MiB.
+    arr = np.zeros((1500, 1500, 3), dtype=np.uint8)
+    sources = [arr, arr.copy()]
+    monkeypatch.setattr(resource_policy, 'FRAME_RAM_BUDGET_BYTES', 1 * MiB)
+    reserve_16g = max(
+        resource_policy.RESERVE_BYTES,
+        min(int(resource_policy.RESERVE_RATIO * (16 * GiB)), resource_policy.RESERVE_CAP_BYTES),
+    )
+    tight_avail = reserve_16g + 40 * MiB
+    tight_snap = resource_policy.ResourceSnapshot(
+        available_ram=tight_avail, total_ram=16 * GiB, physical_cores=8, logical_cpus=16,
+    )
+    monkeypatch.setattr(resource_policy, 'probe_resources', lambda kind='CPU': tight_snap)
+    monkeypatch.setattr(resource_policy, 'probe_memory', lambda: tight_snap)
+
+    logged = []
+    monkeypatch.setattr(logging_setup, 'log_action', lambda event, **kw: logged.append((event, kw)))
+    plan = openfocus_alignment.estimate_alignment_plan(sources)
+    assert len(plan.transforms) == 2
+    assert any(event == 'openfocus_alignment_low_ram_degrade' for event, _ in logged)
+
+    transient_calls = []
+    orig_create = frame_storage.create_transient_frame
+
+    def spy_transient(shape, dtype):
+        transient_calls.append((shape, np.dtype(dtype)))
+        return orig_create(shape, dtype)
+
+    monkeypatch.setattr(frame_storage, 'create_transient_frame', spy_transient)
+    plane = openfocus_alignment._alloc_alignment_plane((2048, 2048), np.uint16, spillable=True)
+    assert plane.shape == (2048, 2048)
+    assert transient_calls == [((2048, 2048), np.dtype(np.uint16))]
+
+    zero_snap = resource_policy.ResourceSnapshot(
+        available_ram=0, total_ram=16 * GiB, physical_cores=8, logical_cpus=16,
+        commit_headroom=0,
+    )
+    monkeypatch.setattr(resource_policy, 'probe_resources', lambda kind='CPU': zero_snap)
+    monkeypatch.setattr(resource_policy, 'probe_memory', lambda: zero_snap)
+    with pytest.raises(resource_policy.ResourceLimitError):
+        openfocus_alignment.estimate_alignment_plan(sources)
+
+    # Preflight on 8K and 12K with 6 GiB free on 16 GiB laptop reports no false RAM warning.
+    snap_ok = resource_policy.ResourceSnapshot(
+        available_ram=6 * GiB, total_ram=16 * GiB, physical_cores=8, logical_cpus=16,
+    )
+    monkeypatch.setattr(resource_policy, 'probe_resources', lambda kind='CPU': snap_ok)
+    monkeypatch.setattr(resource_policy, 'probe_memory', lambda: snap_ok)
+    frame_12k = SourceFrame(
+        'frame_12k.png', 0, (6480, 11520, 3), np.dtype('uint8'), None, (18 * MiB, 0),
+    )
+    est_12k = estimate_render_memory([frame_12k] * 100, 'openfocus_b', {}, register=True, alignment='openfocus')
+    assert not est_12k.ram_short
+
+
+def test_openfocus_b_unmapped_source_admits_first_pass_without_degrade(tmp_path, monkeypatch):
+    from core import frame_storage, multi_focus_fusion as mff
+
+    MiB = 1024 ** 2
+    GiB = 1024 ** 3
+    p0 = tmp_path / 'u0.png'
+    p1 = tmp_path / 'u1.png'
+    arr = np.zeros((2000, 2000, 3), dtype=np.uint8)
+    cv2.imwrite(str(p0), arr)
+    cv2.imwrite(str(p1), arr)
+    sources = [scan_source(str(p0), header_only=True)[0], scan_source(str(p1), header_only=True)[0]]
+
+    # 2000x2000*16 is ~61 MiB per transient plane; clamping to 16 MiB admits in a single pass (~60 MiB < 100 MiB ceiling).
+    monkeypatch.setattr(resource_policy, 'FRAME_RAM_BUDGET_BYTES', 16 * MiB)
+    reserve = resource_policy.RESERVE_BYTES
+    tight_avail = reserve + int(45 * MiB / resource_policy.BUDGET_RATIO)
+    snap = resource_policy.ResourceSnapshot(
+        available_ram=tight_avail, total_ram=4 * GiB, physical_cores=4, logical_cpus=8,
+    )
+    monkeypatch.setattr(resource_policy, 'probe_resources', lambda kind='CPU': snap)
+    monkeypatch.setattr(resource_policy, 'probe_memory', lambda: snap)
+    monkeypatch.setattr(frame_storage, 'assess_scratch', lambda *args, **kwargs: {'status': 'advisory'})
+
+    events = []
+    monkeypatch.setattr(mff, 'log_action', lambda event, **kw: events.append(event))
+    calls = []
+    orig_plan = resource_policy.plan_execution
+
+    def spy_plan(workload, **kwargs):
+        calls.append(workload.per_worker_bytes)
+        return orig_plan(workload, **kwargs)
+
+    monkeypatch.setattr(resource_policy, 'plan_execution', spy_plan)
+    fusion = MultiFocusFusion(algorithm='openfocus_b', use_gpu=False, tile_enabled=False, exposure_match=False)
+    fusion.align_images = lambda *args, **kwargs: None
+    result = fusion.fuse(sources)
+    assert result.shape == (2000, 2000, 3)
+    assert calls[0] <= 64 * MiB
+    assert 'openfocus_low_ram_degrade' not in events

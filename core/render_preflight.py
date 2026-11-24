@@ -53,7 +53,7 @@ def _preview_geometry(frame):
     return max(1, round(height * scale)), max(1, round(width * scale)), resolves, sample
 
 
-def _estimate_registration_ram(frames, height, width, alignment, preview, source_ram):
+def _estimate_registration_ram(frames, height, width, alignment, preview, source_ram, snapshot=None):
     """Estimate peak working memory for one registration pass without decoding."""
     if preview:
         worker = max(h * w * (sample.shape[2] if sample.ndim == 3 else 1) * 16
@@ -87,11 +87,9 @@ def _estimate_registration_ram(frames, height, width, alignment, preview, source
         solve_bytes = (36 if native_available() else 124) * max_pixels + 128 * 1024
         return 2 * gray_bytes + max(prepare_bytes, solve_bytes)
     if alignment == 'openfocus':
-        from core import openfocus_alignment
-        try:
-            return openfocus_alignment.estimate_alignment_bytes(frames)
-        except (OSError, ValueError):
-            return height * width * 16 + source_ram + width * 1024 + 16 * 1024 * 1024
+        plane_cap = (policy.frame_ram_budget(snapshot)
+                     if snapshot is not None and snapshot.ram_known else height * width * 16)
+        return min(height * width * 16, plane_cap) + source_ram + width * 1024 + 16 * 1024 * 1024
     # Homography / combined / unspecified alignment downscales to at most 1600px wide
     # while holding one full-resolution source frame and reference gray plane.
     scale = min(1.0, 1600.0 / max(1, width))
@@ -119,10 +117,18 @@ def estimate_render_memory(frames, algorithm, parameters, *, preview=False, roi=
     itemsize = sample.dtype.itemsize
     if not (height and width):
         return None
+    requested = None
+    if spec is not None and spec.neural:
+        from fusion_methods.neural_runtime import cached_device
+        requested = cached_device() if use_gpu else 'CPU'
+    kind = requested or 'CPU'
+    snapshot = policy.probe_resources(kind)
+    # Windows per-process commit limits belong to the child doing the work.
+    snapshot = replace(snapshot, process_commit_headroom=None)
     source_ram = max((frame_resolution_bytes(frame, metadata_only=True) for frame in frames
                       if not preview or _preview_geometry(frame)[2]), default=0)
     registration_ram = (
-        _estimate_registration_ram(frames, height, width, alignment, preview, source_ram)
+        _estimate_registration_ram(frames, height, width, alignment, preview, source_ram, snapshot)
         if register else 0
     )
     if roi is not None and spec is not None and spec.roi is not None:
@@ -139,14 +145,6 @@ def estimate_render_memory(frames, algorithm, parameters, *, preview=False, roi=
             else min(SOURCE_CACHE.max_bytes, sum(map(frame_source_cache_bytes, frames)))
         )
         source_bytes = source_ram + cache_bytes
-    requested = None
-    if spec is not None and spec.neural:
-        from fusion_methods.neural_runtime import cached_device
-        requested = cached_device() if use_gpu else 'CPU'
-    kind = requested or 'CPU'
-    snapshot = policy.probe_resources(kind)
-    # Windows per-process commit limits belong to the child doing the work.
-    snapshot = replace(snapshot, process_commit_headroom=None)
     estimate = RenderMemoryEstimate(algorithm, len(frames), height, width, snapshot, source_ram,
                                     registration_ram)
     if spec is None:

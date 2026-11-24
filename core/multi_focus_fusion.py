@@ -706,6 +706,8 @@ class MultiFocusFusion:
                 raise RegistrationCancelled()
 
         check_cancel()
+        from core.source_frames import SOURCE_CACHE
+        SOURCE_CACHE.adapt_to_memory()
         self._tile_grid = None
         supplied = kwargs.pop('parameters', None)
         values = dict(self.fusion_parameters)
@@ -1158,11 +1160,10 @@ class MultiFocusFusion:
                 if spec.resource_estimator:
                     fixed, per_worker = resolve_runner(spec.resource_estimator)(height, width, kwargs, count)
                     if streaming_sources:
-                        from core.source_frames import (frame_has_mapped_pixels, frame_resolution_bytes,
+                        from core.source_frames import (frame_resolution_bytes,
                                                         source_cache_growth_bytes)
                         if (openfocus_native_family and img_resize is None
                                 and all(frame.dtype in (np.uint8, np.uint16)
-                                        and (self.algorithm != 'openfocus_b' or frame_has_mapped_pixels(frame))
                                         for frame in input_source)):
                             # OpenFocus A/B/C spill large transient planes to disk above
                             # the shared frame RAM cap; device passes admit separately.

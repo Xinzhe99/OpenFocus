@@ -379,8 +379,8 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
                     # and packed response statistics for each live band.
                     background_shape = (height, width, channels + 2)
                     background_bytes = height * width * (channels + 2) * 4
-                    from constants import FRAME_RAM_BUDGET_BYTES
-                    bg_ram_limit = (FRAME_RAM_BUDGET_BYTES
+                    from core import resource_policy as policy
+                    bg_ram_limit = (policy.frame_ram_budget(policy.probe_memory())
                                     if _BACKGROUND_RAM_LIMIT_BYTES == _DEFAULT_BACKGROUND_RAM_LIMIT
                                     else _BACKGROUND_RAM_LIMIT_BYTES)
                     allocate = (create_frame if background_bytes <= bg_ram_limit

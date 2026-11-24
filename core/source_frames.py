@@ -38,9 +38,35 @@ class FrameCache:
     """Strong references to decoded pixels, bounded by actual array bytes."""
     def __init__(self, max_bytes=256 * 1024 * 1024):
         self.max_bytes = max(0, int(max_bytes))
+        self._default_max_bytes = self.max_bytes
+        self._last_adapted_max = self.max_bytes
         self.bytes = 0
         self._items = OrderedDict()
         self._lock = threading.RLock()
+
+    def adapt_to_memory(self, snapshot=None) -> int:
+        """Scale cache capacity to free RAM unless externally pinned."""
+        if getattr(self, '_last_adapted_max', self._default_max_bytes) != self.max_bytes:
+            return self.max_bytes
+        try:
+            from core import resource_policy as policy
+            snap = snapshot or policy.probe_memory()
+            if not getattr(snap, 'ram_known', False):
+                return self.max_bytes
+            budget = policy.ram_budget(snap)
+        except Exception:
+            return self.max_bytes
+        target = min(1024 * 1024 ** 2, max(64 * 1024 ** 2, budget // 8))
+        with self._lock:
+            if getattr(self, '_last_adapted_max', self._default_max_bytes) != self.max_bytes:
+                return self.max_bytes
+            self.max_bytes = target
+            self._last_adapted_max = target
+            while self._items and self.bytes > self.max_bytes:
+                _, removed = self._items.popitem(last=False)
+                self.bytes -= removed.nbytes
+                logger.debug('source cache eviction bytes=%d released=%d', self.bytes, removed.nbytes)
+        return target
 
     def get(self, key):
         with self._lock:

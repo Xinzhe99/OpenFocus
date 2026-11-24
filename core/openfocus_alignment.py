@@ -425,11 +425,20 @@ def _validate_internal_float(image, should_cancel):
     _check_cancel(should_cancel)
 
 
-def _alignment_gray16(image, should_cancel):
+def _alloc_alignment_plane(shape, dtype, *, spillable: bool = False):
+    """Allocate an array or spill-capable transient plane when memory is tight."""
+    dt = np.dtype(dtype)
+    if spillable and math.prod(shape) * dt.itemsize >= 8 * 1024 * 1024:
+        from core.frame_storage import create_transient_frame
+        return create_transient_frame(shape, dt)
+    return np.empty(shape, dtype=dt)
+
+
+def _alignment_gray16(image, should_cancel, *, spillable: bool = False):
     if image.dtype.kind != 'f':
-        return _gray16(image, should_cancel)
+        return _gray16(image, should_cancel, spillable=spillable)
     _validate_internal_float(image, should_cancel)
-    gray = np.empty(image.shape[:2], np.uint16)
+    gray = _alloc_alignment_plane(image.shape[:2], np.uint16, spillable=spillable)
     take = min(image.shape[2], 3) if image.ndim == 3 else 1
     for start in range(0, len(image), 128):
         _check_cancel(should_cancel)
@@ -488,9 +497,9 @@ def estimate_translation_bytes(sources):
             + w * 1024 + 256 * 256 * 128)
 
 
-def _gray16(image, should_cancel):
+def _gray16(image, should_cancel, *, spillable: bool = False):
     _check_cancel(should_cancel)
-    gray = np.empty(image.shape[:2], dtype=np.uint16)
+    gray = _alloc_alignment_plane(image.shape[:2], np.uint16, spillable=spillable)
     if _native_kernels.available() and image.ndim in (2, 3):
         kernel_rows = (_native_kernels.gray16_u8_rows if image.dtype == np.uint8 else
                        _native_kernels.gray16_u16_rows if image.dtype == np.uint16 else None)
@@ -1690,7 +1699,7 @@ def estimate_alignment_bytes(sources):
             + w * 1024 + 16 * 1024 * 1024)
 
 
-def _warp_alignment(image, f8, should_cancel):
+def _warp_alignment(image, f8, should_cancel, *, spillable: bool = False):
     tx, ty, cx, cy, rotation, mx, my, _ = f8
     _check_cancel(should_cancel)
     if tx == cx and ty == cy and rotation == 0 and mx == 1 and my == 1:
@@ -1702,7 +1711,7 @@ def _warp_alignment(image, f8, should_cancel):
     _check_cancel(should_cancel)
     fields = gpu_params(f8)
     h, w = image.shape[:2]
-    output = np.empty_like(image)
+    output = _alloc_alignment_plane(image.shape, image.dtype, spillable=spillable)
     if (_native_kernels.available() and image.ndim in (2, 3)
             and image.dtype in (np.uint8, np.uint16, np.float32, np.float64)):
         if _is_bgr_rev(image):
@@ -1979,14 +1988,43 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
     if not isinstance(reference_frame, (int, np.integer)) or not 1 <= reference_frame <= len(sources):
         raise ValueError(f'OpenFocus reference frame {reference_frame} is outside the stack of {len(sources)} frames')
     h, w = sources[0].shape[:2]
-    plan = resource_policy.plan_execution(resource_policy.Workload(
-        algorithm='openfocus_alignment', frames=len(sources), height=h, width=w,
-        fixed_bytes=needed, per_worker_bytes=0, outer_tasks=1), user_threads=1)
+    low_ram_spill = False
+    try:
+        plan = resource_policy.plan_execution(resource_policy.Workload(
+            algorithm='openfocus_alignment', frames=len(sources), height=h, width=w,
+            fixed_bytes=needed, per_worker_bytes=0, outer_tasks=1), user_threads=1)
+    except resource_policy.ResourceLimitError:
+        import gc
+        from core.source_frames import SOURCE_CACHE
+        from utils.logging_setup import log_action
+
+        snap = resource_policy.probe_memory()
+        ceiling_now = resource_policy.ram_ceiling(snap)
+        if ceiling_now <= 0:
+            raise
+        SOURCE_CACHE.clear()
+        gc.collect()
+        snap = resource_policy.probe_memory()
+        ceiling_now = resource_policy.ram_ceiling(snap)
+        if ceiling_now <= 0:
+            raise
+        decode_peak = max(_decode_bytes(frame) for frame in sources)
+        plane_cap = resource_policy.frame_ram_budget(snap)
+        min_needed = min(h * w * 16, plane_cap) + decode_peak + w * 1024 + 16 * 1024 * 1024
+        if min_needed > ceiling_now:
+            raise
+        plan = resource_policy.plan_execution(resource_policy.Workload(
+            algorithm='openfocus_alignment', frames=len(sources), height=h, width=w,
+            fixed_bytes=min_needed, per_worker_bytes=0, outer_tasks=1), user_threads=1)
+        low_ram_spill = True
+        log_action('openfocus_alignment_low_ram_degrade',
+                   required_bytes=min_needed, budget_bytes=ceiling_now)
     host_budget = getattr(plan, 'ram_budget', 0) or 0
     frame_bytes = max((int(getattr(s, 'nbytes', 0)) for s in sources), default=0)
     gray_bytes = int(h) * int(w) * 2
     use_prefetch = (
-        len(sources) >= 2
+        not low_ram_spill
+        and len(sources) >= 2
         and frame_bytes > 0
         and (needed + frame_bytes + gray_bytes) <= host_budget
     )
@@ -2009,7 +2047,7 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
             if _has_transparency(image):
                 raise UnsupportedTransparency('Registration of transparent images is unsupported')
         identity = _alignment_source_identity(frame, image, cancelled)
-        gray = _alignment_gray16(image, cancelled)
+        gray = _alignment_gray16(image, cancelled, spillable=low_ram_spill)
         del image
         return identity, gray
 
@@ -2078,7 +2116,7 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
             transform = AlignmentTransform(index, tuple(float(v) for v in total),
                 tuple(float(v) for v in pair), identity, previous_index, rounds, failure)
             transforms[index] = transform
-            previous = _warp_alignment(gray, total, should_cancel)
+            previous = _warp_alignment(gray, total, should_cancel, spillable=low_ram_spill)
             if previous is gray:
                 prev_pyr = curr_pyr
             else:
