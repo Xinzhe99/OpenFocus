@@ -142,6 +142,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   previews with native row kernels. Preserve OpenCV's exposure calculation
   for normalized grayscale. Encode compressed TIFF strips in a bounded queue
   and preserve their output order.
+- Check repeated original paths once when validating a desktop export
+  destination, including exports from large image stacks.
 
 ### Fixed
 - Default new watermarks to fusion results. Apply removes unchecked watermark
