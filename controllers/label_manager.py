@@ -365,6 +365,10 @@ class LabelManager:
                                       scale_cfg=None, watermark_cfg=None,
                                       source_shape=None):
         """Annotated pixmap for the source canvas (labels + scale bar + mark)."""
+        labels_enabled = self._labels.any_enabled("input")
+        if (not (labels_enabled or scale_cfg or watermark_cfg) and pixmap is not None
+                and not pixmap.hasAlphaChannel() and pixmap.devicePixelRatio() == 1.0):
+            return pixmap
         image = pixmap_to_cv2(pixmap)
         if image is None:
             return pixmap
@@ -372,7 +376,7 @@ class LabelManager:
         source_shape = (source_shape if source_shape is not None else
                         source[index].shape if 0 <= index < len(source)
                         else image.shape)
-        if self._labels.any_enabled("input"):
+        if labels_enabled:
             image = image.copy()
             image, _err = self._draw_for(image, "input", index, source_shape=source_shape)
         if scale_cfg:
