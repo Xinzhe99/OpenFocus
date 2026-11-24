@@ -1918,7 +1918,17 @@ class MultiFocusFusion:
         # tile-coordinate order — the same order a single-worker run uses, so
         # the accumulation is reproducible while the pool still overlaps work.
         from collections import deque
+        from core._native import load_native
         from core.registration import RegistrationCancelled, carry_warp_accelerator
+
+        native_tile = load_native()
+        if native_tile is not None and not (
+                hasattr(native_tile, 'of_tile_accumulate')
+                and hasattr(native_tile, 'of_tile_finalize')):
+            native_tile = None
+
+        def _nd(arr):
+            return arr if type(arr) is np.ndarray else arr.view(np.ndarray)
 
         def _check_cancel():
             if should_cancel is not None and should_cancel():
@@ -1926,9 +1936,16 @@ class MultiFocusFusion:
 
         def _reduce(result):
             x0, y0, fh, fw, fused_tile, weight2d = result
-            acc[y0:y0 + fh, x0:x0 + fw, :channels] += (
-                fused_tile.astype(np.float32) * weight2d[:, :, np.newaxis])
-            weight[y0:y0 + fh, x0:x0 + fw, 0] += weight2d
+            if (native_tile is not None and acc.dtype == np.float32
+                    and weight.dtype == np.float32 and weight2d.dtype == np.float32
+                    and fused_tile.dtype in (np.uint8, np.uint16, np.float32)):
+                native_tile.of_tile_accumulate(
+                    _nd(acc), _nd(weight), _nd(fused_tile), _nd(weight2d),
+                    int(x0), int(y0), max(1, min(4, optimal_threads)))
+            else:
+                acc[y0:y0 + fh, x0:x0 + fw, :channels] += (
+                    fused_tile.astype(np.float32) * weight2d[:, :, np.newaxis])
+                weight[y0:y0 + fh, x0:x0 + fw, 0] += weight2d
             del fused_tile, weight2d
 
         completed_tiles = 0
@@ -1968,14 +1985,20 @@ class MultiFocusFusion:
             fused = create_frame(acc.shape, out_dtype)
             for start in range(0, h, 128):
                 _check_cancel()
-                rows = slice(start, min(h, start + 128))
-                row_weight = weight[rows]
-                row_weight[row_weight == 0] = 1.0
-                np.divide(acc[rows], row_weight, out=acc[rows])
-                np.clip(acc[rows], 0, 255, out=acc[rows])
-                if out_dtype is np.uint8:
-                    np.rint(acc[rows], out=acc[rows])
-                fused[rows] = acc[rows]
+                stop = min(h, start + 128)
+                if (native_tile is not None and acc.dtype == np.float32
+                        and weight.dtype == np.float32 and out_dtype in (np.uint8, np.float32)):
+                    native_tile.of_tile_finalize(_nd(acc), _nd(weight), _nd(fused),
+                                                 int(start), int(stop))
+                else:
+                    rows = slice(start, stop)
+                    row_weight = weight[rows]
+                    row_weight[row_weight == 0] = 1.0
+                    np.divide(acc[rows], row_weight, out=acc[rows])
+                    np.clip(acc[rows], 0, 255, out=acc[rows])
+                    if out_dtype is np.uint8:
+                        np.rint(acc[rows], out=acc[rows])
+                    fused[rows] = acc[rows]
         _check_cancel()
 
         if channels == 1:

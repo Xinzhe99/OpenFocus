@@ -1285,9 +1285,18 @@ def quantize_fuse_output(result, is_16bit: bool):
     if not is_16bit and result.dtype == np.uint8:
         return result
     from core.frame_storage import create_transient_frame
+    from core._native import load_native
 
     pixels = np.asarray(result)
     output = create_transient_frame(pixels.shape, np.uint16 if is_16bit else np.uint8)
+    if (pixels.ndim in (2, 3) and pixels.size > 0
+            and pixels.dtype in (np.float32, np.float64) and pixels.dtype.isnative):
+        native = load_native()
+        if native is not None and hasattr(native, 'of_quantize_output'):
+            p_nd = pixels if type(pixels) is np.ndarray else pixels.view(np.ndarray)
+            o_nd = output if type(output) is np.ndarray else output.view(np.ndarray)
+            native.of_quantize_output(p_nd, o_nd, bool(is_16bit), 4)
+            return output
     if (pixels.ndim in (2, 3) and pixels.size >= 65536
             and pixels.dtype in (np.float32, np.float64) and pixels.dtype.isnative):
         kernels = _load_image_kernels()
@@ -1349,6 +1358,22 @@ def _exposure_mean(frame, should_cancel=None, *, normalize_uint16=False):
     # OpenCV builds can reduce single-channel float32 stripes differently.
     if (frame.ndim in (2, 3) and frame.dtype in (np.uint8, np.uint16)
             and (not normalized or channels >= 3)):
+        from core._native import load_native
+        native = load_native()
+        if native is not None and hasattr(native, 'of_exposure_mean') and frame.dtype.isnative:
+            f_nd = frame if type(frame) is np.ndarray else frame.view(np.ndarray)
+            if should_cancel is None:
+                return float(native.of_exposure_mean(f_nd, bool(normalized), 4))
+
+            def weighted_strip_means():
+                for y in range(0, f_nd.shape[0], 128):
+                    check()
+                    strip = f_nd[y:y + 128]
+                    yield native.of_exposure_mean(strip, bool(normalized), 1) * strip.shape[0]
+
+            total = math.fsum(weighted_strip_means())
+            check()
+            return total / f_nd.shape[0]
         kernels = _load_image_kernels()
         if kernels is not None:
             height = frame.shape[0]
@@ -1432,7 +1457,15 @@ def apply_exposure_gain(frame, gain, *, copy=True):
     dtype = frame.dtype
     gain_f = float(gain)
     if (frame.ndim in (2, 3) and frame.size > 0 and dtype in (np.uint8, np.uint16, np.float32)
-            and math.isfinite(gain_f)):
+            and math.isfinite(gain_f) and dtype.isnative):
+        from core._native import load_native
+        native = load_native()
+        if native is not None and hasattr(native, 'of_apply_exposure_gain'):
+            out = frame if (not copy and dtype == np.float32) else np.empty(frame.shape, dtype=dtype)
+            f_nd = frame if type(frame) is np.ndarray else frame.view(np.ndarray)
+            o_nd = out if type(out) is np.ndarray else out.view(np.ndarray)
+            native.of_apply_exposure_gain(f_nd, o_nd, gain_f, 0, int(frame.shape[0]))
+            return out
         threshold = 4096 if dtype == np.uint8 else (131072 if dtype == np.uint16 else 262144)
         if frame.size >= threshold:
             kernels = _load_image_kernels()
