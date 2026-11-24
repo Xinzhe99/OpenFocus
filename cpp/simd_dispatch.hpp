@@ -134,5 +134,51 @@ void pyr_up_horiz_3c_row_avx2(
 void pyr_down_horiz_f32_3c_row_avx2(
     const float* sr, float* h_row, int64_t ix_stop, float d0, float d1);
 
+void align_valid_mask_row_avx2(
+    uint8_t* mr, int64_t w,
+    float cx, float p08, float p18, float tx, float ty, float v_dy, float u_dy,
+    float wf, float hf);
+
+void align_gray16_rgb_row_avx2(
+    const void* src, bool is_u8, uint16_t* dst, int64_t w, int64_t src_px_stride);
+
+void align_down_half_vert_row_avx2(
+    const uint16_t* r0, const uint16_t* r1, const uint16_t* r2, const uint16_t* r3,
+    uint32_t* scratch, int64_t w);
+
+void align_down_half_horiz_row_avx2(
+    const uint32_t* scratch, uint16_t* out, int64_t ow, int64_t w);
+
+void align_fast_downsize_u16_row_avx2(
+    const uint16_t* r0, const uint16_t* r1, uint16_t* dst, int64_t ow, int64_t w);
+
+void align_warp_alignment_row_avx2(
+    const void* img_data, int64_t img_s0, int64_t img_s1, bool is_u8,
+    void* out_row, int64_t out_s1,
+    int64_t src_h, int64_t src_w, int64_t src_y0, int64_t x_off, int64_t rw,
+    int64_t channels, bool bgr_rev,
+    float cx, float p08, float p18, float tx, float ty, float v_dy, float u_dy);
+
+void align_score_chunk_packed_avx2(
+    const uint16_t* rb, int64_t ref_sy,
+    const uint16_t* bb, int64_t b_sy, int64_t h, int64_t w,
+    const float* xs, int64_t nxx, const float* ys, int64_t nyy,
+    const float* p08, const float* p0c, const float* p18, const float* p1c,
+    const float* tx, const float* ty, const float* cx, const float* cy,
+    const int64_t* idx, int64_t k_start, int64_t k_stop,
+    int64_t* ssum, int64_t* ssq, int64_t* cnt);
+
+void align_score_grid_4d_packed_avx2(
+    const uint16_t* rb, int64_t ref_sy,
+    const uint16_t* bb, int64_t b_sy, int64_t h, int64_t w,
+    const float* xs, int64_t nxx, const float* ys, int64_t nyy,
+    float tx0, float ty0,
+    const float* cx_tab, const float* cy_tab,
+    const float* p08b, int64_t p08_sy, int64_t p08_sx,
+    const float* p18b, int64_t p18_sy, int64_t p18_sx,
+    int64_t n0, int64_t n1, int64_t n2, int64_t n3,
+    int64_t k_start, int64_t k_stop,
+    int64_t* out_best_k, float* out_best_sc, int64_t slot);
+
 }  // namespace simd
 }  // namespace openfocus
