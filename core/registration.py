@@ -1578,19 +1578,20 @@ class _EccStageBudget:
     prepare_bytes: int
     solve_bytes: int
     jpeg_inputs: dict[int, _JpegEccPreparation]
+    accelerate_ecc: bool = True
 
 
 def _plan_deferred_ecc(images, downscale_width, accelerate_ecc, preference, thread_count,
                        should_cancel):
     from core.openfocus_alignment import _hash_scratch_bytes, _is_bgr_rev
-    from core.resource_policy import cpu_capacity, probe_resources, require_memory
+    from core.resource_policy import cpu_capacity, probe_resources, ram_ceiling, require_memory
     from core.source_frames import frame_resolution_bytes, is_direct_rgb_tiff
 
     if accelerate_ecc:
-        from core._ecc_area_gpu import _AXIS
+        from core._ecc_area_gpu import _AXIS, _TILE_ROWS
 
     width = _ecc_width(images[0].shape, downscale_width)
-    max_pixels = prepare_bytes = 0
+    max_pixels = prepare_bytes = prepare_bytes_cpu = 0
     jpeg_inputs = {}
     for frame in images:
         _check_cancel(should_cancel)
@@ -1600,7 +1601,9 @@ def _plan_deferred_ecc(images, downscale_width, accelerate_ecc, preference, thre
         jpeg = _plan_jpeg_ecc(frame, width)
         if jpeg is not None:
             jpeg_inputs[id(frame)] = jpeg
-            prepare_bytes = max(prepare_bytes, jpeg.workspace_bytes, 2 * pixels + 64 * 1024)
+            req = max(jpeg.workspace_bytes, 2 * pixels + 64 * 1024)
+            prepare_bytes = max(prepare_bytes, req)
+            prepare_bytes_cpu = max(prepare_bytes_cpu, req)
             continue
         channels = frame.shape[2] if frame.ndim == 3 else 1
         itemsize = frame.dtype.itemsize
@@ -1615,36 +1618,51 @@ def _plan_deferred_ecc(images, downscale_width, accelerate_ecc, preference, thre
                   else frame.nbytes)
         color, gray = pixels * channels * itemsize, pixels * itemsize
         prepare = max(decode, decoded + _hash_scratch_bytes(frame), 2 * gray + 64 * 1024)
+        prepare_cpu = prepare
         if scale < 1.0:
-            # INTER_AREA uses axis tables and a pair of accumulator rows. Also
-            # allow the accelerated path its pageable transfer staging (at
-            # most one input and output stripe) plus its coefficient tables.
+            # INTER_AREA uses axis tables and a pair of accumulator rows. The
+            # OpenCL path stages bounded _TILE_ROWS stripes rather than full
+            # frames, and gracefully falls back if that headroom is absent.
             resize_scratch = 32 * (sum(frame.shape[:2]) + h + w * channels)
+            prepare_cpu = max(prepare, decoded + packed + color + resize_scratch, color + gray)
             if accelerate_ecc:
-                resize_scratch = max(resize_scratch,
-                                     frame.nbytes + color + _AXIS.itemsize * (h + w))
+                stripe_src_rows = min(frame.shape[0], math.ceil(_TILE_ROWS / max(scale, 1e-6)) + 2)
+                gpu_stripe = (
+                    min(frame.nbytes, stripe_src_rows * frame.shape[1] * channels * itemsize)
+                    + min(color, _TILE_ROWS * w * channels * itemsize)
+                    + _AXIS.itemsize * (h + w)
+                )
+                resize_scratch = max(resize_scratch, gpu_stripe)
             prepare = max(prepare, decoded + packed + color + resize_scratch, color + gray)
         else:
             prepare = max(prepare, decoded + packed + gray)
+            prepare_cpu = prepare
         prepare_bytes = max(prepare_bytes, prepare)
+        prepare_bytes_cpu = max(prepare_bytes_cpu, prepare_cpu)
 
     # Each prepared float32 plane can retain its lower-resolution pyramid levels.
     gray_bytes = 6 * max_pixels
-    # OpenCV's homography ECC uses an eight-plane Jacobian, float grids,
-    # warped/zero-mean images and gradients, masks and Jacobian temporaries.
-    # Allow 30 float planes for live buffers and expression temporaries, four
-    # byte masks and native tile scratch. Count the input planes separately.
-    solve_bytes = (30 * 4 + 4) * max_pixels + 128 * 1024
+    native_ecc = (cv2.findTransformECC is _ORIGINAL_FIND_TRANSFORM_ECC
+                  and _load_ecc_native() is not None)
+    # C++ native pyramid solver reuses precomputed float planes (~8 planes peak);
+    # OpenCV's homography solver needs ~30 float planes.
+    solve_bytes = ((8 * 4 + 4) if native_ecc else (30 * 4 + 4)) * max_pixels + 128 * 1024
     snapshot = probe_resources()
+    ceiling_ram = ram_ceiling(snapshot)
+    if (accelerate_ecc
+            and 2 * gray_bytes + max(prepare_bytes, solve_bytes) > ceiling_ram
+            and 2 * gray_bytes + max(prepare_bytes_cpu, solve_bytes) <= ceiling_ram):
+        accelerate_ecc = False
+        prepare_bytes = prepare_bytes_cpu
     ram = require_memory(2 * gray_bytes + max(prepare_bytes, solve_bytes), snapshot)
     ceiling = cpu_capacity(snapshot, preference)
     if thread_count is not None and thread_count > 0:
         ceiling = min(ceiling, int(thread_count))
     # Reserve a window for all the prepared inputs. With that window full,
     # either all solvers or at least one preparation must fit on its own.
-    workers = min(ceiling, len(images) - 1,
-                  (ram - gray_bytes) // (solve_bytes + gray_bytes),
-                  (ram - gray_bytes - prepare_bytes) // gray_bytes)
+    workers = max(1, min(ceiling, len(images) - 1,
+                         (ram - gray_bytes) // (solve_bytes + gray_bytes),
+                         (ram - gray_bytes - prepare_bytes) // gray_bytes))
     task_bytes = ram - (workers + 1) * gray_bytes
     log_action('registration_plan', method='ecc', frames=len(images), shape=images[0].shape,
                workers=workers, native_threads=1, ram_budget=ram, vram_budget=0,
@@ -1652,7 +1670,7 @@ def _plan_deferred_ecc(images, downscale_width, accelerate_ecc, preference, thre
                prepare_bytes=prepare_bytes,
                solve_bytes=solve_bytes, retained_gray_bytes=(workers + 1) * gray_bytes,
                reduced_jpeg_frames=len(jpeg_inputs))
-    return _EccStageBudget(workers, task_bytes, prepare_bytes, solve_bytes, jpeg_inputs)
+    return _EccStageBudget(workers, task_bytes, prepare_bytes, solve_bytes, jpeg_inputs, accelerate_ecc)
 
 
 
@@ -1674,6 +1692,8 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
     if len(images) < 2:
         return images
 
+    if stage_budget is not None and not stage_budget.accelerate_ecc:
+        accelerate_ecc = False
     area_gpu = None
     if accelerate_ecc:
         from core._ecc_area_gpu import ExactAreaGpu

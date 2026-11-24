@@ -44,7 +44,7 @@ def _is_bgr_rev(image):
 
 def _get_or_build_program(cl, device):
     global _PROGRAM_CACHE
-    from fusion_methods._openfocus_gpu import _device_cache_key
+    from fusion_methods._openfocus_gpu import _build_cached_program, _device_cache_key
 
     key = _device_cache_key(device)
     with _cache_lock:
@@ -52,7 +52,7 @@ def _get_or_build_program(cl, device):
             return _PROGRAM_CACHE[1:]
         context = cl.Context([device])
         queue = cl.CommandQueue(context, device=device)
-        program = cl.Program(context, _KERNEL).build()
+        program = _build_cached_program(cl, device, context, _KERNEL)
         kernels = {(size, rev, block): cl.Kernel(program, name)
                    for size, rev, block, name in _KERNEL_NAMES}
         _PROGRAM_CACHE = (key, context, queue, kernels)

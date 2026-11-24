@@ -1,0 +1,402 @@
+"""Regression and adaptive resource-scheduling tests for the OpenFocus default pipeline."""
+from __future__ import annotations
+
+from dataclasses import replace
+from types import SimpleNamespace
+import os
+import threading
+
+import cv2
+import numpy as np
+import pytest
+
+from core import openfocus_alignment, registration, resource_policy
+from core.multi_focus_fusion import MultiFocusFusion
+from core.render_preflight import estimate_render_memory
+from core.source_frames import (
+    SourceFrame, is_direct_rgb_tiff, map_native_rgb_tiffs, process_frame, scan_source,
+)
+from fusion_methods import _openfocus_gpu
+from fusion_methods._openfocus_execution import serial_execution_scope
+from fusion_methods.openfocus_a import openfocus_a_impl
+from fusion_methods.openfocus_bc import openfocus_b_impl, openfocus_c_impl
+
+
+def _require_opencl_gpu():
+    try:
+        import pyopencl as cl
+    except Exception:
+        pytest.skip('pyopencl unavailable')
+    device = _openfocus_gpu._device(cl)
+    if device is None:
+        pytest.skip('OpenCL GPU unavailable')
+    return cl, device
+
+
+def test_prefetch_window_and_multi_worker_order():
+    assert _openfocus_gpu._prefetch_window(1000, 950, 100, 10) == 0
+    assert _openfocus_gpu._prefetch_window(1000, 500, 100, 10, thread_count=1) == 0
+    assert _openfocus_gpu._prefetch_window(1000, 500, 100, 3) == 2
+    assert _openfocus_gpu._prefetch_window(2000, 100, 100, 12, max_slots=3) <= 3
+
+    active = 0
+    peak_active = 0
+    lock = threading.Lock()
+    barrier = threading.Event()
+
+    def prepare(index, item, cancelled):
+        nonlocal active, peak_active
+        assert not cancelled()
+        with lock:
+            active += 1
+            peak_active = max(peak_active, active)
+            if peak_active >= 2:
+                barrier.set()
+        barrier.wait(timeout=1.0)
+        with lock:
+            active -= 1
+        return index, item * 10
+
+    items = list(range(6))
+    seen = list(_openfocus_gpu._iter_prefetched(
+        items, prepare, enabled=True, max_in_flight=3,
+    ))
+    assert seen == [(i, (i, i * 10)) for i in items]
+    assert peak_active >= 2
+
+    with serial_execution_scope(None):
+        single = list(_openfocus_gpu._iter_prefetched(
+            [1, 2, 3], lambda idx, val, _c: val + 1, enabled=True, max_in_flight=3,
+        ))
+    assert single == [(0, 2), (1, 3), (2, 4)]
+
+
+def test_weak_integrated_gpu_filter(monkeypatch):
+    weak = SimpleNamespace(host_unified_memory=True, max_compute_units=8, available=True,
+                           compiler_available=True, global_mem_size=4 << 30, name='Weak iGPU')
+    strong_igpu = SimpleNamespace(host_unified_memory=True, max_compute_units=24, available=True,
+                                  compiler_available=True, global_mem_size=4 << 30, name='Strong iGPU')
+    discrete = SimpleNamespace(host_unified_memory=False, max_compute_units=4, available=True,
+                               compiler_available=True, global_mem_size=8 << 30, name='Discrete GPU')
+    mock_default = SimpleNamespace(host_unified_memory=True, max_compute_units=0)
+
+    monkeypatch.setattr(os, 'cpu_count', lambda: 16)
+    monkeypatch.setattr('core._native.native_available', lambda: True)
+    assert _openfocus_gpu._is_weak_integrated_gpu(weak) is True
+    assert _openfocus_gpu._is_weak_integrated_gpu(strong_igpu) is False
+    assert _openfocus_gpu._is_weak_integrated_gpu(discrete) is False
+    assert _openfocus_gpu._is_weak_integrated_gpu(mock_default) is False
+
+    monkeypatch.setattr(os, 'cpu_count', lambda: 4)
+    assert _openfocus_gpu._is_weak_integrated_gpu(weak) is False
+
+
+def test_opencl_binary_disk_cache_hit_miss_and_corrupt_recovery(tmp_path, monkeypatch):
+    monkeypatch.setenv('OPENFOCUS_OPENCL_CACHE_DIR', str(tmp_path))
+    builds = []
+
+    class FakeProgram:
+        def __init__(self, ctx, *args):
+            self.args = args
+
+        def build(self, options=None):
+            if len(self.args) == 1:
+                builds.append(('source', self.args[0]))
+            else:
+                builds.append(('binary', self.args[1]))
+            return self
+
+        def get_info(self, info_key):
+            assert info_key == 'BINARIES'
+            return [b'compiled-opencl-binary']
+
+    fake_cl = SimpleNamespace(
+        Program=FakeProgram,
+        program_info=SimpleNamespace(BINARIES='BINARIES'),
+    )
+    device = SimpleNamespace(name='TestGPU', vendor='TestVendor', driver_version='1.0', version='OpenCL 3.0')
+
+    prog1 = _openfocus_gpu._build_cached_program(fake_cl, device, 'ctx', '__kernel void k() {}')
+    assert builds == [('source', '__kernel void k() {}')]
+    cached_files = list(tmp_path.glob('*.clbin'))
+    assert len(cached_files) == 1
+    assert prog1.args == ('__kernel void k() {}',)
+
+    prog2 = _openfocus_gpu._build_cached_program(fake_cl, device, 'ctx', '__kernel void k() {}')
+    assert builds == [
+        ('source', '__kernel void k() {}'),
+        ('binary', [b'compiled-opencl-binary']),
+    ]
+    assert prog2.args == ([device], [b'compiled-opencl-binary'])
+
+    class CorruptFallbackProgram(FakeProgram):
+        def build(self, options=None):
+            if len(self.args) == 2:
+                raise RuntimeError('corrupt binary')
+            return super().build(options=options)
+
+    cached_files[0].write_bytes(b'corrupt')
+    fake_cl.Program = CorruptFallbackProgram
+    _openfocus_gpu._build_cached_program(fake_cl, device, 'ctx', '__kernel void k() {}')
+    assert builds[-1] == ('source', '__kernel void k() {}')
+
+
+def test_fast_file_digest_middle_mutation_and_source_fingerprint(tmp_path):
+    large_file = tmp_path / 'sample.bin'
+    payload = bytearray(b'A' * 200_000)
+    large_file.write_bytes(payload)
+    stat = large_file.stat()
+    stamp = (stat.st_size, stat.st_mtime_ns)
+    d1 = openfocus_alignment._fast_file_digest(str(large_file), (10, 10, 3), '|u1', 0, stamp)
+
+    payload[100_000:100_016] = b'Z' * 16
+    large_file.write_bytes(payload)
+    os.utime(large_file, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    d2 = openfocus_alignment._fast_file_digest(str(large_file), (10, 10, 3), '|u1', 0, stamp)
+    assert d1 != d2
+
+    rng = np.random.default_rng(7)
+    arr0 = rng.integers(0, 255, (64, 64, 3), dtype=np.uint8)
+    arr1 = np.roll(arr0, 2, axis=1)
+    p0 = tmp_path / 'f0.png'
+    p1 = tmp_path / 'f1.png'
+    cv2.imwrite(str(p0), arr0)
+    cv2.imwrite(str(p1), arr1)
+    sf_png = [scan_source(str(p0), header_only=True)[0], scan_source(str(p1), header_only=True)[0]]
+    plan_png = openfocus_alignment.estimate_alignment_plan(sf_png, reference_frame=1, max_shift_ratio=0.15)
+    assert all(t.source.file_sha256 for t in plan_png.transforms)
+    plan_ram = openfocus_alignment.estimate_alignment_plan(
+        [arr0[:, :, ::-1], arr1[:, :, ::-1]], reference_frame=1, max_shift_ratio=0.15,
+    )
+    assert np.allclose(plan_png.transforms[1].f8, plan_ram.transforms[1].f8, atol=1e-4)
+
+    import tifffile
+
+    t0 = tmp_path / 'f0.tif'
+    t1 = tmp_path / 'f1.tif'
+    tifffile.imwrite(str(t0), np.ascontiguousarray(arr0), photometric='rgb', compression=None, rowsperstrip=64)
+    tifffile.imwrite(str(t1), np.ascontiguousarray(arr1), photometric='rgb', compression=None, rowsperstrip=64)
+    sf_tif = map_native_rgb_tiffs([
+        scan_source(str(t0), header_only=True)[0],
+        scan_source(str(t1), header_only=True)[0],
+    ])
+    assert all(is_direct_rgb_tiff(f) for f in sf_tif)
+    plan_tif = openfocus_alignment.estimate_alignment_plan(sf_tif, reference_frame=1, max_shift_ratio=0.15)
+    assert all(not t.source.file_sha256 for t in plan_tif.transforms)
+
+
+def test_perspective_gpu_vram_ttl_cache(monkeypatch):
+    from core import _perspective_gpu
+
+    calls = []
+    clock = [100.0]
+
+    monkeypatch.setattr(_perspective_gpu.time, 'monotonic', lambda: clock[0])
+    monkeypatch.setattr(_perspective_gpu, '_free_vram', lambda _dev: (calls.append(1), (4 << 30, 8 << 30))[1])
+    monkeypatch.setattr(_perspective_gpu, '_band_plan', lambda *args: None)
+
+    gpu = _perspective_gpu.ExactPerspectiveGpu()
+    gpu._device = SimpleNamespace(max_mem_alloc_size=1 << 30)
+    gpu._cl = SimpleNamespace()
+    w = np.zeros((16,), dtype=np.float32)
+    prog = ('ctx', 'q', {}, w, w)
+    img = np.zeros((32, 32, 3), dtype=np.uint8)
+    inv = np.eye(3, dtype=np.float64)
+
+    assert gpu._dispatch(prog, img, inv, 1.0, False, (0, 0, 32, 32), (32, 32), None) is None
+    gpu._disabled = False
+    clock[0] = 101.0
+    assert gpu._dispatch(prog, img, inv, 1.0, False, (0, 0, 32, 32), (32, 32), None) is None
+    assert len(calls) == 1
+
+    gpu._disabled = False
+    clock[0] = 103.5
+    assert gpu._dispatch(prog, img, inv, 1.0, False, (0, 0, 32, 32), (32, 32), None) is None
+    assert len(calls) == 2
+
+    gpu.close()
+    assert gpu._vram_cache is None
+
+
+def test_openfocus_b_processed_disk_stack_stages_once(tmp_path):
+    rng = np.random.default_rng(11)
+    paths = []
+    for i in range(4):
+        p = tmp_path / f'stack_{i}.png'
+        img = rng.integers(0, 255, (1800, 1800, 3), dtype=np.uint8)
+        cv2.imwrite(str(p), img)
+        paths.append(p)
+
+    resolve_counts = [0] * len(paths)
+
+    def make_op(idx):
+        def op(arr):
+            resolve_counts[idx] += 1
+            return arr
+        return op
+
+    sources = [process_frame(scan_source(str(p), header_only=True)[0], make_op(i))
+               for i, p in enumerate(paths)]
+    merger = MultiFocusFusion(
+        algorithm='openfocus_b', use_gpu=False, tile_enabled=False, exposure_match=False,
+    )
+    merger.align_images = lambda *args, **kwargs: None
+    result = merger.fuse(sources)
+    assert result.shape == (1800, 1800, 3)
+    assert all(c == 1 for c in resolve_counts)
+
+
+def test_openfocus_b_skips_optional_staging_when_scratch_tight_or_huge(tmp_path, monkeypatch):
+    from core import frame_storage, source_frames
+
+    p0 = tmp_path / 's0.png'
+    p1 = tmp_path / 's1.png'
+    arr = np.zeros((1800, 1800, 3), dtype=np.uint8)
+    cv2.imwrite(str(p0), arr)
+    cv2.imwrite(str(p1), arr)
+    s0 = scan_source(str(p0), header_only=True)[0]
+    s1 = scan_source(str(p1), header_only=True)[0]
+    sources = [process_frame(s0, lambda x: x), process_frame(s1, lambda x: x),
+               process_frame(s0, lambda x: x), process_frame(s1, lambda x: x)]
+
+    staged = []
+    monkeypatch.setattr(source_frames, 'materialize_for_repeated_access',
+                        lambda srcs, *args, **kwargs: staged.append(len(srcs)) or srcs)
+    monkeypatch.setattr(frame_storage, 'assess_scratch', lambda *args, **kwargs: {'status': 'advisory'})
+    merger = MultiFocusFusion(algorithm='openfocus_b', use_gpu=False, tile_enabled=False)
+    merger.align_images = lambda *args, **kwargs: None
+    merger.fuse(sources)
+    assert staged == []
+
+
+def test_preflight_8k_300_frames_no_false_ram_warning(monkeypatch):
+    GiB = 1024 ** 3
+    snapshot = resource_policy.ResourceSnapshot(
+        available_ram=6 * GiB, total_ram=16 * GiB, physical_cores=8, logical_cpus=16,
+    )
+    monkeypatch.setattr(resource_policy, 'probe_resources', lambda kind='CPU': snapshot)
+    frame_8k = SourceFrame(
+        'frame_000.png', 0, (4320, 7680, 3), np.dtype('uint8'), None, (12 * 1024 ** 2, 0),
+    )
+
+    est_10 = estimate_render_memory([frame_8k] * 10, 'openfocus_b', {}, register=True, alignment='ecc')
+    est_300 = estimate_render_memory([frame_8k] * 300, 'openfocus_b', {}, register=True, alignment='ecc')
+    assert not est_300.ram_short
+    assert est_300.fusion_ram == est_10.fusion_ram
+    assert est_300.registration_ram < GiB
+
+    for algo in ('openfocus_a', 'openfocus_c'):
+        est_algo = estimate_render_memory([frame_8k] * 300, algo, {}, register=True, alignment='openfocus')
+        assert not est_algo.ram_short
+
+
+def test_openfocus_b_low_ram_auto_degrades_to_serial(monkeypatch):
+    from core import multi_focus_fusion as mff
+
+    frames = [np.full((64, 64, 3), 20 + i * 30, np.uint8) for i in range(4)]
+    original_plan = resource_policy.plan_execution
+    calls = []
+
+    def tight_plan(workload, **kwargs):
+        calls.append((workload.outer_tasks, kwargs.get('user_threads'), workload.per_worker_bytes))
+        if len(calls) == 1:
+            raise resource_policy.ResourceLimitError('tight memory simulation')
+        return original_plan(workload, **kwargs)
+
+    monkeypatch.setattr(resource_policy, 'plan_execution', tight_plan)
+    fusion = MultiFocusFusion('openfocus_b', use_gpu=False, tile_enabled=False, exposure_match=False)
+    result = fusion.fuse(frames, thread_count=4)
+    assert result.shape == (64, 64, 3)
+    assert len(calls) >= 2 and calls[1][1] == 1
+
+    monkeypatch.setattr(mff, 'memory_budget_bytes', lambda: 0)
+    with pytest.raises(resource_policy.ResourceLimitError):
+        fusion.fuse(frames, thread_count=4)
+
+
+def test_ecc_plan_native_footprint_and_gpu_scratch_fallback(monkeypatch):
+    frames = [np.broadcast_to(np.zeros((1, 1, 3), np.uint8), (4320, 7680, 3))] * 4
+    monkeypatch.setattr(registration, '_load_ecc_native', lambda: object())
+    native_snap = resource_policy.ResourceSnapshot(
+        available_ram=4 * 1024 ** 3, total_ram=16 * 1024 ** 3, physical_cores=8, logical_cpus=16,
+    )
+    monkeypatch.setattr(resource_policy, 'probe_resources', lambda *args, **kwargs: native_snap)
+    budget_native = registration._plan_deferred_ecc(frames, 1024, True, 'balanced', None, None)
+
+    monkeypatch.setattr(registration, '_load_ecc_native', lambda: None)
+    budget_cv = registration._plan_deferred_ecc(frames, 1024, True, 'balanced', None, None)
+    assert budget_native.solve_bytes < budget_cv.solve_bytes
+
+    # Tight RAM admits CPU stripe scratch but rejects GPU stripe scratch: should fall back cleanly.
+    monkeypatch.setattr(registration, '_load_ecc_native', lambda: object())
+    cpu_only = registration._plan_deferred_ecc(frames, 1024, False, 'balanced', None, None)
+    assert cpu_only.accelerate_ecc is False
+    min_cpu = 2 * 6 * (576 * 1024) + max(cpu_only.prepare_bytes, cpu_only.solve_bytes)
+    assert budget_native.prepare_bytes > cpu_only.prepare_bytes
+    reserve = max(
+        resource_policy.RESERVE_BYTES,
+        min(int(resource_policy.RESERVE_RATIO * native_snap.total_ram), resource_policy.RESERVE_CAP_BYTES),
+    )
+    tight_avail = reserve + min_cpu + 4 * 1024 ** 2
+    tight_snap = replace(native_snap, available_ram=tight_avail)
+    monkeypatch.setattr(resource_policy, 'probe_resources', lambda *args, **kwargs: tight_snap)
+    degraded = registration._plan_deferred_ecc(frames, 1024, True, 'balanced', None, None)
+    assert degraded.accelerate_ecc is False
+
+
+@pytest.mark.parametrize('algo', ['a', 'b', 'c'])
+def test_openfocus_abc_gpu_ping_pong_matches_cpu(algo):
+    _require_opencl_gpu()
+    rng = np.random.default_rng(101)
+    base = rng.integers(20, 235, (128, 128, 3), dtype=np.uint8)
+    frames = []
+    for k in range(6):
+        shifted = base.copy()
+        y0, x0 = 16 + k * 8, 16 + k * 8
+        shifted[y0:y0 + 32, x0:x0 + 32] = rng.integers(0, 255, (32, 32, 3), dtype=np.uint8)
+        frames.append(shifted)
+
+    if algo == 'a':
+        cpu = openfocus_a_impl(frames, use_gpu=False)
+        gpu = openfocus_a_impl(frames, use_gpu=True)
+    elif algo == 'b':
+        cpu = openfocus_b_impl(frames, use_gpu=False)
+        gpu = openfocus_b_impl(frames, use_gpu=True)
+    else:
+        cpu = openfocus_c_impl(frames, use_gpu=False)
+        gpu = openfocus_c_impl(frames, use_gpu=True)
+
+    diff = np.abs(cpu.astype(np.int32) - gpu.astype(np.int32))
+    assert int(diff.max()) <= 1
+
+
+def test_openfocus_b_gpu_direct_u8_readback_and_ping_pong_parity(monkeypatch):
+    _require_opencl_gpu()
+    rng = np.random.default_rng(202)
+    frames = [rng.integers(0, 255, (96, 128, 3), dtype=np.uint8) for _ in range(8)]
+    readback_calls = []
+    orig_u8 = _openfocus_gpu.Merge.finish_merge_u8
+
+    def tracked_u8(self, output):
+        readback_calls.append(output.dtype)
+        return orig_u8(self, output)
+
+    monkeypatch.setattr(_openfocus_gpu.Merge, 'finish_merge_u8', tracked_u8)
+    cpu = openfocus_b_impl(frames, use_gpu=False)
+    gpu = openfocus_b_impl(frames, use_gpu=True)
+    assert readback_calls == [np.dtype(np.uint8)]
+    assert int(np.abs(cpu.astype(np.int32) - gpu.astype(np.int32)).max()) <= 1
+
+
+def test_active_sources_parallel_matches_tiled():
+    from fusion_methods.openfocus_bc import _MERGE_TILE, _active_sources
+
+    rng = np.random.default_rng(303)
+    count = 16
+    depth = (rng.integers(0, count, (300, 300), dtype=np.uint16) * (65535 // (count - 1))).astype(np.uint16)
+    bands = (depth.shape[0] + _MERGE_TILE - 1) // _MERGE_TILE
+    cols = (depth.shape[1] + _MERGE_TILE - 1) // _MERGE_TILE
+    tiles = np.zeros((bands, cols, count), dtype=bool)
+    tiled = _active_sources(depth, count, None, tiles=tiles)
+    parallel = _active_sources(depth, count, None, tiles=None)
+    np.testing.assert_array_equal(parallel, tiled)

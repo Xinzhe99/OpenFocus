@@ -45,17 +45,32 @@ def roi_openfocus_c(parameters, width, height):
 # row scratch. A's background accumulators spill to mapped row windows when
 # they exceed 32 MiB. Concurrent producers are admitted separately.
 def openfocus_a_resources(height, width, parameters, frames):
+    from core._native import native_available
+
+    native = native_available()
     background_ram = min(height * width * 24, 32 * 1024 * 1024)
-    fixed = 4 * 1024 * 1024 + background_ram + min(height, 128) * width * 120
-    return fixed, height * width * 16
+    fixed = (4 * 1024 * 1024 + background_ram
+             + min(height, 128) * width * (64 if native else 120))
+    return fixed, height * width * (12 if native else 16)
 
 
 def openfocus_b_resources(height, width, parameters, frames):
-    return 4 * 1024 * 1024 + min(height, 128) * width * 256, height * width * 16
+    from core._native import native_available
+
+    native = native_available()
+    fixed = (4 * 1024 * 1024
+             + min(height, 128) * width * (64 if native else 160))
+    half_planes = 6 * ((height + 1) // 2) * ((width + 1) // 2) * 2
+    return fixed, max(height * width * 8, half_planes)
 
 
 def openfocus_c_resources(height, width, parameters, frames):
-    return openfocus_b_resources(height, width, parameters, frames)
+    from core._native import native_available
+
+    native = native_available()
+    fixed = (4 * 1024 * 1024
+             + min(height, 128) * width * (96 if native else 192))
+    return fixed, height * width * (12 if native else 16)
 
 
 def guided_resources(height, width, parameters, frames):

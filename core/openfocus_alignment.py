@@ -220,7 +220,7 @@ def _source_file_identity(frame):
 
 def _fast_file_digest(path: str, shape: tuple, dtype_str: str, page: int, file_stamp: tuple,
                       should_cancel=None) -> str:
-    """Compute a 64-hex SHA-256 identity from file size, stamp, geometry, and head/tail bytes."""
+    """Compute a 64-hex SHA-256 identity from file size, stamp, geometry, and head/mid/tail bytes."""
     _check_cancel(should_cancel)
     chunk = 65536
     digest = hashlib.sha256()
@@ -231,11 +231,35 @@ def _fast_file_digest(path: str, shape: tuple, dtype_str: str, page: int, file_s
         digest.update(str(size).encode('ascii'))
         fh.seek(0)
         digest.update(fh.read(chunk))
+        if size > 2 * chunk:
+            fh.seek((size - chunk) // 2)
+            digest.update(fh.read(chunk))
         if size > chunk:
             fh.seek(max(chunk, size - chunk))
             digest.update(fh.read(chunk))
     _check_cancel(should_cancel)
     return digest.hexdigest()
+
+
+def _alignment_source_identity(frame, image, should_cancel=None):
+    """Build a SourceFingerprint retaining pixel SHA-256 and O(1) file digest for SourceFrames."""
+    from core.source_frames import SourceFrame, is_direct_rgb_tiff
+
+    path, page, file_stamp = _source_file_identity(frame)
+    context = _source_context(frame)
+    pixel_sha = _pixel_digest(image, should_cancel, source=frame)
+    file_sha = ''
+    if (isinstance(frame, SourceFrame) and not is_direct_rgb_tiff(frame)
+            and path and file_stamp):
+        file_sha = _fast_file_digest(
+            path, tuple(image.shape), image.dtype.str, page, file_stamp, should_cancel,
+        )
+    identity = SourceFingerprint(
+        tuple(image.shape), image.dtype.str, pixel_sha, path, page, file_stamp,
+        context, 'pixel', file_sha,
+    )
+    identity.validate_file()
+    return identity
 
 
 @dataclass(frozen=True)
@@ -250,6 +274,7 @@ class SourceFingerprint:
     file_stamp: tuple = ()
     context: str = ''
     digest_kind: str = 'pixel'
+    file_sha256: str = ''
 
     def validate_file(self):
         if self.path and self.file_stamp:
@@ -281,6 +306,14 @@ class SourceFingerprint:
         self.validate_file()
         if tuple(image.shape) != self.shape or np.dtype(image.dtype).str != self.dtype:
             raise ValueError('Alignment source shape or dtype changed')
+        if (self.file_sha256 and self.path
+                and source is not None and not isinstance(source, np.ndarray)
+                and _source_file_identity(source) == (self.path, self.page, self.file_stamp)):
+            if _fast_file_digest(self.path, self.shape, self.dtype, self.page, self.file_stamp,
+                                 should_cancel) != self.file_sha256:
+                raise ValueError('Alignment source file changed')
+            self.validate_file()
+            return
         if self.digest_kind == 'file' and self.path:
             if _fast_file_digest(self.path, self.shape, self.dtype, self.page, self.file_stamp,
                                  should_cancel) != self.sha256:
@@ -1629,7 +1662,7 @@ class AlignmentPlan:
                 raise ValueError('Invalid source digest')
             fingerprint = SourceFingerprint(shape, dtype.str, digest, source['path'],
                 int(source['page']), tuple(source['file_stamp']), source.get('context', ''),
-                source.get('digest_kind', 'pixel'))
+                source.get('digest_kind', 'pixel'), source.get('file_sha256', ''))
             transforms.append(AlignmentTransform(int(item['source_index']), tuple(item['f8']),
                 tuple(item['pair_f8']), fingerprint, int(item['reference_index']),
                 int(item['rounds']), item['failure']))
@@ -1946,76 +1979,120 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
     if not isinstance(reference_frame, (int, np.integer)) or not 1 <= reference_frame <= len(sources):
         raise ValueError(f'OpenFocus reference frame {reference_frame} is outside the stack of {len(sources)} frames')
     h, w = sources[0].shape[:2]
-    resource_policy.plan_execution(resource_policy.Workload(
+    plan = resource_policy.plan_execution(resource_policy.Workload(
         algorithm='openfocus_alignment', frames=len(sources), height=h, width=w,
         fixed_bytes=needed, per_worker_bytes=0, outer_tasks=1), user_threads=1)
+    host_budget = getattr(plan, 'ram_budget', 0) or 0
+    frame_bytes = max((int(getattr(s, 'nbytes', 0)) for s in sources), default=0)
+    gray_bytes = int(h) * int(w) * 2
+    use_prefetch = (
+        len(sources) >= 2
+        and frame_bytes > 0
+        and (needed + frame_bytes + gray_bytes) <= host_budget
+    )
     ref = reference_frame - 1
     order = (ref, *range(ref - 1, -1, -1), *range(ref + 1, len(sources)))
     transforms = [None] * len(sources)
     previous = anchor = None
     prev_pyr = anchor_pyr = None
     previous_index = ref
-    for done, index in enumerate(order):
-        _check_cancel(should_cancel)
-        frame = sources[index]
+
+    def prepare_source(source_index, cancelled):
+        _check_cancel(cancelled)
+        frame = sources[source_index]
         image = resolve_frame(frame)
-        _check_cancel(should_cancel)
+        _check_cancel(cancelled)
         if not isinstance(image, np.ndarray) or _alignment_geometry(image) != _alignment_geometry(frame):
             raise ValueError('Alignment source metadata does not match decoded pixels')
         if image.ndim == 3 and image.shape[2] == 4:
             from core.image_loader import _has_transparency, UnsupportedTransparency
             if _has_transparency(image):
                 raise UnsupportedTransparency('Registration of transparent images is unsupported')
-        path, page, file_stamp = _source_file_identity(frame)
-        identity = SourceFingerprint(tuple(image.shape), image.dtype.str,
-            _pixel_digest(image, should_cancel, source=frame), path, page, file_stamp, _source_context(frame))
-        identity.validate_file()
-        gray = _alignment_gray16(image, should_cancel)
+        identity = _alignment_source_identity(frame, image, cancelled)
+        gray = _alignment_gray16(image, cancelled)
         del image
-        if ref > 0 and index == ref + 1:
-            previous, previous_index = anchor, ref
-            prev_pyr = anchor_pyr
-        pair = np.array(_IDENTITY_F8, np.float32)
-        rounds, failure = 0, ''
-        curr_pyr = None
-        if index != ref and (ratio or rotation or magnification) and not np.array_equal(previous, gray):
-            if prev_pyr is None:
-                prev_pyr = build_pyramid(previous, 64, should_cancel)
-            if index == ref - 1 and previous_index == ref and ref > 0:
-                anchor_pyr = prev_pyr
-            curr_pyr = build_pyramid(gray, 64, should_cancel)
+        return identity, gray
+
+    def iter_prepared():
+        if not use_prefetch:
+            for source_index in order:
+                _check_cancel(should_cancel)
+                yield prepare_source(source_index, should_cancel)
+            return
+        stop = threading.Event()
+
+        def cancelled():
+            return stop.is_set() or (should_cancel is not None and should_cancel())
+
+        with ThreadPoolExecutor(max_workers=1, thread_name_prefix='openfocus-align-io') as pool:
+            pending = pool.submit(prepare_source, order[0], cancelled)
             try:
-                pair, rounds = align_pair_wide(previous, gray, h_pct=ratio * 100,
-                    v_pct=ratio * 100, rot_deg=rotation, mag_pct=magnification,
-                    should_cancel=should_cancel, initial_f8=transforms[previous_index].f8,
-                    _a_pyr=prev_pyr, _b_pyr=curr_pyr)
-            except AlignmentEstimationError as error:
-                if failure_policy == 'fail':
-                    failure = RejectedAlignmentFrame('OpenFocus', index, str(error))
-                    failure.completed_transforms = tuple(t for t in transforms if t is not None)
-                    raise failure from error
-                failure = str(error)
-                pair = np.array(_IDENTITY_F8, np.float32)
-        total = pair.copy()
-        if (not failure and previous_index != ref
-                and transforms[previous_index].failure):
-            failure = 'reference alignment fell back'
-        transform = AlignmentTransform(index, tuple(float(v) for v in total),
-            tuple(float(v) for v in pair), identity, previous_index, rounds, failure)
-        transforms[index] = transform
-        previous = _warp_alignment(gray, total, should_cancel)
-        if previous is gray:
-            prev_pyr = curr_pyr
-        else:
-            prev_pyr = None
-        del curr_pyr
-        if index == ref and ref > 0:
-            anchor = previous
-            anchor_pyr = prev_pyr
-        del gray
-        previous_index = index
-        if progress_callback is not None:
-            progress_callback(done + 1, len(sources))
+                for pos in range(len(order)):
+                    while not pending.done():
+                        _check_cancel(should_cancel)
+                        wait((pending,), timeout=0.05)
+                    _check_cancel(should_cancel)
+                    prepared = pending.result()
+                    pending = None
+                    if pos + 1 < len(order):
+                        pending = pool.submit(prepare_source, order[pos + 1], cancelled)
+                    yield prepared
+                    del prepared
+            finally:
+                stop.set()
+                if pending is not None:
+                    pending.cancel()
+
+    prepared_stream = iter_prepared()
+    try:
+        for done, (index, (identity, gray)) in enumerate(zip(order, prepared_stream)):
+            _check_cancel(should_cancel)
+            if ref > 0 and index == ref + 1:
+                previous, previous_index = anchor, ref
+                prev_pyr = anchor_pyr
+            pair = np.array(_IDENTITY_F8, np.float32)
+            rounds, failure = 0, ''
+            curr_pyr = None
+            if index != ref and (ratio or rotation or magnification) and not np.array_equal(previous, gray):
+                if prev_pyr is None:
+                    prev_pyr = build_pyramid(previous, 64, should_cancel)
+                if index == ref - 1 and previous_index == ref and ref > 0:
+                    anchor_pyr = prev_pyr
+                curr_pyr = build_pyramid(gray, 64, should_cancel)
+                try:
+                    pair, rounds = align_pair_wide(previous, gray, h_pct=ratio * 100,
+                        v_pct=ratio * 100, rot_deg=rotation, mag_pct=magnification,
+                        should_cancel=should_cancel, initial_f8=transforms[previous_index].f8,
+                        _a_pyr=prev_pyr, _b_pyr=curr_pyr)
+                except AlignmentEstimationError as error:
+                    if failure_policy == 'fail':
+                        failure = RejectedAlignmentFrame('OpenFocus', index, str(error))
+                        failure.completed_transforms = tuple(t for t in transforms if t is not None)
+                        raise failure from error
+                    failure = str(error)
+                    pair = np.array(_IDENTITY_F8, np.float32)
+            total = pair.copy()
+            if (not failure and previous_index != ref
+                    and transforms[previous_index].failure):
+                failure = 'reference alignment fell back'
+            transform = AlignmentTransform(index, tuple(float(v) for v in total),
+                tuple(float(v) for v in pair), identity, previous_index, rounds, failure)
+            transforms[index] = transform
+            previous = _warp_alignment(gray, total, should_cancel)
+            if previous is gray:
+                prev_pyr = curr_pyr
+            else:
+                prev_pyr = None
+            del curr_pyr
+            if index == ref and ref > 0:
+                anchor = previous
+                anchor_pyr = prev_pyr
+            del gray
+            previous_index = index
+            if progress_callback is not None:
+                progress_callback(done + 1, len(sources))
+    finally:
+        prepared_stream.close()
     _check_cancel(should_cancel)
     return AlignmentPlan(tuple(transforms), ref, order, ratio, needed, failure_policy,
                          rotation, magnification)

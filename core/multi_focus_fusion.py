@@ -1053,11 +1053,28 @@ class MultiFocusFusion:
                 required = (fixed + worker + decode + source_cache_growth_bytes(input_source)
                             > budget)
                 # Stage decodes that cannot fit the frame cache even on a
-                # machine that has spare RAM at the start of this render.
+                # machine that has spare RAM at the start of this render, or
+                # processed disk stacks in OpenFocus B when scratch space is
+                # healthy and total footprint stays within the cache ceiling.
+                from core import frame_storage
+                from core.frame_resolution_cache import NATIVE_PREPARED_FRAME_LIMIT_BYTES
                 expensive_decode = max(128 * 1024 ** 2, min(budget // 4, FRAME_RAM_BUDGET_BYTES))
-                stage = required or (method_b and decode > expensive_decode and any(
-                    frame_resolution_bytes(input_source[index]) > expensive_decode
-                    for index in indices))
+                total_disk_bytes = (
+                    sum(int(getattr(input_source[index], 'nbytes', 0)) for index in indices)
+                    if method_b else 0
+                )
+                has_processed_disk = (
+                    method_b
+                    and 32 * 1024 * 1024 <= total_disk_bytes <= NATIVE_PREPARED_FRAME_LIMIT_BYTES
+                    and any(isinstance(input_source[index], ProcessedFrame) for index in indices)
+                    and frame_storage.assess_scratch(0, total_disk_bytes, 0).get('status') == 'ok'
+                )
+                stage = required or has_processed_disk or (
+                    method_b and decode > expensive_decode and any(
+                        frame_resolution_bytes(input_source[index]) > expensive_decode
+                        for index in indices
+                    )
+                )
             if indices and stage:
                 sources = [input_source[index] for index in indices]
                 scope = current()
@@ -1135,34 +1152,75 @@ class MultiFocusFusion:
             if not spec.neural:
                 height = max(h, img_resize[1]) if img_resize else h
                 width = max(w, img_resize[0]) if img_resize else w
+                openfocus_native_family = self.algorithm in ('openfocus_a', 'openfocus_b', 'openfocus_c')
                 estimates = {}
+                fixed = per_worker = decode_peak = 0
                 if spec.resource_estimator:
                     fixed, per_worker = resolve_runner(spec.resource_estimator)(height, width, kwargs, count)
                     if streaming_sources:
                         from core.source_frames import (frame_has_mapped_pixels, frame_resolution_bytes,
                                                         source_cache_growth_bytes)
-                        if (self.algorithm == 'openfocus_b' and img_resize is None
-                                and all(frame.dtype in (np.uint8, np.uint16) and frame_has_mapped_pixels(frame)
+                        if (openfocus_native_family and img_resize is None
+                                and all(frame.dtype in (np.uint8, np.uint16)
+                                        and (self.algorithm != 'openfocus_b' or frame_has_mapped_pixels(frame))
                                         for frame in input_source)):
-                            # Its integer depth and merge planes spill to scratch
-                            # above the transient RAM cap. Device paths separately
-                            # admit their own host staging and VRAM.
+                            # OpenFocus A/B/C spill large transient planes to disk above
+                            # the shared frame RAM cap; device passes admit separately.
                             per_worker = min(per_worker, policy.frame_ram_budget(policy.probe_memory()))
-                        per_worker += max(frame_resolution_bytes(frame) for frame in input_source)
-                        fixed += source_cache_growth_bytes(input_source)
+                        decode_peak = max(frame_resolution_bytes(frame) for frame in input_source)
+                        per_worker += decode_peak
+                        if not openfocus_native_family:
+                            fixed += source_cache_growth_bytes(input_source)
                     estimates = {'fixed_bytes': fixed, 'per_worker_bytes': per_worker}
-                plan = policy.plan_execution(
-                    policy.Workload(algorithm=self.algorithm, frames=count,
-                        height=height, width=width, channels=3, itemsize=np.dtype(first.dtype).itemsize,
-                        outer_tasks=count if spec.parallel_frames else 1, **estimates),
-                    preference=self.resource_preference,
-                    user_threads=kwargs.get('thread_count'),
-                    ram_budget_override=memory_budget_bytes())
+                workload = policy.Workload(
+                    algorithm=self.algorithm, frames=count,
+                    height=height, width=width, channels=3, itemsize=np.dtype(first.dtype).itemsize,
+                    outer_tasks=count if spec.parallel_frames else 1, **estimates,
+                )
+                try:
+                    plan = policy.plan_execution(
+                        workload,
+                        preference=self.resource_preference,
+                        user_threads=kwargs.get('thread_count'),
+                        ram_budget_override=memory_budget_bytes(),
+                    )
+                except policy.ResourceLimitError:
+                    if not openfocus_native_family or memory_budget_bytes() <= 0:
+                        raise
+                    import gc
+                    from core.source_frames import SOURCE_CACHE
+
+                    SOURCE_CACHE.clear()
+                    gc.collect()
+                    budget_now = memory_budget_bytes()
+                    if budget_now <= 0:
+                        raise
+                    min_fixed = fixed
+                    if streaming_sources:
+                        min_worker = max(1, decode_peak or min(per_worker, min(height, 128) * width * 64))
+                    else:
+                        min_worker = max(1, min(per_worker, min(height, 128) * width * 64))
+                    if min_fixed + min_worker > budget_now:
+                        raise
+                    plan = policy.plan_execution(
+                        policy.Workload(
+                            algorithm=self.algorithm, frames=count,
+                            height=height, width=width, channels=3,
+                            itemsize=np.dtype(first.dtype).itemsize,
+                            outer_tasks=1, fixed_bytes=min_fixed, per_worker_bytes=min_worker,
+                        ),
+                        preference=self.resource_preference,
+                        user_threads=1,
+                        ram_budget_override=budget_now,
+                    )
+                    log_action(
+                        'openfocus_low_ram_degrade', algorithm=self.algorithm,
+                        required_bytes=min_fixed + min_worker, budget_bytes=budget_now,
+                    )
                 # OpenFocus admits the whole serial reconstruction here, then
                 # admits its independent FirstPass producers separately. Its
                 # global smoothing/pyramid maps are not live per producer.
-                kwargs['thread_count'] = (plan.native_threads if self.algorithm in
-                    ('openfocus_a', 'openfocus_b', 'openfocus_c') else plan.workers)
+                kwargs['thread_count'] = (plan.native_threads if openfocus_native_family else plan.workers)
                 if spec.ordered_plan:
                     kwargs['execution_plan'] = plan
             kwargs['should_cancel'] = should_cancel

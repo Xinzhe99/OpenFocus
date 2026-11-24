@@ -53,9 +53,56 @@ def _preview_geometry(frame):
     return max(1, round(height * scale)), max(1, round(width * scale)), resolves, sample
 
 
+def _estimate_registration_ram(frames, height, width, alignment, preview, source_ram):
+    """Estimate peak working memory for one registration pass without decoding."""
+    if preview:
+        worker = max(h * w * (sample.shape[2] if sample.ndim == 3 else 1) * 16
+                     for h, w, _, sample in map(_preview_geometry, frames))
+        return sum(policy.registration_working_set(height, width, worker))
+    if alignment == 'ecc':
+        from constants import ECC_DOWNSCALE_WIDTH
+        from core._native import native_available
+        from core.registration import _ecc_resize_geometry, _ecc_width, _plan_jpeg_ecc
+
+        ecc_w = _ecc_width(frames[0].shape, ECC_DOWNSCALE_WIDTH)
+        max_pixels = prepare_bytes = 0
+        for frame in frames:
+            h_r, w_r, _ = _ecc_resize_geometry(frame.shape, ecc_w)
+            pixels = max(1, h_r) * max(1, w_r)
+            max_pixels = max(max_pixels, pixels)
+            try:
+                jpeg = _plan_jpeg_ecc(frame, ecc_w)
+            except OSError:
+                jpeg = None
+            if jpeg is not None:
+                prepare_bytes = max(prepare_bytes, jpeg.workspace_bytes, 2 * pixels + 64 * 1024)
+                continue
+            channels = frame.shape[2] if frame.ndim == 3 else 1
+            itemsize = frame.dtype.itemsize
+            req = (frame_resolution_bytes(frame, metadata_only=True)
+                   + pixels * channels * itemsize
+                   + 32 * (sum(frame.shape[:2]) + h_r + w_r * channels))
+            prepare_bytes = max(prepare_bytes, req)
+        gray_bytes = 6 * max_pixels
+        solve_bytes = (36 if native_available() else 124) * max_pixels + 128 * 1024
+        return 2 * gray_bytes + max(prepare_bytes, solve_bytes)
+    if alignment == 'openfocus':
+        from core import openfocus_alignment
+        try:
+            return openfocus_alignment.estimate_alignment_bytes(frames)
+        except (OSError, ValueError):
+            return height * width * 16 + source_ram + width * 1024 + 16 * 1024 * 1024
+    # Homography / combined / unspecified alignment downscales to at most 1600px wide
+    # while holding one full-resolution source frame and reference gray plane.
+    scale = min(1.0, 1600.0 / max(1, width))
+    scaled_px = max(1, round(height * scale) * round(width * scale))
+    worker = source_ram + max(scaled_px * 32, height * width * 2) + 16 * 1024 * 1024
+    return sum(policy.registration_working_set(height, width, worker))
+
+
 def estimate_render_memory(frames, algorithm, parameters, *, preview=False, roi=None,
                            use_gpu=True, tile_enabled=None, tile_block=None,
-                           tile_threshold=None, register=False):
+                           tile_threshold=None, register=False, alignment=None):
     """Estimate source resolution, one registration worker and fusion allocations.
 
     The child re-plans with its own snapshot and the prepared geometry. Alignment
@@ -70,26 +117,27 @@ def estimate_render_memory(frames, algorithm, parameters, *, preview=False, roi=
         height, width, _, sample = _preview_geometry(first)
     channels = min(3, sample.shape[2]) if sample.ndim == 3 else 1
     itemsize = sample.dtype.itemsize
-    registration_ram = 0
-    if register:
-        if preview:
-            worker = max(h * w * (sample.shape[2] if sample.ndim == 3 else 1) * 16
-                         for h, w, _, sample in map(_preview_geometry, frames))
-        else:
-            worker = max(frame.size * 16 + frame_resolution_bytes(frame, metadata_only=True)
-                         for frame in frames)
-        registration_ram = sum(policy.registration_working_set(height, width, worker))
+    if not (height and width):
+        return None
+    source_ram = max((frame_resolution_bytes(frame, metadata_only=True) for frame in frames
+                      if not preview or _preview_geometry(frame)[2]), default=0)
+    registration_ram = (
+        _estimate_registration_ram(frames, height, width, alignment, preview, source_ram)
+        if register else 0
+    )
     if roi is not None and spec is not None and spec.roi is not None:
         x, y, w, h = roi
         height = max(1, min(h, height - max(0, y)))
         width = max(1, min(w, width - max(0, x)))
     if not (height and width):
         return None
-    source_ram = max((frame_resolution_bytes(frame, metadata_only=True) for frame in frames
-                      if not preview or _preview_geometry(frame)[2]), default=0)
     source_bytes = 0
+    openfocus_native_family = algorithm in ('openfocus_a', 'openfocus_b', 'openfocus_c')
     if not preview:
-        cache_bytes = min(SOURCE_CACHE.max_bytes, sum(map(frame_source_cache_bytes, frames)))
+        cache_bytes = (
+            0 if openfocus_native_family
+            else min(SOURCE_CACHE.max_bytes, sum(map(frame_source_cache_bytes, frames)))
+        )
         source_bytes = source_ram + cache_bytes
     requested = None
     if spec is not None and spec.neural:
@@ -120,7 +168,10 @@ def estimate_render_memory(frames, algorithm, parameters, *, preview=False, roi=
     values = resolve_fusion_parameters(algorithm, parameters)
     if spec.resource_estimator:
         size = resolve_runner(spec.resource_estimator)
-        full = sum(size(height, width, values, count))
+        fixed_full, worker_full = size(height, width, values, count)
+        if openfocus_native_family:
+            worker_full = min(worker_full, policy.frame_ram_budget(snapshot))
+        full = fixed_full + worker_full
         use_tiles = tiled and (full > policy.ram_ceiling(snapshot) if algorithm == 'dtcwt'
                                else max(height, width) > threshold)
         working = sum(size(block, block, values, count)) if use_tiles else full
