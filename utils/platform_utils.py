@@ -18,6 +18,12 @@ def get_os_type() -> str:
     Returns:
         'windows' | 'macos' | 'linux'
     """
+    if sys.platform.startswith(('win32', 'cygwin')):
+        return 'windows'
+    if sys.platform == 'darwin':
+        return 'macos'
+    if sys.platform.startswith('linux'):
+        return 'linux'
     system = platform.system().lower()
     if system == 'darwin':
         return 'macos'

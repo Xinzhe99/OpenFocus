@@ -1075,55 +1075,35 @@ def _homography_plausible(W: np.ndarray, w: int, h: int) -> bool:
     return True
 
 
-def find_transform_ecc_homography(
-    tpl: np.ndarray,
-    src: np.ndarray,
-    *,
-    max_iter: int = 50,
-    eps: float = 1e-4,
-) -> tuple[float | None, np.ndarray | None]:
-    """Estimate a 3x3 homography aligning ``src`` onto ``tpl`` via ECC.
-
-    Returns ``(cc, warp_matrix)`` or ``(None, None)`` when the caller should
-    fall back to ``cv2.findTransformECC`` (e.g., flat/degenerate/tiny frames or
-    unusual divergence).
-    """
-    if (not isinstance(tpl, np.ndarray) or not isinstance(src, np.ndarray)
-            or tpl.ndim != 2 or src.ndim != 2 or tpl.shape != src.shape):
-        return None, None
-    h, w = tpl.shape
-    if h < 16 or w < 16:
-        return None, None
-
-    tpl_f = np.ascontiguousarray(tpl, dtype=np.float32)
-    src_f = np.ascontiguousarray(src, dtype=np.float32)
-
-    is_finite, is_nonflat, is_identical, rho_ident_full = _check_identical_and_stats(tpl_f, src_f)
-    if not is_finite or not is_nonflat:
-        return None, None
-    if is_identical:
-        return 1.0, np.eye(3, 3, dtype=np.float32)
-
-    # Build pyramid (level 0 is full resolution)
-    pyr: list[tuple[np.ndarray, np.ndarray]] = [(tpl_f, src_f)]
-    cur_t, cur_s = tpl_f, src_f
+def build_ecc_pyramid(img: np.ndarray) -> list[np.ndarray]:
+    """Build contiguous float32 coarsening pyramid (level 0 is full resolution)."""
+    cur = np.ascontiguousarray(img, dtype=np.float32)
+    pyr: list[np.ndarray] = [cur]
     for _ in range(3):
-        ch, cw = cur_t.shape
+        ch, cw = cur.shape
         if max(ch, cw) <= 192 or min(ch, cw) < 48:
             break
         nh = (ch + 1) // 2
         nw = (cw + 1) // 2
         if min(nh, nw) < 24:
             break
-        cur_t = np.ascontiguousarray(cv2.resize(cur_t, (nw, nh), interpolation=cv2.INTER_AREA))
-        cur_s = np.ascontiguousarray(cv2.resize(cur_s, (nw, nh), interpolation=cv2.INTER_AREA))
-        pyr.append((cur_t, cur_s))
+        cur = np.ascontiguousarray(cv2.resize(cur, (nw, nh), interpolation=cv2.INTER_AREA))
+        pyr.append(cur)
+    return pyr
 
-    # Initialize coarsest level (identity vs pure-NumPy phase correlation)
-    tc, sc = pyr[-1]
+
+def _coarsest_initial_warp(
+    tc: np.ndarray,
+    sc: np.ndarray,
+    native_mod,
+) -> np.ndarray:
+    """Compute initial translation-aware 3x3 homography on the coarsest pyramid level."""
     hc, wc = tc.shape
     W = np.eye(3, 3, dtype=np.float64)
-    rho_ident_c, _ = _eval_rho_warped(tc, sc, W, 1, hc - 1, 1, wc - 1, True)
+    if native_mod is not None:
+        rho_ident_c, _ = native_mod.ecc_eval_rho_warped(tc, sc, W, 1, hc - 1, 1, wc - 1, True)
+    else:
+        rho_ident_c, _ = _eval_rho_warped(tc, sc, W, 1, hc - 1, 1, wc - 1, True)
     best_rho_c = rho_ident_c
     if rho_ident_c < 0.995:
         dx, dy, response = _phase_correlate_np(tc, sc)
@@ -1136,16 +1116,67 @@ def find_transform_ecc_homography(
                     [0.0, 0.0, 1.0],
                 ], dtype=np.float64)
                 y0, y1, x0, x1, all_in = _inscribed_roi(W_try, wc, hc)
-                rho_try, valid_try = _eval_rho_warped(tc, sc, W_try, y0, y1, x0, x1, all_in)
+                if native_mod is not None:
+                    rho_try, valid_try = native_mod.ecc_eval_rho_warped(tc, sc, W_try, y0, y1, x0, x1, all_in)
+                else:
+                    rho_try, valid_try = _eval_rho_warped(tc, sc, W_try, y0, y1, x0, x1, all_in)
                 if valid_try > 0 and rho_try > best_rho_c + 0.005:
                     best_rho_c = rho_try
                     W = W_try
+    return W
 
-    # Coarse-to-fine IC refinement
+
+def find_transform_ecc_homography_pyramids(
+    tpl_pyr: list[np.ndarray],
+    src_pyr: list[np.ndarray],
+    *,
+    max_iter: int = 50,
+    eps: float = 1e-4,
+    num_threads: int = 1,
+) -> tuple[float | None, np.ndarray | None]:
+    """Estimate 3x3 ECC homography from prebuilt float32 pyramids."""
+    if not tpl_pyr or len(tpl_pyr) != len(src_pyr):
+        return None, None
+    tpl_f = tpl_pyr[0]
+    src_f = src_pyr[0]
+    if (not isinstance(tpl_f, np.ndarray) or not isinstance(src_f, np.ndarray)
+            or tpl_f.ndim != 2 or src_f.ndim != 2 or tpl_f.shape != src_f.shape):
+        return None, None
+    h, w = tpl_f.shape
+    if h < 16 or w < 16:
+        return None, None
+
+    from core._native import load_native
+    native_mod = load_native()
+    if native_mod is not None and hasattr(native_mod, 'ecc_refine_pyramids'):
+        is_finite, is_nonflat, is_identical, rho_ident_full = native_mod.ecc_check_identical_and_stats(
+            tpl_f, src_f, int(num_threads)
+        )
+    else:
+        native_mod = None
+        is_finite, is_nonflat, is_identical, rho_ident_full = _check_identical_and_stats(tpl_f, src_f)
+
+    if not is_finite or not is_nonflat:
+        return None, None
+    if is_identical:
+        return 1.0, np.eye(3, 3, dtype=np.float32)
+
+    tc, sc = tpl_pyr[-1], src_pyr[-1]
+    W = _coarsest_initial_warp(tc, sc, native_mod)
     eps = float(eps)
-    n_levels = len(pyr)
+
+    if native_mod is not None:
+        ok, final_cc, W_f32 = native_mod.ecc_refine_pyramids(
+            tpl_pyr, src_pyr, W, float(rho_ident_full), int(max_iter), eps, int(num_threads)
+        )
+        if not ok:
+            return None, None
+        return float(final_cc), np.array(W_f32, copy=True)
+
+    # Coarse-to-fine IC refinement (Numba fallback)
+    n_levels = len(tpl_pyr)
     for lvl in range(n_levels - 1, -1, -1):
-        tl, sl = pyr[lvl]
+        tl, sl = tpl_pyr[lvl], src_pyr[lvl]
         hl, wl = tl.shape
         if lvl > 0:
             lvl_iter = min(max_iter, 16 if lvl == n_levels - 1 else 12)
@@ -1165,7 +1196,7 @@ def find_transform_ecc_homography(
         if _homography_plausible(W_next, wl, hl):
             W = W_next
         if lvl > 0:
-            tf, _ = pyr[lvl - 1]
+            tf = tpl_pyr[lvl - 1]
             hf, wf = tf.shape
             W = _scale_homography(W, wf / float(wl), hf / float(hl))
 
@@ -1177,10 +1208,53 @@ def find_transform_ecc_homography(
     if valid_final == 0 or not np.isfinite(final_cc):
         return None, None
 
-    # Compare against precomputed full-frame identity NCC
     if final_cc < 0.25 or final_cc < rho_ident_full - 1e-3:
         if rho_ident_full > final_cc and rho_ident_full > 0.9999:
             return float(rho_ident_full), np.eye(3, 3, dtype=np.float32)
         return None, None
 
     return float(final_cc), W.astype(np.float32)
+
+
+def find_transform_ecc_homography(
+    tpl: np.ndarray,
+    src: np.ndarray,
+    *,
+    max_iter: int = 50,
+    eps: float = 1e-4,
+    num_threads: int = 1,
+) -> tuple[float | None, np.ndarray | None]:
+    """Estimate a 3x3 homography aligning ``src`` onto ``tpl`` via ECC.
+
+    Returns ``(cc, warp_matrix)`` or ``(None, None)`` when the caller should
+    fall back to ``cv2.findTransformECC`` (e.g., flat/degenerate/tiny frames or
+    unusual divergence).
+    """
+    if (not isinstance(tpl, np.ndarray) or not isinstance(src, np.ndarray)
+            or tpl.ndim != 2 or src.ndim != 2 or tpl.shape != src.shape):
+        return None, None
+    h, w = tpl.shape
+    if h < 16 or w < 16:
+        return None, None
+
+    tpl_f = np.ascontiguousarray(tpl, dtype=np.float32)
+    src_f = np.ascontiguousarray(src, dtype=np.float32)
+
+    from core._native import load_native
+    native_mod = load_native()
+    if native_mod is not None and hasattr(native_mod, 'ecc_check_identical_and_stats'):
+        is_finite, is_nonflat, is_identical, _ = native_mod.ecc_check_identical_and_stats(
+            tpl_f, src_f, int(num_threads)
+        )
+    else:
+        is_finite, is_nonflat, is_identical, _ = _check_identical_and_stats(tpl_f, src_f)
+    if not is_finite or not is_nonflat:
+        return None, None
+    if is_identical:
+        return 1.0, np.eye(3, 3, dtype=np.float32)
+
+    tpl_pyr = build_ecc_pyramid(tpl_f)
+    src_pyr = build_ecc_pyramid(src_f)
+    return find_transform_ecc_homography_pyramids(
+        tpl_pyr, src_pyr, max_iter=max_iter, eps=eps, num_threads=num_threads
+    )

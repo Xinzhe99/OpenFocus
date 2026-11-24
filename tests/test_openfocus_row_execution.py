@@ -401,6 +401,7 @@ def test_direct_cold_import_restores_existing_and_new_native_pools(cancel):
             active = {pool['filepath']: pool['num_threads'] for pool in threadpool_info()}
             assert all(active[path] == 1 for path in snapshots[0])
             assert cv2.getNumThreads() <= 1
+            import scipy.linalg
             if done and sys.argv[1] == 'cancel':
                 stopped[0] = True
         caught = False

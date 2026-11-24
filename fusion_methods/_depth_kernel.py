@@ -256,8 +256,19 @@ def _unpack_rows_T(src_buf, orig_out, left, right):
                     orig_out[y, x] = src_buf[x, col]
 
 
+_DEFAULT_AXIS_BLOCK = axis_block
+_DEFAULT_PACK_ROWS = _pack_rows_T
+_DEFAULT_UNPACK_ROWS = _unpack_rows_T
+
+
 def prepare_depth_kernel(guided=True, should_cancel=None):
     """Compile needed layouts before frame pools and workspace admission."""
+    from core._native import load_native
+    if (axis_block is _DEFAULT_AXIS_BLOCK and _pack_rows_T is _DEFAULT_PACK_ROWS
+            and _unpack_rows_T is _DEFAULT_UNPACK_ROWS):
+        native = load_native()
+        if native is not None and hasattr(native, 'of_depth_axis_iir'):
+            return
     from numba import types
     from fusion_methods.openfocus_ab import _check_cancel
 

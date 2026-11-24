@@ -515,6 +515,7 @@ def decode_image(path: str, *, allow_transparent_png: bool = False,
         return decode_tiff_page(path, preserve_grayscale=preserve_grayscale)
     # _downscale_page leaves the image alone at a scale of one.
     jpeg_scale = scale_factor if is_scaled_jpeg(path, scale_factor) else 1.0
+    jpeg_mode = None
     if PIL_AVAILABLE:
         with PILImage.open(path) as header:
             validate_pil_header(path, header)
@@ -522,12 +523,35 @@ def decode_image(path: str, *, allow_transparent_png: bool = False,
                 image = cmyk_to_bgr(header, path, header.info.get('icc_profile', b''))
                 image = _downscale_page(image, jpeg_scale, area_resizer)
                 return apply_exif_orientation(path, image)
-    # IMREAD_IGNORE_ORIENTATION is required: modern OpenCV already rotates by
-    # the EXIF Orientation tag itself, so letting apply_exif_orientation run
-    # afterwards applied every transform twice (portrait phone shots loaded
-    # sideways). The PIL fallback below does not rotate on its own, so the
-    # single explicit pass is the only orientation step for both paths.
-    data = np.fromfile(path, dtype=np.uint8)
+            if ext in ('.jpg', '.jpeg', '.jpe', '.jfif') and header.format == 'JPEG':
+                jpeg_mode = header.mode
+    if jpeg_mode is not None:
+        with open(path, 'rb') as fh:
+            raw_bytes = fh.read()
+        img = None
+        try:
+            import imagecodecs
+            if jpeg_mode == 'L':
+                img = imagecodecs.jpeg8_decode(raw_bytes, outcolorspace='GRAY')
+                if img is not None and img.ndim == 2 and not preserve_grayscale:
+                    img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+            else:
+                img = imagecodecs.jpeg8_decode(raw_bytes, outcolorspace='RGB')
+                if img is not None and img.ndim == 3 and img.shape[2] == 3:
+                    img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+                elif img is not None and img.ndim == 2 and not preserve_grayscale:
+                    img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+                else:
+                    img = None
+        except Exception:
+            img = None
+        if img is not None:
+            _validate_depth(path, img.dtype)
+            img = _downscale_page(img, jpeg_scale, area_resizer)
+            return apply_exif_orientation(path, img)
+        data = np.frombuffer(raw_bytes, dtype=np.uint8)
+    else:
+        data = np.fromfile(path, dtype=np.uint8)
     unchanged = cv2.imdecode(data, cv2.IMREAD_UNCHANGED)
     if unchanged is not None:
         _validate_depth(path, unchanged.dtype)
@@ -772,6 +796,22 @@ def _frame_metadata(path, frames, should_cancel):
     except (OSError, EOFError):
         return [(b'', b'') for _ in frames]
     return result
+
+
+def _pil_metadata_from_image(path: str, image) -> Tuple[bytes, bytes]:
+    """Extract sanitized EXIF and ICC profile from an already-opened Pillow image."""
+    if not PIL_AVAILABLE:
+        return b'', b''
+    ext = os.path.splitext(path)[1].lower()
+    raw_exif = _exif_bytes_from_image(image) if ext in ('.jpg', '.jpeg', '.jpe', '.jfif', '.png', '.webp') else b''
+    safe_exif = _safe_exif_bytes(path, raw_exif)
+    try:
+        profile = _display_profile(path, image.info.get('icc_profile', b''), image.mode == 'CMYK')
+    except UnsupportedColorSpace:
+        raise
+    except (OSError, ValueError, TypeError, EOFError):
+        profile = b''
+    return safe_exif, profile
 
 
 def common_profile_values(profiles) -> bytes:
@@ -1443,13 +1483,19 @@ class ImageStackLoader:
         def inspect(path):
             if self.should_cancel():
                 raise _DecodeCancelled()
+            metadata = []
             try:
-                return scan_source(path, scale_factor, header_only=True,
-                                   should_cancel=self.should_cancel), None
+                frames = scan_source(path, scale_factor, header_only=True,
+                                     should_cancel=self.should_cancel,
+                                     metadata_out=metadata)
+                if len(metadata) != len(frames):
+                    metadata = _frame_metadata(path, frames, self.should_cancel)
+                px_um = detect_px_size_um(path)
+                return (frames, metadata, px_um), None
             except SourceExifTooLarge:
                 raise
             except Exception as exc:
-                return [], exc
+                return ([], [], None), exc
         if self.progress_callback is not None:
             self.progress_callback(0, len(sources))
         with log_operation('source_manifest', count=len(sources), preview_threads=workers):
@@ -1460,7 +1506,7 @@ class ImageStackLoader:
                     for done, (path, result) in enumerate(zip(sources, pool.map(inspect, sources)), 1):
                         if self.should_cancel():
                             raise _DecodeCancelled()
-                        frames, error = result
+                        (frames, metadata, px_um), error = result
                         if error is not None:
                             if isinstance(error, InterruptedError):
                                 return False, 'CANCELLED', [], []
@@ -1471,13 +1517,12 @@ class ImageStackLoader:
                             import logging
                             logging.getLogger(__name__).warning('Source preview failed path=%s: %s', path, error)
                         else:
-                            metadata = _frame_metadata(path, frames, self.should_cancel)
                             for frame_exif, frame_icc in metadata:
                                 if not exif:
                                     exif = frame_exif
                                 exifs.append(frame_exif)
                                 profiles.append(frame_icc)
-                            px_sizes.append(detect_px_size_um(path))
+                            px_sizes.append(px_um)
                             stem = os.path.splitext(os.path.basename(path))[0]
                             images.extend(frames)
                             paths.extend([path] * len(frames))

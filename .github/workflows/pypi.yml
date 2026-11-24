@@ -17,13 +17,13 @@ permissions:
   actions: read
 
 jobs:
-  build:
+  identity:
     runs-on: ubuntu-latest
     outputs:
-      sha: ${{ steps.identity.outputs.sha }}
-      version: ${{ steps.identity.outputs.version }}
-      channel: ${{ steps.identity.outputs.channel }}
-      tag: ${{ steps.identity.outputs.tag }}
+      sha: ${{ steps.resolve.outputs.sha }}
+      version: ${{ steps.resolve.outputs.version }}
+      channel: ${{ steps.resolve.outputs.channel }}
+      tag: ${{ steps.resolve.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -31,7 +31,7 @@ jobs:
           python-version: "3.10"
 
       - name: Resolve checked-out build identity
-        id: identity
+        id: resolve
         run: python tools/release_metadata.py --checkout-sha "$(git rev-parse HEAD)" --github-output "$GITHUB_OUTPUT"
 
       - name: Verify neural model checkpoints
@@ -40,19 +40,73 @@ jobs:
           test "$(wc -c < weights/stackmff_v2_final.onnx)" -gt 600000
           test "$(wc -c < weights/stackmff_v3_final.onnx)" -gt 600000
 
-      - name: Build
+  build-wheels:
+    needs: identity
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.identity.outputs.sha }}
+
+      - name: Build platform wheels
+        uses: pypa/cibuildwheel@v2.23.2
+        env:
+          CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-*"
+          CIBW_SKIP: "*-win32 *-manylinux_i686 *-musllinux_*"
+          CIBW_ARCHS_LINUX: x86_64
+          CIBW_ARCHS_WINDOWS: AMD64
+          CIBW_ARCHS_MACOS: arm64
+          CIBW_OUTPUT_DIR: wheelhouse
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}
+          path: wheelhouse/*.whl
+
+  build:
+    needs: [identity, build-wheels]
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ needs.identity.outputs.sha }}
+      version: ${{ needs.identity.outputs.version }}
+      channel: ${{ needs.identity.outputs.channel }}
+      tag: ${{ needs.identity.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.identity.outputs.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Build source distribution
         run: |
           python -m pip install --upgrade build
-          python -m build
+          python -m build --sdist --outdir dist
 
-      - name: Check the wheel and source distribution contents
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          path: dist
+          merge-multiple: true
+
+      - name: Check the wheels and source distribution contents
         run: |
           python - <<'PY'
           import glob, pathlib, sys, tarfile, zipfile
-          wheel = glob.glob('dist/*.whl')[0]
-          sdist = glob.glob('dist/*.tar.gz')[0]
+          wheels = sorted(glob.glob('dist/*.whl'))
+          sdists = sorted(glob.glob('dist/*.tar.gz'))
+          if not wheels or len(sdists) != 1:
+              sys.exit(f'Expected >=1 wheels and 1 sdist, got wheels={wheels}, sdists={sdists}')
+          sdist = sdists[0]
           required = [
-              'core/cli.py', 'core/control/protocol.py', 'utils/weights.py',
+              'constants.py', 'build_identity.py',
+              'core/cli.py', 'core/control/protocol.py', 'core/_native.py',
+              'utils/weights.py',
               'core/models/stackmff_v1/network.py',
               'core/models/stackmff_v2/network.py',
               'core/models/stackmff_v3/network.py',
@@ -62,26 +116,32 @@ jobs:
           weights = {'weights/stackmff_final.onnx': 600000,
                      'weights/stackmff_v2_final.onnx': 600000,
                      'weights/stackmff_v3_final.onnx': 600000}
-          with zipfile.ZipFile(wheel) as archive:
-              files = {info.filename: info.file_size for info in archive.infolist()}
           with tarfile.open(sdist, 'r:gz') as archive:
               source = {entry.name.split('/', 1)[1]: entry.size
                         for entry in archive.getmembers() if '/' in entry.name}
-          for name, entries in ((wheel, files), (sdist, source)):
+          checks = [(sdist, source)]
+          for wheel in wheels:
+              with zipfile.ZipFile(wheel) as archive:
+                  files = {info.filename: info.file_size for info in archive.infolist()}
+              if not any(p.startswith('core/_openfocus_native') and (p.endswith('.so') or p.endswith('.pyd')) for p in files):
+                  sys.exit(f'{wheel}: missing compiled core._openfocus_native binary')
+              checks.append((wheel, files))
+          for name, entries in checks:
               missing = [path for path in [*required, *weights] if path not in entries]
               small = [path for path, size in weights.items()
                        if path in entries and entries[path] < size]
               stale = [path for path in entries if 'stackmffv4' in path]
               if missing or small or stale:
                   sys.exit(f'{name}: missing={missing}, truncated={small}, stale={stale}')
-              print(f'{name}: required modules, locales and model weights present')
+              print(f'{name}: required modules, locales, native binary and model weights present')
           PY
+
       - name: Record distribution identity
         env:
-          BUILD_SHA: ${{ steps.identity.outputs.sha }}
-          BUILD_VERSION: ${{ steps.identity.outputs.version }}
-          BUILD_CHANNEL: ${{ steps.identity.outputs.channel }}
-          BUILD_TAG: ${{ steps.identity.outputs.tag }}
+          BUILD_SHA: ${{ needs.identity.outputs.sha }}
+          BUILD_VERSION: ${{ needs.identity.outputs.version }}
+          BUILD_CHANNEL: ${{ needs.identity.outputs.channel }}
+          BUILD_TAG: ${{ needs.identity.outputs.tag }}
         run: |
           python tools/release_metadata.py pypi create --identity identity/dist.json \
             --sha "$BUILD_SHA" --version "$BUILD_VERSION" --channel "$BUILD_CHANNEL" --tag "$BUILD_TAG"
@@ -146,14 +206,6 @@ jobs:
           python tools/release_metadata.py pypi tag --identity identity/dist.json \
             --sha "$BUILD_SHA" --version "$BUILD_VERSION" --channel "$BUILD_CHANNEL" --tag "$BUILD_TAG"
 
-      # Two publish paths, in order of preference:
-      #   1. PYPI_API_TOKEN (a project-scoped token in repo secrets). Works
-      #      today and does not depend on PyPI-side configuration.
-      #   2. Trusted Publishing (OIDC) when no token is set. Requires a
-      #      publisher registered at
-      #      https://pypi.org/manage/account/publishing/ with
-      #      owner Xinzhe99 / repo OpenFocus / workflow pypi.yml / env pypi.
-      # A tag push therefore publishes without any manual upload.
       - name: Publish with the API token
         if: ${{ env.PYPI_API_TOKEN != '' && steps.verify.outputs.upload_count != '0' }}
         env:

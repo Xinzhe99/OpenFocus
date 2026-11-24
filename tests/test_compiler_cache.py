@@ -12,7 +12,11 @@ def test_fusion_survives_contended_and_corrupt_compiler_cache(tmp_path):
     code = textwrap.dedent('''
         import hashlib
         import json
+        import sys
         import numpy as np
+
+        # Exercise the compiled fallback even when the C++ extension is installed.
+        sys.modules['core._openfocus_native'] = None
         from fusion_methods.openfocus_bc import openfocus_b_impl
 
         rng = np.random.default_rng(177)

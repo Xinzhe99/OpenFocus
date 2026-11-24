@@ -1157,8 +1157,7 @@ class MultiFocusFusion:
                 kwargs['live_preview'] = live_preview
             from contextlib import nullcontext
             cache_access = nullcontext()
-            if (streaming_sources and (self.algorithm == 'openfocus_c' or
-                                       (self.algorithm == 'openfocus_a' and not self.use_gpu))
+            if (streaming_sources and self.algorithm in ('openfocus_a', 'openfocus_c')
                     and self.base_frame == 'none' and not self.retain_aligned_pixels):
                 # A successful pass consumes each source once. Borrow ECC's
                 # existing decode snapshots without writing one-use pixels.

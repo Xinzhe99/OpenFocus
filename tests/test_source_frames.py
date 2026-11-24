@@ -1319,3 +1319,36 @@ def test_raw_frame_budget_includes_masked_sensor_margins(tmp_path):
                                 None, sources._fingerprint(str(path)),
                                 native_shape=(4000, 6000, 3), raw_sensor_shape=(4100, 6200))
     assert sources.frame_resolution_bytes(frame) == 4100 * 6200 * 64 + frame.nbytes + 10
+
+
+def test_fast_os_check_and_jpeg_single_pass_metadata(tmp_path):
+    from PIL import Image
+    from core.image_loader import ImageStackLoader, decode_image
+    from utils.image_utils import srgb_icc_profile
+    from utils.platform_utils import get_os_type
+
+    assert get_os_type() in ('windows', 'macos', 'linux')
+
+    rgb = np.zeros((900, 1200, 3), dtype=np.uint8)
+    rgb[:450, :, 0] = 200
+    rgb[450:, :, 2] = 180
+    exif = Image.Exif()
+    exif[271] = 'OpenFocusTestCam'
+    exif[274] = 6  # 90 CW rotation on load
+    profile = srgb_icc_profile()
+    paths = []
+    for i in range(3):
+        p = tmp_path / f'img_{i:02d}.jpg'
+        Image.fromarray(rgb, 'RGB').save(p, format='JPEG', quality=95, exif=exif.tobytes(), icc_profile=profile)
+        paths.append(str(p))
+
+    loader = ImageStackLoader()
+    ok, _msg, images, names = loader.load_from_filepaths(paths, thread_count=2)
+    assert ok and len(images) == 3 and len(names) == 3
+    assert loader.source_icc_profile == profile
+    assert len(loader.source_exifs) == 3 and loader.source_exif
+    # Oriented size after Orientation=6 turns 1200x900 -> height=1200, width=900
+    assert images[0].shape == (1200, 900, 3)
+    assert images[0].preview is not None and max(images[0].preview.shape[:2]) <= sources.PREVIEW_EDGE
+    decoded = decode_image(paths[0])
+    assert decoded.shape == (1200, 900, 3)

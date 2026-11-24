@@ -27,6 +27,7 @@ from utils.image_utils import read_image_exif
 logger = logging.getLogger(__name__)
 PREVIEW_EDGE = 768
 PREVIEW_DECODE_BUDGET = 32 * 1024 * 1024
+_DEFAULT_PIL_THUMBNAIL = Image.Image.thumbnail
 
 
 class _UnavailablePreview(np.ndarray):
@@ -388,6 +389,34 @@ def _pil_preview(image, *, itemsize=1, alpha=False):
     coefficients = (math.ceil(width / 8) * math.ceil(height / 8) * 64 * bands * 2
                     if info.get('progressive') or info.get('progression') else 0)
     row_scratch = width * max(4, bands) * 32
+    from core.resource_policy import require_memory
+    if (getattr(image, 'format', None) == 'JPEG' and source_path and not cmyk
+            and not alpha and itemsize == 1 and Image.Image.thumbnail is _DEFAULT_PIL_THUMBNAIL
+            and os.path.isfile(source_path)):
+        scale_den = 1
+        for k in (8, 4, 2):
+            if (width + k - 1) // k >= target[0] and (height + k - 1) // k >= target[1]:
+                scale_den = k
+                break
+        if scale_den > 1:
+            dct_w = (width + scale_den - 1) // scale_den
+            dct_h = (height + scale_den - 1) // scale_den
+            working = dct_w * dct_h * max(4, len(image.getbands())) * 4 + coefficients + row_scratch
+            if working > PREVIEW_DECODE_BUDGET:
+                logger.warning('Preview decoder exceeds budget size=%sx%s need=%d budget=%d',
+                               width, height, working, PREVIEW_DECODE_BUDGET)
+                return _unavailable_preview(width, height)
+            require_memory(working)
+            try:
+                import imagecodecs
+                with open(source_path, 'rb') as fh:
+                    raw_bytes = fh.read()
+                decoded = imagecodecs.jpeg8_decode(raw_bytes, outcolorspace='BGR', scale=(1, scale_den))
+                if decoded.shape[1] != target[0] or decoded.shape[0] != target[1]:
+                    decoded = cv2.resize(decoded, target, interpolation=cv2.INTER_AREA)
+                return decoded
+            except Exception:
+                pass
     # Aspect-correct draft targets let libjpeg choose its largest useful DCT
     # reduction. Other formats retain native geometry and are checked below.
     image.draft('CMYK' if cmyk else 'RGB', target)
@@ -396,7 +425,6 @@ def _pil_preview(image, *, itemsize=1, alpha=False):
         logger.warning('Preview decoder exceeds budget size=%sx%s need=%d budget=%d',
                        width, height, working, PREVIEW_DECODE_BUDGET)
         return _unavailable_preview(width, height)
-    from core.resource_policy import require_memory
     require_memory(working)
     image.thumbnail((PREVIEW_EDGE, PREVIEW_EDGE), Image.Resampling.LANCZOS)
     if cmyk:
@@ -2121,7 +2149,8 @@ def _tiff_embedded_preview(page, candidates, should_cancel):
     return None
 
 
-def scan_source(path, scale=1.0, *, linear=False, header_only=False, page_index=None, should_cancel=None):
+def scan_source(path, scale=1.0, *, linear=False, header_only=False, page_index=None, should_cancel=None,
+                metadata_out=None):
     """Read headers and bounded previews; linear RAW calibration may unpack the sensor."""
     from core.image_loader import is_raw_source
     _check_preview_cancel(should_cancel)
@@ -2204,6 +2233,17 @@ def scan_source(path, scale=1.0, *, linear=False, header_only=False, page_index=
                                           np.dtype(page.dtype), preview, stamp, scale, orientation,
                                           native_shape=(h, w, 3),
                                           grayscale=page.samplesperpixel == 1 and page.photometric in (0, 1)))
+                if metadata_out is not None:
+                    from core.image_loader import UnsupportedColorSpace, _safe_exif_bytes, _tiff_page_exif, _tiff_page_profile
+                    from utils.image_utils import SourceExifTooLarge
+                    try:
+                        raw_exif = _tiff_page_exif(tif, page, path)
+                        profile = _tiff_page_profile(path, page)
+                    except (SourceExifTooLarge, UnsupportedColorSpace):
+                        raise
+                    except (OSError, ValueError, TypeError, EOFError):
+                        raw_exif, profile = b'', b''
+                    metadata_out.append((_safe_exif_bytes(path, raw_exif), profile))
     else:
         with Image.open(path) as image:
             from core.image_loader import validate_pil_header
@@ -2222,6 +2262,9 @@ def scan_source(path, scale=1.0, *, linear=False, header_only=False, page_index=
                     dtype = np.dtype(np.uint16)
             if orientation in (5, 6, 7, 8):
                 width, height = height, width
+            if metadata_out is not None:
+                from core.image_loader import _pil_metadata_from_image
+                metadata_out.append(_pil_metadata_from_image(path, image))
             preview = None
             if not header_only:
                 preview = _orient(_pil_preview(image, itemsize=dtype.itemsize, alpha=alpha), orientation)

@@ -9,7 +9,8 @@ from core.frame_storage import (
 from fusion_methods._openfocus_pixels import frame_codes, frame_gray_codes, gray_codes, output_codes
 from fusion_methods._openfocus_execution import execution_job, configure_rows, run_bands
 
-_BACKGROUND_RAM_LIMIT_BYTES = 32 * 1024 * 1024
+_DEFAULT_BACKGROUND_RAM_LIMIT = 32 * 1024 * 1024
+_BACKGROUND_RAM_LIMIT_BYTES = _DEFAULT_BACKGROUND_RAM_LIMIT
 
 
 def _down2(gray, should_cancel, check_cancel):
@@ -378,7 +379,11 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
                     # and packed response statistics for each live band.
                     background_shape = (height, width, channels + 2)
                     background_bytes = height * width * (channels + 2) * 4
-                    allocate = (create_frame if background_bytes <= _BACKGROUND_RAM_LIMIT_BYTES
+                    from constants import FRAME_RAM_BUDGET_BYTES
+                    bg_ram_limit = (FRAME_RAM_BUDGET_BYTES
+                                    if _BACKGROUND_RAM_LIMIT_BYTES == _DEFAULT_BACKGROUND_RAM_LIMIT
+                                    else _BACKGROUND_RAM_LIMIT_BYTES)
+                    allocate = (create_frame if background_bytes <= bg_ram_limit
                                 else create_disk_frame)
                     background = allocate(background_shape, np.float32)
                     no_background = background[:0]
