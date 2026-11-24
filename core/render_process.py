@@ -1,6 +1,8 @@
 """One crash-isolated process per GUI render, using the existing pipeline."""
 from __future__ import annotations
 
+import atexit
+import gc
 import multiprocessing
 import os
 import signal
@@ -157,6 +159,11 @@ class _LivePreviewMailbox:
         return cls((context.RawArray('B', _LIVE_PREVIEW_EDGE ** 2),
                     context.RawArray('q', 5),  # width, height, done, total, blending
                     context.Lock()))
+
+    def reset(self):
+        with self._lock:
+            self._metadata[:] = (0, 0, 0, 0, 0)
+            self._last_read = (0, 0)
 
     def publish(self, gray, done, total, blending):
         height, width = gray.shape
@@ -327,6 +334,227 @@ def _render_child(connection, cancel_event, request, budget, directory, language
         relay.send(('error', str(exc), None,
                     (_render_error_category(exc), 'child_setup_or_transfer', relay.last_stage),
                     _capture_error_details(exc)))
+    finally:
+        connection.close()
+
+
+_DEFAULT_GET_CONTEXT = multiprocessing.get_context
+_DEFAULT_RENDER_CHILD = _render_child
+_PERSISTENT_LOCK = threading.Lock()
+_PERSISTENT_HANDLE = None
+
+
+class _PersistentWorkerHandle:
+    """Long-lived isolated render child reused across compatible GUI renders."""
+
+    def __init__(self, process, parent_conn, cancel_event, directory, source_revision, mailbox):
+        self.process = process
+        self.parent_conn = parent_conn
+        self.cancel_event = cancel_event
+        self.directory = directory
+        self.source_revision = source_revision
+        self.mailbox = mailbox
+
+    def compatible(self, directory, source_revision):
+        return (self.process is not None
+                and self.process.is_alive()
+                and self.directory == directory
+                and self.source_revision == source_revision)
+
+    def close(self):
+        proc = self.process
+        conn = self.parent_conn
+        cancel_event = self.cancel_event
+        self.process = None
+        self.parent_conn = None
+        self.cancel_event = None
+        self.mailbox = None
+        if proc is not None and proc.pid is not None:
+            if proc.is_alive() and conn is not None:
+                try:
+                    conn.send('shutdown')
+                except (BrokenPipeError, EOFError, OSError):
+                    pass
+                proc.join(1.0)
+            if proc.is_alive() and cancel_event is not None:
+                try:
+                    cancel_event.set()
+                except Exception:
+                    pass
+                proc.join(_CANCEL_GRACE_SECONDS)
+            if proc.is_alive():
+                proc.terminate()
+                proc.join(1.0)
+            if proc.is_alive():
+                proc.kill()
+                proc.join()
+        if conn is not None:
+            try:
+                conn.close()
+            except OSError:
+                pass
+        if proc is not None:
+            try:
+                proc.close()
+            except ValueError:
+                pass
+
+
+def shutdown_persistent_worker():
+    """Shut down the cached isolated render worker process if running."""
+    global _PERSISTENT_HANDLE
+    with _PERSISTENT_LOCK:
+        handle = _PERSISTENT_HANDLE
+        _PERSISTENT_HANDLE = None
+    if handle is not None:
+        handle.close()
+
+
+atexit.register(shutdown_persistent_worker)
+
+
+def _persistent_worker_enabled():
+    return (multiprocessing.get_context is _DEFAULT_GET_CONTEXT
+            and _render_child is _DEFAULT_RENDER_CHILD
+            and not os.environ.get('OPENFOCUS_DISABLE_PERSISTENT_RENDER_WORKER'))
+
+
+def _checkout_persistent_worker(directory, source_revision):
+    global _PERSISTENT_HANDLE
+    with _PERSISTENT_LOCK:
+        handle = _PERSISTENT_HANDLE
+        if handle is not None:
+            _PERSISTENT_HANDLE = None
+            if handle.compatible(directory, source_revision):
+                return handle
+    if handle is not None:
+        handle.close()
+    return None
+
+
+def _checkin_persistent_worker(handle):
+    global _PERSISTENT_HANDLE
+    old = None
+    with _PERSISTENT_LOCK:
+        if _PERSISTENT_HANDLE is None and handle.process is not None and handle.process.is_alive():
+            _PERSISTENT_HANDLE = handle
+            return
+        old = handle
+    if old is not None:
+        old.close()
+
+
+def _run_one_persistent_job(connection, cancel_event, request, budget, job_directory, language,
+                            mailbox, live_preview_requested):
+    """Run a single render job in a dedicated stack frame so all mmaps close on return."""
+    from utils.logging_setup import set_log_level
+    trans.current_lang = language
+    relay = _Relay(connection, cancel_event)
+    worker = None
+    inputs = None
+    results, errors = [], []
+    try:
+        if _windows_source_run() and multiprocessing.parent_process() is not None:
+            request = unwrap_source_request(request, _LOADED_SOURCE_REVISION)
+            if request is None:
+                raise RuntimeError(trans.t('render_source_changed'))
+        storage.restore_storage_directory(job_directory)
+        with process_budget(budget), storage.observe_temp_files(relay.temporary_file):
+            inputs = FrameDecoder(should_cancel=cancel_event.is_set).decode(request)
+            set_log_level(inputs['log_level'])
+            _restore_algorithms(inputs['fusions'], inputs['registrations'])
+            worker = _ChildRenderWorker(cancel_event, *inputs['args'], **inputs['kwargs'])
+            if live_preview_requested and mailbox is not None:
+                worker.live_preview_sink = mailbox.publish
+            direct = Qt.ConnectionType.DirectConnection
+            worker.progress_signal.connect(relay.progress, direct)
+            worker.stage_signal.connect(relay.stage, direct)
+            worker.finished_signal.connect(lambda *result: results.append(result), direct)
+            worker.error_signal.connect(errors.append, direct)
+            worker.run()
+            if errors:
+                state = {name: getattr(worker, name) for name in _ERROR_STATE_FIELDS}
+                encoder = FrameEncoder()
+                metadata = ((worker._render_error_category, 'child_worker', relay.last_stage)
+                            if worker._render_error_category is not None else None)
+                message = ('error', errors[-1], encoder.encode(state), metadata)
+                if metadata is not None and worker._error_details:
+                    message += (worker._error_details,)
+                relay.send(message)
+            elif not results:
+                raise RuntimeError('Render worker produced neither a result nor an error')
+            else:
+                relay.stage('publish')
+                state = {name: getattr(worker, name) for name in _SUCCESS_STATE_FIELDS}
+                encoder = FrameEncoder(cancel_event.is_set)
+                payload = encoder.encode({'result': results[-1], 'state': state})
+                paths = encoder.owned_paths
+                if relay.send(('completed', payload, paths, relay.directories)):
+                    while not connection.poll(.05):
+                        if cancel_event.is_set():
+                            break
+                    if not cancel_event.is_set() and connection.recv() == 'accepted':
+                        storage.disown_temp_files(paths)
+                        from core import scratch_registry
+                        scratch_registry.forget([*paths, *relay.directories])
+    except RegistrationCancelled:
+        relay.send(('error', 'CANCELLED: render cancelled', None, None))
+    except Exception as exc:
+        logger.exception('isolated render failed')
+        relay.send(('error', str(exc), None,
+                    (_render_error_category(exc), 'child_setup_or_transfer', relay.last_stage),
+                    _capture_error_details(exc)))
+    finally:
+        if worker is not None:
+            for sig in (worker.progress_signal, worker.stage_signal,
+                        worker.finished_signal, worker.error_signal):
+                try:
+                    sig.disconnect()
+                except TypeError:
+                    pass
+            for attr in ('raw_images', 'aligned_images', 'prepared_cache',
+                         'rendered_depth', 'live_preview_sink'):
+                if hasattr(worker, attr):
+                    setattr(worker, attr, None)
+        results.clear()
+        errors.clear()
+        if isinstance(inputs, dict):
+            inputs.clear()
+
+
+def _persistent_render_child(connection, cancel_event, directory, mailbox_shared):
+    """Persistent top-level spawn target handling sequential isolated renders."""
+    from utils.logging_setup import setup_logging
+    from utils.diagnostics import install_exception_hooks
+    setup_logging()
+    install_exception_hooks()
+    storage.restore_storage_directory(directory)
+    mailbox = _LivePreviewMailbox(mailbox_shared) if mailbox_shared is not None else None
+    try:
+        while True:
+            try:
+                command = connection.recv()
+            except (EOFError, OSError):
+                break
+            if command is None or command == 'shutdown':
+                break
+            _, request, budget, job_directory, language, live_preview_requested = command
+            _run_one_persistent_job(
+                connection, cancel_event, request, budget, job_directory,
+                language, mailbox, live_preview_requested,
+            )
+            command = request = budget = None
+            from core import source_frames
+            source_frames.SOURCE_CACHE.clear()
+            source_frames.PREVIEW_CACHE.clear()
+            gc.collect()
+            gc.collect()
+            if cancel_event.is_set():
+                break
+            try:
+                connection.send(('idle',))
+            except (EOFError, OSError):
+                break
     finally:
         connection.close()
 
@@ -504,6 +732,8 @@ class RenderProcessWorker(RenderWorker):
             source_revision = _LOADED_SOURCE_REVISION
             if source_revision is None or _render_source_revision() != source_revision:
                 raise RuntimeError(trans.t('render_source_changed'))
+        if _persistent_worker_enabled():
+            return self._run_persistent_process(source_revision)
         context = multiprocessing.get_context('spawn')
         self._cancel_event = context.Event()
         parent, child = context.Pipe()
@@ -605,5 +835,124 @@ class RenderProcessWorker(RenderWorker):
             _cleanup_files(exchange.files - adopted, exchange.directories)
             if process is not None:
                 process.close()
+            self._process = None
+            self._cancel_event = None
+
+    def _run_persistent_process(self, source_revision):
+        context = multiprocessing.get_context('spawn')
+        scratch = storage.capture_scratch()
+        directory = scratch.explicit_directory if scratch is not None else None
+        handle = _checkout_persistent_worker(directory, source_revision)
+        child = None
+        if handle is None:
+            cancel_event = context.Event()
+            parent, child = context.Pipe()
+            mailbox = _LivePreviewMailbox.create(context)
+            process = context.Process(
+                target=_persistent_render_child,
+                args=(child, cancel_event, directory, mailbox.shared),
+                name='OpenFocus render',
+                daemon=True,
+            )
+            handle = _PersistentWorkerHandle(process, parent, cancel_event, directory, source_revision, mailbox)
+        else:
+            parent = handle.parent_conn
+            process = handle.process
+            cancel_event = handle.cancel_event
+            mailbox = handle.mailbox
+        mailbox.reset()
+        self._live_preview_mailbox = mailbox if self.live_preview_requested else None
+        self._cancel_event = cancel_event
+        self._process = process
+        exchange = _RenderExchange(self)
+        adopted = set()
+        encoder = None
+        reusable = False
+        try:
+            log_action('render_dispatch.ipc_ready')
+            encoder = FrameEncoder(self._check_current)
+            request = encoder.encode({'args': self._render_args, 'kwargs': self._render_kwargs,
+                'fusions': fusion_algorithms(), 'registrations': registration_algorithms(),
+                'log_level': logger.getEffectiveLevel()})
+            if source_revision is not None:
+                request = wrap_source_request(request, source_revision)
+            log_action('render_dispatch.request_encoded')
+            budget = make_process_budget(storage.ram_snapshot_bytes())
+            if process.pid is None:
+                log_action('render_dispatch.spawn_started')
+                process.start()
+                log_action('render_dispatch.spawn_completed')
+            if child is not None:
+                child.close()
+                child = None
+            self.child_pid = process.pid
+            parent.send(('run', request, budget, directory, trans.current_lang, bool(self.live_preview_requested)))
+            cancel_deadline = None
+            idle_confirmed = False
+            while True:
+                if self._check_current():
+                    cancel_event.set()
+                    if cancel_deadline is None:
+                        cancel_deadline = time.monotonic() + _CANCEL_GRACE_SECONDS
+                    elif process.is_alive() and time.monotonic() >= cancel_deadline:
+                        process.terminate()
+                        process.join(1)
+                        if process.is_alive():
+                            process.kill()
+                try:
+                    available = parent.poll(.05)
+                    if available:
+                        message = parent.recv()
+                    else:
+                        message = None
+                except (EOFError, OSError):
+                    message = None
+                    available = False
+                if message is not None:
+                    if message[0] == 'idle':
+                        idle_confirmed = True
+                        break
+                    exchange.receive(message, parent)
+                if not process.is_alive() and not available:
+                    break
+            if not idle_confirmed and not process.is_alive():
+                process.join()
+            if self.is_cancelled:
+                raise RegistrationCancelled()
+            if (not idle_confirmed and process.exitcode not in (0, None)) or (
+                exchange.packet is None and exchange.error is None
+            ):
+                exit_code_raw = process.exitcode if not process.is_alive() else -1
+                evidence = dict(exchange.error_metadata or {'error_category': 'runtime'})
+                evidence.update(error_origin=_CHILD_EXIT_ORIGIN, render_stage=exchange.last_stage)
+                exit_code = _bounded_exit_code(exit_code_raw)
+                if exit_code is not None:
+                    evidence['exit_code'] = exit_code
+                self._child_error_evidence = evidence
+                raise RuntimeError(trans.t('render_worker_crashed').format(
+                    reason=_exit_reason(exit_code_raw)))
+            reusable = idle_confirmed and process.is_alive() and not cancel_event.is_set()
+            if exchange.error is not None:
+                self._child_error_evidence = exchange.error_metadata
+                if source_revision is not None and exchange.error == LEGACY_SOURCE_REQUEST_ERROR:
+                    raise RuntimeError(trans.t('render_source_changed'))
+                raise RuntimeError(exchange.error)
+            exchange.restore_state(exchange.packet['state'])
+            adopted = exchange.decoder.adopted_paths
+            return exchange.packet['result']
+        finally:
+            if child is not None:
+                try:
+                    child.close()
+                except OSError:
+                    pass
+            if not adopted:
+                exchange.packet = exchange.decoder = None
+            encoder = None
+            _cleanup_files(exchange.files - adopted, exchange.directories)
+            if reusable:
+                _checkin_persistent_worker(handle)
+            else:
+                handle.close()
             self._process = None
             self._cancel_event = None

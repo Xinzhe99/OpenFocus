@@ -1230,3 +1230,61 @@ def test_isolated_render_adopts_readonly_focus_map(qapp, scratch):
     assert Path(mapping['path']).parent.is_relative_to(scratch)
     assert owns_temp_file(mapping['path'])
     np.testing.assert_array_equal(index[1:-1, 1:-1], 1)
+
+
+def test_persistent_render_worker_reuses_pid_recovers_crash_and_tracks_scratch(qapp, tmp_path, scratch, monkeypatch):
+    from core import frame_storage as storage, render_process
+
+    frames = _sources(tmp_path)
+    try:
+        render_process.shutdown_persistent_worker()
+        first = render_process.RenderProcessWorker(
+            frames, algorithm='openfocus_b', use_gpu=False, sort_mode='off',
+            thread_count=1, exposure_match=False,
+        )
+        first.live_preview_requested = True
+        r1, e1 = _start(first)
+        _wait(first, qapp)
+        assert len(r1) == 1 and not e1
+        pid1 = first.child_pid
+        assert pid1 is not None
+
+        second = render_process.RenderProcessWorker(
+            frames, algorithm='openfocus_b', use_gpu=False, sort_mode='off',
+            thread_count=1, exposure_match=False,
+        )
+        second.live_preview_requested = True
+        r2, e2 = _start(second)
+        _wait(second, qapp)
+        assert len(r2) == 1 and not e2
+        assert second.child_pid == pid1
+
+        # Simulate unexpected worker death between jobs.
+        handle = render_process._PERSISTENT_HANDLE
+        assert handle is not None and handle.process is not None
+        handle.process.kill()
+        handle.process.join()
+
+        third = render_process.RenderProcessWorker(
+            frames, algorithm='openfocus_b', use_gpu=False, sort_mode='off',
+            thread_count=1, exposure_match=False,
+        )
+        r3, e3 = _start(third)
+        _wait(third, qapp)
+        assert len(r3) == 1 and not e3
+        pid3 = third.child_pid
+        assert pid3 is not None and pid3 != pid1
+
+        other_scratch = tmp_path / 'scratch_other'
+        other_scratch.mkdir()
+        monkeypatch.setattr(storage, '_storage_directory', str(other_scratch))
+        fourth = render_process.RenderProcessWorker(
+            frames, algorithm='openfocus_b', use_gpu=False, sort_mode='off',
+            thread_count=1, exposure_match=False,
+        )
+        r4, e4 = _start(fourth)
+        _wait(fourth, qapp)
+        assert len(r4) == 1 and not e4
+        assert fourth.child_pid is not None and fourth.child_pid != pid3
+    finally:
+        render_process.shutdown_persistent_worker()
