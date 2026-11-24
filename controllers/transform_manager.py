@@ -1,6 +1,7 @@
 import cv2
 from typing import Any
-from core.source_frames import display_image, transform_frame
+from weakref import WeakKeyDictionary
+from core.source_frames import PreviewPixels, SourceFrame, display_image, preview_ready, transform_frame
 
 from PyQt6.QtGui import QFont
 
@@ -175,7 +176,6 @@ class TransformManager:
                 from utils.linear_dng import develop_linear
                 thumbnails = []
                 for image in window.raw_images:
-                    from core.source_frames import preview_ready
                     if not preview_ready(image):
                         from PyQt6.QtGui import QPixmap
                         thumbnails.append(QPixmap())
@@ -244,7 +244,6 @@ class TransformManager:
         curve = getattr(window, "sharpness_curve", None)
         if curve is None:
             return
-        from core.source_frames import preview_ready
         if any(not preview_ready(frame) for frame in window.raw_images):
             curve.set_data([])
             return
@@ -252,15 +251,30 @@ class TransformManager:
             curve.set_data([])
             return
         try:
+            scores = getattr(window, "_source_preview_sharpness", None)
+            if scores is None:
+                scores = window._source_preview_sharpness = WeakKeyDictionary()
             values = []
-            for img in window.raw_images:
-                img = display_image(img)
+            for frame in window.raw_images:
+                # Disk-backed previews have stable pixels. Weak keys let the
+                # scores follow their lifetime, including previews held by undo.
+                preview = frame.preview if isinstance(frame, SourceFrame) else None
+                cacheable = isinstance(preview, PreviewPixels)
+                if cacheable:
+                    score = scores.get(preview)
+                    if score is not None:
+                        values.append(score)
+                        continue
+                img = preview.get() if cacheable else display_image(frame)
                 h, w = img.shape[:2]
                 scale = 320.0 / max(h, w)
                 small = cv2.resize(img, (max(1, int(w * scale)), max(1, int(h * scale))),
                                    interpolation=cv2.INTER_AREA) if scale < 1.0 else img
                 gray = small if small.ndim == 2 else cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
-                values.append(float(cv2.Laplacian(gray, cv2.CV_64F).var()))
+                score = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+                if cacheable:
+                    scores[preview] = score
+                values.append(score)
             curve.set_data(values)
             curve.set_current(window.current_display_index)
         except Exception as exc:
