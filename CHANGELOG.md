@@ -27,6 +27,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   your phone or computer to sign in automatically on the desktop.
 
 ### Changed
+- Build desktop packages and platform wheels with C++17 CPU kernels for
+  homography ECC and OpenFocus A, B, and C. Reuse per-frame ECC pyramids and
+  estimate eligible JPEG stacks from reduced grayscale decodes.
+- Read stack previews and metadata in a single scan and reuse compatible
+  isolated render workers between renders.
 - Use OpenCL for eligible large integer ECC reductions, including 8×8 area
   downsizing. Apply exact Lanczos4 warps for large 8-bit and 16-bit frames
   during ECC and homography registration and whenever a GPU render resolves
