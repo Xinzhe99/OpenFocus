@@ -133,7 +133,9 @@ class MagnifierLabel(QLabel):
         self._pan_button = Qt.MouseButton.NoButton
         self._last_mouse_pos = QPointF()
         self._roi_state = "none"
-        self._hovering_handle = None
+        if self._hovering_handle is not None:
+            self._hovering_handle = None
+            self.update()
         self._last_cursor_state = None
         self.unsetCursor()
 
@@ -175,6 +177,11 @@ class MagnifierLabel(QLabel):
         scale, dx, dy = self._get_layout_params()
         if scale == 0: return QPointF(0,0)
         return QPointF((point.x() - dx) / scale, (point.y() - dy) / scale)
+
+    def _roi_in_widget(self, roi: QRectF) -> QRectF:
+        scale, dx, dy = self._get_layout_params()
+        return QRectF(roi.x() * scale + dx, roi.y() * scale + dy,
+                      roi.width() * scale, roi.height() * scale)
 
     def _get_handle_rects(self, widget_roi: QRectF):
         """Get handles in widget coordinates."""
@@ -538,14 +545,7 @@ class MagnifierLabel(QLabel):
             
             # Check interactions if ROI exists
             if self._roi_rect is not None:
-                # Check handles
-                scale, _, _ = self._get_layout_params()
-                screen_roi = QRectF(
-                   (self._roi_rect.x() * scale) + self._get_layout_params()[1],
-                   (self._roi_rect.y() * scale) + self._get_layout_params()[2],
-                   self._roi_rect.width() * scale,
-                   self._roi_rect.height() * scale
-                )
+                screen_roi = self._roi_in_widget(self._roi_rect)
                 handles = self._get_handle_rects(screen_roi)
                 
                 # Check delete button first - emit exit request instead of just deleting
@@ -599,14 +599,7 @@ class MagnifierLabel(QLabel):
                 pos = event.position()
                 is_inside_roi = False
                 if self._roi_rect is not None:
-                    scale, _, _ = self._get_layout_params()
-                    screen_roi = QRectF(
-                       (self._roi_rect.x() * scale) + self._get_layout_params()[1],
-                       (self._roi_rect.y() * scale) + self._get_layout_params()[2],
-                       self._roi_rect.width() * scale,
-                       self._roi_rect.height() * scale
-                    )
-                    is_inside_roi = screen_roi.contains(pos)
+                    is_inside_roi = self._roi_in_widget(self._roi_rect).contains(pos)
                 
                 if not is_inside_roi:
                     # 右键点击非ROI区域，请求退出ROI模式
@@ -666,63 +659,49 @@ class MagnifierLabel(QLabel):
             return
         if self._roi_mode:
             pos = event.position()
-            base_pos = self._map_to_base(pos)
-            
-            if self._roi_state == "creating":
-                x = min(self._roi_start_pos.x(), base_pos.x())
-                y = min(self._roi_start_pos.y(), base_pos.y())
-                w = abs(base_pos.x() - self._roi_start_pos.x())
-                h = abs(base_pos.y() - self._roi_start_pos.y())
-                self._roi_rect = QRectF(x, y, w, h)
-                self.update()
-                return
+            if self._roi_state != "none":
+                base_pos = self._map_to_base(pos)
+                if self._roi_state == "creating":
+                    x = min(self._roi_start_pos.x(), base_pos.x())
+                    y = min(self._roi_start_pos.y(), base_pos.y())
+                    w = abs(base_pos.x() - self._roi_start_pos.x())
+                    h = abs(base_pos.y() - self._roi_start_pos.y())
+                    self._roi_rect = QRectF(x, y, w, h)
+                elif self._roi_state == "moving":
+                    dx = base_pos.x() - self._roi_start_pos.x()
+                    dy = base_pos.y() - self._roi_start_pos.y()
+                    r = self._roi_original_rect
+                    self._roi_rect = QRectF(r.x() + dx, r.y() + dy, r.width(), r.height())
+                elif self._roi_state.startswith("resizing_"):
+                    corner = self._roi_state.split("_")[1]
+                    r = self._roi_original_rect
+                    dx = base_pos.x() - self._roi_start_pos.x()
+                    dy = base_pos.y() - self._roi_start_pos.y()
 
-            elif self._roi_state == "moving":
-                dx = base_pos.x() - self._roi_start_pos.x()
-                dy = base_pos.y() - self._roi_start_pos.y()
-                r = self._roi_original_rect
-                self._roi_rect = QRectF(r.x() + dx, r.y() + dy, r.width(), r.height())
-                self.update()
-                return
+                    new_l, new_t, new_r, new_b = r.left(), r.top(), r.right(), r.bottom()
 
-            elif self._roi_state.startswith("resizing_"):
-                # Handle resizing
-                corner = self._roi_state.split("_")[1]
-                r = self._roi_original_rect
-                dx = base_pos.x() - self._roi_start_pos.x()
-                dy = base_pos.y() - self._roi_start_pos.y()
-                
-                new_l, new_t, new_r, new_b = r.left(), r.top(), r.right(), r.bottom()
-                
-                if "l" in corner: new_l += dx
-                if "t" in corner: new_t += dy
-                if "r" in corner: new_r += dx
-                if "b" in corner: new_b += dy
-                
-                self._roi_rect = QRectF(QPointF(new_l, new_t), QPointF(new_r, new_b)).normalized()
+                    if "l" in corner: new_l += dx
+                    if "t" in corner: new_t += dy
+                    if "r" in corner: new_r += dx
+                    if "b" in corner: new_b += dy
+
+                    self._roi_rect = QRectF(QPointF(new_l, new_t), QPointF(new_r, new_b)).normalized()
                 self.update()
                 return
 
             # Update hovering state
             if self._roi_rect:
-                scale, _, _ = self._get_layout_params()
-                screen_roi = QRectF(
-                   (self._roi_rect.x() * scale) + self._get_layout_params()[1],
-                   (self._roi_rect.y() * scale) + self._get_layout_params()[2],
-                   self._roi_rect.width() * scale,
-                   self._roi_rect.height() * scale
-                )
+                screen_roi = self._roi_in_widget(self._roi_rect)
                 handles = self._get_handle_rects(screen_roi)
                 cursor = Qt.CursorShape.CrossCursor
                 
                 # Check delete button hover
-                if "del" in handles and handles["del"].contains(pos):
+                if handles["del"].contains(pos):
                     self.setCursor(Qt.CursorShape.PointingHandCursor)
-                    # We need to track hover state for redraw, let's use a member variable
                     if self._hovering_handle != "del":
                         self._hovering_handle = "del"
-                        self.update() # To redraw button highlight
-                    return 
+                        self.update()
+                    return
 
                 # Check resize handles
                 for name, rect in handles.items():
@@ -735,9 +714,10 @@ class MagnifierLabel(QLabel):
                      if screen_roi.contains(pos):
                          cursor = Qt.CursorShape.SizeAllCursor
                 
-                self._hovering_handle = None # Reset if not on button
                 self.setCursor(cursor)
-                self.update() # optional: to clear button highlight if needed, but might flicker
+                if self._hovering_handle is not None:
+                    self._hovering_handle = None
+                    self.update()
             else:
                 self.setCursor(Qt.CursorShape.CrossCursor)
                 

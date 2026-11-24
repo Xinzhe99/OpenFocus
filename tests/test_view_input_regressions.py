@@ -99,6 +99,47 @@ def test_roi_left_create_move_and_resize(qapp):
     label.close()
 
 
+def test_roi_hover_repaints_only_when_delete_highlight_changes(qapp):
+    class PaintCountingLabel(MagnifierLabel):
+        paints = 0
+
+        def paintEvent(self, event):
+            self.paints += 1
+            super().paintEvent(event)
+
+    label = PaintCountingLabel()
+    label.resize(600, 400)
+    pixmap = QPixmap(600, 400)
+    pixmap.fill(Qt.GlobalColor.white)
+    label.set_display_pixmap(pixmap)
+    label.roi_mode = True
+    label.set_roi_rect(QRectF(100, 100, 300, 200))
+    label.show()
+    try:
+        qapp.processEvents()
+        label.paints = 0
+
+        def hover(point):
+            mouse(label, QEvent.Type.MouseMove, point, Qt.MouseButton.NoButton,
+                  Qt.MouseButton.NoButton)
+            qapp.processEvents()
+            return label.cursor().shape()
+
+        assert hover((200, 200)) == Qt.CursorShape.SizeAllCursor
+        assert hover((100, 100)) == Qt.CursorShape.SizeFDiagCursor
+        assert hover((85, 100)) == Qt.CursorShape.CrossCursor
+        assert label.paints == 0
+        assert hover((406, 92)) == Qt.CursorShape.PointingHandCursor
+        assert label.paints == 1
+        assert hover((406, 93)) == Qt.CursorShape.PointingHandCursor
+        assert label.paints == 1
+        assert hover((200, 200)) == Qt.CursorShape.SizeAllCursor
+        assert label.paints == 2
+        assert label.get_roi_rect() == QRectF(100, 100, 300, 200)
+    finally:
+        label.close()
+
+
 def test_wipe_missing_images_and_drag_reset(qapp):
     widget = WipeCompareWidget()
     widget.resize(900, 600)
