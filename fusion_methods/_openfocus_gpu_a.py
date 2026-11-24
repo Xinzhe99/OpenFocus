@@ -31,7 +31,9 @@ _PROGRAM_CACHE = None
 
 def _get_or_build_program(cl, device):
     global _PROGRAM_CACHE
-    from fusion_methods._openfocus_gpu import _PREVIEW_KERNEL, _device_cache_key
+    from fusion_methods._openfocus_gpu import (
+        _PREVIEW_KERNEL, _build_cached_program, _device_cache_key,
+    )
 
     key = _device_cache_key(device)
     with _cache_lock:
@@ -39,7 +41,8 @@ def _get_or_build_program(cl, device):
             return _PROGRAM_CACHE[1:]
         ctx = cl.Context(devices=[device])
         queue = cl.CommandQueue(ctx, device=device)
-        program = cl.Program(ctx, _A_K + _PREVIEW_KERNEL.format(type='int')).build(
+        program = _build_cached_program(
+            cl, device, ctx, _A_K + _PREVIEW_KERNEL.format(type='int'),
             options=['-cl-fp32-correctly-rounded-divide-sqrt'],
         )
         kernels = {name: cl.Kernel(program, name) for name in _KERNEL_NAMES}
@@ -368,7 +371,7 @@ class GpuA:
             raise GpuError('OpenCL GPU A initialization failed') from exc
 
     def _run(self, kernel, gsize, *args):
-        kernel(self.q, gsize if isinstance(gsize, tuple) else (gsize,), None, *args)
+        return kernel(self.q, gsize if isinstance(gsize, tuple) else (gsize,), None, *args)
 
     def _drain_queue(self):
         q = getattr(self, 'q', None)
@@ -491,10 +494,13 @@ class GpuA:
         if need > limit or largest > single:
             raise GpuError('OpenFocus A GPU workspace exceeds the device budget')
 
-        gray_bufs = lap_buf = best_buf = out_buf = acc_buf = wt_buf = stat_buf = src_buf = dst_buf = None
+        gray_bufs = lap_buf = best_buf = out_buf = acc_buf = wt_buf = stat_buf = dst_buf = None
+        src_bufs = ()
         reader = prepared_iter = None
         in_flight = False
         try:
+            from fusion_methods._openfocus_gpu import _prefetch_window, _wait_event
+
             gray_bufs = [self.cl.Buffer(self.ctx, self.mf.READ_WRITE, size) for size in gray_sizes]
             lap_buf = (self.cl.Buffer(self.ctx, self.mf.READ_WRITE, lap_bytes)
                        if lap_bytes else gray_bufs[0])
@@ -504,9 +510,20 @@ class GpuA:
             wt_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, n * 4))
             stat_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, n * 4))
 
-            src_buf = self.cl.Buffer(self.ctx, self.mf.READ_ONLY, src_bytes)
             prefetch_budget = host_budget - need if unified_memory else host_budget
-            prefetch = staging + source_peak <= prefetch_budget
+            prefetch_slots = _prefetch_window(
+                prefetch_budget, staging, source_peak, total,
+            )
+            ping_pong = (
+                total >= 2
+                and (need + src_bytes) <= limit
+                and (staging + prefetch_slots * source_peak + 2 * src_bytes
+                     + (src_bytes if unified_memory else 0)) <= prefetch_budget
+            )
+            src_bufs = tuple(
+                self.cl.Buffer(self.ctx, self.mf.READ_ONLY, src_bytes)
+                for _ in range(2 if ping_pong else 1)
+            )
             if live_preview is not None:
                 reader = _PreviewPlaneReader(self.cl, self.ctx, self.q, self.k['sample_focus_plane'],
                                              (height, width), np.int32)
@@ -533,12 +550,21 @@ class GpuA:
                 return host_src, False, u8_gray, bgr_rev
 
             prepared_iter = _iter_prefetched(
-                frames, prepare_frame, enabled=prefetch, should_cancel=should_cancel,
+                frames, prepare_frame, enabled=prefetch_slots > 0,
+                should_cancel=should_cancel, max_in_flight=max(1, prefetch_slots),
             )
+            slot_events = [None, None]
+            slot_hosts = [None, None]
             for index, (host_src, src_is_u8, u8_gray, bgr_rev) in prepared_iter:
+                slot = index & 1 if ping_pong else 0
+                if slot_events[slot] is not None:
+                    _wait_event(slot_events[slot], lambda: _check_cancel(should_cancel))
+                    slot_events[slot] = None
+                    slot_hosts[slot] = None
                 _check_cancel(should_cancel)
+                src_buf = src_bufs[slot]
                 in_flight = True
-                self.cl.enqueue_copy(self.q, src_buf, host_src, is_blocking=False)
+                upload = self.cl.enqueue_copy(self.q, src_buf, host_src, is_blocking=False)
                 _check_cancel(should_cancel)
                 rh, rw = pyr_shapes[1]
                 down2 = self.k['a_down2_u8'] if src_is_u8 else self.k['a_down2_u16']
@@ -567,24 +593,45 @@ class GpuA:
                     kern_name = 'a_select_u8_bgr_rev' if bgr_rev else 'a_select_u8'
                 else:
                     kern_name = 'a_select_u16_bgr_rev' if bgr_rev else 'a_select_u16'
-                self._run(self.k[kern_name], (width, height), src_buf, gray_bufs[0], lap_buf,
-                          best_buf, out_buf, acc_buf, wt_buf, stat_buf, np.int32(height),
-                          np.int32(width), np.int32(channels), np.int32(levels_count),
-                          np.int32(index == 0), np.int32(u8_gray))
-                # Bound queued frame uploads to one source, even for very deep stacks.
-                self.q.finish()
-                in_flight = False
-                if reader is not None and live_preview.tracks():
-                    _check_cancel(should_cancel)
-                    sample = reader.read(best_buf, live_preview)
-                    if sample is not None:
-                        live_preview.update_best(sample, index, total, sampled=True)
-                del host_src
+                last_event = self._run(
+                    self.k[kern_name], (width, height), src_buf, gray_bufs[0], lap_buf,
+                    best_buf, out_buf, acc_buf, wt_buf, stat_buf, np.int32(height),
+                    np.int32(width), np.int32(channels), np.int32(levels_count),
+                    np.int32(index == 0), np.int32(u8_gray),
+                )
+                if ping_pong and last_event is not None and hasattr(last_event, 'wait'):
+                    slot_events[slot] = last_event
+                    slot_hosts[slot] = (host_src, upload)
+                    if reader is not None and live_preview.tracks():
+                        _wait_event(last_event, lambda: _check_cancel(should_cancel))
+                        slot_events[slot] = None
+                        slot_hosts[slot] = None
+                        sample = reader.read(best_buf, live_preview)
+                        if sample is not None:
+                            live_preview.update_best(sample, index, total, sampled=True)
+                else:
+                    self.q.finish()
+                    in_flight = False
+                    if reader is not None and live_preview.tracks():
+                        _check_cancel(should_cancel)
+                        sample = reader.read(best_buf, live_preview)
+                        if sample is not None:
+                            live_preview.update_best(sample, index, total, sampled=True)
+                    del host_src, upload
                 if progress_callback is not None:
                     progress_callback(index + 1, total)
 
-            _release_buffers(src_buf, gray_bufs, lap_buf)
-            src_buf = gray_bufs = lap_buf = None
+            if ping_pong:
+                for slot in (0, 1):
+                    if slot_events[slot] is not None:
+                        _wait_event(slot_events[slot], lambda: _check_cancel(should_cancel))
+                        slot_events[slot] = None
+                    slot_hosts[slot] = None
+                self.q.finish()
+                in_flight = False
+
+            _release_buffers(src_bufs, gray_bufs, lap_buf)
+            src_bufs = gray_bufs = lap_buf = None
             _check_cancel(should_cancel)
             in_flight = True
             self._run(self.k['a_blend_low'], n, out_buf, best_buf,
@@ -614,4 +661,4 @@ class GpuA:
                 prepared_iter.close()
             if reader is not None:
                 reader.close()
-            _release_buffers(gray_bufs, lap_buf, best_buf, out_buf, acc_buf, wt_buf, stat_buf, src_buf, dst_buf)
+            _release_buffers(gray_bufs, lap_buf, best_buf, out_buf, acc_buf, wt_buf, stat_buf, src_bufs, dst_buf)

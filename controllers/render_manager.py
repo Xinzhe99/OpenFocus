@@ -609,7 +609,7 @@ class RenderManager:
         box.exec()
         return box.clickedButton() is proceed
 
-    def _estimate_memory(self, frames, method, parameters, roi_rect, register):
+    def _estimate_memory(self, frames, method, parameters, roi_rect, register, alignment=None):
         from core.render_preflight import estimate_render_memory
         from utils.logging_setup import get_logger
 
@@ -620,6 +620,7 @@ class RenderManager:
         try:
             return estimate_render_memory(
                 frames, method, parameters, preview=self._preview_mode, roi=roi, register=register,
+                alignment=alignment,
                 use_gpu=getattr(window, 'use_gpu', True),
                 tile_enabled=getattr(window, 'tile_enabled', None),
                 tile_block=getattr(window, 'tile_block_size', None),
@@ -1349,7 +1350,8 @@ class RenderManager:
             memory_estimate = self._estimate_memory(
                 estimate_frames, method, fusion_parameters, roi_rect,
                 register=bool(requested_steps and effective_alignment != 'none'
-                              and (not effective_is_aligned or collect_report)))
+                              and (not effective_is_aligned or collect_report)),
+                alignment=effective_alignment)
         if (memory_estimate and (memory_estimate.ram_short or memory_estimate.gpu_fallback)
                 and interactive and not confirmed and force_algorithm is None
                 and not self._confirm_memory(memory_estimate)):

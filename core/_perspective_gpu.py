@@ -3,6 +3,7 @@ import ctypes
 import logging
 import math
 import os
+import time
 from collections import Counter
 from string import Template
 from threading import Lock
@@ -291,12 +292,16 @@ def _self_check(cl, device, program):
 
 def _verified_program(cl, device):
     global _program
+    from fusion_methods._openfocus_gpu import _build_cached_program
+
     key = _device_cache_key(device)
     if _program is not None and _program[0] == key:
         return _program[1]
     context = cl.Context(devices=[device])
     queue = cl.CommandQueue(context)
-    program = cl.Program(context, _SOURCE).build(options=[f'-DREPAIR_LIMIT={_REPAIR_LIMIT}'])
+    program = _build_cached_program(
+        cl, device, context, _SOURCE, options=[f'-DREPAIR_LIMIT={_REPAIR_LIMIT}'],
+    )
     kernels = {(2 if pixel == 'ushort' else 1, channels, reverse): cl.Kernel(program, name)
                for name, pixel, _, _, channels, reverse in _VARIANTS}
     flags = cl.mem_flags
@@ -319,6 +324,7 @@ class ExactPerspectiveGpu:
 
     def __init__(self):
         self._cl = self._device = self._buffers = None
+        self._vram_cache = None
         self._disabled = False
         self._round_mode = None
         self.device_name = ''
@@ -328,6 +334,7 @@ class ExactPerspectiveGpu:
         self._cpu_by_method = Counter()
 
     def close(self):
+        self._vram_cache = None
         buffers, self._buffers = self._buffers, None
         for buffer in (buffers or ())[2:]:
             buffer.release()
@@ -437,6 +444,27 @@ class ExactPerspectiveGpu:
                 _log.info('Deferred Lanczos4 warp using OpenCV: %s', exc)
                 return None
 
+    def _plan_bands(self, inverse, rect, src_size, channels, itemsize, fixed_bytes):
+        from core import resource_policy as policy
+
+        now = time.monotonic()
+        cache = self._vram_cache
+        cached = cache is not None and now - cache[0] < 2.0
+        memory = cache[1] if cached else None
+        while True:
+            if not cached:
+                memory = _free_vram(self._device)
+                self._vram_cache = (now, memory) if memory is not None else None
+            if memory is None:
+                return None
+            snapshot = policy.ResourceSnapshot(free_vram=memory[0], total_vram=memory[1])
+            budget = min(_MAX_WORKSPACE_BYTES, policy.vram_budget(snapshot))
+            plan = _band_plan(inverse, rect, src_size, channels, itemsize, budget,
+                              int(self._device.max_mem_alloc_size), fixed_bytes)
+            if plan is not None or not cached:
+                return plan
+            cached = False
+
     def _dispatch(self, program, image, inverse, tolerance, bgr_rev, rect, dsize, should_cancel):
         from core import resource_policy as policy
         from core.registration import _check_cancel
@@ -448,14 +476,8 @@ class ExactPerspectiveGpu:
         channels = image.shape[2] if image.ndim == 3 else 1
         itemsize = image.dtype.itemsize
         weights = weights8 if itemsize == 1 else weights16
-        memory = _free_vram(self._device)
-        if memory is None:
-            self._disabled = True
-            return None
-        snapshot = policy.ResourceSnapshot(free_vram=memory[0], total_vram=memory[1])
-        budget = min(_MAX_WORKSPACE_BYTES, policy.vram_budget(snapshot))
-        plan = _band_plan(inverse, rect, image.shape[:2], channels, itemsize, budget,
-                          int(self._device.max_mem_alloc_size), weights8.size + weights16.size + _REPAIR_BYTES)
+        plan = self._plan_bands(inverse, rect, (src_h, src_w), channels, itemsize,
+                                weights8.size + weights16.size + _REPAIR_BYTES)
         if plan is None:
             self._disabled = True
             return None

@@ -92,22 +92,26 @@ def configure_rows(frames, img_resize, algorithm, thread_count, should_cancel):
     if h * w < _ROW_PARALLEL_PIXELS or thread_count == 1:
         return
     from core import resource_policy as policy
-    from core.source_frames import frame_resolution_bytes, source_cache_growth_bytes
-    from constants import FRAME_RAM_BUDGET_BYTES
-    # Accumulators, one producer, cache growth and decoder are job-wide, never
-    # multiplied by spatial workers. Mapped planes remain the serial fallback.
+    from core._native import native_available
+    from core.source_frames import frame_resolution_bytes
+    # Accumulators, one producer and decoder are job-wide, never multiplied
+    # by spatial workers. Mapped planes remain the serial fallback.
+    native = native_available()
     channels = frames[0].shape[2] if len(frames[0].shape) == 3 else 1
-    plane_bytes = min(h * w * (48 if algorithm == 'openfocus_c' else 24),
-                      FRAME_RAM_BUDGET_BYTES)
+    plane_cap = policy.frame_ram_budget(policy.probe_memory())
+    plane_bytes = min(h * w * (48 if algorithm == 'openfocus_c' else 24), plane_cap)
     fixed = (4 * 1024 * 1024 + plane_bytes
-             + source_cache_growth_bytes(frames)
              + max((frame_resolution_bytes(frame) for frame in frames), default=0))
     if img_resize is not None:
         fixed += max((frame.shape[0] * frame.shape[1] * channels * 8
                       for frame in frames), default=0) + h * w * channels * 8
-    per_worker = max(max(h, w) * 64 * 12,
-                     min(h, 128) * w * (64 if algorithm == 'openfocus_a'
-                                        else max(16, channels * 8)))
+    per_worker = max(
+        max(h, w) * 64 * 12,
+        min(h, 128) * w * (
+            (32 if native else 64) if algorithm == 'openfocus_a'
+            else max(12 if native else 16, channels * (6 if native else 8))
+        ),
+    )
     try:
         plan = job.plan(max(1, (max(h, w) + 63) // 64), per_worker, fixed)
     except policy.ResourceLimitError:

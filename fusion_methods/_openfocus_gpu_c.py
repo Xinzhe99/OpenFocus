@@ -329,7 +329,7 @@ class GpuC:
         return self.cl.Buffer(self.ctx, self.mf.READ_WRITE, pixels * 2)
 
     def _run(self, kernel, gsize, *args):
-        kernel(self.q, gsize if isinstance(gsize, tuple) else (gsize,), None, *args)
+        return kernel(self.q, gsize if isinstance(gsize, tuple) else (gsize,), None, *args)
 
     def _filt4(self, src, dst, first, h, w, count, q, t):
         step = (w + 3) // 4
@@ -539,10 +539,13 @@ class GpuC:
                   total_vram_bytes=total_vram, staging_bytes=staging,
                   host_budget_bytes=host_budget)
 
-        accumulators = maxima = coarsest = rolling = horizontal = weight = winner = filter_scratch = src = dst = None
+        accumulators = maxima = coarsest = rolling = horizontal = weight = winner = filter_scratch = dst = None
+        srcs = ()
         reader = prepared_iter = None
         in_flight = False
         try:
+            from fusion_methods._openfocus_gpu import _prefetch_window, _wait_event
+
             accumulators = [self._f32(size, channels) for size in detail_sizes]
             maxima = [self._u16(size) for size in detail_sizes]
             coarsest = self._f32(coarsest_size, channels)
@@ -559,9 +562,23 @@ class GpuC:
                     q = int(_weight(radius))
                     filter_configs.append((max(1, min(int(radius), w)), max(1, min(int(radius), h)),
                                            q, (4096 - q) >> 1))
-            src = self.cl.Buffer(self.ctx, self.mf.READ_ONLY, upload_bytes)
             prefetch_budget = host_budget - need if unified_memory else host_budget
-            prefetch = bool(detail_levels) and (staging + source_peak <= prefetch_budget)
+            prefetch_slots = (
+                _prefetch_window(
+                    prefetch_budget, staging, source_peak, total,
+                )
+                if detail_levels else 0
+            )
+            ping_pong = (
+                bool(detail_levels) and total >= 2
+                and (need + upload_bytes) <= limit
+                and (staging + prefetch_slots * source_peak + 2 * upload_bytes
+                     + (upload_bytes if unified_memory else 0)) <= prefetch_budget
+            )
+            srcs = tuple(
+                self.cl.Buffer(self.ctx, self.mf.READ_ONLY, upload_bytes)
+                for _ in range(2 if ping_pong else 1)
+            )
             if live_preview is not None and detail_levels:
                 reader = _PreviewPlaneReader(self.cl, self.ctx, self.q, self.k['sample_focus_plane'],
                                              (height, width), np.uint16)
@@ -581,22 +598,32 @@ class GpuC:
                 return codes, scale, pix_u8, bgr_rev
 
             prepared_iter = _iter_prefetched(
-                frames, prepare_frame, enabled=prefetch, should_cancel=should_cancel,
+                frames, prepare_frame, enabled=prefetch_slots > 0,
+                should_cancel=should_cancel, max_in_flight=max(1, prefetch_slots),
             )
+            slot_events = [None, None]
+            slot_hosts = [None, None]
             for index, item in prepared_iter:
                 _check_cancel(should_cancel)
                 if item is None:
                     if progress_callback is not None:
                         progress_callback(index + 1, total)
                     continue
+                slot = index & 1 if ping_pong else 0
+                if slot_events[slot] is not None:
+                    _wait_event(slot_events[slot], lambda: _check_cancel(should_cancel))
+                    slot_events[slot] = None
+                    slot_hosts[slot] = None
+                src = srcs[slot]
                 codes, scale, pix_u8, bgr_rev = item
                 packing = (np.float32(scale / (65280.0 if is_u8 else 65535.0)),
                            np.int32(pix_u8), np.int32(bgr_rev))
                 in_flight = True
-                self.cl.enqueue_copy(self.q, src, codes, is_blocking=False)
+                upload = self.cl.enqueue_copy(self.q, src, codes, is_blocking=False)
+                last_event = None
                 if not detail_levels:
-                    self._run(self.k['c_norm'], full_size, src, coarsest,
-                              *packing, np.int32(channels))
+                    last_event = self._run(self.k['c_norm'], full_size, src, coarsest,
+                                           *packing, np.int32(channels))
 
                 for level, ((h, w), (ch, cw)) in enumerate(detail_levels):
                     _check_cancel(should_cancel)
@@ -625,32 +652,55 @@ class GpuC:
                             self._run(self.k['c_weight_packed'], (w, h), src, horizontal,
                                       weight, *packing, *up_dims)
                             self._filter_w(weight, filter_scratch, h, w, filter_configs[level])
-                        self._run(self.k['c_merge_packed'], (w, h), src, horizontal,
-                                  filtered_weight, accumulators[0], maxima[0], winner,
-                                  np.int32(index), *packing, *up_dims)
+                        last_event = self._run(
+                            self.k['c_merge_packed'], (w, h), src, horizontal,
+                            filtered_weight, accumulators[0], maxima[0], winner,
+                            np.int32(index), *packing, *up_dims,
+                        )
                     else:
                         self._synthesize(self.k['c_detail_w'], coarse, horizontal, fine,
                                          ch, cw, h, w, channels, weight)
                         if filter_scratch:
                             self._filter_w(weight, filter_scratch, h, w, filter_configs[level])
-                        self._run(self.k['c_merge'], (w, h), fine, weight, accumulators[level],
-                                  maxima[level], np.int32(index == 0), w_arg, h_arg, c_arg)
-                # Bound queued frame uploads to one source, even for very deep stacks.
-                self.q.finish()
-                in_flight = False
-                if reader is not None and live_preview.tracks():
-                    _check_cancel(should_cancel)
-                    sample = reader.read(maxima[0], live_preview)
-                    if sample is not None:
-                        live_preview.update_best(sample, index, count, sampled=True)
-                elif reader is None and live_preview is not None and not detail_levels:
-                    live_preview.show_positions(np.zeros((height, width), np.uint8), index, count, 1)
-                del codes, item
+                        last_event = self._run(
+                            self.k['c_merge'], (w, h), fine, weight, accumulators[level],
+                            maxima[level], np.int32(index == 0), w_arg, h_arg, c_arg,
+                        )
+                if ping_pong and last_event is not None and hasattr(last_event, 'wait'):
+                    slot_events[slot] = last_event
+                    slot_hosts[slot] = (codes, item, upload)
+                    if reader is not None and live_preview.tracks():
+                        _wait_event(last_event, lambda: _check_cancel(should_cancel))
+                        slot_events[slot] = None
+                        slot_hosts[slot] = None
+                        sample = reader.read(maxima[0], live_preview)
+                        if sample is not None:
+                            live_preview.update_best(sample, index, count, sampled=True)
+                else:
+                    self.q.finish()
+                    in_flight = False
+                    if reader is not None and live_preview.tracks():
+                        _check_cancel(should_cancel)
+                        sample = reader.read(maxima[0], live_preview)
+                        if sample is not None:
+                            live_preview.update_best(sample, index, count, sampled=True)
+                    elif reader is None and live_preview is not None and not detail_levels:
+                        live_preview.show_positions(np.zeros((height, width), np.uint8), index, count, 1)
+                    del codes, item, upload
                 if progress_callback is not None:
                     progress_callback(index + 1, total)
 
-            _release_buffers(src)
-            src = None
+            if ping_pong:
+                for slot in (0, 1):
+                    if slot_events[slot] is not None:
+                        _wait_event(slot_events[slot], lambda: _check_cancel(should_cancel))
+                        slot_events[slot] = None
+                    slot_hosts[slot] = None
+                self.q.finish()
+                in_flight = False
+
+            _release_buffers(srcs)
+            srcs = None
             result = coarsest
             in_flight = True
             for ((h, w), (ch, cw)), detail in zip(reversed(detail_levels), reversed(accumulators)):
@@ -694,7 +744,7 @@ class GpuC:
                 reader.close()
             _release_buffers(
                 accumulators, maxima, coarsest, rolling, horizontal,
-                weight, winner, filter_scratch, src, dst,
+                weight, winner, filter_scratch, srcs, dst,
             )
 
 
