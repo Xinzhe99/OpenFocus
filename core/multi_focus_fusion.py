@@ -1051,9 +1051,15 @@ class MultiFocusFusion:
                     max(h, height), max(w, width), kwargs, count)
                 decode = max(frame_resolution_bytes(frame) for frame in input_source)
                 budget = memory_budget_bytes()
-                # Keep staging mandatory when the streamed peak exceeds RAM.
-                required = (fixed + worker + decode + source_cache_growth_bytes(input_source)
-                            > budget)
+                if method_b and not self.use_gpu:
+                    # Both CPU passes stream without retaining decoded sources.
+                    cache_growth = 0
+                    if img_resize is None and all(frame.dtype in (np.uint8, np.uint16)
+                                                  for frame in input_source):
+                        worker = min(worker, policy.frame_ram_budget(policy.probe_memory()))
+                else:
+                    cache_growth = source_cache_growth_bytes(input_source)
+                required = fixed + worker + decode + cache_growth > budget
                 # Stage decodes that cannot fit the frame cache even on a
                 # machine that has spare RAM at the start of this render, or
                 # processed disk stacks in OpenFocus B when scratch space is

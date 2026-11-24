@@ -53,7 +53,7 @@ def _preview_geometry(frame):
     return max(1, round(height * scale)), max(1, round(width * scale)), resolves, sample
 
 
-def _estimate_registration_ram(frames, height, width, alignment, preview, source_ram, snapshot=None):
+def _estimate_registration_ram(frames, height, width, alignment, preview, source_ram, snapshot):
     """Estimate peak working memory for one registration pass without decoding."""
     if preview:
         worker = max(h * w * (sample.shape[2] if sample.ndim == 3 else 1) * 16
@@ -83,9 +83,10 @@ def _estimate_registration_ram(frames, height, width, alignment, preview, source
         solve_bytes = _ecc_solve_bytes(max_pixels)
         return 2 * gray_bytes + max(prepare_bytes, solve_bytes)
     if alignment == 'openfocus':
-        plane_cap = (policy.frame_ram_budget(snapshot)
-                     if snapshot is not None and snapshot.ram_known else height * width * 16)
-        return min(height * width * 16, plane_cap) + source_ram + width * 1024 + 16 * 1024 * 1024
+        from core.openfocus_alignment import _alignment_memory
+
+        plane_cap = policy.frame_ram_budget(snapshot) if snapshot.ram_known else None
+        return _alignment_memory(height, width, source_ram, plane_cap)
     # Homography / combined / unspecified alignment downscales to at most 1600px wide
     # while holding one full-resolution source frame and reference gray plane.
     scale = min(1.0, 1600.0 / max(1, width))

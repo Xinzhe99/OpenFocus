@@ -508,6 +508,9 @@ def test_adaptive_source_cache_trims_on_low_ram_and_grows_on_high_ram():
     assert adapted_low == 64 * MiB
     assert cache.max_bytes == 64 * MiB
     assert cache.bytes <= 64 * MiB
+    depleted = replace(low_snap, available_ram=MiB)
+    assert cache.adapt_to_memory(depleted) == 0
+    assert cache.bytes == 0
 
     high_snap = resource_policy.ResourceSnapshot(
         available_ram=48 * GiB, total_ram=64 * GiB, physical_cores=16, logical_cpus=32,
@@ -516,21 +519,24 @@ def test_adaptive_source_cache_trims_on_low_ram_and_grows_on_high_ram():
     assert adapted_high == GiB
     assert cache.max_bytes == GiB
 
+    pinned = FrameCache(0)
+    assert pinned.adapt_to_memory(high_snap) == 0
+
     # Explicit max_bytes override pins capacity and is not overwritten.
     cache.max_bytes = 128 * MiB
     assert cache.adapt_to_memory(high_snap) == 128 * MiB
 
 
-def test_openfocus_alignment_low_ram_spill_degrade_and_zero_budget_reject(monkeypatch):
+def test_openfocus_alignment_low_ram_spill_degrade_and_zero_budget_reject(monkeypatch, tmp_path):
     from core import frame_storage
-    from utils import logging_setup
 
     GiB = 1024 ** 3
     MiB = 1024 ** 2
 
-    # 1500x1500 uint8 pair: unspilled estimate ~52 MiB; clamped spillable estimate ~25 MiB.
-    arr = np.zeros((1500, 1500, 3), dtype=np.uint8)
-    sources = [arr, arr.copy()]
+    first = np.random.default_rng(37).integers(0, 256, size=(1500, 1500), dtype=np.uint8)
+    sources = [first, np.roll(first, 2, axis=1)]
+    parameters = {'max_shift_ratio': 0.01, 'magnification': 0.0}
+    expected = openfocus_alignment.estimate_alignment_plan(sources, **parameters)
     monkeypatch.setattr(resource_policy, 'FRAME_RAM_BUDGET_BYTES', 1 * MiB)
     reserve_16g = max(
         resource_policy.RESERVE_BYTES,
@@ -543,23 +549,20 @@ def test_openfocus_alignment_low_ram_spill_degrade_and_zero_budget_reject(monkey
     monkeypatch.setattr(resource_policy, 'probe_resources', lambda kind='CPU': tight_snap)
     monkeypatch.setattr(resource_policy, 'probe_memory', lambda: tight_snap)
 
-    logged = []
-    monkeypatch.setattr(logging_setup, 'log_action', lambda event, **kw: logged.append((event, kw)))
-    plan = openfocus_alignment.estimate_alignment_plan(sources)
-    assert len(plan.transforms) == 2
-    assert any(event == 'openfocus_alignment_low_ram_degrade' for event, _ in logged)
+    mapped_shapes = set()
+    create_transient = frame_storage.create_transient_frame
 
-    transient_calls = []
-    orig_create = frame_storage.create_transient_frame
+    def capture_mapping(shape, dtype):
+        plane = create_transient(shape, dtype)
+        if frame_storage.is_mapped_frame(plane):
+            mapped_shapes.add(shape)
+        return plane
 
-    def spy_transient(shape, dtype):
-        transient_calls.append((shape, np.dtype(dtype)))
-        return orig_create(shape, dtype)
-
-    monkeypatch.setattr(frame_storage, 'create_transient_frame', spy_transient)
-    plane = openfocus_alignment._alloc_alignment_plane((2048, 2048), np.uint16, spillable=True)
-    assert plane.shape == (2048, 2048)
-    assert transient_calls == [((2048, 2048), np.dtype(np.uint16))]
+    monkeypatch.setattr(frame_storage, 'create_transient_frame', capture_mapping)
+    with frame_storage.scratch_directory(explicit_directory=tmp_path):
+        plan = openfocus_alignment.estimate_alignment_plan(sources, **parameters)
+    assert plan == expected
+    assert {(1500, 1500), (750, 750)} <= mapped_shapes
 
     zero_snap = resource_policy.ResourceSnapshot(
         available_ram=0, total_ram=16 * GiB, physical_cores=8, logical_cpus=16,
@@ -584,7 +587,8 @@ def test_openfocus_alignment_low_ram_spill_degrade_and_zero_budget_reject(monkey
 
 
 def test_openfocus_b_unmapped_source_admits_first_pass_without_degrade(tmp_path, monkeypatch):
-    from core import frame_storage, multi_focus_fusion as mff
+    from core import multi_focus_fusion as mff, source_frames
+    from core.algorithm_adapters import openfocus_b_resources
 
     MiB = 1024 ** 2
     GiB = 1024 ** 3
@@ -595,16 +599,23 @@ def test_openfocus_b_unmapped_source_admits_first_pass_without_degrade(tmp_path,
     cv2.imwrite(str(p1), arr)
     sources = [scan_source(str(p0), header_only=True)[0], scan_source(str(p1), header_only=True)[0]]
 
-    # 2000x2000*16 is ~61 MiB per transient plane; clamping to 16 MiB admits in a single pass (~60 MiB < 100 MiB ceiling).
-    monkeypatch.setattr(resource_policy, 'FRAME_RAM_BUDGET_BYTES', 16 * MiB)
-    reserve = resource_policy.RESERVE_BYTES
-    tight_avail = reserve + int(45 * MiB / resource_policy.BUDGET_RATIO)
+    # Admit the spillable streaming pass while the unclamped resident estimate
+    # would force a full disk staging pass.
+    cap = 16 * MiB
+    monkeypatch.setattr(resource_policy, 'FRAME_RAM_BUDGET_BYTES', cap)
+    fixed, _ = openfocus_b_resources(2000, 2000, {}, len(sources))
+    decode = max(source_frames.frame_resolution_bytes(source) for source in sources)
     snap = resource_policy.ResourceSnapshot(
-        available_ram=tight_avail, total_ram=4 * GiB, physical_cores=4, logical_cpus=8,
+        available_ram=6 * GiB, total_ram=8 * GiB, physical_cores=4, logical_cpus=8,
+        commit_headroom=fixed + cap + decode + MiB,
     )
     monkeypatch.setattr(resource_policy, 'probe_resources', lambda kind='CPU': snap)
     monkeypatch.setattr(resource_policy, 'probe_memory', lambda: snap)
-    monkeypatch.setattr(frame_storage, 'assess_scratch', lambda *args, **kwargs: {'status': 'advisory'})
+
+    def unexpected_staging(*args, **kwargs):
+        pytest.fail('OpenFocus B can stream these sources with the available memory')
+
+    monkeypatch.setattr(source_frames, 'materialize_for_repeated_access', unexpected_staging)
 
     events = []
     monkeypatch.setattr(mff, 'log_action', lambda event, **kw: events.append(event))
@@ -612,13 +623,47 @@ def test_openfocus_b_unmapped_source_admits_first_pass_without_degrade(tmp_path,
     orig_plan = resource_policy.plan_execution
 
     def spy_plan(workload, **kwargs):
-        calls.append(workload.per_worker_bytes)
+        if workload.algorithm == 'openfocus_b':
+            calls.append(workload.per_worker_bytes)
         return orig_plan(workload, **kwargs)
 
     monkeypatch.setattr(resource_policy, 'plan_execution', spy_plan)
     fusion = MultiFocusFusion(algorithm='openfocus_b', use_gpu=False, tile_enabled=False, exposure_match=False)
     fusion.align_images = lambda *args, **kwargs: None
-    result = fusion.fuse(sources)
+    result = fusion.fuse(sources, thread_count=1)
     assert result.shape == (2000, 2000, 3)
-    assert calls[0] <= 64 * MiB
+    assert calls == [cap + decode]
     assert 'openfocus_low_ram_degrade' not in events
+
+
+def test_openfocus_a_spills_background_to_admit_next_decode(monkeypatch, tmp_path):
+    from core import frame_storage, source_frames
+    from fusion_methods import openfocus_a
+
+    first = np.full((128, 128, 3), 88, np.uint8)
+    second = first.copy()
+    expected = openfocus_a_impl([first, second], use_gpu=False, thread_count=1).copy()
+    ceiling = 64 * 1024 ** 2
+    decode_peak = ceiling - first.shape[0] * first.shape[1] * 20
+    baseline_ram = frame_storage.ram_snapshot_bytes()
+
+    def probe(kind='CPU'):
+        return resource_policy.ResourceSnapshot(
+            available_ram=6 * 1024 ** 3, total_ram=8 * 1024 ** 3,
+            commit_headroom=ceiling - (frame_storage.ram_snapshot_bytes() - baseline_ram),
+        )
+
+    def decode(frame, *, should_cancel=None):
+        if frame is second:
+            resource_policy.require_memory(decode_peak, probe())
+        return frame
+
+    monkeypatch.setattr(openfocus_a, '_DEFAULT_BACKGROUND_RAM_LIMIT', 0)
+    monkeypatch.setattr(openfocus_a, '_BACKGROUND_RAM_LIMIT_BYTES', 0)
+    monkeypatch.setattr(resource_policy, 'probe_memory', probe)
+    monkeypatch.setattr(resource_policy, 'probe_resources', probe)
+    monkeypatch.setattr(source_frames, 'frame_resolution_bytes', lambda frame: decode_peak)
+    monkeypatch.setattr(source_frames, 'resolve_frame', decode)
+    with frame_storage.scratch_directory(explicit_directory=tmp_path):
+        actual = openfocus_a_impl([first, second], use_gpu=False, thread_count=1)
+    np.testing.assert_array_equal(actual, expected)

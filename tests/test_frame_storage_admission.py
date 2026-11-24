@@ -441,6 +441,70 @@ def test_bounded_workspace_hint_precedes_ram_only_fallback(monkeypatch, tmp_path
     assert not list(default.iterdir())
 
 
+def test_openfocus_spill_keeps_both_reference_chains_within_scratch(monkeypatch, tmp_path):
+    from core import resource_policy
+    from core.registration import ImageRegistration
+
+    mib = 1024 ** 2
+    first = np.random.default_rng(37).integers(0, 256, (512, 512, 3), dtype=np.uint8)
+    frames = [np.roll(first, 2, axis=1), first, np.roll(first, -2, axis=1)]
+    default, alternative = _fake_volumes(monkeypatch, tmp_path, mib // 2, 2 * mib)
+    capacity = frame_storage._space
+
+    def remaining(path):
+        volume = default if os.path.commonpath((str(default), path)) == str(default) else alternative
+        return None, 0, capacity(path)[2] - sum(
+            mapping.stat().st_size for mapping in volume.rglob('openfocus-frame-*.bin')
+        )
+
+    snapshot = resource_policy.ResourceSnapshot(
+        available_ram=4 * 1024 ** 3, total_ram=4 * 1024 ** 3, commit_headroom=19 * mib,
+    )
+    monkeypatch.setattr(frame_storage, '_space', remaining)
+    monkeypatch.setattr(resource_policy, 'FRAME_RAM_BUDGET_BYTES', 1)
+    monkeypatch.setattr(resource_policy, 'probe_memory', lambda: snapshot)
+    monkeypatch.setattr(resource_policy, 'probe_resources', lambda kind='CPU': snapshot)
+    registration = ImageRegistration('openfocus', defer_warps=True, parameters={
+        'reference_frame': 2, 'max_shift_ratio': 0.02, 'magnification': 0.0,
+    })
+    with frame_storage.scratch_directory():
+        registration.process(frames, thread_count=1)
+        assert os.path.dirname(frame_storage.storage_directory()) == str(alternative)
+        left, center, right = registration.alignment_plan.transforms
+        assert center.is_identity and not left.is_identity and not right.is_identity
+    assert not list(default.iterdir()) and not list(alternative.iterdir())
+
+
+def test_materialization_spills_snapshot_to_admit_next_decode(monkeypatch, tmp_path):
+    from core import resource_policy as policy, source_frames
+
+    pixels = [np.full((128, 128), value, np.uint16) for value in (17, 29)]
+    sources = [source_frames.SourceFrame(f'{i}.png', 0, image.shape, image.dtype, None, (1, 0))
+               for i, image in enumerate(pixels)]
+    ceiling = 8 * 1024 ** 2
+    decode_peak = ceiling - pixels[0].nbytes // 2
+    baseline_ram = frame_storage.ram_snapshot_bytes()
+
+    def probe(kind='CPU'):
+        return policy.ResourceSnapshot(
+            available_ram=6 * 1024 ** 3, total_ram=8 * 1024 ** 3,
+            commit_headroom=ceiling - (frame_storage.ram_snapshot_bytes() - baseline_ram),
+        )
+
+    def decode(frame, *, should_cancel=None):
+        policy.require_memory(decode_peak, probe())
+        return pixels[0 if frame is sources[0] else 1]
+
+    monkeypatch.setattr(policy, 'probe_memory', probe)
+    monkeypatch.setattr(policy, 'probe_resources', probe)
+    monkeypatch.setattr(source_frames, 'resolve_frame', decode)
+    monkeypatch.setattr(source_frames, 'frame_resolution_bytes', lambda frame: decode_peak)
+    with frame_storage.scratch_directory(explicit_directory=tmp_path), source_frames.without_source_cache_growth():
+        stored = source_frames.materialize_frames(sources, thread_count=1)
+    assert frame_storage.is_mapped_frame(stored[0])
+    np.testing.assert_array_equal(stored, pixels)
+
+
 def test_optional_estimate_prefers_larger_volume_without_rejecting_explicit(monkeypatch, tmp_path):
     default, alternative = _fake_volumes(monkeypatch, tmp_path, 100, 1000)
     with frame_storage.scratch_directory():

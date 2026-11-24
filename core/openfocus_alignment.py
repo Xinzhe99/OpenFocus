@@ -6,6 +6,7 @@ identities, never decoded frame stacks.
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor, wait
 from contextvars import copy_context
+from contextlib import nullcontext
 import hashlib
 import math
 import mmap
@@ -17,7 +18,7 @@ import numpy as np
 
 from core import resource_policy
 from core import _alignment_kernels as _native_kernels
-from core.source_frames import resolve_frame
+from core.source_frames import resolve_frame, without_source_cache_growth
 from core.registration_errors import AlignmentEstimationError, RejectedAlignmentFrame
 
 _F32 = np.float32
@@ -396,7 +397,7 @@ def _validate_internal_float(image, should_cancel):
 def _alloc_alignment_plane(shape, dtype, *, spillable: bool = False):
     """Allocate an array or spill-capable transient plane when memory is tight."""
     dt = np.dtype(dtype)
-    if spillable and math.prod(shape) * dt.itemsize >= 8 * 1024 * 1024:
+    if spillable:
         from core.frame_storage import create_transient_frame
         return create_transient_frame(shape, dt)
     return np.empty(shape, dtype=dt)
@@ -408,14 +409,18 @@ def _alignment_gray16(image, should_cancel, *, spillable: bool = False):
     _validate_internal_float(image, should_cancel)
     gray = _alloc_alignment_plane(image.shape[:2], np.uint16, spillable=spillable)
     take = min(image.shape[2], 3) if image.ndim == 3 else 1
-    for start in range(0, len(image), 128):
+    rows = max(1, min(128, _HASH_CHUNK_BYTES // (image.shape[1] * take * 10)))
+    for start in range(0, len(image), rows):
         _check_cancel(should_cancel)
-        band = image[start:start + 128]
+        band = image[start:start + rows]
         # Recover native code values from normalize_fuse_input's 0..255
         # floats before taking the same truncated equal-channel mean.
         color = band[:, :, :take] if image.ndim == 3 else band
-        codes = np.rint(color.astype(np.float64) * 257.).astype(np.uint16)
-        gray[start:start + 128] = (
+        scaled = color.astype(np.float64)
+        scaled *= 257.
+        np.rint(scaled, out=scaled)
+        codes = scaled.astype(np.uint16)
+        gray[start:start + rows] = (
             codes.sum(axis=2, dtype=np.uint32) // take if image.ndim == 3 else codes
         )
     _check_cancel(should_cancel)
@@ -921,11 +926,11 @@ _ONE_F32 = F32(1.0)
 _FLIP = np.uint32(0x80000000)
 _BIG = F32(1.0e6)
 
-def fast_downsize(img, should_cancel=None):
+def fast_downsize(img, should_cancel=None, *, spillable=False):
     """2x2 mean (sum+2)>>2, ceil dimensions and edge tail."""
     h, w = img.shape
     oh = (h + 1) // 2
-    out = np.empty((oh, (w + 1) // 2), np.uint16)
+    out = _alloc_alignment_plane((oh, (w + 1) // 2), np.uint16, spillable=spillable)
     if _native_kernels.available() and img.dtype == np.uint16 and img.ndim == 2:
         _run_row_bands(
             oh, 128, should_cancel, _native_kernels.fast_downsize_u16_rows, img, out,
@@ -942,12 +947,12 @@ def fast_downsize(img, should_cancel=None):
     return out
 
 
-def build_pyramid(img, min_dim=16, should_cancel=None):
+def build_pyramid(img, min_dim=16, should_cancel=None, *, spillable=False):
     """CreatePyramid semantics: while min(w,h) >= min_dim: append(half)."""
     lev = [np.ascontiguousarray(img, dtype=np.uint16)]
     while min(lev[-1].shape) >= min_dim:
         _check_cancel(should_cancel)
-        lev.append(fast_downsize(lev[-1], should_cancel))
+        lev.append(fast_downsize(lev[-1], should_cancel, spillable=spillable))
     return lev
 
 def gpu_params(f8):
@@ -1655,17 +1660,40 @@ def alignment_resolution_bytes(frame):
     return math.prod(shape) * dtype.itemsize + shape[1] * (channels * 64 + 256)
 
 
-def estimate_alignment_bytes(sources, *, decode_peak=None):
-    """Anchor/previous gray, two pyramids, current decode and bounded scoring."""
+def _alignment_stack_geometry(sources):
     if not sources:
         raise ValueError('Alignment requires at least one source')
     h, w = _alignment_geometry(sources[0])[0][:2]
     for source in sources:
         if _alignment_geometry(source)[0][:2] != (h, w):
             raise ValueError('Alignment sources must have equal shapes in both spatial axes')
-    if decode_peak is None:
-        decode_peak = max(_decode_bytes(frame) for frame in sources)
-    return h * w * 16 + decode_peak + w * 1024 + 16 * 1024 * 1024
+    return h, w
+
+
+def _alignment_memory(height, width, decode_peak, plane_limit=None):
+    planes = height * width * 16
+    if plane_limit is not None:
+        planes = min(planes, plane_limit)
+    return planes + decode_peak + width * 1024 + 16 * 1024 * 1024
+
+
+def _alignment_spill_bytes(height, width, count, reference_frame):
+    plane = height * width * 2
+    if count == 1:
+        return plane
+    # A retained anchor overlaps the current pair only on a longer chain.
+    pyramids = 3 if count > 3 and reference_frame not in (1, count) else 2
+    reduced = 0
+    while min(height, width) >= 64:
+        height, width = (height + 1) // 2, (width + 1) // 2
+        reduced += height * width * 2
+    return (pyramids + 1) * plane + pyramids * reduced
+
+
+def estimate_alignment_bytes(sources):
+    """Anchor/previous gray, two pyramids, current decode and bounded scoring."""
+    h, w = _alignment_stack_geometry(sources)
+    return _alignment_memory(h, w, max(_decode_bytes(frame) for frame in sources))
 
 
 def _warp_alignment(image, f8, should_cancel, *, spillable: bool = False):
@@ -1680,7 +1708,8 @@ def _warp_alignment(image, f8, should_cancel, *, spillable: bool = False):
     _check_cancel(should_cancel)
     fields = gpu_params(f8)
     h, w = image.shape[:2]
-    output = _alloc_alignment_plane(image.shape, image.dtype, spillable=spillable)
+    output = (_alloc_alignment_plane(image.shape, image.dtype, spillable=True)
+              if spillable else np.empty_like(image))
     if (_native_kernels.available() and image.ndim in (2, 3)
             and image.dtype in (np.uint8, np.uint16, np.float32, np.float64)):
         if _is_bgr_rev(image):
@@ -1932,6 +1961,15 @@ def alignment_valid_mask(transform, *, should_cancel=None):
     return mask
 
 
+def _alignment_pixels_equal(first, second, should_cancel):
+    for start in range(0, len(first), 128):
+        _check_cancel(should_cancel)
+        band = slice(start, start + 128)
+        if not np.array_equal(first[band], second[band]):
+            return False
+    return True
+
+
 def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
                             rotation=0., magnification=3., should_cancel=None,
                             progress_callback=None, failure_policy='fail'):
@@ -1953,10 +1991,11 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
         raise ValueError('magnification must be finite and in [0, 100) percent')
     if failure_policy not in ('fail', 'continue'):
         raise ValueError('Invalid alignment failure policy')
-    needed = estimate_alignment_bytes(sources)
+    h, w = _alignment_stack_geometry(sources)
+    decode_peak = max(_decode_bytes(frame) for frame in sources)
+    needed = _alignment_memory(h, w, decode_peak)
     if not isinstance(reference_frame, (int, np.integer)) or not 1 <= reference_frame <= len(sources):
         raise ValueError(f'OpenFocus reference frame {reference_frame} is outside the stack of {len(sources)} frames')
-    h, w = sources[0].shape[:2]
     low_ram_spill = False
     try:
         plan = resource_policy.plan_execution(resource_policy.Workload(
@@ -1977,9 +2016,8 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
         ceiling_now = resource_policy.ram_ceiling(snap)
         if ceiling_now <= 0:
             raise
-        decode_peak = max(_decode_bytes(frame) for frame in sources)
         plane_cap = resource_policy.frame_ram_budget(snap)
-        min_needed = min(h * w * 16, plane_cap) + decode_peak + w * 1024 + 16 * 1024 * 1024
+        min_needed = _alignment_memory(h, w, decode_peak, plane_cap)
         if min_needed > ceiling_now:
             raise
         plan = resource_policy.plan_execution(resource_policy.Workload(
@@ -1989,16 +2027,15 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
         log_action('openfocus_alignment_low_ram_degrade',
                    required_bytes=min_needed, budget_bytes=ceiling_now)
     host_budget = getattr(plan, 'ram_budget', 0) or 0
-    frame_bytes = max((int(getattr(s, 'nbytes', 0)) for s in sources), default=0)
     gray_bytes = int(h) * int(w) * 2
     use_prefetch = (
         not low_ram_spill
         and len(sources) >= 2
         and _alignment_workers(h * w, min_items=1) > 1
-        and frame_bytes > 0
-        and (needed + frame_bytes + gray_bytes) <= host_budget
+        and (needed + decode_peak + gray_bytes) <= host_budget
     )
     ref = reference_frame - 1
+    has_right_chain = 0 < ref < len(sources) - 1
     order = (ref, *range(ref - 1, -1, -1), *range(ref + 1, len(sources)))
     transforms = [None] * len(sources)
     previous = anchor = None
@@ -2008,7 +2045,8 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
     def prepare_source(source_index, cancelled):
         _check_cancel(cancelled)
         frame = sources[source_index]
-        image = resolve_frame(frame, should_cancel=cancelled)
+        with without_source_cache_growth() if low_ram_spill else nullcontext():
+            image = resolve_frame(frame, should_cancel=cancelled)
         _check_cancel(cancelled)
         if not isinstance(image, np.ndarray) or _alignment_geometry(image) != _alignment_geometry(frame):
             raise ValueError('Alignment source metadata does not match decoded pixels')
@@ -2057,20 +2095,22 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
 
     prepared_stream = iter_prepared()
     try:
-        for done, (index, (identity, gray)) in enumerate(zip(order, prepared_stream)):
+        for done, index in enumerate(order):
             _check_cancel(should_cancel)
-            if ref > 0 and index == ref + 1:
+            if has_right_chain and index == ref + 1:
                 previous, previous_index = anchor, ref
                 prev_pyr = anchor_pyr
+            identity, gray = next(prepared_stream)
             pair = np.array(_IDENTITY_F8, np.float32)
             rounds, failure = 0, ''
             curr_pyr = None
-            if index != ref and (ratio or rotation or magnification) and not np.array_equal(previous, gray):
+            if (index != ref and (ratio or rotation or magnification)
+                    and not _alignment_pixels_equal(previous, gray, should_cancel)):
                 if prev_pyr is None:
-                    prev_pyr = build_pyramid(previous, 64, should_cancel)
-                if index == ref - 1 and previous_index == ref and ref > 0:
+                    prev_pyr = build_pyramid(previous, 64, should_cancel, spillable=low_ram_spill)
+                if has_right_chain and index == ref - 1 and previous_index == ref:
                     anchor_pyr = prev_pyr
-                curr_pyr = build_pyramid(gray, 64, should_cancel)
+                curr_pyr = build_pyramid(gray, 64, should_cancel, spillable=low_ram_spill)
                 try:
                     pair, rounds = align_pair_wide(previous, gray, h_pct=ratio * 100,
                         v_pct=ratio * 100, rot_deg=rotation, mag_pct=magnification,
@@ -2096,7 +2136,7 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
             else:
                 prev_pyr = None
             del curr_pyr
-            if index == ref and ref > 0:
+            if index == ref and has_right_chain:
                 anchor = previous
                 anchor_pyr = prev_pyr
             del gray

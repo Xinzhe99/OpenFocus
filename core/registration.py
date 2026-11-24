@@ -1515,7 +1515,7 @@ def _align_openfocus_impl(input_source, output_path=None, img_filenames=None, *,
                         reference_frame=1, rotation=0., magnification=3.,
                         defer_warps=False, plan_callback=None, dispatch_callback=None):
     """Wide detector using the verified search and sampling behavior."""
-    from core.openfocus_alignment import estimate_alignment_plan
+    from core.openfocus_alignment import _alignment_spill_bytes, estimate_alignment_plan
     images = input_source
     if isinstance(input_source, str):
         from dataclasses import replace
@@ -1541,7 +1541,11 @@ def _align_openfocus_impl(input_source, output_path=None, img_filenames=None, *,
     cache_reads = cache.reuse_only() if large_stack and isinstance(cache, ScopedCache) else nullcontext()
     source_reads = without_source_cache_growth() if large_stack else nullcontext()
     with scratch_directory():
-        select_frame_scratch(images, should_cancel=should_cancel)
+        height, width = images[0].shape[:2]
+        select_frame_scratch(
+            images, working_size=_alignment_spill_bytes(height, width, len(images), reference_frame),
+            should_cancel=should_cancel,
+        )
         try:
             with cache_reads, source_reads:
                 plan = estimate_alignment_plan(images, max_shift_ratio=max_shift_ratio,
