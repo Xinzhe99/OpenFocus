@@ -41,7 +41,8 @@ void of_apply_exposure_gain_cpp(
     const ArrayView& output,
     float gain,
     int64_t start,
-    int64_t stop
+    int64_t stop,
+    int num_threads = 4
 );
 
 void of_quantize_output_cpp(

@@ -64,5 +64,47 @@ void quantize_f32_to_u16_row_avx2(
 void quantize_f32_to_u8_row_avx2(
     const float* sr, uint8_t* dr, int64_t elems);
 
+void exposure_gain_u16_row_avx2(
+    const uint16_t* sr, uint16_t* dr, int64_t elems, float gain, float limit);
+
+void exposure_gain_u8_row_avx2(
+    const uint8_t* sr, uint8_t* dr, int64_t elems, float gain, float limit);
+
+void exposure_gain_f32_row_avx2(
+    const float* sr, float* dr, int64_t elems, float gain, float limit);
+
+void down2_row_u16_to_i32_avx2(
+    const uint16_t* r0, const uint16_t* r1, int32_t* dst, int64_t full_w, int32_t scale);
+
+void down2_row_i32_to_i32_avx2(
+    const int32_t* r0, const int32_t* r1, int32_t* dst, int64_t full_w, int32_t scale);
+
+void gray_rgb_u8_row_avx2(
+    const uint8_t* sr, uint16_t* dst16, int32_t* dst32, int64_t width,
+    int32_t scale, bool depth_color, bool dst_is_u16);
+
+void gray_rgb_u16_row_avx2(
+    const uint16_t* sr, uint16_t* dst16, int32_t* dst32, int64_t width,
+    int32_t scale, bool depth_color, bool dst_is_u16);
+
+void merge_recip_packed_row_avx2(
+    const uint16_t* drow, const void* irow, bool src_u8,
+    void* arow, bool dst_u16, int64_t width,
+    int64_t is1, int64_t is2, int64_t as1, int64_t as2,
+    int32_t base32, int32_t step32, uint64_t recip48, int32_t s32);
+
+int select_a_no_bg_packed_row_avx2(
+    int32_t* b_row, const int32_t* response, int64_t width,
+    const void* irow, bool src_u8, void* orow, bool dst_u16,
+    int64_t is1, int64_t is2, int64_t os1, int64_t os2,
+    int64_t scale, int state, int64_t max_response, int sharp_state, int saturated_state);
+
+void tile_accumulate_f32_1c_row_avx2(
+    const float* tr, const float* wr, float* ar, float* war, int64_t fw);
+
+void tile_finalize_3c_row_avx2(
+    const float* ar, const float* war, uint8_t* u8_dr, float* f32_dr,
+    int64_t width, int64_t channels, bool out_u8);
+
 }  // namespace simd
 }  // namespace openfocus

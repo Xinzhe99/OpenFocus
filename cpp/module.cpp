@@ -653,11 +653,11 @@ double of_exposure_mean_py(ConstAnyCpuArray image, bool normalize_uint16, int nu
 }
 
 void of_apply_exposure_gain_py(ConstAnyCpuArray image, AnyCpuArray output, float gain,
-                               int64_t start, int64_t stop) {
+                               int64_t start, int64_t stop, int num_threads) {
     const auto iv = make_array_view(image);
     const auto ov = make_array_view(output);
     nb::gil_scoped_release release;
-    openfocus::of_apply_exposure_gain_cpp(iv, ov, gain, start, stop);
+    openfocus::of_apply_exposure_gain_cpp(iv, ov, gain, start, stop, num_threads);
 }
 
 void of_quantize_output_py(ConstAnyCpuArray src, AnyCpuArray dst, bool is_16bit, int num_threads) {
@@ -1052,7 +1052,9 @@ NB_MODULE(_openfocus_native, m) {
     m.def("of_fill_linear_axis", &of_fill_linear_axis_py);
     m.def("of_exposure_mean", &of_exposure_mean_py,
           nb::arg("image"), nb::arg("normalize_uint16"), nb::arg("num_threads") = 4);
-    m.def("of_apply_exposure_gain", &of_apply_exposure_gain_py);
+    m.def("of_apply_exposure_gain", &of_apply_exposure_gain_py,
+          nb::arg("image"), nb::arg("output"), nb::arg("gain"),
+          nb::arg("start"), nb::arg("stop"), nb::arg("num_threads") = 4);
     m.def("of_quantize_output", &of_quantize_output_py,
           nb::arg("src"), nb::arg("dst"), nb::arg("is_16bit"), nb::arg("num_threads") = 4);
     m.def("of_tile_accumulate", &of_tile_accumulate_py,

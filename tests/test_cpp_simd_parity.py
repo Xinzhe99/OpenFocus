@@ -142,3 +142,112 @@ def test_pyramid_kernels_avx2_vs_scalar_zero_ulp(w):
 
     for arr_a, arr_s in zip(res_avx, res_sca):
         assert np.array_equal(arr_a.view(np.uint8), arr_s.view(np.uint8))
+
+
+@pytest.mark.parametrize("w", [1, 7, 8, 15, 16, 33, 129])
+@pytest.mark.parametrize("dtype", [np.uint8, np.uint16, np.float32])
+@pytest.mark.parametrize("channels", [1, 3, 4])
+def test_exposure_gain_avx2_vs_scalar_bit_exact(w, dtype, channels):
+    mod = _require_avx2()
+    rng = np.random.default_rng(500 + w + channels)
+    h = 25
+    shape = (h, w) if channels == 1 else (h, w, channels)
+    if dtype == np.float32:
+        img = rng.uniform(0.0, 260.0, shape).astype(np.float32)
+    else:
+        hi = 256 if dtype == np.uint8 else 65536
+        img = rng.integers(0, hi, shape, dtype=dtype)
+    gain = 1.137
+
+    try:
+        mod.set_force_scalar(False)
+        out_avx = np.empty_like(img)
+        mod.of_apply_exposure_gain(img, out_avx, gain, 0, h, 2)
+
+        mod.set_force_scalar(True)
+        out_sca = np.empty_like(img)
+        mod.of_apply_exposure_gain(img, out_sca, gain, 0, h, 2)
+    finally:
+        mod.set_force_scalar(False)
+
+    assert np.array_equal(out_avx.view(np.uint8), out_sca.view(np.uint8))
+
+
+@pytest.mark.parametrize("w", [7, 8, 17, 33, 129])
+def test_ab_packed_gray_down2_merge_select_avx2_vs_scalar(w):
+    mod = _require_avx2()
+    rng = np.random.default_rng(600 + w)
+    h = 33
+    rgb8 = rng.integers(0, 256, (h, w, 3), dtype=np.uint8)
+    rgb16 = rng.integers(0, 65536, (h, w, 3), dtype=np.uint16)
+    g2d16 = rng.integers(0, 65536, (h, w), dtype=np.uint16)
+    g2d32 = rng.integers(0, 100000, (h, w), dtype=np.int32)
+    oh, ow = (h + 1) // 2, (w + 1) // 2
+    depth = rng.integers(0, 1000, (h, w), dtype=np.uint16)
+
+    def _run_ab():
+        g_u8 = np.empty((h, w), dtype=np.uint16)
+        g_u16 = np.empty((h, w), dtype=np.int32)
+        mod.of_gray_rows(rgb8, g_u8, 0, h, 256, False)
+        mod.of_gray_rows(rgb16, g_u16, 0, h, 16, True)
+        d_16 = np.empty((oh, ow), dtype=np.int32)
+        d_32 = np.empty((oh, ow), dtype=np.int32)
+        mod.of_down2_rows(g2d16, d_16, 0, oh, 8)
+        mod.of_down2_rows(g2d32, d_32, 0, oh, 4)
+        acc = rgb16.copy()
+        mod.of_merge_rows(acc, rgb16, depth, 2, 100, 0, h, 1, False, False)
+        return g_u8, g_u16, d_16, d_32, acc
+
+    try:
+        mod.set_force_scalar(False)
+        res_avx = _run_ab()
+        mod.set_force_scalar(True)
+        res_sca = _run_ab()
+    finally:
+        mod.set_force_scalar(False)
+
+    for arr_a, arr_s in zip(res_avx, res_sca):
+        assert np.array_equal(arr_a, arr_s)
+
+
+def test_ab_8k_width_and_500_layer_depth_parity():
+    mod = _require_avx2()
+    rng = np.random.default_rng(8500)
+    h, w = 4, 7680  # 8K row width
+    rgb8 = rng.integers(0, 256, (h, w, 3), dtype=np.uint8)
+    rgb16 = rng.integers(0, 65536, (h, w, 3), dtype=np.uint16)
+    g2d16 = rng.integers(0, 65536, (h, w), dtype=np.uint16)
+    # Sparse 500-layer depth map: layer 499 at step=131 (base=65369, mostly inactive)
+    depth_500 = rng.integers(0, 65536, (h, w), dtype=np.uint16)
+    depth_500[1, 100:250] = 65369
+    fsrc = rng.uniform(0.0, 260.0, (h, w, 3)).astype(np.float32)
+    w2d = rng.uniform(0.1, 1.0, (h, w)).astype(np.float32)
+
+    def _run_8k():
+        g_u8 = np.empty((h, w), dtype=np.uint16)
+        mod.of_gray_rows(rgb8, g_u8, 0, h, 256, False)
+        exp16 = np.empty_like(rgb16)
+        mod.of_apply_exposure_gain(rgb16, exp16, 1.07, 0, h, 2)
+        d_16 = np.empty((h // 2, w // 2), dtype=np.int32)
+        mod.of_down2_rows(g2d16, d_16, 0, h // 2, 8)
+        acc_m = rgb16.copy()
+        mod.of_merge_rows(acc_m, rgb16, depth_500, 499, 131, 0, h, 1, False, False)
+        t_acc = np.zeros((h, w, 3), dtype=np.float32)
+        t_wacc = np.zeros((h, w), dtype=np.float32)
+        mod.of_tile_accumulate(t_acc, t_wacc, fsrc, w2d, 0, 0, 2)
+        t_u8 = np.empty((h, w, 3), dtype=np.uint8)
+        t_f32 = np.empty((h, w, 3), dtype=np.float32)
+        mod.of_tile_finalize(t_acc, t_wacc, t_u8, 0, h)
+        mod.of_tile_finalize(t_acc, t_wacc, t_f32, 0, h)
+        return g_u8, exp16, d_16, acc_m, t_u8, t_f32
+
+    try:
+        mod.set_force_scalar(False)
+        res_avx = _run_8k()
+        mod.set_force_scalar(True)
+        res_sca = _run_8k()
+    finally:
+        mod.set_force_scalar(False)
+
+    for arr_a, arr_s in zip(res_avx, res_sca):
+        assert np.array_equal(arr_a.view(np.uint8), arr_s.view(np.uint8))

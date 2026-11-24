@@ -254,6 +254,134 @@ inline uint16_t store_f32_code(float acc) {
     return static_cast<uint16_t>(static_cast<int32_t>(rounded));
 }
 
+template <typename SrcT, typename DstT>
+void gray_rgb3_packed_row(
+    const SrcT* sr, DstT* dr, int64_t width, int64_t s1, int64_t s2,
+    int64_t scale, bool depth_color
+) {
+    if (depth_color) {
+        const uint32_t s32 = static_cast<uint32_t>(scale * 85);
+        for (int64_t x = 0; x < width; ++x) {
+            const SrcT* p = sr + x * s1;
+            const uint32_t total = static_cast<uint32_t>(p[0])
+                                 + static_cast<uint32_t>(p[s2])
+                                 + static_cast<uint32_t>(p[2 * s2]);
+            dr[x] = static_cast<DstT>((total * s32) >> 8u);
+        }
+    } else {
+        for (int64_t x = 0; x < width; ++x) {
+            const SrcT* p = sr + x * s1;
+            const uint32_t total = static_cast<uint32_t>(p[0])
+                                 + static_cast<uint32_t>(p[s2])
+                                 + static_cast<uint32_t>(p[2 * s2]);
+            dr[x] = static_cast<DstT>(static_cast<int64_t>(total / 3u) * scale);
+        }
+    }
+}
+
+template <typename SrcT, typename DstT>
+void merge_recip_packed_rows(
+    const ArrayView& accumulator, const ArrayView& image,
+    const uint16_t* depth, int64_t d_sy,
+    int64_t base, int64_t step, int64_t start, int64_t stop, int32_t s32,
+    bool src_packed, bool dst_packed, bool use_avx2_skip
+) {
+    const int64_t width = accumulator.shape[1];
+    const uint64_t recip48 = ((uint64_t{1} << 48) + static_cast<uint64_t>(step) - 1u) / static_cast<uint64_t>(step);
+    const int32_t base32 = static_cast<int32_t>(base);
+    const int32_t step32 = static_cast<int32_t>(step);
+    const int32_t neg_step = -step32;
+    const SrcT* ib = static_cast<const SrcT*>(image.data);
+    DstT* ab = static_cast<DstT*>(accumulator.data);
+    const int64_t is1 = src_packed ? 3 : image.stride[1];
+    const int64_t is2 = src_packed ? 1 : image.stride[2];
+    const int64_t as1 = dst_packed ? 3 : accumulator.stride[1];
+    const int64_t as2 = dst_packed ? 1 : accumulator.stride[2];
+
+    for (int64_t y = start; y < stop; ++y) {
+        const uint16_t* drow = depth + y * d_sy;
+        const SrcT* irow = ib + y * image.stride[0];
+        DstT* arow = ab + y * accumulator.stride[0];
+        if (use_avx2_skip) {
+            simd::merge_recip_packed_row_avx2(
+                drow, irow, sizeof(SrcT) == 1, arow, sizeof(DstT) == 2,
+                width, is1, is2, as1, as2, base32, step32, recip48, s32);
+            continue;
+        }
+        for (int64_t x = 0; x < width; ++x) {
+            const int32_t delta = static_cast<int32_t>(drow[x]) - base32;
+            if (delta >= 0) {
+                if (delta <= step32) {
+                    const SrcT* sp = irow + x * is1;
+                    DstT* dp = arow + x * as1;
+                    if (src_packed && dst_packed) {
+                        dp[0] = static_cast<DstT>(static_cast<int32_t>(sp[0]) * s32);
+                        dp[1] = static_cast<DstT>(static_cast<int32_t>(sp[1]) * s32);
+                        dp[2] = static_cast<DstT>(static_cast<int32_t>(sp[2]) * s32);
+                    } else {
+                        for (int64_t ch = 0; ch < 3; ++ch) {
+                            dp[ch * as2] = static_cast<DstT>(static_cast<int32_t>(sp[ch * is2]) * s32);
+                        }
+                    }
+                }
+            } else if (delta > neg_step) {
+                const int32_t w = 1024 - static_cast<int32_t>(
+                    (static_cast<uint64_t>(-delta) << 10u) * recip48 >> 48u);
+                if (w > 0) {
+                    const int32_t iw = 1024 - w;
+                    const SrcT* sp = irow + x * is1;
+                    DstT* dp = arow + x * as1;
+                    if (src_packed && dst_packed) {
+                        dp[0] = static_cast<DstT>((static_cast<int32_t>(dp[0]) * iw + static_cast<int32_t>(sp[0]) * s32 * w) >> 10);
+                        dp[1] = static_cast<DstT>((static_cast<int32_t>(dp[1]) * iw + static_cast<int32_t>(sp[1]) * s32 * w) >> 10);
+                        dp[2] = static_cast<DstT>((static_cast<int32_t>(dp[2]) * iw + static_cast<int32_t>(sp[2]) * s32 * w) >> 10);
+                    } else {
+                        for (int64_t ch = 0; ch < 3; ++ch) {
+                            const int32_t cur = static_cast<int32_t>(dp[ch * as2]);
+                            const int32_t val = static_cast<int32_t>(sp[ch * is2]) * s32;
+                            dp[ch * as2] = static_cast<DstT>((cur * iw + val * w) >> 10);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+template <typename SrcT, typename DstT>
+int select_a_no_bg_packed_row(
+    int32_t* b_row, const int32_t* response, int64_t width,
+    const SrcT* irow, DstT* orow, int64_t is1, int64_t is2, int64_t os1, int64_t os2,
+    int64_t scale, int state, bool use_avx2
+) {
+    if (use_avx2) {
+        return simd::select_a_no_bg_packed_row_avx2(
+            b_row, response, width, irow, sizeof(SrcT) == 1, orow, sizeof(DstT) == 2,
+            is1, is2, os1, os2, scale, state, kAMaxResponse, kASharp, kASaturated);
+    }
+    for (int64_t x = 0; x < width; ++x) {
+        const int64_t prev = b_row[x];
+        if (prev == kAMaxResponse) {
+            continue;
+        }
+        int64_t sc = response[x];
+        if (sc >= kAMaxResponse) {
+            sc = kAMaxResponse;
+        } else if (state == kASaturated) {
+            state = kASharp;
+        }
+        if (sc > prev) {
+            b_row[x] = static_cast<int32_t>(sc);
+            const SrcT* sp = irow + x * is1;
+            DstT* dp = orow + x * os1;
+            dp[0] = static_cast<DstT>(static_cast<int64_t>(sp[0]) * scale);
+            dp[os2] = static_cast<DstT>(static_cast<int64_t>(sp[is2]) * scale);
+            dp[2 * os2] = static_cast<DstT>(static_cast<int64_t>(sp[2 * is2]) * scale);
+        }
+    }
+    return state;
+}
+
 }  // namespace
 
 void of_gray_rows_cpp(const ArrayView& image, const ArrayView& output,
@@ -274,6 +402,56 @@ void of_gray_rows_cpp(const ArrayView& image, const ArrayView& output,
         return;
     }
     if (channels >= 3) {
+        const bool can_packed = (channels == 3 && !image.is_float && !output.is_float
+                                 && output.ndim == 2 && output.stride[1] == 1
+                                 && (image.itemsize == 1 || image.itemsize == 2)
+                                 && (output.itemsize == 2 || output.itemsize == 4)
+                                 && image.stride[1] == 3 && (image.stride[2] == 1 || image.stride[2] == -1)
+                                 && (!depth_color || (scale >= 0 && scale <= 256))
+                                 && (scale >= 0 && scale <= 65535));
+        if (can_packed) {
+            const bool contiguous_rgb = (image.stride[2] == 1);
+            const bool avx2_ok = contiguous_rgb && simd::use_avx2() && width >= 8;
+            const bool out_u16 = (output.itemsize == 2);
+            for (int64_t y = start; y < stop; ++y) {
+                if (image.itemsize == 1) {
+                    const uint8_t* sr = static_cast<const uint8_t*>(image.data) + y * image.stride[0];
+                    if (out_u16) {
+                        uint16_t* dr = static_cast<uint16_t*>(output.data) + y * output.stride[0];
+                        if (avx2_ok) {
+                            simd::gray_rgb_u8_row_avx2(sr, dr, nullptr, width, static_cast<int32_t>(scale), depth_color, true);
+                        } else {
+                            gray_rgb3_packed_row(sr, dr, width, image.stride[1], image.stride[2], scale, depth_color);
+                        }
+                    } else {
+                        int32_t* dr = static_cast<int32_t*>(output.data) + y * output.stride[0];
+                        if (avx2_ok) {
+                            simd::gray_rgb_u8_row_avx2(sr, nullptr, dr, width, static_cast<int32_t>(scale), depth_color, false);
+                        } else {
+                            gray_rgb3_packed_row(sr, dr, width, image.stride[1], image.stride[2], scale, depth_color);
+                        }
+                    }
+                } else {
+                    const uint16_t* sr = static_cast<const uint16_t*>(image.data) + y * image.stride[0];
+                    if (out_u16) {
+                        uint16_t* dr = static_cast<uint16_t*>(output.data) + y * output.stride[0];
+                        if (avx2_ok) {
+                            simd::gray_rgb_u16_row_avx2(sr, dr, nullptr, width, static_cast<int32_t>(scale), depth_color, true);
+                        } else {
+                            gray_rgb3_packed_row(sr, dr, width, image.stride[1], image.stride[2], scale, depth_color);
+                        }
+                    } else {
+                        int32_t* dr = static_cast<int32_t*>(output.data) + y * output.stride[0];
+                        if (avx2_ok) {
+                            simd::gray_rgb_u16_row_avx2(sr, nullptr, dr, width, static_cast<int32_t>(scale), depth_color, false);
+                        } else {
+                            gray_rgb3_packed_row(sr, dr, width, image.stride[1], image.stride[2], scale, depth_color);
+                        }
+                    }
+                }
+            }
+            return;
+        }
         if (depth_color && (image.itemsize == 1 || image.itemsize == 2) && scale >= 0 && scale <= 256) {
             const uint32_t s32 = static_cast<uint32_t>(scale * 85);
             for (int64_t y = start; y < stop; ++y) {
@@ -324,6 +502,60 @@ void of_down2_rows_cpp(const ArrayView& image, const ArrayView& output,
     const int64_t full_w = width / 2;
 
     if (image.ndim == 2) {
+        if (!image.is_float && !output.is_float && output.ndim == 2
+                && image.stride[1] == 1 && output.stride[1] == 1
+                && (image.itemsize == 2 || image.itemsize == 4)
+                && output.itemsize == 4 && scale >= 0 && scale <= 256) {
+            const bool avx2_ok = simd::use_avx2() && full_w >= 8;
+            int32_t* ob = static_cast<int32_t*>(output.data);
+            for (int64_t y = start; y < stop; ++y) {
+                const int64_t top = 2 * y;
+                const int64_t bottom = (top + 1 < height) ? (top + 1) : (height - 1);
+                int32_t* dst = ob + y * output.stride[0];
+                if (image.itemsize == 2) {
+                    const uint16_t* ib = static_cast<const uint16_t*>(image.data);
+                    const uint16_t* r0 = ib + top * image.stride[0];
+                    const uint16_t* r1 = ib + bottom * image.stride[0];
+                    if (avx2_ok) {
+                        simd::down2_row_u16_to_i32_avx2(r0, r1, dst, full_w, static_cast<int32_t>(scale));
+                    } else {
+                        for (int64_t x = 0; x < full_w; ++x) {
+                            const int64_t left = 2 * x;
+                            const int32_t tot = static_cast<int32_t>(r0[left]) + static_cast<int32_t>(r0[left + 1])
+                                              + static_cast<int32_t>(r1[left]) + static_cast<int32_t>(r1[left + 1]);
+                            dst[x] = (tot * static_cast<int32_t>(scale)) >> 2;
+                        }
+                    }
+                    for (int64_t x = full_w; x < out_w; ++x) {
+                        const int64_t left = 2 * x;
+                        const int64_t right = (left + 1 < width) ? (left + 1) : (width - 1);
+                        const int32_t tot = static_cast<int32_t>(r0[left]) + static_cast<int32_t>(r0[right])
+                                          + static_cast<int32_t>(r1[left]) + static_cast<int32_t>(r1[right]);
+                        dst[x] = (tot * static_cast<int32_t>(scale)) >> 2;
+                    }
+                } else {
+                    const int32_t* ib = static_cast<const int32_t*>(image.data);
+                    const int32_t* r0 = ib + top * image.stride[0];
+                    const int32_t* r1 = ib + bottom * image.stride[0];
+                    if (avx2_ok) {
+                        simd::down2_row_i32_to_i32_avx2(r0, r1, dst, full_w, static_cast<int32_t>(scale));
+                    } else {
+                        for (int64_t x = 0; x < full_w; ++x) {
+                            const int64_t left = 2 * x;
+                            const int32_t tot = r0[left] + r0[left + 1] + r1[left] + r1[left + 1];
+                            dst[x] = (tot * static_cast<int32_t>(scale)) >> 2;
+                        }
+                    }
+                    for (int64_t x = full_w; x < out_w; ++x) {
+                        const int64_t left = 2 * x;
+                        const int64_t right = (left + 1 < width) ? (left + 1) : (width - 1);
+                        const int32_t tot = r0[left] + r0[right] + r1[left] + r1[right];
+                        dst[x] = (tot * static_cast<int32_t>(scale)) >> 2;
+                    }
+                }
+            }
+            return;
+        }
         for (int64_t y = start; y < stop; ++y) {
             const int64_t top = 2 * y;
             const int64_t bottom = (top + 1 < height) ? (top + 1) : (height - 1);
@@ -630,6 +862,40 @@ int of_select_rows_a_cpp(
         int32_t* b_row = best_data + y * best.stride[0];
         const int64_t local_y = y - start;
         if (no_bg) {
+            if (channels == 3 && image.ndim == 3 && output.ndim == 3
+                    && !image.is_float && !output.is_float
+                    && (image.itemsize == 1 || image.itemsize == 2)
+                    && (output.itemsize == 2 || output.itemsize == 4)) {
+                const bool avx2_skip = simd::use_avx2() && width >= 8;
+                const int64_t is1 = image.stride[1], is2 = image.stride[2];
+                const int64_t os1 = output.stride[1], os2 = output.stride[2];
+                if (image.itemsize == 1 && output.itemsize == 2) {
+                    state = select_a_no_bg_packed_row<uint8_t, uint16_t>(
+                        b_row, response.data(), width,
+                        static_cast<const uint8_t*>(image.data) + y * image.stride[0],
+                        static_cast<uint16_t*>(output.data) + y * output.stride[0],
+                        is1, is2, os1, os2, scale, state, avx2_skip);
+                } else if (image.itemsize == 1 && output.itemsize == 4) {
+                    state = select_a_no_bg_packed_row<uint8_t, int32_t>(
+                        b_row, response.data(), width,
+                        static_cast<const uint8_t*>(image.data) + y * image.stride[0],
+                        static_cast<int32_t*>(output.data) + y * output.stride[0],
+                        is1, is2, os1, os2, scale, state, avx2_skip);
+                } else if (image.itemsize == 2 && output.itemsize == 2) {
+                    state = select_a_no_bg_packed_row<uint16_t, uint16_t>(
+                        b_row, response.data(), width,
+                        static_cast<const uint16_t*>(image.data) + y * image.stride[0],
+                        static_cast<uint16_t*>(output.data) + y * output.stride[0],
+                        is1, is2, os1, os2, scale, state, avx2_skip);
+                } else {
+                    state = select_a_no_bg_packed_row<uint16_t, int32_t>(
+                        b_row, response.data(), width,
+                        static_cast<const uint16_t*>(image.data) + y * image.stride[0],
+                        static_cast<int32_t*>(output.data) + y * output.stride[0],
+                        is1, is2, os1, os2, scale, state, avx2_skip);
+                }
+                continue;
+            }
             for (int64_t x = 0; x < width; ++x) {
                 const int64_t prev = b_row[x];
                 if (prev == kAMaxResponse) {
@@ -1516,36 +1782,30 @@ void of_merge_rows_cpp(
     const int64_t channels = image.shape[2];
     const bool use_recip = (accumulator.ndim == 3 && (!reverse) && step >= 2 && step <= 65535
                             && channels == 3 && scale >= 1 && scale <= 256
-                            && (image.itemsize == 1 || image.itemsize == 2));
+                            && (image.itemsize == 1 || image.itemsize == 2)
+                            && !image.is_float && !accumulator.is_float
+                            && (accumulator.itemsize == 2 || accumulator.itemsize == 4));
     if (use_recip) {
-        const uint64_t recip48 = ((uint64_t{1} << 48) + static_cast<uint64_t>(step) - 1u) / static_cast<uint64_t>(step);
-        const int32_t base32 = static_cast<int32_t>(base);
-        const int32_t step32 = static_cast<int32_t>(step);
-        const int32_t neg_step = -step32;
         const int32_t s32 = static_cast<int32_t>(scale);
-        for (int64_t y = start; y < stop; ++y) {
-            const uint16_t* drow = depth + y * d_sy;
-            for (int64_t x = 0; x < width; ++x) {
-                const int32_t delta = static_cast<int32_t>(drow[x]) - base32;
-                if (delta >= 0) {
-                    if (delta <= step32) {
-                        for (int64_t ch = 0; ch < 3; ++ch) {
-                            write_int(accumulator, y, x, read_int(image, y, x, ch) * s32, ch);
-                        }
-                    }
-                } else if (delta > neg_step) {
-                    const int32_t w = 1024 - static_cast<int32_t>(
-                        (static_cast<uint64_t>(-delta) << 10u) * recip48 >> 48u);
-                    if (w > 0) {
-                        const int32_t iw = 1024 - w;
-                        for (int64_t ch = 0; ch < 3; ++ch) {
-                            const int32_t cur = static_cast<int32_t>(read_int(accumulator, y, x, ch));
-                            const int32_t val = static_cast<int32_t>(read_int(image, y, x, ch)) * s32;
-                            write_int(accumulator, y, x, (cur * iw + val * w) >> 10, ch);
-                        }
-                    }
-                }
-            }
+        const bool src_packed = (image.stride[1] == 3 && image.stride[2] == 1);
+        const bool dst_packed = (accumulator.stride[1] == 3 && accumulator.stride[2] == 1);
+        const bool use_avx2_skip = simd::use_avx2() && width >= 16;
+        if (image.itemsize == 1 && accumulator.itemsize == 2) {
+            merge_recip_packed_rows<uint8_t, uint16_t>(
+                accumulator, image, depth, d_sy, base, step, start, stop, s32,
+                src_packed, dst_packed, use_avx2_skip);
+        } else if (image.itemsize == 1 && accumulator.itemsize == 4) {
+            merge_recip_packed_rows<uint8_t, int32_t>(
+                accumulator, image, depth, d_sy, base, step, start, stop, s32,
+                src_packed, dst_packed, use_avx2_skip);
+        } else if (image.itemsize == 2 && accumulator.itemsize == 2) {
+            merge_recip_packed_rows<uint16_t, uint16_t>(
+                accumulator, image, depth, d_sy, base, step, start, stop, s32,
+                src_packed, dst_packed, use_avx2_skip);
+        } else {
+            merge_recip_packed_rows<uint16_t, int32_t>(
+                accumulator, image, depth, d_sy, base, step, start, stop, s32,
+                src_packed, dst_packed, use_avx2_skip);
         }
         return;
     }
