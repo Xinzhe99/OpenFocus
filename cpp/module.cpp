@@ -12,10 +12,12 @@
 #include <string>
 #include <vector>
 
+#include "alignment_kernels.hpp"
 #include "ecc_solver.hpp"
 #include "openfocus_ab.hpp"
 #include "openfocus_c.hpp"
 #include "openfocus_pipeline.hpp"
+#include "simd_dispatch.hpp"
 #include "thread_pool.hpp"
 
 namespace nb = nanobind;
@@ -685,12 +687,239 @@ void of_tile_finalize_py(ConstAnyCpuArray acc, ConstAnyCpuArray weight_acc,
     openfocus::of_tile_finalize_cpp(av, wav, ov, start, stop);
 }
 
+using ConstF32_1D = nb::ndarray<const float, nb::ndim<1>, nb::c_contig, nb::device::cpu>;
+using ConstI64_1D = nb::ndarray<const int64_t, nb::ndim<1>, nb::c_contig, nb::device::cpu>;
+using I64_1D = nb::ndarray<int64_t, nb::ndim<1>, nb::c_contig, nb::device::cpu>;
+using F32_1D = nb::ndarray<float, nb::ndim<1>, nb::c_contig, nb::device::cpu>;
+using ConstF64_2D = nb::ndarray<const double, nb::ndim<2>, nb::c_contig, nb::device::cpu>;
+
+void of_align_swap_rgb_to_bgr_rows_py(ConstAnyCpuArray src, AnyCpuArray dst,
+                                      int64_t y_start, int64_t y_stop) {
+    const auto sv = make_array_view(src);
+    const auto dv = make_array_view(dst);
+    nb::gil_scoped_release release;
+    openfocus::of_align_swap_rgb_to_bgr_rows_cpp(sv, dv, y_start, y_stop);
+}
+
+void of_align_swap_bgr_inplace_rows_py(AnyCpuArray arr, int64_t y_start, int64_t y_stop) {
+    const auto av = make_array_view(arr);
+    nb::gil_scoped_release release;
+    openfocus::of_align_swap_bgr_inplace_rows_cpp(av, y_start, y_stop);
+}
+
+void of_align_gray16_rows_py(ConstAnyCpuArray image, AnyCpuArray out,
+                             int64_t y_start, int64_t y_stop) {
+    const auto iv = make_array_view(image);
+    const auto ov = make_array_view(out);
+    nb::gil_scoped_release release;
+    openfocus::of_align_gray16_rows_cpp(iv, ov, y_start, y_stop);
+}
+
+void of_align_down_half_rows_py(ConstAnyCpuArray src, AnyCpuArray out,
+                                int64_t oy_start, int64_t oy_stop) {
+    const auto sv = make_array_view(src);
+    const auto ov = make_array_view(out);
+    nb::gil_scoped_release release;
+    openfocus::of_align_down_half_rows_cpp(sv, ov, oy_start, oy_stop);
+}
+
+void of_align_fast_downsize_u16_rows_py(ConstAnyCpuArray img, AnyCpuArray out,
+                                        int64_t oy_start, int64_t oy_stop) {
+    const auto iv = make_array_view(img);
+    const auto ov = make_array_view(out);
+    nb::gil_scoped_release release;
+    openfocus::of_align_fast_downsize_u16_rows_cpp(iv, ov, oy_start, oy_stop);
+}
+
+void of_align_warp_int_rows_py(ConstAnyCpuArray image, AnyCpuArray out,
+                               float dx, float dy,
+                               int64_t y_start, int64_t y_stop, bool bgr_rev) {
+    const auto iv = make_array_view(image);
+    const auto ov = make_array_view(out);
+    nb::gil_scoped_release release;
+    openfocus::of_align_warp_int_rows_cpp(iv, ov, dx, dy, y_start, y_stop, bgr_rev);
+}
+
+void of_align_warp_alignment_int_rows_py(
+    ConstAnyCpuArray image, AnyCpuArray out,
+    float tx, float ty, float cx, float cy,
+    float p08, float p0c, float p18, float p1c,
+    int64_t y_start, int64_t y_stop, bool bgr_rev
+) {
+    const auto iv = make_array_view(image);
+    const auto ov = make_array_view(out);
+    nb::gil_scoped_release release;
+    openfocus::of_align_warp_alignment_int_rows_cpp(
+        iv, ov, tx, ty, cx, cy, p08, p0c, p18, p1c, y_start, y_stop, bgr_rev);
+}
+
+void of_align_warp_alignment_float_rows_py(
+    ConstAnyCpuArray image, AnyCpuArray out,
+    float tx, float ty, float cx, float cy,
+    float p08, float p0c, float p18, float p1c,
+    int64_t y_start, int64_t y_stop
+) {
+    const auto iv = make_array_view(image);
+    const auto ov = make_array_view(out);
+    nb::gil_scoped_release release;
+    openfocus::of_align_warp_alignment_float_rows_cpp(
+        iv, ov, tx, ty, cx, cy, p08, p0c, p18, p1c, y_start, y_stop);
+}
+
+void of_align_valid_mask_rows_py(
+    nb::ndarray<uint8_t, nb::ndim<2>, nb::device::cpu> mask,
+    int64_t h, int64_t w,
+    float tx, float ty, float cx, float cy,
+    float p08, float p0c, float p18, float p1c,
+    int64_t y_start, int64_t y_stop
+) {
+    uint8_t* ptr = mask.data();
+    const int64_t sy = static_cast<int64_t>(mask.stride(0));
+    const int64_t sx = static_cast<int64_t>(mask.stride(1));
+    nb::gil_scoped_release release;
+    openfocus::of_align_valid_mask_rows_cpp(
+        ptr, sy, sx, h, w, tx, ty, cx, cy, p08, p0c, p18, p1c, y_start, y_stop);
+}
+
+std::tuple<float, float, bool> of_align_refine_level_py(
+    ConstU16_2D a, ConstU16_2D b,
+    float c_dx, float c_dy, double half, double step, int64_t crop
+) {
+    const auto av = make_array_view(a);
+    const auto bv = make_array_view(b);
+    nb::gil_scoped_release release;
+    return openfocus::of_align_refine_level_cpp(av, bv, c_dx, c_dy, half, step, crop);
+}
+
+void of_align_score_chunk_u16_slice_py(
+    ConstU16_2D ref, ConstU16_2D img_b,
+    ConstF32_1D xs, ConstF32_1D ys,
+    ConstF32_1D p08, ConstF32_1D p0c, ConstF32_1D p18, ConstF32_1D p1c,
+    ConstF32_1D tx, ConstF32_1D ty, ConstF32_1D cx, ConstF32_1D cy,
+    ConstI64_1D idx, int64_t k_start, int64_t k_stop,
+    I64_1D ssum, I64_1D ssq, I64_1D cnt
+) {
+    const auto rv = make_array_view(ref);
+    const auto bv = make_array_view(img_b);
+    const float* xs_p = xs.data();
+    const int64_t nxx = static_cast<int64_t>(xs.shape(0));
+    const float* ys_p = ys.data();
+    const int64_t nyy = static_cast<int64_t>(ys.shape(0));
+    const float* p08_p = p08.data();
+    const float* p0c_p = p0c.data();
+    const float* p18_p = p18.data();
+    const float* p1c_p = p1c.data();
+    const float* tx_p = tx.data();
+    const float* ty_p = ty.data();
+    const float* cx_p = cx.data();
+    const float* cy_p = cy.data();
+    const int64_t* idx_p = idx.data();
+    int64_t* ssum_p = ssum.data();
+    int64_t* ssq_p = ssq.data();
+    int64_t* cnt_p = cnt.data();
+    nb::gil_scoped_release release;
+    openfocus::of_align_score_chunk_u16_slice_cpp(
+        rv, bv, xs_p, nxx, ys_p, nyy,
+        p08_p, p0c_p, p18_p, p1c_p, tx_p, ty_p, cx_p, cy_p,
+        idx_p, k_start, k_stop, ssum_p, ssq_p, cnt_p);
+}
+
+void of_align_score_grid_4d_slice_py(
+    ConstU16_2D ref, ConstU16_2D img_b,
+    ConstF32_1D xs, ConstF32_1D ys,
+    float tx0, float ty0,
+    ConstF32_1D cx_tab, ConstF32_1D cy_tab,
+    ConstAnyCpuArray p08_tab, ConstAnyCpuArray p18_tab,
+    int64_t n0, int64_t n1, int64_t n2, int64_t n3,
+    int64_t k_start, int64_t k_stop,
+    I64_1D out_best_k, F32_1D out_best_sc, int64_t slot
+) {
+    const auto rv = make_array_view(ref);
+    const auto bv = make_array_view(img_b);
+    const auto p08v = make_array_view(p08_tab);
+    const auto p18v = make_array_view(p18_tab);
+    const float* xs_p = xs.data();
+    const int64_t nxx = static_cast<int64_t>(xs.shape(0));
+    const float* ys_p = ys.data();
+    const int64_t nyy = static_cast<int64_t>(ys.shape(0));
+    const float* cx_p = cx_tab.data();
+    const float* cy_p = cy_tab.data();
+    int64_t* bk_p = out_best_k.data();
+    float* bsc_p = out_best_sc.data();
+    nb::gil_scoped_release release;
+    openfocus::of_align_score_grid_4d_slice_cpp(
+        rv, bv, xs_p, nxx, ys_p, nyy, tx0, ty0, cx_p, cy_p, p08v, p18v,
+        n0, n1, n2, n3, k_start, k_stop, bk_p, bsc_p, slot);
+}
+
+bool of_align_perspective_has_rounding_edge_py(
+    ConstF64_2D inverse, int64_t x0, int64_t x1, int64_t y0, int64_t y1,
+    double bins, double tolerance
+) {
+    if (inverse.shape(0) < 3 || inverse.shape(1) < 3) {
+        throw std::invalid_argument("inverse must be at least 3x3");
+    }
+    const double* ptr = inverse.data();
+    nb::gil_scoped_release release;
+    return openfocus::of_align_perspective_has_rounding_edge_cpp(
+        ptr, x0, x1, y0, y1, bins, tolerance);
+}
+
+void of_align_warp_alignment_region_int_rows_py(
+    ConstAnyCpuArray image, AnyCpuArray out,
+    int64_t src_h, int64_t src_w, int64_t src_y0,
+    int64_t x_off, int64_t y_off,
+    float tx, float ty, float cx, float cy,
+    float p08, float p0c, float p18, float p1c,
+    int64_t oy_start, int64_t oy_stop, bool bgr_rev
+) {
+    const auto iv = make_array_view(image);
+    const auto ov = make_array_view(out);
+    nb::gil_scoped_release release;
+    openfocus::of_align_warp_alignment_region_int_rows_cpp(
+        iv, ov, src_h, src_w, src_y0, x_off, y_off,
+        tx, ty, cx, cy, p08, p0c, p18, p1c, oy_start, oy_stop, bgr_rev);
+}
+
+void of_align_warp_alignment_region_float_rows_py(
+    ConstAnyCpuArray image, AnyCpuArray out,
+    int64_t src_h, int64_t src_w, int64_t src_y0,
+    int64_t x_off, int64_t y_off,
+    float tx, float ty, float cx, float cy,
+    float p08, float p0c, float p18, float p1c,
+    int64_t oy_start, int64_t oy_stop
+) {
+    const auto iv = make_array_view(image);
+    const auto ov = make_array_view(out);
+    nb::gil_scoped_release release;
+    openfocus::of_align_warp_alignment_region_float_rows_cpp(
+        iv, ov, src_h, src_w, src_y0, x_off, y_off,
+        tx, ty, cx, cy, p08, p0c, p18, p1c, oy_start, oy_stop);
+}
+
+void of_align_warp_translation_region_int_rows_py(
+    ConstAnyCpuArray image, AnyCpuArray out,
+    int64_t src_h, int64_t src_w, int64_t src_y0,
+    int64_t x_off, int64_t y_off,
+    float dx, float dy,
+    int64_t oy_start, int64_t oy_stop, bool bgr_rev
+) {
+    const auto iv = make_array_view(image);
+    const auto ov = make_array_view(out);
+    nb::gil_scoped_release release;
+    openfocus::of_align_warp_translation_region_int_rows_cpp(
+        iv, ov, src_h, src_w, src_y0, x_off, y_off,
+        dx, dy, oy_start, oy_stop, bgr_rev);
+}
+
 }  // namespace
 
 NB_MODULE(_openfocus_native, m) {
     m.doc() = "OpenFocus C++17 native compute kernels";
     m.def("abi_version", []() { return kAbiVersion; });
     m.def("compiler_info", &compiler_info);
+    m.def("simd_info", &openfocus::simd::simd_info);
+    m.def("set_force_scalar", &openfocus::simd::set_force_scalar, nb::arg("force"));
     m.def(
         "parallel_sum_smoke",
         &parallel_sum_smoke,
@@ -830,4 +1059,20 @@ NB_MODULE(_openfocus_native, m) {
           nb::arg("acc"), nb::arg("weight_acc"), nb::arg("tile"), nb::arg("weight2d"),
           nb::arg("x0"), nb::arg("y0"), nb::arg("num_threads") = 4);
     m.def("of_tile_finalize", &of_tile_finalize_py);
+    m.def("of_align_swap_rgb_to_bgr_rows", &of_align_swap_rgb_to_bgr_rows_py);
+    m.def("of_align_swap_bgr_inplace_rows", &of_align_swap_bgr_inplace_rows_py);
+    m.def("of_align_gray16_rows", &of_align_gray16_rows_py);
+    m.def("of_align_down_half_rows", &of_align_down_half_rows_py);
+    m.def("of_align_fast_downsize_u16_rows", &of_align_fast_downsize_u16_rows_py);
+    m.def("of_align_warp_int_rows", &of_align_warp_int_rows_py);
+    m.def("of_align_warp_alignment_int_rows", &of_align_warp_alignment_int_rows_py);
+    m.def("of_align_warp_alignment_float_rows", &of_align_warp_alignment_float_rows_py);
+    m.def("of_align_valid_mask_rows", &of_align_valid_mask_rows_py);
+    m.def("of_align_refine_level", &of_align_refine_level_py);
+    m.def("of_align_score_chunk_u16_slice", &of_align_score_chunk_u16_slice_py);
+    m.def("of_align_score_grid_4d_slice", &of_align_score_grid_4d_slice_py);
+    m.def("of_align_perspective_has_rounding_edge", &of_align_perspective_has_rounding_edge_py);
+    m.def("of_align_warp_alignment_region_int_rows", &of_align_warp_alignment_region_int_rows_py);
+    m.def("of_align_warp_alignment_region_float_rows", &of_align_warp_alignment_region_float_rows_py);
+    m.def("of_align_warp_translation_region_int_rows", &of_align_warp_translation_region_int_rows_py);
 }

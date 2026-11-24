@@ -1,4 +1,5 @@
 #include "openfocus_c.hpp"
+#include "simd_dispatch.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -180,11 +181,15 @@ void down_vertical_impl(
             const float* p2 = static_cast<const float*>(scratch.data) + r2 * scratch.stride[0];
             const float* p3 = static_cast<const float*>(scratch.data) + r3 * scratch.stride[0];
             float* dst = static_cast<float*>(output.data) + y * output.stride[0];
-            for (int64_t i = 0; i < elems; ++i) {
-                float v = p0[i] * kD0;
-                v += p1[i] * kD1;
-                v += p2[i] * kD1;
-                dst[i] = v + p3[i] * kD0;
+            if (simd::use_avx2() && elems >= 8) {
+                simd::pyr_down_vertical_row_f32_avx2(p0, p1, p2, p3, dst, elems, kD0, kD1);
+            } else {
+                for (int64_t i = 0; i < elems; ++i) {
+                    float v = p0[i] * kD0;
+                    v += p1[i] * kD1;
+                    v += p2[i] * kD1;
+                    dst[i] = v + p3[i] * kD0;
+                }
             }
         } else {
             for (int64_t x = 0; x < out_w; ++x) {
@@ -364,6 +369,26 @@ void synth_detail_band_impl(
             const float w2 = kE2;
             const float w3 = odd ? kE1 : kE3;
             const float w4 = odd ? kE0 : 0.0f;
+
+            if constexpr (!ScaledRaw && WriteDetailInPlace && UpdateWeight) {
+                if (simd::use_avx2() && width >= 8) {
+                    float* dst = static_cast<float*>(target_or_raw.data) + y * target_or_raw.stride[0];
+                    simd::pyr_detail_weight_3c_f32_avx2(
+                        hr0, hr1, hr2, hr3, hr4, dst, w_row, width,
+                        w0, w1, w2, w3, w4, kPointOne, kWScale, y_border);
+                    continue;
+                }
+            } else if constexpr (ScaledRaw && !WriteDetailInPlace && UpdateWeight) {
+                if (simd::use_avx2() && width >= 8) {
+                    const void* raw_ptr = (target_or_raw.itemsize == 1)
+                        ? static_cast<const void*>(static_cast<const uint8_t*>(target_or_raw.data) + y * target_or_raw.stride[0])
+                        : static_cast<const void*>(static_cast<const uint16_t*>(target_or_raw.data) + y * target_or_raw.stride[0]);
+                    simd::pyr_level0_weights_3c_f32_from_raw_avx2(
+                        hr0, hr1, hr2, hr3, hr4, raw_ptr, target_or_raw.itemsize == 1, w_row, width,
+                        factor, w0, w1, w2, w3, w4, kPointOne, kWScale, y_border);
+                    continue;
+                }
+            }
 
             for (int64_t x = 0; x < width; ++x) {
                 const int64_t off3 = x * 3;
@@ -791,11 +816,17 @@ void of_pyr_reconstruct_f32_cpp(
             const float w2 = kE2;
             const float w3 = odd ? kE1 : kE3;
             const float w4 = odd ? kE0 : 0.0f;
-            for (int64_t i = 0; i < elems; ++i) {
-                float lo = (hr0[i] * w0 + hr1[i] * w1) + hr2[i] * w2;
-                lo = (lo + hr3[i] * w3) + hr4[i] * w4;
-                const float val = (lo + kPointOne) * tr[i] + lo;
-                tr[i] = val < 0.0f ? 0.0f : (val > 1.0f ? 1.0f : val);
+            if (simd::use_avx2() && elems >= 8) {
+                simd::pyr_reconstruct_row_f32_avx2(
+                    hr0, hr1, hr2, hr3, hr4, tr, elems,
+                    w0, w1, w2, w3, w4, kPointOne);
+            } else {
+                for (int64_t i = 0; i < elems; ++i) {
+                    float lo = (hr0[i] * w0 + hr1[i] * w1) + hr2[i] * w2;
+                    lo = (lo + hr3[i] * w3) + hr4[i] * w4;
+                    const float val = (lo + kPointOne) * tr[i] + lo;
+                    tr[i] = val < 0.0f ? 0.0f : (val > 1.0f ? 1.0f : val);
+                }
             }
         } else {
             float total = 0.0f;
