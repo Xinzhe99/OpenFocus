@@ -223,6 +223,24 @@ def test_sixteen_bit_frame_keeps_style_arguments():
     assert (out[150:210, 40:200] != img[150:210, 40:200]).any()
     assert np.array_equal(out[-40:, -120:], img[-40:, -120:])
 
+
+def test_sixteen_bit_scale_bar_preserves_color_and_rounding():
+    from utils.scalebar import draw_scale_bar
+
+    ramp = np.arange(65536, dtype=np.uint16).reshape(256, 256)
+    pixels = np.stack((ramp, ramp[::-1], ramp[:, ::-1]), axis=2)[:, ::-1]
+    original = pixels.copy()
+    preview = np.rint(pixels.astype(np.float32) * (255.0 / 65535.0)).astype(np.uint8)
+    style = dict(position='top-left', color='auto', font_size=18)
+    drawn = draw_scale_bar(preview, .5, **style)
+    touched = np.any(preview != drawn, axis=2)
+    expected = original.copy()
+    expected[touched] = drawn[touched].astype(np.uint16) * 257
+    assert touched.any()
+    np.testing.assert_array_equal(draw_scale_bar(pixels, .5, **style), expected)
+    np.testing.assert_array_equal(pixels, original)
+
+
 @pytest.mark.parametrize("dtype", [np.uint8, np.uint16])
 @pytest.mark.parametrize("position", ["top-left", "bottom-right", "custom"])
 def test_grayscale_bar_preserves_layout_and_pixels(dtype, position):
