@@ -10,6 +10,7 @@ from utils.image_utils import apply_exposure_gain, normalize_fuse_input
 from utils.logging_setup import log_action, log_debug
 from utils.performance_profile import current as _profile
 from utils.sorting import natural_sort_key
+from constants import FRAME_RAM_BUDGET_BYTES
 from core.algorithms import (FUSION_DEFAULT, _NEURAL_TILE_RUNNERS, get_fusion,
                              resolve_fusion_parameters, resolve_runner)
 from core.frame_storage import (capture_scratch, create_frame, is_mapped_frame,
@@ -1051,7 +1052,9 @@ class MultiFocusFusion:
                 # Keep staging mandatory when the streamed peak exceeds RAM.
                 required = (fixed + worker + decode + source_cache_growth_bytes(input_source)
                             > budget)
-                expensive_decode = max(128 * 1024 ** 2, budget // 4)
+                # Stage decodes that cannot fit the frame cache even on a
+                # machine that has spare RAM at the start of this render.
+                expensive_decode = max(128 * 1024 ** 2, min(budget // 4, FRAME_RAM_BUDGET_BYTES))
                 stage = required or (method_b and decode > expensive_decode and any(
                     frame_resolution_bytes(input_source[index]) > expensive_decode
                     for index in indices))
@@ -1059,7 +1062,8 @@ class MultiFocusFusion:
                 sources = [input_source[index] for index in indices]
                 scope = current()
                 cache_access = (scope.reuse_only() if isinstance(scope, ScopedCache)
-                                and not self.retain_aligned_pixels else nullcontext())
+                                and (large_native_stack or not self.retain_aligned_pixels)
+                                else nullcontext())
                 try:
                     # Borrow decoded sources already in the resolution scope
                     # without writing one-use intermediates.

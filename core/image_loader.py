@@ -525,6 +525,7 @@ def decode_image(path: str, *, allow_transparent_png: bool = False,
                 return apply_exif_orientation(path, image)
             if ext in ('.jpg', '.jpeg', '.jpe', '.jfif') and header.format == 'JPEG':
                 jpeg_mode = header.mode
+                jpeg_size = header.size
     if jpeg_mode is not None:
         with open(path, 'rb') as fh:
             raw_bytes = fh.read()
@@ -575,6 +576,13 @@ def decode_image(path: str, *, allow_transparent_png: bool = False,
         img = cv2.imdecode(data, cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR
                            | cv2.IMREAD_IGNORE_ORIENTATION)
     if img is None:
+        if jpeg_mode in ('L', 'RGB'):
+            # Pillow can hold its own decoded pixels and RGB conversion
+            # alongside a NumPy copy. Admit this separately from libjpeg.
+            del unchanged, data, raw_bytes
+            from core.resource_policy import require_memory
+            width, height = jpeg_size
+            require_memory(16 * width * height + 128 * width + 128 * 1024)
         # OpenCV ships no HEIC/HEIF decoder: fall back to Pillow
         img = _read_via_pil(path)
     if img is not None:

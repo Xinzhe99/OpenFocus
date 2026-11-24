@@ -1305,7 +1305,7 @@ def test_render_retry_after_memory_rejection_starts_new_child(qapp, tmp_path, sc
             results, errors = _start(failed)
             _wait(failed, qapp)
         assert not results and errors
-        assert failed._child_error_evidence['error_category'] == 'resource_limit'
+        assert failed.failure_category == 'resource_limit'
 
         retry = render_process.RenderProcessWorker(frames, **options)
         results, errors = _start(retry)

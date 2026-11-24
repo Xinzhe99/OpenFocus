@@ -1136,6 +1136,28 @@ def test_raw_jpeg_fallback_cancels_before_reading_next_preview(tmp_path, monkeyp
     assert frame.preview is None and attempts == [(1024, 768)]
 
 
+def test_full_size_jpeg_resolves_with_bounded_workspace(tmp_path, monkeypatch):
+    from core import resource_policy
+
+    path = _jpeg(tmp_path, shape=(480, 640))
+    frame = sources.scan_source(path, header_only=True)[0]
+    expected = image_loader.decode_image(path)
+    limit = 4 * 1024 ** 2
+
+    with resource_policy.process_budget(resource_policy.ProcessBudget(limit, limit)):
+        with sources.without_source_cache_growth():
+            np.testing.assert_array_equal(sources.resolve_frame(frame), expected)
+
+            # The fallback must admit Pillow's larger simultaneous copies.
+            jpeg_decoder = pytest.importorskip('imagecodecs')
+            monkeypatch.setattr(jpeg_decoder, 'jpeg8_decode', lambda *a, **kw: None)
+            monkeypatch.setattr(cv2, 'imdecode', lambda *a, **kw: None)
+            monkeypatch.setattr(image_loader, '_read_via_pil',
+                                lambda _path: pytest.fail('Pillow fallback started'))
+            with pytest.raises(resource_policy.ResourceLimitError):
+                sources.resolve_frame(frame)
+
+
 @pytest.mark.parametrize('replace_at', ['before_decode', 'after_decode'])
 def test_original_rejects_source_replaced_during_decode(tmp_path, monkeypatch, replace_at):
     import os

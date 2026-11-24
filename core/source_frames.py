@@ -662,6 +662,7 @@ class SourceFrame:
     raw_sensor_shape: tuple = ()
     _rgb_tiff_offset: int | None = None  # Bound only on a fusion-local descriptor.
     _rgb_tiff_generation: tuple | None = None
+    _jpeg_components: int = 0
 
     def __post_init__(self):
         path = _source_lifetime_key(self.path)
@@ -932,9 +933,9 @@ class ProcessedFrame:
                             return stored
                     _check_resolution_cancel(cancelled)
                     return direct
+            from core.resource_policy import require_memory
             required = frame_resolution_bytes(self)
             if required:
-                from core.resource_policy import require_memory
                 require_memory(required)
             if isinstance(self.source, ProcessedFrame):
                 image = self.source.full_resolution(
@@ -1679,9 +1680,24 @@ def frame_resolution_bytes(frame, *, metadata_only=False):
             from core.resource_policy import raw_decode_bytes
             height, width = frame.raw_sensor_shape
             return raw_decode_bytes(width, height, frame.nbytes, encoded)
+        if frame._jpeg_components and frame.scale == 1.0 and not frame.transforms:
+            return _jpeg_resolution_bytes(frame, encoded)
         return (math.prod(frame.native_shape or frame.shape) * frame.dtype.itemsize * 4
                 + frame.nbytes + encoded * 2)
     return 0
+
+
+def _jpeg_resolution_bytes(frame, encoded):
+    height, width = frame.shape[:2]
+    # Multi-scan JPEGs can retain every DCT coefficient. Round to the
+    # largest possible MCU (four blocks in either direction).
+    padded_pixels = ((height + 31) // 32) * ((width + 31) // 32) * 32 * 32
+    coefficients = 2 * frame._jpeg_components * padded_pixels
+    # Decode, channel conversion, orientation and cache storage happen in
+    # order. Only decode holds coefficients, and the other stages can each
+    # coexist with one finished frame.
+    return (encoded + max(frame.nbytes + coefficients, 2 * frame.nbytes)
+            + 128 * max(height, width) + 128 * 1024)
 
 
 def select_frame_scratch(frames, *, preferred_size=0, should_cancel=None):
@@ -2258,13 +2274,16 @@ def scan_source(path, scale=1.0, *, linear=False, header_only=False, page_index=
                     metadata_out.append((_safe_exif_bytes(path, raw_exif), profile))
     else:
         with Image.open(path) as image:
-            from core.image_loader import validate_pil_header
+            from core.image_loader import _JPEG_EXTENSIONS, validate_pil_header
             validate_pil_header(path, image)
             width, height = image.size
             orientation = int(read_image_exif(image).get(274, 1))
             alpha = 'A' in image.getbands() or 'transparency' in image.info
             dtype = np.dtype(np.uint16 if image.mode in ('I', 'I;16', 'I;16B') else np.uint8)
             grayscale = image.mode in ('1', 'L', 'I', 'I;16', 'I;16B') and not alpha
+            jpeg_components = (len(image.getbands())
+                               if image.format == 'JPEG' and image.mode in ('L', 'RGB') and not alpha
+                               and extension in _JPEG_EXTENSIONS else 0)
             if extension == '.png':
                 # Pillow presents RGB16 PNG as RGB8; the IHDR bit depth is
                 # still authoritative for the original pixel decoder.
@@ -2282,7 +2301,8 @@ def scan_source(path, scale=1.0, *, linear=False, header_only=False, page_index=
                 preview = _orient(_pil_preview(image, itemsize=dtype.itemsize, alpha=alpha), orientation)
         frames.append(SourceFrame(path, 0, (max(1, int(height * scale)), max(1, int(width * scale)),
                                             4 if alpha else 3), dtype, preview, stamp, scale, orientation,
-                                  native_shape=(height, width, 4 if alpha else 3), grayscale=grayscale))
+                                  native_shape=(height, width, 4 if alpha else 3), grayscale=grayscale,
+                                  _jpeg_components=jpeg_components))
     _check_preview_cancel(should_cancel)
     if _fingerprint(path) != stamp:
         raise OSError(f'Source changed while reading its preview: {path}')
