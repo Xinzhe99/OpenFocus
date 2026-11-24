@@ -448,17 +448,9 @@ class MagnifierLabel(QLabel):
             new_zoom = max(old_zoom / step, self._min_zoom)
 
         if new_zoom != old_zoom:
-            # Keep the image point under the cursor fixed.
-            #
-            # Scaling _pan_offset alone is not enough: the drawn image is
-            # centred by (label - scaled)/2, and that term changes with the
-            # zoom. Worse, _update_scaled_pixmap() clamps the pan to keep the
-            # image reachable, so after a large pan the clamp silently moved
-            # the anchor (measured: up to 378 px of drift on a 4000x3000 image
-            # in a 400x300 view). Compute the cursor's image point, apply the
-            # new zoom, then shift the pan so that point is back under the
-            # cursor — the clamp runs afterwards and only trims what is
-            # genuinely off-screen.
+            # The image is centred within the label, so zoom changes its
+            # origin as well as its scale. Record the cursor's source point
+            # before updating the zoom and pan.
             mouse_pos = event.position()
             base_point = self._map_to_base(mouse_pos)
             # Only anchor on a point that exists. When the cursor is over the
@@ -474,7 +466,9 @@ class MagnifierLabel(QLabel):
                     base_point = QPointF(self._source_size.width() / 2.0,
                                          self._source_size.height() / 2.0)
             self._zoom_factor = new_zoom
-            self._update_scaled_pixmap()
+            # Keep the existing pan bounds for the anchor calculation. The
+            # final position below is the only one that needs pixels.
+            self._clamp_pan_offset()
             after = self._map_from_base(base_point)
             self._pan_offset = QPointF(
                 self._pan_offset.x() + (mouse_pos.x() - after.x()),
