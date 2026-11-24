@@ -185,6 +185,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   destination, including exports from large image stacks.
 
 ### Fixed
+- Admit large JPEG stacks for ECC using reduced grayscale decodes, including
+  with GPU acceleration enabled. Keep registration warps at full resolution.
+- Budget sequential decode and processing peaks separately. Stage full-size
+  frames on scratch storage for OpenFocus A/B/C when memory is tight.
+- Release the isolated render worker after a memory error so the next render
+  starts with fresh native memory and device contexts.
 - Default new watermarks to fusion results. Apply removes unchecked watermark
   scopes, scale bars on the selected target, and unchecked labels.
 - Retain OpenFocus B's prepared images when switching fusion methods with

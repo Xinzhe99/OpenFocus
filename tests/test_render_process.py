@@ -1288,3 +1288,29 @@ def test_persistent_render_worker_reuses_pid_recovers_crash_and_tracks_scratch(q
         assert fourth.child_pid is not None and fourth.child_pid != pid3
     finally:
         render_process.shutdown_persistent_worker()
+
+
+def test_render_retry_after_memory_rejection_starts_new_child(qapp, tmp_path, scratch, monkeypatch):
+    from core import render_process
+    from core.resource_policy import ProcessBudget
+
+    frames = _sources(tmp_path)
+    options = dict(algorithm='openfocus_b', use_gpu=False, sort_mode='off',
+                   thread_count=1, exposure_match=False)
+    try:
+        render_process.shutdown_persistent_worker()
+        with monkeypatch.context() as limited:
+            limited.setattr(render_process, 'make_process_budget', lambda _: ProcessBudget(1, 1))
+            failed = render_process.RenderProcessWorker(frames, **options)
+            results, errors = _start(failed)
+            _wait(failed, qapp)
+        assert not results and errors
+        assert failed._child_error_evidence['error_category'] == 'resource_limit'
+
+        retry = render_process.RenderProcessWorker(frames, **options)
+        results, errors = _start(retry)
+        _wait(retry, qapp)
+        assert len(results) == 1 and not errors
+        assert retry.child_pid != failed.child_pid
+    finally:
+        render_process.shutdown_persistent_worker()

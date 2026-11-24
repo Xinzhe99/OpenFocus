@@ -1024,7 +1024,7 @@ class MultiFocusFusion:
                     self.prepared_cache = TileExposureCache(input_source, tuple(exposure_gains_))
             elif not native_neural_tiles and input_source is not before_snapshot:
                 self.prepared_cache = input_source
-        if self.algorithm == 'openfocus_b' and streaming_sources and not reuse_native:
+        if native_codes and streaming_sources and not reuse_native:
             from contextlib import nullcontext
             from core.frame_resolution_cache import ScopedCache, current
             from core.frame_storage import ScratchSpaceError
@@ -1039,9 +1039,10 @@ class MultiFocusFusion:
                     original = original.source
                 if isinstance(original, SourceFrame):
                     indices.append(index)
-            # Explicit tiles require repeated access. Whole-image B also
-            # stages expensive sources when disk can save a second decode.
-            required = stage = self.tile_enabled and needs_tiles and img_resize is None
+            # B can read a source twice. A and C stage only when the serial
+            # fusion working set cannot coexist with resolving one frame.
+            method_b = self.algorithm == 'openfocus_b'
+            required = stage = method_b and self.tile_enabled and needs_tiles and img_resize is None
             if indices and not required:
                 fixed, worker = resolve_runner(spec.resource_estimator)(
                     max(h, height), max(w, width), kwargs, count)
@@ -1051,7 +1052,7 @@ class MultiFocusFusion:
                 required = (fixed + worker + decode + source_cache_growth_bytes(input_source)
                             > budget)
                 expensive_decode = max(128 * 1024 ** 2, budget // 4)
-                stage = required or (decode > expensive_decode and any(
+                stage = required or (method_b and decode > expensive_decode and any(
                     frame_resolution_bytes(input_source[index]) > expensive_decode
                     for index in indices))
             if indices and stage:
@@ -1060,10 +1061,10 @@ class MultiFocusFusion:
                 cache_access = (scope.reuse_only() if isinstance(scope, ScopedCache)
                                 and not self.retain_aligned_pixels else nullcontext())
                 try:
-                    # The snapshot supplies both passes. Borrow ECC's decoded
-                    # frames without writing one-use intermediates.
+                    # Borrow decoded sources already in the resolution scope
+                    # without writing one-use intermediates.
                     with (cache_access, without_source_cache_growth(),
-                          _profile().stage('snapshot_openfocus_b')):
+                          _profile().stage('snapshot_openfocus_b' if method_b else 'snapshot_native_sources')):
                         prepared = materialize_for_repeated_access(
                             sources, should_cancel, thread_count=kwargs.get('thread_count', 0),
                             resource_preference=self.resource_preference,

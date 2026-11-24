@@ -946,6 +946,8 @@ class ProcessedFrame:
                 image = resolve_frame(self.source, should_cancel=cancelled)
             if cancelled():
                 raise RegistrationCancelled()
+            if self.scratch_bytes:
+                require_memory(self.scratch_bytes)
             result = None
             if is_direct_rgb_tiff(self.source):
                 from core.registration import PerspectiveWarp, _ORIGINAL_PERSPECTIVE_CALL
@@ -1658,7 +1660,17 @@ def frame_resolution_bytes(frame, *, metadata_only=False):
     if isinstance(frame, RetainedFrame):
         return 0
     if isinstance(frame, ProcessedFrame):
-        return frame_resolution_bytes(frame.source, metadata_only=metadata_only) + frame.scratch_bytes
+        source = frame.source
+        decode_peak = frame_resolution_bytes(source, metadata_only=metadata_only)
+        if not decode_peak:
+            return frame.scratch_bytes
+        # The finished source enters processing after decoder scratch is freed.
+        # Its array may be a crop that keeps a larger source buffer alive.
+        input_bytes = source.nbytes
+        while isinstance(source, ProcessedFrame):
+            source = source.source
+            input_bytes = max(input_bytes, source.nbytes)
+        return max(decode_peak, input_bytes + frame.scratch_bytes)
     if isinstance(frame, SourceFrame):
         if frame._rgb_tiff_offset is not None:
             return frame.nbytes
