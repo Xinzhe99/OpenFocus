@@ -17,6 +17,7 @@
 #include "openfocus_ab.hpp"
 #include "openfocus_c.hpp"
 #include "openfocus_pipeline.hpp"
+#include "simd_dispatch.hpp"
 #include "thread_pool.hpp"
 
 namespace nb = nanobind;
@@ -917,6 +918,8 @@ NB_MODULE(_openfocus_native, m) {
     m.doc() = "OpenFocus C++17 native compute kernels";
     m.def("abi_version", []() { return kAbiVersion; });
     m.def("compiler_info", &compiler_info);
+    m.def("simd_info", &openfocus::simd::simd_info);
+    m.def("set_force_scalar", &openfocus::simd::set_force_scalar, nb::arg("force"));
     m.def(
         "parallel_sum_smoke",
         &parallel_sum_smoke,

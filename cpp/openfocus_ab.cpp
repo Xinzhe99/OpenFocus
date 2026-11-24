@@ -1,4 +1,5 @@
 #include "openfocus_ab.hpp"
+#include "simd_dispatch.hpp"
 #include "thread_pool.hpp"
 
 #include <algorithm>
@@ -526,11 +527,20 @@ int of_select_rows_a_cpp(
                                       cya5, cyb5, da5.data(), db5.data(), tmp0.data(), tmp1.data(), n_out);
             }
 
-            for (int64_t j = 0; j < n_out; ++j) {
-                m2[j] = da2[j] * wy2 + db2[j] * fy2;
-                m3[j] = da3[j] * wy3 + db3[j] * fy3;
-                m4[j] = da4[j] * wy4 + db4[j] * fy4;
-                m5[j] = da5[j] * wy5 + db5[j] * fy5;
+            if (simd::use_avx2() && n_out >= 8) {
+                simd::select_a_combine_m2_to_m5_avx2(
+                    da2.data(), db2.data(), m2.data(), wy2, fy2,
+                    da3.data(), db3.data(), m3.data(), wy3, fy3,
+                    da4.data(), db4.data(), m4.data(), wy4, fy4,
+                    da5.data(), db5.data(), m5.data(), wy5, fy5,
+                    n_out);
+            } else {
+                for (int64_t j = 0; j < n_out; ++j) {
+                    m2[j] = da2[j] * wy2 + db2[j] * fy2;
+                    m3[j] = da3[j] * wy3 + db3[j] * fy3;
+                    m4[j] = da4[j] * wy4 + db4[j] * fy4;
+                    m5[j] = da5[j] * wy5 + db5[j] * fy5;
+                }
             }
 
             const void* g_ptr = (gray.itemsize == 2)
@@ -542,32 +552,39 @@ int of_select_rows_a_cpp(
                     : static_cast<uint32_t>(static_cast<const int32_t*>(g_ptr)[x]);
             };
 
-            for (int64_t j = 0; j < full_pairs; ++j) {
-                const int64_t ev = 2 * j;
-                const uint32_t a0_l = m0[j], a0_c = m0[j + 1], a0_r = m0[j + 2];
-                const uint32_t a1_l = m1[j], a1_c = m1[j + 1], a1_r = m1[j + 2];
-                const int32_t d0 = static_cast<int32_t>(read_g(ev) << 4u)
-                                 - static_cast<int32_t>(a0_l + a0_c * 3u);
-                const int32_t d1 = static_cast<int32_t>(read_g(ev + 1) << 4u)
-                                 - static_cast<int32_t>(a0_c * 3u + a0_r);
-                int32_t s0 = (d0 < 0) ? -d0 : d0;
-                int32_t s1 = (d1 < 0) ? -d1 : d1;
-                s0 += static_cast<int32_t>((a1_l + a1_c * 3u + 8u) >> 4u);
-                s1 += static_cast<int32_t>((a1_c * 3u + a1_r + 8u) >> 4u);
-                const uint32_t l2 = m2[j], r2 = m2[j + 1];
-                const uint32_t l3 = m3[j], r3 = m3[j + 1];
-                const uint32_t l4 = m4[j], r4 = m4[j + 1];
-                const uint32_t l5 = m5[j], r5 = m5[j + 1];
-                s0 += static_cast<int32_t>((l2 * 3u + r2 + 32u) >> 6u);
-                s1 += static_cast<int32_t>((l2 + r2 * 3u + 32u) >> 6u);
-                s0 += static_cast<int32_t>((l3 * 3u + r3 + 128u) >> 8u);
-                s1 += static_cast<int32_t>((l3 + r3 * 3u + 128u) >> 8u);
-                s0 += static_cast<int32_t>((l4 * 3u + r4 + 512u) >> 10u);
-                s1 += static_cast<int32_t>((l4 + r4 * 3u + 512u) >> 10u);
-                s0 += static_cast<int32_t>((l5 * 3u + r5 + 2048u) >> 12u);
-                s1 += static_cast<int32_t>((l5 + r5 * 3u + 2048u) >> 12u);
-                response[ev] = s0;
-                response[ev + 1] = s1;
+            if (simd::use_avx2() && full_pairs >= 8) {
+                simd::select_a_response_pairs_avx2(
+                    g_ptr, gray.itemsize == 2,
+                    m0.data(), m1.data(), m2.data(), m3.data(), m4.data(), m5.data(),
+                    response.data(), full_pairs);
+            } else {
+                for (int64_t j = 0; j < full_pairs; ++j) {
+                    const int64_t ev = 2 * j;
+                    const uint32_t a0_l = m0[j], a0_c = m0[j + 1], a0_r = m0[j + 2];
+                    const uint32_t a1_l = m1[j], a1_c = m1[j + 1], a1_r = m1[j + 2];
+                    const int32_t d0 = static_cast<int32_t>(read_g(ev) << 4u)
+                                     - static_cast<int32_t>(a0_l + a0_c * 3u);
+                    const int32_t d1 = static_cast<int32_t>(read_g(ev + 1) << 4u)
+                                     - static_cast<int32_t>(a0_c * 3u + a0_r);
+                    int32_t s0 = (d0 < 0) ? -d0 : d0;
+                    int32_t s1 = (d1 < 0) ? -d1 : d1;
+                    s0 += static_cast<int32_t>((a1_l + a1_c * 3u + 8u) >> 4u);
+                    s1 += static_cast<int32_t>((a1_c * 3u + a1_r + 8u) >> 4u);
+                    const uint32_t l2 = m2[j], r2 = m2[j + 1];
+                    const uint32_t l3 = m3[j], r3 = m3[j + 1];
+                    const uint32_t l4 = m4[j], r4 = m4[j + 1];
+                    const uint32_t l5 = m5[j], r5 = m5[j + 1];
+                    s0 += static_cast<int32_t>((l2 * 3u + r2 + 32u) >> 6u);
+                    s1 += static_cast<int32_t>((l2 + r2 * 3u + 32u) >> 6u);
+                    s0 += static_cast<int32_t>((l3 * 3u + r3 + 128u) >> 8u);
+                    s1 += static_cast<int32_t>((l3 + r3 * 3u + 128u) >> 8u);
+                    s0 += static_cast<int32_t>((l4 * 3u + r4 + 512u) >> 10u);
+                    s1 += static_cast<int32_t>((l4 + r4 * 3u + 512u) >> 10u);
+                    s0 += static_cast<int32_t>((l5 * 3u + r5 + 2048u) >> 12u);
+                    s1 += static_cast<int32_t>((l5 + r5 * 3u + 2048u) >> 12u);
+                    response[ev] = s0;
+                    response[ev + 1] = s1;
+                }
             }
             if (odd_width) {
                 const int64_t j = full_pairs;
@@ -815,6 +832,10 @@ void of_depth_axis_iir_cpp(
         openfocus::parallel_bands(w, band, threads, [&](int64_t left, int64_t right) {
             const int64_t cols = right - left;
             if (guide == nullptr) {
+                if (simd::use_avx2() && cols >= 8) {
+                    simd::depth_axis_iir_y_unguided_avx2(src, src_sy, out, out_sy, h, left, cols, cnt, q, t);
+                    return;
+                }
                 const uint32_t t16 = t * 16u;
                 std::vector<uint16_t> first(static_cast<size_t>(h) * cols);
                 std::vector<uint32_t> acc(static_cast<size_t>(cols), 0u);
@@ -855,6 +876,10 @@ void of_depth_axis_iir_cpp(
                     }
                 }
             } else {
+                if (simd::use_avx2() && cols >= 8) {
+                    simd::depth_axis_iir_y_guided_avx2(src, src_sy, guide, guide_sy, out, out_sy, h, left, cols, cnt, tm, tl);
+                    return;
+                }
                 std::vector<uint32_t> first(static_cast<size_t>(h) * cols);
                 std::vector<uint32_t> acc(static_cast<size_t>(cols), 0u);
                 for (int64_t y = 0; y < cnt; ++y) {

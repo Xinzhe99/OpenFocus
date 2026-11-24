@@ -1,4 +1,5 @@
 #include "openfocus_pipeline.hpp"
+#include "simd_dispatch.hpp"
 #include "thread_pool.hpp"
 
 #include <algorithm>
@@ -436,6 +437,8 @@ void of_quantize_output_cpp(
     constexpr float kScaleF32 = static_cast<float>(65535.0 / 255.0);
     constexpr double kScaleF64 = 65535.0 / 255.0;
 
+    const bool use_avx2_q = simd::use_avx2() && row_elems >= 8;
+
     parallel_bands(height, 128, threads, [&](int64_t start, int64_t stop) {
 #ifdef OPENFOCUS_HAS_SSE2
         const __m128 v_zero = _mm_setzero_ps();
@@ -449,6 +452,10 @@ void of_quantize_output_cpp(
                 const float* sr = static_cast<const float*>(src.data) + y * src.stride[0];
                 if (is_16bit) {
                     uint16_t* dr = static_cast<uint16_t*>(dst.data) + y * dst.stride[0];
+                    if (use_avx2_q) {
+                        simd::quantize_f32_to_u16_row_avx2(sr, dr, row_elems, kScaleF32);
+                        continue;
+                    }
                     int64_t i = 0;
 #ifdef OPENFOCUS_HAS_SSE2
                     for (; i + 4 <= row_elems; i += 4) {
@@ -469,6 +476,10 @@ void of_quantize_output_cpp(
                     }
                 } else {
                     uint8_t* dr = static_cast<uint8_t*>(dst.data) + y * dst.stride[0];
+                    if (use_avx2_q) {
+                        simd::quantize_f32_to_u8_row_avx2(sr, dr, row_elems);
+                        continue;
+                    }
                     int64_t i = 0;
 #ifdef OPENFOCUS_HAS_SSE2
                     for (; i + 4 <= row_elems; i += 4) {
