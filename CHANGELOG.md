@@ -177,9 +177,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   layers. Reuse CUDA worker admission on completed tile sizes and reuse logits
   storage for probabilities. StackMFF V2 reads only contributing color strips.
 - Accelerate integer exposure matching, fusion output conversion, and 16-bit
-  previews with native row kernels. Preserve OpenCV's exposure calculation
-  for normalized grayscale. Encode compressed TIFF strips in a bounded queue
-  and preserve their output order.
+  previews with native row kernels. Preserve per-pixel 16-bit exposure
+  normalization and OpenCV's reduction for normalized grayscale. Check for
+  cancellation between exposure strips. Encode compressed TIFF strips in a
+  bounded queue and preserve their output order.
 - Check repeated original paths once when validating a desktop export
   destination, including exports from large image stacks.
 

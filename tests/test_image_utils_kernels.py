@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 import tifffile
 
+from core import _native
 from core import resource_policy
 from core.frame_storage import configure_storage_directory, is_mapped_frame
 from core.registration import RegistrationCancelled
@@ -15,6 +16,7 @@ from utils import image_utils, platform_utils
 
 
 def _fallback_exposure_mean(monkeypatch, frame, *, normalize_uint16=False):
+    monkeypatch.setattr(_native, "load_native", lambda: None)
     monkeypatch.setattr(image_utils, "_load_image_kernels", lambda: None)
     return image_utils._exposure_mean(frame, normalize_uint16=normalize_uint16)
 
@@ -90,6 +92,7 @@ def test_already_cancelled_exposure_does_not_load_kernels(monkeypatch):
 def test_parallel_exposure_polls_cancellation_on_caller(monkeypatch):
     from utils import _image_kernels
 
+    monkeypatch.setattr(_native, "load_native", lambda: None)
     monkeypatch.setattr(image_utils, "_load_image_kernels", lambda: _image_kernels)
     monkeypatch.setattr(_image_kernels, "worker_count", lambda *args, **kwargs: 2)
     caller = threading.get_ident()
@@ -128,6 +131,7 @@ def test_exposure_gains_matches_fallback(monkeypatch):
         rng.integers(0, 65536, size=(128, 200, 3), dtype=np.uint16),
     ]
     actual = image_utils.exposure_gains(frames)
+    monkeypatch.setattr(_native, "load_native", lambda: None)
     monkeypatch.setattr(image_utils, "_load_image_kernels", lambda: None)
     expected = image_utils.exposure_gains(frames)
     np.testing.assert_allclose(actual, expected, rtol=1e-13, atol=1e-13)
