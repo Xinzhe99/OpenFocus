@@ -569,3 +569,57 @@ def test_ab_depth_resample_and_8k_tile_acc_parity() -> None:
         for idx, (arr_a, arr_s) in enumerate(zip(res_a, res_s)):
             assert np.array_equal(arr_a.view(np.uint8), arr_s.view(np.uint8)), f"pr12 mismatch {idx} w={w}"
 
+
+def test_ecc_solver_avx2_parity() -> None:
+    import cv2
+    from core._ecc_native import find_transform_ecc_homography
+
+    mod = _require_avx2()
+    rng = np.random.default_rng(131313)
+
+    for (h, w), (tx, ty, scale, ang, px, py) in [
+        ((163, 251), (2.4, -1.7, 1.006, 0.35, 0.0, 0.0)),
+        ((576, 1024), (1.8, 1.2, 1.004, -0.25, 6e-6, -5e-6)),
+    ]:
+        yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+        base = (
+            0.5
+            + 0.2 * np.sin(xx * (2.0 * np.pi / 43.0)) * np.cos(yy * (2.0 * np.pi / 37.0))
+            + 0.12 * np.cos((xx * 0.7 + yy * 1.2) * (2.0 * np.pi / 19.0))
+            + 0.08 * rng.normal(0.0, 1.0, size=(h, w)).astype(np.float32)
+        )
+        tpl = np.clip(cv2.GaussianBlur(base, (0, 0), 1.4), 0.0, 1.0).astype(np.float32)
+        cx, cy = (w - 1) * 0.5, (h - 1) * 0.5
+        th = np.deg2rad(ang)
+        c, s = np.cos(th) * scale, np.sin(th) * scale
+        M = np.array(
+            [
+                [c, -s, tx + cx - (c * cx - s * cy)],
+                [s, c, ty + cy - (s * cx + c * cy)],
+                [px, py, 1.0],
+            ],
+            dtype=np.float64,
+        )
+        src = cv2.warpPerspective(
+            tpl, M, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT
+        ).astype(np.float32)
+
+        try:
+            mod.set_force_scalar(False)
+            cc_a, W_a = find_transform_ecc_homography(tpl, src, max_iter=50, eps=1e-4, num_threads=2)
+            mod.set_force_scalar(True)
+            cc_s, W_s = find_transform_ecc_homography(tpl, src, max_iter=50, eps=1e-4, num_threads=2)
+        finally:
+            mod.set_force_scalar(False)
+
+        assert cc_a is not None and cc_s is not None
+        assert W_a is not None and W_s is not None
+        assert abs(cc_a - cc_s) < 1e-8
+        corners = np.array([[0.0, 0.0, 1.0], [w - 1.0, 0.0, 1.0], [w - 1.0, h - 1.0, 1.0], [0.0, h - 1.0, 1.0]])
+        pa = (corners @ W_a.astype(np.float64).T)
+        pa = pa[:, :2] / pa[:, 2:3]
+        ps = (corners @ W_s.astype(np.float64).T)
+        ps = ps[:, :2] / ps[:, 2:3]
+        max_corner_diff = float(np.sqrt(np.sum((pa - ps) ** 2, axis=1)).max())
+        assert max_corner_diff < 1e-5, f"shape={(h, w)} corner diff={max_corner_diff}"
+

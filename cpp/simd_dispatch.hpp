@@ -214,5 +214,27 @@ void tile_accumulate_3c_row_avx2(
     const void* tr, int src_kind, const float* wr,
     float* ar, float* war, int64_t fw);
 
+void ecc_prepare_level_row_avx2(
+    const float* rm1, const float* r0, const float* rp1,
+    int x0, int rw, double cx, double inv_s, double mean_t, double g_scale, double v,
+    int p_count, bool sample_h_row, bool stride2,
+    float* dst_t0, float* dst_gx, float* dst_gy,
+    double& norm_T2, double* js, double* tv, double* H_tri);
+
+void ecc_ic_pass_all_in_row_p6_avx2(
+    const float* src_data, int w, int h,
+    const float* t0_row, const float* gx_row, const float* gy_row, int rw,
+    double sx0, double sy0, double dsx, double dsy,
+    double u0, double inv_s, double v,
+    double& rs_iw, double& rs_iw2, double& rs_tiw, double* raw_g);
+
+void ecc_ic_pass_all_in_row_p8_avx2(
+    const float* src_data, int w, int h,
+    const float* t0_row, const float* gx_row, const float* gy_row, int rw,
+    double nsx0, double nsy0, double den0,
+    double d_nsx, double d_nsy, double d_den,
+    double u0, double inv_s, double v,
+    double& rs_iw, double& rs_iw2, double& rs_tiw, double* raw_g);
+
 }  // namespace simd
 }  // namespace openfocus
