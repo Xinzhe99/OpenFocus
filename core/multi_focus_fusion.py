@@ -1139,8 +1139,15 @@ class MultiFocusFusion:
                 if spec.resource_estimator:
                     fixed, per_worker = resolve_runner(spec.resource_estimator)(height, width, kwargs, count)
                     if streaming_sources:
-                        from core.source_frames import (frame_resolution_bytes,
+                        from core.source_frames import (frame_has_mapped_pixels, frame_resolution_bytes,
                                                         source_cache_growth_bytes)
+                        if (self.algorithm == 'openfocus_b' and img_resize is None
+                                and all(frame.dtype in (np.uint8, np.uint16) and frame_has_mapped_pixels(frame)
+                                        for frame in input_source)):
+                            # Its integer depth and merge planes spill to scratch
+                            # above the transient RAM cap. Device paths separately
+                            # admit their own host staging and VRAM.
+                            per_worker = min(per_worker, policy.frame_ram_budget(policy.probe_memory()))
                         per_worker += max(frame_resolution_bytes(frame) for frame in input_source)
                         fixed += source_cache_growth_bytes(input_source)
                     estimates = {'fixed_bytes': fixed, 'per_worker_bytes': per_worker}

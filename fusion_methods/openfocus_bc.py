@@ -3,6 +3,7 @@ import numpy as np
 
 from fusion_methods.openfocus_depth import depth_map, _validate_feather
 from core.frame_storage import create_transient_frame as create_frame
+from core.frame_storage import frame_region
 from fusion_methods._openfocus_execution import (
     execution_job, configure_rows, run_bands,
 )
@@ -227,9 +228,10 @@ def openfocus_b_impl(input_source, img_resize=None, kernel_size: int = 17,
                     except GpuError as exc:
                         return exc
                 else:
-                    gpu = _merge_codes(result, frame, depth, index, count, should_cancel,
-                                       source_scale=source_scale, gpu=gpu,
-                                       tiles=None if tiles is None else tiles[:, :, index])
+                    with frame_region(frame) as pixels:
+                        gpu = _merge_codes(result, pixels, depth, index, count, should_cancel,
+                                           source_scale=source_scale, gpu=gpu,
+                                           tiles=None if tiles is None else tiles[:, :, index])
                 del frame
             if live_preview is not None:
                 live_preview.show_blend(depth, index, count)

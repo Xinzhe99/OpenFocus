@@ -188,6 +188,24 @@ def test_ram_snapshot_remains_independent_of_source_and_persistent_storage(tmp_p
     np.testing.assert_array_equal(persistent, expected)
 
 
+def test_openfocus_b_fuses_mapped_codes_under_a_bounded_ram_budget(tmp_path):
+    from core import resource_policy
+    from core.multi_focus_fusion import MultiFocusFusion
+
+    rng = np.random.default_rng(311)
+    frames = [rng.integers(0, 256, (1024, 1024, 3), dtype=np.uint8) for _ in range(2)]
+    options = dict(algorithm='openfocus_b', use_gpu=False, exposure_match=False,
+                   tile_enabled=False, sort_mode='off')
+    with frame_storage.scratch_directory(explicit_directory=str(tmp_path)):
+        expected = MultiFocusFusion(**options).fuse(frames, thread_count=1)
+        mapped = [frame_storage.store_frame(frame, prefer_ram=False) for frame in frames]
+        mib = 1024 ** 2
+        budget = resource_policy.ProcessBudget(44 * mib, 44 * mib, frame_ram=8 * mib)
+        with resource_policy.process_budget(budget):
+            actual = MultiFocusFusion(**options).fuse(mapped, thread_count=1)
+        np.testing.assert_array_equal(actual, expected)
+
+
 @pytest.mark.parametrize('method', ['openfocus_a', 'openfocus_b', 'openfocus_c'])
 def test_native_fusion_rejects_pre_materialization_and_preserves_sources(tmp_path, monkeypatch, method):
     from core.multi_focus_fusion import MultiFocusFusion
