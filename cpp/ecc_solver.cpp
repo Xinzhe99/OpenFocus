@@ -333,6 +333,7 @@ void prepare_level_impl(
 
     const double g_scale = s * 0.125;
     const bool stride2 = rh >= 64 && rw >= 64;
+    const bool use_avx2 = rw >= 8 && simd::use_avx2();
 
     struct PrepBand {
         double norm_T2 = 0.0;
@@ -358,7 +359,7 @@ void prepare_level_impl(
             float* dst_gx = out.gx.data() + ry * rw;
             float* dst_gy = out.gy.data() + ry * rw;
 
-            if (simd::use_avx2() && rw >= 8) {
+            if (use_avx2) {
                 simd::ecc_prepare_level_row_avx2(
                     rm1, r0, rp1, x0, rw, cx, inv_s, mean_t, g_scale, v,
                     P, sample_h_row, stride2, dst_t0, dst_gx, dst_gy,
@@ -486,6 +487,7 @@ IcPassAccum<P> ic_pass_impl(
     const double m00 = M[0], m01 = M[1], m02 = M[2];
     const double m10 = M[3], m11 = M[4], m12 = M[5];
     const double m20 = M[6], m21 = M[7], m22 = M[8];
+    const bool use_avx2 = all_in && rw >= 8 && simd::use_avx2();
 
     const double u0 = (static_cast<double>(x0) - cx) * inv_s;
     const double w_max = static_cast<double>(w - 1);
@@ -514,7 +516,7 @@ IcPassAccum<P> ic_pass_impl(
                 const double dsx = m00;
                 const double dsy = m10;
                 if (all_in) {
-                    if (simd::use_avx2() && rw >= 8) {
+                    if (use_avx2) {
                         simd::ecc_ic_pass_all_in_row_p6_avx2(
                             src.data, w, h, t0_row, gx_row, gy_row, rw,
                             sx, sy, dsx, dsy, u0, inv_s, v,
@@ -603,7 +605,7 @@ IcPassAccum<P> ic_pass_impl(
                 double nsx = (m00 * u0 + m01 * v + m02) * s + cx * den;
                 double nsy = (m10 * u0 + m11 * v + m12) * s + cy * den;
                 if (all_in) {
-                    if (simd::use_avx2() && rw >= 8) {
+                    if (use_avx2) {
                         simd::ecc_ic_pass_all_in_row_p8_avx2(
                             src.data, w, h, t0_row, gx_row, gy_row, rw,
                             nsx, nsy, den, d_nsx, d_nsy, d_den, u0, inv_s, v,

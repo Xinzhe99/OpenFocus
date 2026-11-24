@@ -2311,6 +2311,10 @@ inline __m256i normalized_diff_8_avx2(__m256i v_val, __m256i v_mean) {
 
 }  // namespace
 
+// Only callers that checked FMA support may enter these two functions.
+#if !defined(_MSC_VER)
+__attribute__((target("fma")))
+#endif
 void resample_u16_vert_acc_row_avx2_fma(
     const uint16_t* sline, float* row_buf, int64_t sw, float wval
 ) {
@@ -2327,6 +2331,9 @@ void resample_u16_vert_acc_row_avx2_fma(
     }
 }
 
+#if !defined(_MSC_VER)
+__attribute__((target("fma")))
+#endif
 void resample_u16_horiz_rep_row_avx2_fma(
     const float* row_buf, float* sums_buf, uint16_t* orow,
     int64_t first, int64_t nrep,
@@ -2495,11 +2502,11 @@ void select_detail_row_u16_avx2(
         const __m256i va = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(ar + x));
         const __m256i vs = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(sr + x));
         const __m256i le_s = _mm256_cmpeq_epi16(_mm256_max_epu16(va, vs), vs);
-        if (_mm256_testc_si256(le_s, all_ones)) {
-            continue;
-        }
         const __m256i vb = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(br + x));
         const __m256i le_b = _mm256_cmpeq_epi16(_mm256_max_epu16(va, vb), vb);
+        if (_mm256_testc_si256(_mm256_and_si256(le_s, le_b), all_ones)) {
+            continue;
+        }
         const __m256i vw = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(wr + x));
         const __m256i sr_step1 = _mm256_blendv_epi8(va, vs, le_s);
         const __m256i new_sr = _mm256_blendv_epi8(vb, sr_step1, le_b);
@@ -2686,12 +2693,12 @@ inline void ecc_prepare_level_row_impl(
         const __m256d br = _mm256_cvtps_pd(_mm_loadu_ps(rp1 + x + 1));
 
         const __m256d t0 = _mm256_sub_pd(c0, v_mean);
-        const __m256d gx_pos = _mm256_add_pd(_mm256_add_pd(tr, br), _mm256_mul_pd(v_two, mr));
-        const __m256d gx_neg = _mm256_add_pd(_mm256_add_pd(tl, bl), _mm256_mul_pd(v_two, ml));
+        const __m256d gx_pos = _mm256_add_pd(_mm256_add_pd(tr, _mm256_mul_pd(v_two, mr)), br);
+        const __m256d gx_neg = _mm256_add_pd(_mm256_add_pd(tl, _mm256_mul_pd(v_two, ml)), bl);
         const __m256d gx = _mm256_mul_pd(_mm256_sub_pd(gx_pos, gx_neg), v_gs);
 
-        const __m256d gy_pos = _mm256_add_pd(_mm256_add_pd(bl, br), _mm256_mul_pd(v_two, bc));
-        const __m256d gy_neg = _mm256_add_pd(_mm256_add_pd(tl, tr), _mm256_mul_pd(v_two, tc));
+        const __m256d gy_pos = _mm256_add_pd(_mm256_add_pd(bl, _mm256_mul_pd(v_two, bc)), br);
+        const __m256d gy_neg = _mm256_add_pd(_mm256_add_pd(tl, _mm256_mul_pd(v_two, tc)), tr);
         const __m256d gy = _mm256_mul_pd(_mm256_sub_pd(gy_pos, gy_neg), v_gs);
 
         _mm_storeu_ps(dst_t0 + rx, _mm256_cvtpd_ps(t0));
