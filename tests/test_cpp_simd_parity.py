@@ -251,3 +251,81 @@ def test_ab_8k_width_and_500_layer_depth_parity():
 
     for arr_a, arr_s in zip(res_avx, res_sca):
         assert np.array_equal(arr_a.view(np.uint8), arr_s.view(np.uint8))
+
+
+def test_openfocus_c_full_8k_and_500_layer_simd_parity() -> None:
+    mod = _require_avx2()
+    rng = np.random.default_rng(202611)
+    for h, w in [(33, 129), (8, 7680)]:
+        cw = (w + 1) // 2
+        ch = (h + 1) // 2
+        fsrc3 = rng.uniform(-50.0, 65600.0, size=(h, w, 3)).astype(np.float32)
+        fsrc1 = rng.uniform(-50.0, 65600.0, size=(h, w)).astype(np.float32)
+        u16_3 = rng.integers(0, 65536, size=(h, w, 3), dtype=np.uint16)
+        coarse3 = rng.uniform(0.0, 65535.0, size=(ch, cw, 3)).astype(np.float32)
+        coarse1 = rng.uniform(0.0, 65535.0, size=(ch, cw)).astype(np.float32)
+        weight_u16 = rng.integers(0, 65535, size=(h, w), dtype=np.uint16)
+        weight_f32 = rng.uniform(0.0, 5000.0, size=(h, w)).astype(np.float32)
+        # 500-layer sparse winner case: few pixels improve over existing best
+        best_u16_base = np.full((h, w), 60000, dtype=np.uint16)
+        weight_u16_sparse = np.zeros((h, w), dtype=np.uint16)
+        weight_u16_sparse[1, 3:71] = np.uint16(61234)
+        best_f32_base = np.full((h, w), 4500.0, dtype=np.float32)
+        weight_f32_sparse = np.where(weight_f32 > 4500.0, weight_f32, np.float32(100.0))
+        fsrc3_unit = rng.uniform(-0.2, 1.2, size=(h, w, 3)).astype(np.float32)
+
+        def _run_c() -> tuple[np.ndarray, ...]:
+            d_3 = np.empty((ch, cw, 3), dtype=np.float32)
+            d_1 = np.empty((ch, cw), dtype=np.float32)
+            sc3 = np.empty((h, cw, 3), dtype=np.float32)
+            sc1 = np.empty((h, cw), dtype=np.float32)
+            mod.of_pyr_down_f32(fsrc3, d_3, sc3, 0, ch)
+            mod.of_pyr_down_f32(fsrc1, d_1, sc1, 0, ch)
+
+            acc0_f = np.empty((h, w, 3), dtype=np.float32)
+            best0_f = np.empty((h, w), dtype=np.uint16)
+            win0_f = np.full((h, w), 99, dtype=np.uint16)
+            sc_up = np.empty((ch, w, 3), dtype=np.float32)
+            mod.of_pyr_level0_merge_from_raw(
+                coarse3, u16_3, weight_u16, acc0_f, best0_f, win0_f, sc_up, 257.0, True, 0, 0, h
+            )
+
+            acc0_s = fsrc3.copy()
+            best0_s = best_u16_base.copy()
+            win0_s = np.full((h, w), 123, dtype=np.uint16)
+            mod.of_pyr_level0_merge_from_raw(
+                coarse3, u16_3, weight_u16_sparse, acc0_s, best0_s, win0_s, sc_up, 257.0, False, 499, 0, h
+            )
+
+            acc_m = np.zeros((h, w, 3), dtype=np.float32)
+            best_m = best_f32_base.copy()
+            win_m = np.full((h, w), 77, dtype=np.uint16)
+            mod.of_pyr_merge_f32(fsrc3, weight_f32_sparse, acc_m, best_m, win_m, False, 499, 0, h)
+
+            rec3 = fsrc3.copy()
+            rec1 = fsrc1.copy()
+            sc_r1 = np.empty((ch, w), dtype=np.float32)
+            mod.of_pyr_reconstruct_f32(coarse3, rec3, sc_up, 0, h)
+            mod.of_pyr_reconstruct_f32(coarse1, rec1, sc_r1, 0, h)
+
+            out_u8 = np.empty((h, w, 3), dtype=np.uint8)
+            out_f32 = np.empty((h, w, 3), dtype=np.float32)
+            out_unit_u8 = np.empty((h, w, 3), dtype=np.uint8)
+            out_unit_f32 = np.empty((h, w, 3), dtype=np.float32)
+            mod.of_pyr_output_f32(fsrc3, out_u8, True, 0, h)
+            mod.of_pyr_output_f32(fsrc3, out_f32, False, 0, h)
+            mod.of_pyr_output_f32(fsrc3_unit, out_unit_u8, True, 0, h)
+            mod.of_pyr_output_f32(fsrc3_unit, out_unit_f32, False, 0, h)
+            return d_3, d_1, acc0_f, best0_f, win0_f, acc0_s, best0_s, win0_s, acc_m, best_m, win_m, rec3, rec1, out_u8, out_f32, out_unit_u8, out_unit_f32
+
+        try:
+            mod.set_force_scalar(False)
+            res_avx = _run_c()
+            mod.set_force_scalar(True)
+            res_sca = _run_c()
+        finally:
+            mod.set_force_scalar(False)
+
+        for idx, (arr_a, arr_s) in enumerate(zip(res_avx, res_sca)):
+            assert np.array_equal(arr_a.view(np.uint8), arr_s.view(np.uint8)), f"mismatch at {idx} for {(h, w)}"
+

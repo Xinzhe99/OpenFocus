@@ -5,6 +5,11 @@
 #include <cmath>
 #include <cstring>
 
+#if defined(__SSE2__) || defined(_M_X64) || defined(_M_AMD64)
+#include <emmintrin.h>
+#define OPENFOCUS_C_HAS_SSE2 1
+#endif
+
 #if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC optimize("no-math-errno")
 #endif
@@ -90,14 +95,18 @@ void down_horizontal_impl(
             }
             if constexpr (!ScaledRaw) {
                 const float* sr = static_cast<const float*>(source.data) + y * source.stride[0];
-                for (int64_t x = 1; x < ix_stop; ++x) {
-                    const float* p = sr + (2 * x - 1) * 3;
-                    float* dst = h_row + x * 3;
-                    for (int64_t c = 0; c < 3; ++c) {
-                        float v = p[c] * kD0;
-                        v += p[3 + c] * kD1;
-                        v += p[6 + c] * kD1;
-                        dst[c] = v + p[9 + c] * kD0;
+                if (simd::use_avx2() && ix_stop >= 4) {
+                    simd::pyr_down_horiz_f32_3c_row_avx2(sr, h_row, ix_stop, kD0, kD1);
+                } else {
+                    for (int64_t x = 1; x < ix_stop; ++x) {
+                        const float* p = sr + (2 * x - 1) * 3;
+                        float* dst = h_row + x * 3;
+                        for (int64_t c = 0; c < 3; ++c) {
+                            float v = p[c] * kD0;
+                            v += p[3 + c] * kD1;
+                            v += p[6 + c] * kD1;
+                            dst[c] = v + p[9 + c] * kD0;
+                        }
                     }
                 }
             } else if (source.itemsize == 1) {
@@ -245,37 +254,45 @@ void up_horizontal_impl(
         if (fast_3c) {
             const float* sr = static_cast<const float*>(coarse.data) + y * coarse.stride[0];
             float* dr = static_cast<float*>(scratch.data) + row * scratch.stride[0];
-            for (int64_t x = ix_start; x < pair_stop; x += 2) {
-                const int64_t left = x / 2 - 2;
-                const float* p = sr + left * 3;
-                float* d0 = dr + x * 3;
-                float* d1 = dr + (x + 1) * 3;
-                for (int64_t c = 0; c < 3; ++c) {
-                    const float s0 = p[c];
-                    const float s1 = p[3 + c];
-                    const float s2 = p[6 + c];
-                    const float s3 = p[9 + c];
-                    const float s4 = p[12 + c];
-                    float ve = (s0 * kE0 + s1 * kE1) + s2 * kE2;
-                    ve = (ve + s3 * kE3) + 0.0f;
-                    d0[c] = ve;
-                    float vo = (0.0f + s1 * kE3) + s2 * kE2;
-                    vo = (vo + s3 * kE1) + s4 * kE0;
-                    d1[c] = vo;
+            if (simd::use_avx2() && (pair_stop - ix_start) >= 4) {
+                simd::pyr_up_horiz_3c_row_avx2(sr, dr, ix_start, pair_stop, kE0, kE1, kE2, kE3);
+            } else {
+                for (int64_t x = ix_start; x < pair_stop; x += 2) {
+                    const int64_t left = x / 2 - 2;
+                    const float* p = sr + left * 3;
+                    float* d0 = dr + x * 3;
+                    float* d1 = dr + (x + 1) * 3;
+                    for (int64_t c = 0; c < 3; ++c) {
+                        const float s0 = p[c];
+                        const float s1 = p[3 + c];
+                        const float s2 = p[6 + c];
+                        const float s3 = p[9 + c];
+                        const float s4 = p[12 + c];
+                        float ve = (s0 * kE0 + s1 * kE1) + s2 * kE2;
+                        ve = (ve + s3 * kE3) + 0.0f;
+                        d0[c] = ve;
+                        float vo = (0.0f + s1 * kE3) + s2 * kE2;
+                        vo = (vo + s3 * kE1) + s4 * kE0;
+                        d1[c] = vo;
+                    }
                 }
             }
         } else if (fast_1c) {
             const float* sr = static_cast<const float*>(coarse.data) + y * coarse.stride[0];
             float* dr = static_cast<float*>(scratch.data) + row * scratch.stride[0];
-            for (int64_t x = ix_start; x < pair_stop; x += 2) {
-                const int64_t left = x / 2 - 2;
-                const float* p = sr + left;
-                float ve = (p[0] * kE0 + p[1] * kE1) + p[2] * kE2;
-                ve = (ve + p[3] * kE3);
-                dr[x] = ve;
-                float vo = (p[1] * kE3 + p[2] * kE2);
-                vo = (vo + p[3] * kE1) + p[4] * kE0;
-                dr[x + 1] = vo;
+            if (simd::use_avx2() && (pair_stop - ix_start) >= 16) {
+                simd::pyr_up_horiz_1c_row_avx2(sr, dr, ix_start, pair_stop, kE0, kE1, kE2, kE3);
+            } else {
+                for (int64_t x = ix_start; x < pair_stop; x += 2) {
+                    const int64_t left = x / 2 - 2;
+                    const float* p = sr + left;
+                    float ve = (p[0] * kE0 + p[1] * kE1) + p[2] * kE2;
+                    ve = (ve + p[3] * kE3);
+                    dr[x] = ve;
+                    float vo = (p[1] * kE3 + p[2] * kE2);
+                    vo = (vo + p[3] * kE1) + p[4] * kE0;
+                    dr[x + 1] = vo;
+                }
             }
         } else if (pair_stop > ix_start) {
             for (int64_t x = ix_start; x < pair_stop; ++x) {
@@ -556,15 +573,23 @@ void of_pyr_level0_merge_from_raw_cpp(
     uint16_t* b_base = static_cast<uint16_t*>(best.data);
     const int64_t b_sy = best.stride[0];
 
+    const bool avx2_skip = simd::use_avx2() && width >= 16;
     bool any_active = first;
     if (!first) {
         for (int64_t y = start; y < stop && !any_active; ++y) {
             const uint16_t* wr = w_base + y * w_sy;
             const uint16_t* br = b_base + y * b_sy;
-            for (int64_t x = 0; x < width; ++x) {
-                if (wr[x] > br[x]) {
+            if (avx2_skip) {
+                if (simd::pyr_any_gt_u16_avx2(wr, br, width)) {
                     any_active = true;
                     break;
+                }
+            } else {
+                for (int64_t x = 0; x < width; ++x) {
+                    if (wr[x] > br[x]) {
+                        any_active = true;
+                        break;
+                    }
                 }
             }
         }
@@ -586,10 +611,14 @@ void of_pyr_level0_merge_from_raw_cpp(
         uint16_t* br = b_base + y * b_sy;
         if (!first) {
             bool row_active = false;
-            for (int64_t x = 0; x < width; ++x) {
-                if (wr[x] > br[x]) {
-                    row_active = true;
-                    break;
+            if (avx2_skip) {
+                row_active = simd::pyr_any_gt_u16_avx2(wr, br, width);
+            } else {
+                for (int64_t x = 0; x < width; ++x) {
+                    if (wr[x] > br[x]) {
+                        row_active = true;
+                        break;
+                    }
                 }
             }
             if (!row_active) {
@@ -616,6 +645,16 @@ void of_pyr_level0_merge_from_raw_cpp(
             const float w2 = kE2;
             const float w3 = odd ? kE1 : kE3;
             const float w4 = odd ? kE0 : 0.0f;
+
+            if (avx2_skip && (source.itemsize == 1 || source.itemsize == 2)) {
+                const void* raw_row = (source.itemsize == 1)
+                    ? static_cast<const void*>(static_cast<const uint8_t*>(source.data) + y * source.stride[0])
+                    : static_cast<const void*>(static_cast<const uint16_t*>(source.data) + y * source.stride[0]);
+                simd::pyr_level0_merge_3c_row_avx2(
+                    wr, br, win_row, hr0, hr1, hr2, hr3, hr4, raw_row, source.itemsize == 1,
+                    acc_row, width, factor, index, first, w0, w1, w2, w3, w4, kPointOne);
+                continue;
+            }
 
             for (int64_t x = 0; x < width; ++x) {
                 const uint16_t wval = wr[x];
@@ -746,6 +785,10 @@ void of_pyr_merge_f32_cpp(
         } else if (packed3) {
             const float* dr = static_cast<const float*>(detail.data) + y * detail.stride[0];
             float* ar = static_cast<float*>(accumulator.data) + y * accumulator.stride[0];
+            if (simd::use_avx2() && width >= 16) {
+                simd::pyr_merge_f32_3c_row_avx2(wr, br, win_row, dr, ar, width, index);
+                continue;
+            }
             for (int64_t x = 0; x < width; ++x) {
                 const uint16_t wval = wr[x];
                 if (wval > br[x]) {
@@ -863,21 +906,45 @@ void of_pyr_output_f32_cpp(
     const bool packed = (source.stride[2] == 1 && source.stride[1] == channels
                          && output.stride[2] == 1 && output.stride[1] == channels);
     const int64_t elems = width * channels;
+    const bool use_avx2_out = packed && simd::use_avx2() && elems >= 8;
 
     for (int64_t y = start; y < stop; ++y) {
         if (packed) {
             const float* sr = static_cast<const float*>(source.data) + y * source.stride[0];
             if (is_u8) {
                 uint8_t* dr = static_cast<uint8_t*>(output.data) + y * output.stride[0];
-                for (int64_t i = 0; i < elems; ++i) {
-                    const float v = sr[i] < 0.0f ? 0.0f : (sr[i] > 1.0f ? 1.0f : sr[i]);
-                    dr[i] = static_cast<uint8_t>(static_cast<int32_t>(v * kF65535) >> 8);
+                if (use_avx2_out) {
+                    simd::pyr_output_f32_to_u8_row_avx2(sr, dr, elems);
+                } else {
+                    for (int64_t i = 0; i < elems; ++i) {
+                        const float v = sr[i] < 0.0f ? 0.0f : (sr[i] > 1.0f ? 1.0f : sr[i]);
+                        dr[i] = static_cast<uint8_t>(static_cast<int32_t>(v * kF65535) >> 8);
+                    }
                 }
             } else {
                 float* dr = static_cast<float*>(output.data) + y * output.stride[0];
-                for (int64_t i = 0; i < elems; ++i) {
-                    const float v = sr[i] < 0.0f ? 0.0f : (sr[i] > 1.0f ? 1.0f : sr[i]);
-                    dr[i] = std::nearbyintf(v * kF65535) * kInv257;
+                if (use_avx2_out) {
+                    simd::pyr_output_f32_to_f32_row_avx2(sr, dr, elems);
+                } else {
+                    int64_t i = 0;
+#ifdef OPENFOCUS_C_HAS_SSE2
+                    const __m128 v_zero = _mm_setzero_ps();
+                    const __m128 v_one = _mm_set1_ps(1.0f);
+                    const __m128 v_65535 = _mm_set1_ps(kF65535);
+                    const __m128 v_inv257 = _mm_set1_ps(kInv257);
+                    for (; i + 4 <= elems; i += 4) {
+                        __m128 v = _mm_loadu_ps(sr + i);
+                        v = _mm_andnot_ps(_mm_cmplt_ps(v, v_zero), v);
+                        const __m128 m_hi = _mm_cmpgt_ps(v, v_one);
+                        v = _mm_or_ps(_mm_and_ps(m_hi, v_one), _mm_andnot_ps(m_hi, v));
+                        const __m128i qi = _mm_cvtps_epi32(_mm_mul_ps(v, v_65535));
+                        _mm_storeu_ps(dr + i, _mm_mul_ps(_mm_cvtepi32_ps(qi), v_inv257));
+                    }
+#endif
+                    for (; i < elems; ++i) {
+                        const float v = sr[i] < 0.0f ? 0.0f : (sr[i] > 1.0f ? 1.0f : sr[i]);
+                        dr[i] = std::nearbyintf(v * kF65535) * kInv257;
+                    }
                 }
             }
         } else {

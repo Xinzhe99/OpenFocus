@@ -1223,6 +1223,277 @@ void tile_finalize_3c_row_avx2(
     }
 }
 
+bool pyr_any_gt_u16_avx2(const uint16_t* wr, const uint16_t* br, int64_t width) {
+    const __m256i v_ones = _mm256_set1_epi32(-1);
+    int64_t x = 0;
+    for (; x + 16 <= width; x += 16) {
+        const __m256i wv = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(wr + x));
+        const __m256i bv = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(br + x));
+        const __m256i mx = _mm256_max_epu16(wv, bv);
+        const __m256i le = _mm256_cmpeq_epi16(mx, bv);
+        if (!_mm256_testc_si256(le, v_ones)) {
+            return true;
+        }
+    }
+    for (; x < width; ++x) {
+        if (wr[x] > br[x]) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void pyr_level0_merge_3c_row_avx2(
+    const uint16_t* wr, uint16_t* br, uint16_t* win_row,
+    const float* hr0, const float* hr1, const float* hr2, const float* hr3, const float* hr4,
+    const void* raw_row, bool raw_is_u8, float* acc_row,
+    int64_t width, float factor, uint16_t index, bool first,
+    float w0, float w1, float w2, float w3, float w4, float point_one
+) {
+    const __m256i v_ones = _mm256_set1_epi32(-1);
+    const uint8_t* s8 = static_cast<const uint8_t*>(raw_row);
+    const uint16_t* s16 = static_cast<const uint16_t*>(raw_row);
+    int64_t x = 0;
+    while (x < width) {
+        if (!first && x + 16 <= width) {
+            const __m256i wv = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(wr + x));
+            const __m256i bv = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(br + x));
+            const __m256i mx = _mm256_max_epu16(wv, bv);
+            if (_mm256_testc_si256(_mm256_cmpeq_epi16(mx, bv), v_ones)) {
+                x += 16;
+                continue;
+            }
+        }
+        const int64_t x_end = (!first && x + 16 <= width) ? (x + 16) : width;
+        for (; x < x_end; ++x) {
+            const uint16_t wval = wr[x];
+            if (!first && wval <= br[x]) {
+                continue;
+            }
+            br[x] = wval;
+            if (win_row != nullptr) {
+                win_row[x] = index;
+            }
+            const int64_t off3 = x * 3;
+            float lo0 = (hr0[off3] * w0 + hr1[off3] * w1) + hr2[off3] * w2;
+            float lo1 = (hr0[off3 + 1] * w0 + hr1[off3 + 1] * w1) + hr2[off3 + 1] * w2;
+            float lo2 = (hr0[off3 + 2] * w0 + hr1[off3 + 2] * w1) + hr2[off3 + 2] * w2;
+            lo0 = (lo0 + hr3[off3] * w3) + hr4[off3] * w4;
+            lo1 = (lo1 + hr3[off3 + 1] * w3) + hr4[off3 + 1] * w4;
+            lo2 = (lo2 + hr3[off3 + 2] * w3) + hr4[off3 + 2] * w4;
+            float s0, s1, s2;
+            if (raw_is_u8) {
+                s0 = static_cast<float>(s8[off3]) * factor;
+                s1 = static_cast<float>(s8[off3 + 1]) * factor;
+                s2 = static_cast<float>(s8[off3 + 2]) * factor;
+            } else {
+                s0 = static_cast<float>(s16[off3]) * factor;
+                s1 = static_cast<float>(s16[off3 + 1]) * factor;
+                s2 = static_cast<float>(s16[off3 + 2]) * factor;
+            }
+            acc_row[off3] = (s0 - lo0) / (lo0 + point_one);
+            acc_row[off3 + 1] = (s1 - lo1) / (lo1 + point_one);
+            acc_row[off3 + 2] = (s2 - lo2) / (lo2 + point_one);
+        }
+    }
+}
+
+void pyr_merge_f32_3c_row_avx2(
+    const uint16_t* wr, uint16_t* br, uint16_t* win_row,
+    const float* dr, float* ar, int64_t width, uint16_t index
+) {
+    const __m256i v_ones = _mm256_set1_epi32(-1);
+    int64_t x = 0;
+    while (x < width) {
+        if (x + 16 <= width) {
+            const __m256i wv = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(wr + x));
+            const __m256i bv = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(br + x));
+            const __m256i mx = _mm256_max_epu16(wv, bv);
+            if (_mm256_testc_si256(_mm256_cmpeq_epi16(mx, bv), v_ones)) {
+                x += 16;
+                continue;
+            }
+        }
+        const int64_t x_end = (x + 16 <= width) ? (x + 16) : width;
+        for (; x < x_end; ++x) {
+            const uint16_t wval = wr[x];
+            if (wval > br[x]) {
+                br[x] = wval;
+                if (win_row != nullptr) {
+                    win_row[x] = index;
+                }
+                const int64_t off = x * 3;
+                ar[off] = dr[off];
+                ar[off + 1] = dr[off + 1];
+                ar[off + 2] = dr[off + 2];
+            }
+        }
+    }
+}
+
+void pyr_output_f32_to_u8_row_avx2(const float* sr, uint8_t* dr, int64_t elems) {
+    const __m256 v_zero = _mm256_setzero_ps();
+    const __m256 v_one = _mm256_set1_ps(1.0f);
+    const __m256 v_65535 = _mm256_set1_ps(65535.0f);
+    int64_t i = 0;
+    for (; i + 8 <= elems; i += 8) {
+        __m256 v = _mm256_loadu_ps(sr + i);
+        v = _mm256_blendv_ps(v, v_zero, _mm256_cmp_ps(v, v_zero, _CMP_LT_OQ));
+        v = _mm256_blendv_ps(v, v_one, _mm256_cmp_ps(v, v_one, _CMP_GT_OQ));
+        const __m256i q = _mm256_srli_epi32(_mm256_cvttps_epi32(_mm256_mul_ps(v, v_65535)), 8);
+        const __m256i p16 = _mm256_permute4x64_epi64(_mm256_packs_epi32(q, q), 0xD8);
+        const __m128i p8 = _mm_packus_epi16(_mm256_castsi256_si128(p16), _mm256_castsi256_si128(p16));
+        _mm_storel_epi64(reinterpret_cast<__m128i*>(dr + i), p8);
+    }
+    for (; i < elems; ++i) {
+        const float v = sr[i] < 0.0f ? 0.0f : (sr[i] > 1.0f ? 1.0f : sr[i]);
+        dr[i] = static_cast<uint8_t>(static_cast<int32_t>(v * 65535.0f) >> 8);
+    }
+}
+
+void pyr_output_f32_to_f32_row_avx2(const float* sr, float* dr, int64_t elems) {
+    constexpr float kInv257 = static_cast<float>(1.0 / 257.0);
+    const __m256 v_zero = _mm256_setzero_ps();
+    const __m256 v_one = _mm256_set1_ps(1.0f);
+    const __m256 v_65535 = _mm256_set1_ps(65535.0f);
+    const __m256 v_inv257 = _mm256_set1_ps(kInv257);
+    int64_t i = 0;
+    for (; i + 8 <= elems; i += 8) {
+        __m256 v = _mm256_loadu_ps(sr + i);
+        v = _mm256_blendv_ps(v, v_zero, _mm256_cmp_ps(v, v_zero, _CMP_LT_OQ));
+        v = _mm256_blendv_ps(v, v_one, _mm256_cmp_ps(v, v_one, _CMP_GT_OQ));
+        const __m256i qi = _mm256_cvtps_epi32(_mm256_mul_ps(v, v_65535));
+        const __m256 qf = _mm256_mul_ps(_mm256_cvtepi32_ps(qi), v_inv257);
+        _mm256_storeu_ps(dr + i, qf);
+    }
+    for (; i < elems; ++i) {
+        const float v = sr[i] < 0.0f ? 0.0f : (sr[i] > 1.0f ? 1.0f : sr[i]);
+        dr[i] = std::nearbyintf(v * 65535.0f) * kInv257;
+    }
+}
+
+void pyr_up_horiz_1c_row_avx2(
+    const float* sr, float* dr, int64_t ix_start, int64_t pair_stop,
+    float e0, float e1, float e2, float e3
+) {
+    const __m256 ve0 = _mm256_set1_ps(e0);
+    const __m256 ve1 = _mm256_set1_ps(e1);
+    const __m256 ve2 = _mm256_set1_ps(e2);
+    const __m256 ve3 = _mm256_set1_ps(e3);
+    int64_t x = ix_start;
+    for (; x + 16 <= pair_stop; x += 16) {
+        const int64_t left = x / 2 - 2;
+        const float* p = sr + left;
+        const __m256 s0 = _mm256_loadu_ps(p);
+        const __m256 s1 = _mm256_loadu_ps(p + 1);
+        const __m256 s2 = _mm256_loadu_ps(p + 2);
+        const __m256 s3 = _mm256_loadu_ps(p + 3);
+        const __m256 s4 = _mm256_loadu_ps(p + 4);
+        const __m256 ve = _mm256_add_ps(
+            _mm256_add_ps(_mm256_add_ps(_mm256_mul_ps(s0, ve0), _mm256_mul_ps(s1, ve1)),
+                          _mm256_mul_ps(s2, ve2)),
+            _mm256_mul_ps(s3, ve3));
+        const __m256 vo = _mm256_add_ps(
+            _mm256_add_ps(_mm256_add_ps(_mm256_mul_ps(s1, ve3), _mm256_mul_ps(s2, ve2)),
+                          _mm256_mul_ps(s3, ve1)),
+            _mm256_mul_ps(s4, ve0));
+        const __m256 lo = _mm256_unpacklo_ps(ve, vo);
+        const __m256 hi = _mm256_unpackhi_ps(ve, vo);
+        _mm256_storeu_ps(dr + x, _mm256_permute2f128_ps(lo, hi, 0x20));
+        _mm256_storeu_ps(dr + x + 8, _mm256_permute2f128_ps(lo, hi, 0x31));
+    }
+    for (; x < pair_stop; x += 2) {
+        const int64_t left = x / 2 - 2;
+        const float* p = sr + left;
+        const float ve = (p[0] * e0 + p[1] * e1) + p[2] * e2;
+        dr[x] = ve + p[3] * e3;
+        const float vo = p[1] * e3 + p[2] * e2;
+        dr[x + 1] = (vo + p[3] * e1) + p[4] * e0;
+    }
+}
+
+void pyr_up_horiz_3c_row_avx2(
+    const float* sr, float* dr, int64_t ix_start, int64_t pair_stop,
+    float e0, float e1, float e2, float e3
+) {
+    // Keep last pair scalar to guarantee 4-float loads stay strictly inside row bounds.
+    const int64_t safe_stop = (pair_stop > ix_start) ? (pair_stop - 2) : ix_start;
+    const __m256 vw_a = _mm256_set_m128(_mm_set1_ps(e3), _mm_set1_ps(e0));
+    const __m256 vw_b = _mm256_set_m128(_mm_set1_ps(e2), _mm_set1_ps(e1));
+    const __m256 vw_c = _mm256_set_m128(_mm_set1_ps(e1), _mm_set1_ps(e2));
+    const __m256 vw_d = _mm256_set_m128(_mm_set1_ps(e0), _mm_set1_ps(e3));
+    int64_t x = ix_start;
+    alignas(16) float tmp[8];
+    for (; x < safe_stop; x += 2) {
+        const int64_t left = x / 2 - 2;
+        const float* p = sr + left * 3;
+        const __m128 a = _mm_loadu_ps(p);
+        const __m128 b = _mm_loadu_ps(p + 3);
+        const __m128 c = _mm_loadu_ps(p + 6);
+        const __m128 d = _mm_loadu_ps(p + 9);
+        const __m128 e = _mm_loadu_ps(p + 12);
+        const __m256 p0 = _mm256_set_m128(b, a);
+        const __m256 p1 = _mm256_set_m128(c, b);
+        const __m256 p2 = _mm256_set_m128(d, c);
+        const __m256 p3 = _mm256_set_m128(e, d);
+        __m256 v = _mm256_add_ps(
+            _mm256_add_ps(_mm256_mul_ps(p0, vw_a), _mm256_mul_ps(p1, vw_b)),
+            _mm256_mul_ps(p2, vw_c));
+        v = _mm256_add_ps(v, _mm256_mul_ps(p3, vw_d));
+        _mm256_storeu_ps(tmp, v);
+        float* d0 = dr + x * 3;
+        d0[0] = tmp[0]; d0[1] = tmp[1]; d0[2] = tmp[2];
+        d0[3] = tmp[4]; d0[4] = tmp[5]; d0[5] = tmp[6];
+    }
+    for (; x < pair_stop; x += 2) {
+        const int64_t left = x / 2 - 2;
+        const float* p = sr + left * 3;
+        float* d0 = dr + x * 3;
+        float* d1 = dr + (x + 1) * 3;
+        for (int64_t ch = 0; ch < 3; ++ch) {
+            const float s0 = p[ch], s1 = p[3 + ch], s2 = p[6 + ch], s3 = p[9 + ch], s4 = p[12 + ch];
+            float ve = (s0 * e0 + s1 * e1) + s2 * e2;
+            ve = (ve + s3 * e3) + 0.0f;
+            d0[ch] = ve;
+            float vo = (0.0f + s1 * e3) + s2 * e2;
+            vo = (vo + s3 * e1) + s4 * e0;
+            d1[ch] = vo;
+        }
+    }
+}
+
+void pyr_down_horiz_f32_3c_row_avx2(
+    const float* sr, float* h_row, int64_t ix_stop, float d0, float d1
+) {
+    const __m128 vd0 = _mm_set1_ps(d0);
+    const __m128 vd1 = _mm_set1_ps(d1);
+    const int64_t safe_stop = (ix_stop > 1) ? (ix_stop - 1) : 1;
+    int64_t x = 1;
+    alignas(16) float out4[4];
+    for (; x < safe_stop; ++x) {
+        const float* p = sr + (2 * x - 1) * 3;
+        __m128 v = _mm_mul_ps(_mm_loadu_ps(p), vd0);
+        v = _mm_add_ps(v, _mm_mul_ps(_mm_loadu_ps(p + 3), vd1));
+        v = _mm_add_ps(v, _mm_mul_ps(_mm_loadu_ps(p + 6), vd1));
+        v = _mm_add_ps(v, _mm_mul_ps(_mm_loadu_ps(p + 9), vd0));
+        _mm_store_ps(out4, v);
+        float* dst = h_row + x * 3;
+        dst[0] = out4[0];
+        dst[1] = out4[1];
+        dst[2] = out4[2];
+    }
+    for (; x < ix_stop; ++x) {
+        const float* p = sr + (2 * x - 1) * 3;
+        float* dst = h_row + x * 3;
+        for (int64_t c = 0; c < 3; ++c) {
+            float v = p[c] * d0;
+            v += p[3 + c] * d1;
+            v += p[6 + c] * d1;
+            dst[c] = v + p[9 + c] * d0;
+        }
+    }
+}
+
 #else
 
 void pyr_down_vertical_row_f32_avx2(const float*, const float*, const float*, const float*, float*, int64_t, float, float) {}
@@ -1246,6 +1517,14 @@ void merge_recip_packed_row_avx2(const uint16_t*, const void*, bool, void*, bool
 int select_a_no_bg_packed_row_avx2(int32_t*, const int32_t*, int64_t, const void*, bool, void*, bool, int64_t, int64_t, int64_t, int64_t, int64_t, int state, int64_t, int, int) { return state; }
 void tile_accumulate_f32_1c_row_avx2(const float*, const float*, float*, float*, int64_t) {}
 void tile_finalize_3c_row_avx2(const float*, const float*, uint8_t*, float*, int64_t, int64_t, bool) {}
+bool pyr_any_gt_u16_avx2(const uint16_t*, const uint16_t*, int64_t) { return false; }
+void pyr_level0_merge_3c_row_avx2(const uint16_t*, uint16_t*, uint16_t*, const float*, const float*, const float*, const float*, const float*, const void*, bool, float*, int64_t, float, uint16_t, bool, float, float, float, float, float, float) {}
+void pyr_merge_f32_3c_row_avx2(const uint16_t*, uint16_t*, uint16_t*, const float*, float*, int64_t, uint16_t) {}
+void pyr_output_f32_to_u8_row_avx2(const float*, uint8_t*, int64_t) {}
+void pyr_output_f32_to_f32_row_avx2(const float*, float*, int64_t) {}
+void pyr_up_horiz_1c_row_avx2(const float*, float*, int64_t, int64_t, float, float, float, float) {}
+void pyr_up_horiz_3c_row_avx2(const float*, float*, int64_t, int64_t, float, float, float, float) {}
+void pyr_down_horiz_f32_3c_row_avx2(const float*, float*, int64_t, float, float) {}
 
 #endif
 

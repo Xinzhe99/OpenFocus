@@ -106,5 +106,33 @@ void tile_finalize_3c_row_avx2(
     const float* ar, const float* war, uint8_t* u8_dr, float* f32_dr,
     int64_t width, int64_t channels, bool out_u8);
 
+bool pyr_any_gt_u16_avx2(const uint16_t* wr, const uint16_t* br, int64_t width);
+
+void pyr_level0_merge_3c_row_avx2(
+    const uint16_t* wr, uint16_t* br, uint16_t* win_row,
+    const float* hr0, const float* hr1, const float* hr2, const float* hr3, const float* hr4,
+    const void* raw_row, bool raw_is_u8, float* acc_row,
+    int64_t width, float factor, uint16_t index, bool first,
+    float w0, float w1, float w2, float w3, float w4, float point_one);
+
+void pyr_merge_f32_3c_row_avx2(
+    const uint16_t* wr, uint16_t* br, uint16_t* win_row,
+    const float* dr, float* ar, int64_t width, uint16_t index);
+
+void pyr_output_f32_to_u8_row_avx2(const float* sr, uint8_t* dr, int64_t elems);
+
+void pyr_output_f32_to_f32_row_avx2(const float* sr, float* dr, int64_t elems);
+
+void pyr_up_horiz_1c_row_avx2(
+    const float* sr, float* dr, int64_t ix_start, int64_t pair_stop,
+    float e0, float e1, float e2, float e3);
+
+void pyr_up_horiz_3c_row_avx2(
+    const float* sr, float* dr, int64_t ix_start, int64_t pair_stop,
+    float e0, float e1, float e2, float e3);
+
+void pyr_down_horiz_f32_3c_row_avx2(
+    const float* sr, float* h_row, int64_t ix_stop, float d0, float d1);
+
 }  // namespace simd
 }  // namespace openfocus
