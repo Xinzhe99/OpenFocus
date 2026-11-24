@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <utility>
 #include <vector>
 
 #if defined(__SSE2__) || defined(_M_X64) || defined(_M_AMD64)
@@ -356,7 +357,8 @@ void of_apply_exposure_gain_cpp(
     const ArrayView& output,
     float gain,
     int64_t start,
-    int64_t stop
+    int64_t stop,
+    int num_threads
 ) {
     if (start >= stop || image.shape[0] == 0 || image.shape[1] == 0) {
         return;
@@ -365,53 +367,197 @@ void of_apply_exposure_gain_cpp(
     const int64_t channels = (image.ndim == 2) ? 1 : image.shape[2];
     const bool keep_alpha = (image.ndim == 3 && channels == 4);
     const int64_t color_c = keep_alpha ? 3 : channels;
-
-    if (image.is_float) {
-        const float limit = 255.0f;
-        for (int64_t y = start; y < stop; ++y) {
-            for (int64_t x = 0; x < width; ++x) {
-                for (int64_t c = 0; c < color_c; ++c) {
-                    const float v = std::clamp(read_f32_2d3d(image, y, x, c) * gain, 0.0f, limit);
-                    write_f32_2d3d(output, y, x, c, v);
-                }
-                if (keep_alpha) {
-                    write_f32_2d3d(output, y, x, 3, read_f32_2d3d(image, y, x, 3));
-                }
+    const int64_t rows = stop - start;
+    const int64_t row_elems = width * channels;
+    const bool packed = image.ndim == output.ndim
+        && ((image.ndim == 2 && image.stride[1] == 1 && output.stride[1] == 1)
+            || (image.ndim == 3 && image.stride[2] == 1 && image.stride[1] == channels
+                && output.stride[2] == 1 && output.stride[1] == channels));
+    int threads = 1;
+    if (num_threads > 1 && rows > 128 && rows * row_elems >= 65536 && packed
+            && (output.stride[0] >= row_elems || output.stride[0] <= -row_elems)) {
+        // Parallel bands may write their own source samples in place, or
+        // write separate storage. Shifted aliases must keep serial row order.
+        const bool in_place = image.data == output.data && image.itemsize == output.itemsize
+            && image.stride[0] == output.stride[0];
+        if (in_place) {
+            threads = num_threads;
+        } else {
+            const auto byte_range = [&](const ArrayView& view) {
+                const auto base = reinterpret_cast<uintptr_t>(view.data);
+                const int64_t first = start * view.stride[0];
+                const int64_t last = (stop - 1) * view.stride[0];
+                return std::pair{base + std::min(first, last) * view.itemsize,
+                                 base + (std::max(first, last) + row_elems) * view.itemsize};
+            };
+            const auto [src_begin, src_end] = byte_range(image);
+            const auto [dst_begin, dst_end] = byte_range(output);
+            if (src_end <= dst_begin || dst_end <= src_begin) {
+                threads = num_threads;
             }
         }
+    }
+    const bool use_avx2 = packed && (!keep_alpha) && simd::use_avx2() && row_elems >= 8;
+
+    if (image.is_float && output.is_float && image.itemsize == 4 && output.itemsize == 4) {
+        const float limit = 255.0f;
+        parallel_bands(rows, 128, threads, [&](int64_t b0, int64_t b1) {
+            const int64_t y0 = start + b0;
+            const int64_t y1 = start + b1;
+            for (int64_t y = y0; y < y1; ++y) {
+                if (packed) {
+                    const float* sr = static_cast<const float*>(image.data) + y * image.stride[0];
+                    float* dr = static_cast<float*>(output.data) + y * output.stride[0];
+                    if (use_avx2) {
+                        simd::exposure_gain_f32_row_avx2(sr, dr, row_elems, gain, limit);
+                    } else if (!keep_alpha) {
+                        for (int64_t i = 0; i < row_elems; ++i) {
+                            dr[i] = std::clamp(sr[i] * gain, 0.0f, limit);
+                        }
+                    } else {
+                        for (int64_t x = 0; x < width; ++x) {
+                            const int64_t o = x * 4;
+                            dr[o] = std::clamp(sr[o] * gain, 0.0f, limit);
+                            dr[o + 1] = std::clamp(sr[o + 1] * gain, 0.0f, limit);
+                            dr[o + 2] = std::clamp(sr[o + 2] * gain, 0.0f, limit);
+                            dr[o + 3] = sr[o + 3];
+                        }
+                    }
+                } else {
+                    for (int64_t x = 0; x < width; ++x) {
+                        for (int64_t c = 0; c < color_c; ++c) {
+                            const float v = std::clamp(read_f32_2d3d(image, y, x, c) * gain, 0.0f, limit);
+                            write_f32_2d3d(output, y, x, c, v);
+                        }
+                        if (keep_alpha) {
+                            write_f32_2d3d(output, y, x, 3, read_f32_2d3d(image, y, x, 3));
+                        }
+                    }
+                }
+            }
+        });
         return;
     }
 
-    const float limit = (image.itemsize == 2) ? 65535.0f : 255.0f;
-    if (image.itemsize == 1) {
+    if (image.itemsize == 1 && output.itemsize == 1 && !image.is_float && !output.is_float) {
+        const float limit = 255.0f;
         uint8_t lut[256];
         for (int i = 0; i < 256; ++i) {
             const float v = std::clamp(static_cast<float>(i) * gain, 0.0f, limit);
             lut[i] = static_cast<uint8_t>(static_cast<int32_t>(v));
         }
-        for (int64_t y = start; y < stop; ++y) {
-            for (int64_t x = 0; x < width; ++x) {
-                for (int64_t c = 0; c < color_c; ++c) {
-                    write_sample(output, y, x, c, lut[read_u_idx(image, y, x, c)]);
-                }
-                if (keep_alpha) {
-                    write_sample(output, y, x, 3, read_u_idx(image, y, x, 3));
+        parallel_bands(rows, 128, threads, [&](int64_t b0, int64_t b1) {
+            const int64_t y0 = start + b0;
+            const int64_t y1 = start + b1;
+            for (int64_t y = y0; y < y1; ++y) {
+                if (packed) {
+                    const uint8_t* sr = static_cast<const uint8_t*>(image.data) + y * image.stride[0];
+                    uint8_t* dr = static_cast<uint8_t*>(output.data) + y * output.stride[0];
+                    if (use_avx2) {
+                        simd::exposure_gain_u8_row_avx2(sr, dr, row_elems, gain, limit);
+                    } else if (!keep_alpha) {
+                        for (int64_t i = 0; i < row_elems; ++i) {
+                            dr[i] = lut[sr[i]];
+                        }
+                    } else {
+                        for (int64_t x = 0; x < width; ++x) {
+                            const int64_t o = x * 4;
+                            dr[o] = lut[sr[o]];
+                            dr[o + 1] = lut[sr[o + 1]];
+                            dr[o + 2] = lut[sr[o + 2]];
+                            dr[o + 3] = sr[o + 3];
+                        }
+                    }
+                } else {
+                    for (int64_t x = 0; x < width; ++x) {
+                        for (int64_t c = 0; c < color_c; ++c) {
+                            write_sample(output, y, x, c, lut[read_u_idx(image, y, x, c)]);
+                        }
+                        if (keep_alpha) {
+                            write_sample(output, y, x, 3, read_u_idx(image, y, x, 3));
+                        }
+                    }
                 }
             }
+        });
+        return;
+    }
+
+    if (image.itemsize == 2 && output.itemsize == 2 && !image.is_float && !output.is_float) {
+        const float limit = 65535.0f;
+        if (packed && !keep_alpha) {
+            parallel_bands(rows, 128, threads, [&](int64_t b0, int64_t b1) {
+                const int64_t y0 = start + b0;
+                const int64_t y1 = start + b1;
+                for (int64_t y = y0; y < y1; ++y) {
+                    const uint16_t* sr = static_cast<const uint16_t*>(image.data) + y * image.stride[0];
+                    uint16_t* dr = static_cast<uint16_t*>(output.data) + y * output.stride[0];
+                    if (use_avx2) {
+                        simd::exposure_gain_u16_row_avx2(sr, dr, row_elems, gain, limit);
+                    } else {
+                        for (int64_t i = 0; i < row_elems; ++i) {
+                            const float v = std::clamp(static_cast<float>(sr[i]) * gain, 0.0f, limit);
+                            dr[i] = static_cast<uint16_t>(static_cast<int32_t>(v));
+                        }
+                    }
+                }
+            });
+            return;
         }
-    } else {
         std::vector<uint16_t> lut(65536);
         for (int i = 0; i < 65536; ++i) {
             const float v = std::clamp(static_cast<float>(i) * gain, 0.0f, limit);
             lut[static_cast<size_t>(i)] = static_cast<uint16_t>(static_cast<int32_t>(v));
         }
-        for (int64_t y = start; y < stop; ++y) {
-            for (int64_t x = 0; x < width; ++x) {
-                for (int64_t c = 0; c < color_c; ++c) {
-                    write_sample(output, y, x, c, lut[static_cast<size_t>(read_u_idx(image, y, x, c))]);
+        parallel_bands(rows, 128, threads, [&](int64_t b0, int64_t b1) {
+            const int64_t y0 = start + b0;
+            const int64_t y1 = start + b1;
+            for (int64_t y = y0; y < y1; ++y) {
+                if (packed) {
+                    const uint16_t* sr = static_cast<const uint16_t*>(image.data) + y * image.stride[0];
+                    uint16_t* dr = static_cast<uint16_t*>(output.data) + y * output.stride[0];
+                    for (int64_t x = 0; x < width; ++x) {
+                        const int64_t o = x * 4;
+                        dr[o] = lut[sr[o]];
+                        dr[o + 1] = lut[sr[o + 1]];
+                        dr[o + 2] = lut[sr[o + 2]];
+                        dr[o + 3] = sr[o + 3];
+                    }
+                } else {
+                    for (int64_t x = 0; x < width; ++x) {
+                        for (int64_t c = 0; c < color_c; ++c) {
+                            write_sample(output, y, x, c, lut[static_cast<size_t>(read_u_idx(image, y, x, c))]);
+                        }
+                        if (keep_alpha) {
+                            write_sample(output, y, x, 3, read_u_idx(image, y, x, 3));
+                        }
+                    }
                 }
-                if (keep_alpha) {
-                    write_sample(output, y, x, 3, read_u_idx(image, y, x, 3));
+            }
+        });
+        return;
+    }
+
+    const float limit = (image.itemsize == 2) ? 65535.0f : 255.0f;
+    for (int64_t y = start; y < stop; ++y) {
+        for (int64_t x = 0; x < width; ++x) {
+            for (int64_t c = 0; c < color_c; ++c) {
+                const double raw_v = image.is_float ? read_f64_or_f32(image, y, x, c)
+                                                    : static_cast<double>(read_u_idx(image, y, x, c));
+                const float v = std::clamp(static_cast<float>(raw_v) * gain, 0.0f, limit);
+                if (output.is_float) {
+                    write_f32_2d3d(output, y, x, c, v);
+                } else {
+                    write_sample(output, y, x, c, static_cast<int64_t>(static_cast<int32_t>(v)));
+                }
+            }
+            if (keep_alpha) {
+                const double alpha = image.is_float ? read_f64_or_f32(image, y, x, 3)
+                                                    : static_cast<double>(read_u_idx(image, y, x, 3));
+                if (output.is_float) {
+                    write_f32_2d3d(output, y, x, 3, static_cast<float>(alpha));
+                } else {
+                    write_sample(output, y, x, 3, static_cast<int64_t>(alpha));
                 }
             }
         }
@@ -544,23 +690,71 @@ void of_tile_accumulate_cpp(
     auto* wacc_base = static_cast<float*>(weight_acc.data);
     auto* acc_base = static_cast<float*>(acc.data);
 
+    const bool packed_all = (weight2d.stride[1] == 1 && weight_acc.stride[1] == 1
+                             && ((tile.ndim == 2 && acc.ndim == 2 && tile.stride[1] == 1 && acc.stride[1] == 1)
+                                 || (tile.ndim == 3 && acc.ndim == 3 && tile.stride[2] == 1 && tile.stride[1] == channels
+                                     && acc.stride[2] == 1 && acc.stride[1] == acc.shape[2]
+                                     && acc.shape[2] == channels)));
+    const bool use_avx2_1c = packed_all && tile.is_float && tile.itemsize == 4 && channels == 1
+                          && simd::use_avx2() && fw >= 8;
+
     parallel_bands(fh, 64, threads, [&](int64_t start, int64_t stop) {
         for (int64_t dy = start; dy < stop; ++dy) {
             const int64_t ay = y0 + dy;
             const float* wr = w2_base + dy * weight2d.stride[0];
             float* war = wacc_base + ay * weight_acc.stride[0] + x0 * weight_acc.stride[1];
             float* ar = acc_base + ay * acc.stride[0] + x0 * acc.stride[1];
-            for (int64_t dx = 0; dx < fw; ++dx) {
-                const float w = wr[dx * weight2d.stride[1]];
-                war[dx * weight_acc.stride[1]] += w;
-                float* ap = ar + dx * acc.stride[1];
-                if (tile.is_float) {
-                    for (int64_t c = 0; c < channels; ++c) {
-                        ap[c * acc.stride[2]] += read_f32_2d3d(tile, dy, dx, c) * w;
+            if (packed_all && tile.is_float && tile.itemsize == 4) {
+                const float* tr = static_cast<const float*>(tile.data) + dy * tile.stride[0];
+                if (use_avx2_1c) {
+                    simd::tile_accumulate_f32_1c_row_avx2(tr, wr, ar, war, fw);
+                } else if (channels == 3) {
+                    for (int64_t dx = 0; dx < fw; ++dx) {
+                        const float w = wr[dx];
+                        war[dx] += w;
+                        const int64_t o = dx * 3;
+                        ar[o] += tr[o] * w;
+                        ar[o + 1] += tr[o + 1] * w;
+                        ar[o + 2] += tr[o + 2] * w;
                     }
                 } else {
-                    for (int64_t c = 0; c < channels; ++c) {
-                        ap[c * acc.stride[2]] += static_cast<float>(read_u_idx(tile, dy, dx, c)) * w;
+                    for (int64_t dx = 0; dx < fw; ++dx) {
+                        const float w = wr[dx];
+                        war[dx] += w;
+                        for (int64_t c = 0; c < channels; ++c) {
+                            ar[dx * channels + c] += tr[dx * channels + c] * w;
+                        }
+                    }
+                }
+            } else if (packed_all && !tile.is_float && (tile.itemsize == 1 || tile.itemsize == 2)) {
+                for (int64_t dx = 0; dx < fw; ++dx) {
+                    const float w = wr[dx];
+                    war[dx] += w;
+                    if (tile.itemsize == 1) {
+                        const uint8_t* tr = static_cast<const uint8_t*>(tile.data) + dy * tile.stride[0] + dx * channels;
+                        for (int64_t c = 0; c < channels; ++c) {
+                            ar[dx * channels + c] += static_cast<float>(tr[c]) * w;
+                        }
+                    } else {
+                        const uint16_t* tr = static_cast<const uint16_t*>(tile.data) + dy * tile.stride[0] + dx * channels;
+                        for (int64_t c = 0; c < channels; ++c) {
+                            ar[dx * channels + c] += static_cast<float>(tr[c]) * w;
+                        }
+                    }
+                }
+            } else {
+                for (int64_t dx = 0; dx < fw; ++dx) {
+                    const float w = wr[dx * weight2d.stride[1]];
+                    war[dx * weight_acc.stride[1]] += w;
+                    float* ap = ar + dx * acc.stride[1];
+                    if (tile.is_float) {
+                        for (int64_t c = 0; c < channels; ++c) {
+                            ap[c * acc.stride[2]] += read_f32_2d3d(tile, dy, dx, c) * w;
+                        }
+                    } else {
+                        for (int64_t c = 0; c < channels; ++c) {
+                            ap[c * acc.stride[2]] += static_cast<float>(read_u_idx(tile, dy, dx, c)) * w;
+                        }
                     }
                 }
             }
@@ -583,10 +777,39 @@ void of_tile_finalize_cpp(
     const bool out_u8 = !out.is_float;
     const auto* acc_base = static_cast<const float*>(acc.data);
     const auto* wacc_base = static_cast<const float*>(weight_acc.data);
+    const bool packed = (weight_acc.stride[1] == 1
+                         && ((acc.ndim == 2 && out.ndim == 2 && acc.stride[1] == 1 && out.stride[1] == 1)
+                             || (acc.ndim == 3 && out.ndim == 3 && acc.stride[2] == 1 && acc.stride[1] == channels
+                                 && out.stride[2] == 1 && out.stride[1] == channels))
+                         && (out_u8 ? out.itemsize == 1 : out.itemsize == 4));
+    const bool use_avx2 = packed && (channels == 1 || channels == 3) && simd::use_avx2() && width >= 8;
 
     for (int64_t y = start; y < stop; ++y) {
         const float* ar = acc_base + y * acc.stride[0];
         const float* war = wacc_base + y * weight_acc.stride[0];
+        if (packed) {
+            uint8_t* u8_dr = out_u8 ? (static_cast<uint8_t*>(out.data) + y * out.stride[0]) : nullptr;
+            float* f32_dr = out_u8 ? nullptr : (static_cast<float*>(out.data) + y * out.stride[0]);
+            if (use_avx2) {
+                simd::tile_finalize_3c_row_avx2(ar, war, u8_dr, f32_dr, width, channels, out_u8);
+                continue;
+            }
+            for (int64_t x = 0; x < width; ++x) {
+                const float w = war[x];
+                const float denom = (w == 0.0f) ? 1.0f : w;
+                const int64_t base_o = x * channels;
+                for (int64_t c = 0; c < channels; ++c) {
+                    const float raw = ar[base_o + c] / denom;
+                    const float val = (raw > 0.0f) ? (raw < 255.0f ? raw : 255.0f) : 0.0f;
+                    if (out_u8) {
+                        u8_dr[base_o + c] = static_cast<uint8_t>(std::nearbyintf(val));
+                    } else {
+                        f32_dr[base_o + c] = val;
+                    }
+                }
+            }
+            continue;
+        }
         for (int64_t x = 0; x < width; ++x) {
             const float w = war[x * weight_acc.stride[1]];
             const float denom = (w == 0.0f) ? 1.0f : w;

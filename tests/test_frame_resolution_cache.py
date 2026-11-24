@@ -58,6 +58,33 @@ def test_source_frame_decodes_once_per_scope(tmp_path, monkeypatch):
     assert cache_module.current() is None
 
 
+def test_openfocus_alignment_reuses_cache_without_filling_it_on_deep_stacks(tmp_path, monkeypatch):
+    from core import image_loader
+    from core.registration import ImageRegistration
+
+    first = _source(tmp_path, 'first.png')
+    last = _source(tmp_path, 'last.png', value=57)
+    frames = [first, last]
+    monkeypatch.setattr(cache_module, 'RETAINED_FRAME_LIMIT_BYTES', first.nbytes)
+    decode = image_loader.decode_image
+    reads = []
+
+    def counted(path, **options):
+        reads.append(path)
+        return decode(path, **options)
+
+    monkeypatch.setattr(image_loader, 'decode_image', counted)
+    with cache_module.render_scope(frames) as cache, _bound(frames):
+        first.full_resolution()
+        registration = ImageRegistration('openfocus', defer_warps=True,
+            parameters={'max_shift_ratio': 0.0, 'magnification': 0.0})
+        aligned = registration.process(frames, thread_count=1)
+        assert reads == [first.path, last.path]
+        assert cache.get(last) is None
+        np.testing.assert_array_equal(aligned[-1].full_resolution(), np.full(last.shape, 57, np.uint8))
+        assert reads == [first.path, last.path, last.path]
+
+
 def test_source_frame_can_use_direct_disk_cache(tmp_path):
     frame = _source(tmp_path, value=57)
     disk = cache_module.ResolutionCache(frame.nbytes)

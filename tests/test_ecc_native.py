@@ -261,11 +261,10 @@ def test_ecc_cpp_matches_numba_fallback_and_pyramid_api(monkeypatch):
     assert _corner_error(W_cpp, W_nb, 480, 320) < 0.01
 
 
-def test_jpeg_ecc_dct_fast_path_and_file_fingerprint_roundtrip(tmp_path, monkeypatch):
+@pytest.mark.parametrize('accelerate_ecc', [False, True])
+def test_jpeg_ecc_dct_fast_path_and_file_fingerprint_roundtrip(tmp_path, monkeypatch, accelerate_ecc):
     from PIL import Image
     from core import frame_resolution_cache, frame_storage, source_frames
-    from core.openfocus_alignment import SourceFingerprint
-    from core.registration import PerspectiveAlignmentPlan, PerspectiveStage
 
     scratch = tmp_path / 'scratch'
     scratch.mkdir()
@@ -280,33 +279,28 @@ def test_jpeg_ecc_dct_fast_path_and_file_fingerprint_roundtrip(tmp_path, monkeyp
         Image.fromarray(rgb, 'RGB').save(p, format='JPEG', quality=95)
         frames.append(source_frames.scan_source(str(p), header_only=True)[0])
 
-    # Clear SOURCE_CACHE so we prove _align_ecc_impl did not populate full-res source cache via resolve_frame.
+    # Deferred ECC should estimate using only the reduced JPEG planes.
     source_frames.SOURCE_CACHE.clear()
     report = []
     token = alignment_report.set(report)
-    stages = []
+    registration = ImageRegistration(method='ecc', downscale_width=1000,
+        defer_warps=True, accelerate_ecc=accelerate_ecc)
     try:
         with frame_storage.scratch_directory(), frame_resolution_cache.render_scope(frames):
-            out = _align_ecc_impl(
-                frames,
-                downscale_width=1000,
-                thread_count=2,
-                defer_warps=True,
-                plan_callback=stages.append,
-            )
+            out = registration.process(frames, thread_count=2)
             cache_entries = len(list(scratch.glob('*')))
     finally:
         alignment_report.reset(token)
 
-    assert len(out) == 2 and len(stages) == 1
+    plan = registration.alignment_plan
+    assert len(out) == 2 and len(plan.stages) == 1
     assert cache_entries == 0
-    assert all(src_fp.digest_kind == 'file' for src_fp in stages[0].sources)
+    assert all(src_fp.digest_kind == 'file' for src_fp in plan.stages[0].sources)
     assert report[1]['status'] == 'aligned'
     err = _corner_error(np.linalg.inv(report[1]['transform']), M_true, 2000, 1500)
     assert err < 0.25
 
-    plan = PerspectiveAlignmentPlan((stages[0],), '{}', 1000)
-    restored = PerspectiveAlignmentPlan.from_dict(plan.to_dict())
+    restored = type(plan).from_dict(plan.to_dict())
     assert restored == plan
     # validate_pixels succeeds on matching shape/dtype & unchanged disk file
     dummy_arr = np.empty(frames[0].shape, dtype=frames[0].dtype)

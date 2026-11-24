@@ -5,6 +5,7 @@
 
 import os
 import math
+import mmap
 import cv2
 import numpy as np
 from dataclasses import dataclass, field
@@ -497,6 +498,26 @@ def _read_raw(path: str, scale_factor: float = 1.0) -> Optional[np.ndarray]:
         return None
 
 
+def _decode_jpeg_bgr_into(path, encoded_bytes, destination):
+    """Decode a sequential RGB JPEG directly into packed caller-owned BGR pixels."""
+    try:
+        import imagecodecs
+        bgr = imagecodecs.JPEG8.CS.EXT_BGR
+    except (ImportError, AttributeError):
+        return False
+    with open(path, 'rb') as stream:
+        if os.fstat(stream.fileno()).st_size != encoded_bytes:
+            raise OSError(f'Source changed while decoding; reopen the stack: {path}')
+        with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
+            try:
+                decoded = imagecodecs.jpeg8_decode(data, outcolorspace=bgr, out=destination)
+            except (ValueError, TypeError, RuntimeError):
+                return False
+    return (decoded is not None and decoded.shape == destination.shape
+            and decoded.dtype == destination.dtype
+            and decoded.ctypes.data == destination.ctypes.data)
+
+
 def decode_image(path: str, *, allow_transparent_png: bool = False,
                  preserve_grayscale: bool = False, scale_factor: float = 1.0,
                  area_resizer=None) -> Optional[np.ndarray]:
@@ -525,6 +546,7 @@ def decode_image(path: str, *, allow_transparent_png: bool = False,
                 return apply_exif_orientation(path, image)
             if ext in ('.jpg', '.jpeg', '.jpe', '.jfif') and header.format == 'JPEG':
                 jpeg_mode = header.mode
+                jpeg_size = header.size
     if jpeg_mode is not None:
         with open(path, 'rb') as fh:
             raw_bytes = fh.read()
@@ -536,9 +558,14 @@ def decode_image(path: str, *, allow_transparent_png: bool = False,
                 if img is not None and img.ndim == 2 and not preserve_grayscale:
                     img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
             else:
-                img = imagecodecs.jpeg8_decode(raw_bytes, outcolorspace='RGB')
+                # Use the decoder's explicit extension enum. Older wheels
+                # without it retain the portable RGB conversion path.
+                colors = getattr(imagecodecs.JPEG8, 'CS', None)
+                bgr = getattr(colors, 'EXT_BGR', None) if jpeg_mode == 'RGB' else None
+                img = imagecodecs.jpeg8_decode(raw_bytes, outcolorspace=bgr if bgr is not None else 'RGB')
                 if img is not None and img.ndim == 3 and img.shape[2] == 3:
-                    img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+                    if bgr is None:
+                        img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
                 elif img is not None and img.ndim == 2 and not preserve_grayscale:
                     img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
                 else:
@@ -546,6 +573,7 @@ def decode_image(path: str, *, allow_transparent_png: bool = False,
         except Exception:
             img = None
         if img is not None:
+            del raw_bytes
             _validate_depth(path, img.dtype)
             img = _downscale_page(img, jpeg_scale, area_resizer)
             return apply_exif_orientation(path, img)
@@ -575,6 +603,13 @@ def decode_image(path: str, *, allow_transparent_png: bool = False,
         img = cv2.imdecode(data, cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR
                            | cv2.IMREAD_IGNORE_ORIENTATION)
     if img is None:
+        if jpeg_mode in ('L', 'RGB'):
+            # Pillow can hold its own decoded pixels and RGB conversion
+            # alongside a NumPy copy. Admit this separately from libjpeg.
+            del unchanged, data, raw_bytes
+            from core.resource_policy import require_memory
+            width, height = jpeg_size
+            require_memory(16 * width * height + 128 * width + 128 * 1024)
         # OpenCV ships no HEIC/HEIF decoder: fall back to Pillow
         img = _read_via_pil(path)
     if img is not None:

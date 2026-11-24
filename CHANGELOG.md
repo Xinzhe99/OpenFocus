@@ -181,10 +181,27 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   normalization and OpenCV's reduction for normalized grayscale. Check for
   cancellation between exposure strips. Encode compressed TIFF strips in a
   bounded queue and preserve their output order.
+- Speed up packed OpenFocus A, B, and C fusion, exposure adjustment, tile
+  reduction, and alignment with AVX2 on supported CPUs. Preserve scalar pixel
+  arithmetic for strided views, wide integer sums, and float rounding.
 - Check repeated original paths once when validating a desktop export
   destination, including exports from large image stacks.
 
 ### Fixed
+- Admit large JPEG stacks for ECC using reduced grayscale decodes, including
+  with GPU acceleration enabled. Keep registration warps at full resolution.
+- Budget sequential decode and processing peaks separately. Decode RGB JPEGs
+  directly into BGR and stage large deferred stacks one processed frame at a
+  time before OpenFocus fusion.
+- Use scratch-backed decode, perspective warps, and exposure matching for
+  eligible full-size JPEGs that exceed the staging RAM budget. Map compressed
+  input read-only and release temporary views after each source pass.
+- Plan OpenFocus B's mapped integer-frame fusion using its bounded RAM
+  working set and release source mappings after their depth and merge passes.
+- Bound OpenFocus alignment memory for deep stacks by reusing cached source
+  pixels during estimation and staging the resolved frames during fusion.
+- Release the isolated render worker after a memory error so the next render
+  starts with fresh native memory and device contexts.
 - Default new watermarks to fusion results. Apply removes unchecked watermark
   scopes, scale bars on the selected target, and unchecked labels.
 - Retain OpenFocus B's prepared images when switching fusion methods with

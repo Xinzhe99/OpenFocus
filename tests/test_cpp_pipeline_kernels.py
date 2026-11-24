@@ -152,6 +152,35 @@ def test_cpp_apply_exposure_gain_matches_fallback(monkeypatch, dtype, shape):
         np.testing.assert_array_equal(out_cpp, out_fb)
 
 
+def test_cpp_parallel_exposure_preserves_shifted_row_aliases():
+    from core._native import load_native
+
+    native = load_native()
+    if native is None:
+        pytest.skip('Native module not built')
+    values = np.zeros((258, 512), dtype=np.float32)
+    values[0] = 1
+    gain = np.float32(1.003)
+    native.of_apply_exposure_gain(values[:-1], values[1:], float(gain), 0, 257, 4)
+
+    expected = np.full(258, gain, dtype=np.float32)
+    expected[0] = 1
+    np.multiply.accumulate(expected, out=expected)
+    np.testing.assert_array_equal(values, np.broadcast_to(expected[:, None], values.shape))
+
+
+def test_cpp_exposure_reads_alpha_in_source_type():
+    from core._native import load_native
+
+    native = load_native()
+    if native is None:
+        pytest.skip('Native module not built')
+    image = np.array([[[37, 62, 100, 201]]], dtype=np.uint8)
+    output = np.empty(image.shape, dtype=np.float32)
+    native.of_apply_exposure_gain(image, output, 2.0, 0, 1)
+    np.testing.assert_array_equal(output, [[[74.0, 124.0, 200.0, 201.0]]])
+
+
 @pytest.mark.parametrize('src_dtype', [np.float32, np.float64])
 @pytest.mark.parametrize('is_16', [False, True])
 def test_cpp_quantize_output_matches_fallback(monkeypatch, src_dtype, is_16):

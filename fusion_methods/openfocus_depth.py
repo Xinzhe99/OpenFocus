@@ -3,6 +3,7 @@ import ctypes
 from functools import lru_cache
 import numpy as np
 from core.frame_storage import create_transient_frame as create_frame
+from core.frame_storage import frame_region
 from fusion_methods._openfocus_execution import (
     execution_job, configure_rows, run_bands, cancellation_check,
 )
@@ -276,7 +277,8 @@ def _activity_frames(frames, img_resize, kernel_size, thread_count, should_cance
                 pixels = resolve_frame(frames[index], should_cancel=cancelled)
             finally:
                 _deferred_ecc_gpu.reset(token)
-        gray = frame_gray_codes(pixels, img_resize, cancelled, depth_color=True)
+        with frame_region(pixels) as source:
+            gray = frame_gray_codes(source, img_resize, cancelled, depth_color=True)
         del pixels
         if gray.shape != shape:
             raise ValueError('OpenFocus depth requires frames with matching shapes')

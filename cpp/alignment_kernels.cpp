@@ -1,8 +1,10 @@
 #include "alignment_kernels.hpp"
+#include "simd_dispatch.hpp"
 #include "thread_pool.hpp"
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include <vector>
 
@@ -148,6 +150,83 @@ void swap_bgr_inplace_typed(const ArrayView& arr, int64_t y_start, int64_t y_sto
     }
 }
 
+template <typename T, int Channels, bool BgrRev>
+void warp_translation_row_packed_impl(
+    const T* r0, const T* r1, T* out_row, int64_t rw,
+    const int32_t* ix, const int32_t* jx, const uint32_t* fx, const uint8_t* inv_x,
+    uint32_t gy, uint32_t fy
+) {
+    for (int64_t ox = 0; ox < rw; ++ox) {
+        T* dp = out_row + ox * Channels;
+        if (inv_x[ox]) {
+            for (int c = 0; c < Channels; ++c) {
+                dp[c] = 0;
+            }
+            continue;
+        }
+        const uint32_t fxx = fx[ox];
+        const uint32_t gxx = 256u - fxx;
+        const int64_t ixx = static_cast<int64_t>(ix[ox]) * Channels;
+        const int64_t jxx = static_cast<int64_t>(jx[ox]) * Channels;
+        if constexpr (Channels == 1) {
+            const uint32_t top = static_cast<uint32_t>(r0[ixx]) * gxx + static_cast<uint32_t>(r0[jxx]) * fxx;
+            const uint32_t bot = static_cast<uint32_t>(r1[ixx]) * gxx + static_cast<uint32_t>(r1[jxx]) * fxx;
+            dp[0] = static_cast<T>((top * gy + bot * fy) >> 16u);
+        } else {
+            for (int c = 0; c < 3; ++c) {
+                const int sc = BgrRev ? (2 - c) : c;
+                const uint32_t top = static_cast<uint32_t>(r0[ixx + sc]) * gxx
+                                   + static_cast<uint32_t>(r0[jxx + sc]) * fxx;
+                const uint32_t bot = static_cast<uint32_t>(r1[ixx + sc]) * gxx
+                                   + static_cast<uint32_t>(r1[jxx + sc]) * fxx;
+                dp[c] = static_cast<T>((top * gy + bot * fy) >> 16u);
+            }
+        }
+    }
+}
+
+void warp_translation_row_packed(
+    const ArrayView& image, const ArrayView& out, int64_t iy_b, int64_t jy_b, int64_t oy,
+    int64_t rw, int64_t channels, bool bgr_rev,
+    const int32_t* ix, const int32_t* jx, const uint32_t* fx, const uint8_t* inv_x,
+    uint32_t gy, uint32_t fy
+) {
+    if (image.itemsize == 1) {
+        const auto* sb = static_cast<const uint8_t*>(image.data);
+        const auto* r0 = sb + iy_b * image.stride[0];
+        const auto* r1 = sb + jy_b * image.stride[0];
+        auto* dst = static_cast<uint8_t*>(out.data) + oy * out.stride[0];
+        if (channels == 1) {
+            warp_translation_row_packed_impl<uint8_t, 1, false>(r0, r1, dst, rw, ix, jx, fx, inv_x, gy, fy);
+        } else if (bgr_rev) {
+            warp_translation_row_packed_impl<uint8_t, 3, true>(r0, r1, dst, rw, ix, jx, fx, inv_x, gy, fy);
+        } else {
+            warp_translation_row_packed_impl<uint8_t, 3, false>(r0, r1, dst, rw, ix, jx, fx, inv_x, gy, fy);
+        }
+    } else {
+        const auto* sb = static_cast<const uint16_t*>(image.data);
+        const auto* r0 = sb + iy_b * image.stride[0];
+        const auto* r1 = sb + jy_b * image.stride[0];
+        auto* dst = static_cast<uint16_t*>(out.data) + oy * out.stride[0];
+        if (channels == 1) {
+            warp_translation_row_packed_impl<uint16_t, 1, false>(r0, r1, dst, rw, ix, jx, fx, inv_x, gy, fy);
+        } else if (bgr_rev) {
+            warp_translation_row_packed_impl<uint16_t, 3, true>(r0, r1, dst, rw, ix, jx, fx, inv_x, gy, fy);
+        } else {
+            warp_translation_row_packed_impl<uint16_t, 3, false>(r0, r1, dst, rw, ix, jx, fx, inv_x, gy, fy);
+        }
+    }
+}
+
+bool is_warp_packed(const ArrayView& image, const ArrayView& out, int64_t channels) {
+    return (image.itemsize == 1 || image.itemsize == 2)
+        && out.itemsize == image.itemsize
+        && (channels == 1 || channels == 3)
+        && image.stride[1] == channels
+        && out.stride[1] == channels
+        && (channels == 1 || (image.stride[2] == 1 && out.stride[2] == 1));
+}
+
 }  // namespace
 
 void of_align_swap_rgb_to_bgr_rows_cpp(
@@ -177,10 +256,21 @@ void of_align_gray16_rows_cpp(
     const uint32_t shift = (image.itemsize == 1) ? 8u : 0u;
     uint16_t* ob = static_cast<uint16_t*>(out.data);
     const int64_t take = (image.ndim == 2) ? 1 : image.shape[2];
+    const bool packed_rgb_simd = simd::use_avx2()
+        && image.ndim == 3 && take >= 3 && w >= 12
+        && (image.itemsize == 1 || image.itemsize == 2)
+        && image.stride[2] == 1
+        && (image.stride[1] == 3 || (take >= 4 && image.stride[1] == 4))
+        && out.stride[1] == 1;
 
     for (int64_t y = y_start; y < y_stop; ++y) {
         uint16_t* orow = ob + y * out.stride[0];
-        if (image.ndim == 2) {
+        if (packed_rgb_simd) {
+            const void* src_row = (image.itemsize == 1)
+                ? static_cast<const void*>(static_cast<const uint8_t*>(image.data) + y * image.stride[0])
+                : static_cast<const void*>(static_cast<const uint16_t*>(image.data) + y * image.stride[0]);
+            simd::align_gray16_rgb_row_avx2(src_row, image.itemsize == 1, orow, w, image.stride[1]);
+        } else if (image.ndim == 2) {
             for (int64_t x = 0; x < w; ++x) {
                 orow[x * out.stride[1]] = static_cast<uint16_t>(read_u_val(image, y, x) << shift);
             }
@@ -212,7 +302,10 @@ void of_align_down_half_rows_cpp(
     std::vector<uint32_t> scratch(static_cast<size_t>(w));
     const uint16_t* sb = static_cast<const uint16_t*>(src.data);
     uint16_t* ob = static_cast<uint16_t*>(out.data);
-    const bool packed = (src.stride[1] == 1 && out.stride[1] == 1);
+    const bool packed = (src.itemsize == 2 && out.itemsize == 2
+                         && src.stride[1] == 1 && out.stride[1] == 1);
+    const bool use_simd_v = packed && simd::use_avx2() && w >= 8;
+    const bool use_simd_h = (out.itemsize == 2 && out.stride[1] == 1 && simd::use_avx2() && ow >= 16);
 
     for (int64_t oy = oy_start; oy < oy_stop; ++oy) {
         const int64_t y = 2 * oy;
@@ -225,12 +318,16 @@ void of_align_down_half_rows_cpp(
             const uint16_t* r1 = sb + sy1 * src.stride[0];
             const uint16_t* r2 = sb + sy2 * src.stride[0];
             const uint16_t* r3 = sb + sy3 * src.stride[0];
-            for (int64_t x = 0; x < w; ++x) {
-                const uint32_t v = static_cast<uint32_t>(r0[x]) * kWeights[0]
-                                 + static_cast<uint32_t>(r1[x]) * kWeights[1]
-                                 + static_cast<uint32_t>(r2[x]) * kWeights[2]
-                                 + static_cast<uint32_t>(r3[x]) * kWeights[3];
-                scratch[static_cast<size_t>(x)] = (v + 57u) / 115u;
+            if (use_simd_v) {
+                simd::align_down_half_vert_row_avx2(r0, r1, r2, r3, scratch.data(), w);
+            } else {
+                for (int64_t x = 0; x < w; ++x) {
+                    const uint32_t v = static_cast<uint32_t>(r0[x]) * kWeights[0]
+                                     + static_cast<uint32_t>(r1[x]) * kWeights[1]
+                                     + static_cast<uint32_t>(r2[x]) * kWeights[2]
+                                     + static_cast<uint32_t>(r3[x]) * kWeights[3];
+                    scratch[static_cast<size_t>(x)] = (v + 57u) / 115u;
+                }
             }
         } else {
             for (int64_t x = 0; x < w; ++x) {
@@ -242,16 +339,20 @@ void of_align_down_half_rows_cpp(
             }
         }
         uint16_t* orow = ob + oy * out.stride[0];
-        for (int64_t ox = 0; ox < ow; ++ox) {
-            const int64_t sx0 = std::clamp<int64_t>(2 * ox - 1, 0, w - 1);
-            const int64_t sx1 = std::clamp<int64_t>(2 * ox, 0, w - 1);
-            const int64_t sx2 = std::clamp<int64_t>(2 * ox + 1, 0, w - 1);
-            const int64_t sx3 = std::clamp<int64_t>(2 * ox + 2, 0, w - 1);
-            const uint32_t v = scratch[static_cast<size_t>(sx0)] * kWeights[0]
-                             + scratch[static_cast<size_t>(sx1)] * kWeights[1]
-                             + scratch[static_cast<size_t>(sx2)] * kWeights[2]
-                             + scratch[static_cast<size_t>(sx3)] * kWeights[3];
-            orow[ox * out.stride[1]] = static_cast<uint16_t>((v + 57u) / 115u);
+        if (use_simd_h) {
+            simd::align_down_half_horiz_row_avx2(scratch.data(), orow, ow, w);
+        } else {
+            for (int64_t ox = 0; ox < ow; ++ox) {
+                const int64_t sx0 = std::clamp<int64_t>(2 * ox - 1, 0, w - 1);
+                const int64_t sx1 = std::clamp<int64_t>(2 * ox, 0, w - 1);
+                const int64_t sx2 = std::clamp<int64_t>(2 * ox + 1, 0, w - 1);
+                const int64_t sx3 = std::clamp<int64_t>(2 * ox + 2, 0, w - 1);
+                const uint32_t v = scratch[static_cast<size_t>(sx0)] * kWeights[0]
+                                 + scratch[static_cast<size_t>(sx1)] * kWeights[1]
+                                 + scratch[static_cast<size_t>(sx2)] * kWeights[2]
+                                 + scratch[static_cast<size_t>(sx3)] * kWeights[3];
+                orow[ox * out.stride[1]] = static_cast<uint16_t>((v + 57u) / 115u);
+            }
         }
     }
 }
@@ -262,15 +363,26 @@ void of_align_fast_downsize_u16_rows_cpp(
     const int64_t h = img.shape[0];
     const int64_t w = img.shape[1];
     const int64_t ow = out.shape[1];
+    const bool packed_simd = simd::use_avx2()
+        && img.itemsize == 2 && out.itemsize == 2
+        && img.stride[1] == 1 && out.stride[1] == 1 && ow >= 8;
+    const uint16_t* ib = static_cast<const uint16_t*>(img.data);
+    uint16_t* ob = static_cast<uint16_t*>(out.data);
     for (int64_t oy = oy_start; oy < oy_stop; ++oy) {
         const int64_t y0 = 2 * oy;
         const int64_t y1 = (y0 + 1 < h) ? (y0 + 1) : (h - 1);
-        for (int64_t ox = 0; ox < ow; ++ox) {
-            const int64_t x0 = 2 * ox;
-            const int64_t x1 = (x0 + 1 < w) ? (x0 + 1) : (w - 1);
-            const uint32_t tot = (read_u_val(img, y0, x0) + read_u_val(img, y0, x1)
-                                + read_u_val(img, y1, x0) + read_u_val(img, y1, x1) + 2u) >> 2u;
-            write_u_val(out, oy, ox, tot);
+        if (packed_simd) {
+            simd::align_fast_downsize_u16_row_avx2(
+                ib + y0 * img.stride[0], ib + y1 * img.stride[0],
+                ob + oy * out.stride[0], ow, w);
+        } else {
+            for (int64_t ox = 0; ox < ow; ++ox) {
+                const int64_t x0 = 2 * ox;
+                const int64_t x1 = (x0 + 1 < w) ? (x0 + 1) : (w - 1);
+                const uint32_t tot = (read_u_val(img, y0, x0) + read_u_val(img, y0, x1)
+                                    + read_u_val(img, y1, x0) + read_u_val(img, y1, x1) + 2u) >> 2u;
+                write_u_val(out, oy, ox, tot);
+            }
         }
     }
 }
@@ -291,20 +403,33 @@ void of_align_warp_int_rows_cpp(
         inv_x[static_cast<size_t>(x)] = inv ? 1 : 0;
     }
     const int64_t channels = (image.ndim == 2) ? 1 : image.shape[2];
+    const bool packed = is_warp_packed(image, out, channels);
     for (int64_t y = y_start; y < y_stop; ++y) {
         int32_t iy = 0, jy = 0;
         uint32_t fy = 0;
         bool inv_y = false;
         axis_sample(static_cast<float>(y) - dy, h, iy, jy, fy, inv_y);
         if (inv_y) {
-            for (int64_t x = 0; x < w; ++x) {
-                for (int64_t c = 0; c < channels; ++c) {
-                    write_u_val(out, y, x, 0, c);
+            if (packed) {
+                std::memset(
+                    static_cast<uint8_t*>(out.data) + y * out.stride[0] * out.itemsize,
+                    0, static_cast<size_t>(w * channels * out.itemsize));
+            } else {
+                for (int64_t x = 0; x < w; ++x) {
+                    for (int64_t c = 0; c < channels; ++c) {
+                        write_u_val(out, y, x, 0, c);
+                    }
                 }
             }
             continue;
         }
         const uint32_t gy = 256u - fy;
+        if (packed) {
+            warp_translation_row_packed(
+                image, out, iy, jy, y, w, channels, bgr_rev,
+                ix.data(), jx.data(), fx.data(), inv_x.data(), gy, fy);
+            continue;
+        }
         for (int64_t x = 0; x < w; ++x) {
             if (inv_x[static_cast<size_t>(x)]) {
                 for (int64_t c = 0; c < channels; ++c) {
@@ -338,9 +463,23 @@ void of_align_warp_alignment_int_rows_cpp(
     const int64_t h = image.shape[0];
     const int64_t w = image.shape[1];
     const int64_t channels = (image.ndim == 2) ? 1 : image.shape[2];
+    const bool use_simd = simd::use_avx2()
+        && is_warp_packed(image, out, channels)
+        && w >= 8 && w <= 16777216
+        && h <= std::numeric_limits<int32_t>::max();
     for (int64_t y = y_start; y < y_stop; ++y) {
         float v_dy = 0.0f, u_dy = 0.0f;
         map_uv_row(static_cast<float>(y), cy, p1c, p0c, v_dy, u_dy);
+        if (use_simd) {
+            void* out_row = (out.itemsize == 1)
+                ? static_cast<void*>(static_cast<uint8_t*>(out.data) + y * out.stride[0])
+                : static_cast<void*>(static_cast<uint16_t*>(out.data) + y * out.stride[0]);
+            simd::align_warp_alignment_row_avx2(
+                image.data, image.stride[0], image.stride[1], image.itemsize == 1,
+                out_row, out.stride[1], h, w, 0, 0, w, channels, bgr_rev,
+                cx, p08, p18, tx, ty, v_dy, u_dy);
+            continue;
+        }
         for (int64_t x = 0; x < w; ++x) {
             float u = 0.0f, v = 0.0f;
             map_uv_col(static_cast<float>(x), cx, p08, p18, tx, ty, v_dy, u_dy, u, v);
@@ -420,14 +559,19 @@ void of_align_valid_mask_rows_cpp(
 ) {
     const float hf = static_cast<float>(h);
     const float wf = static_cast<float>(w);
+    const bool use_simd = simd::use_avx2() && mask_sx == 1 && w >= 8 && w <= 16777216;
     for (int64_t y = y_start; y < y_stop; ++y) {
         float v_dy = 0.0f, u_dy = 0.0f;
         map_uv_row(static_cast<float>(y), cy, p1c, p0c, v_dy, u_dy);
         uint8_t* mr = mask + y * mask_sy;
-        for (int64_t x = 0; x < w; ++x) {
-            float u = 0.0f, v = 0.0f;
-            map_uv_col(static_cast<float>(x), cx, p08, p18, tx, ty, v_dy, u_dy, u, v);
-            mr[x * mask_sx] = (u >= 0.0f && u < wf && v >= 0.0f && v < hf) ? 1 : 0;
+        if (use_simd) {
+            simd::align_valid_mask_row_avx2(mr, w, cx, p08, p18, tx, ty, v_dy, u_dy, wf, hf);
+        } else {
+            for (int64_t x = 0; x < w; ++x) {
+                float u = 0.0f, v = 0.0f;
+                map_uv_col(static_cast<float>(x), cx, p08, p18, tx, ty, v_dy, u_dy, u, v);
+                mr[x * mask_sx] = (u >= 0.0f && u < wf && v >= 0.0f && v < hf) ? 1 : 0;
+            }
         }
     }
 }
@@ -543,6 +687,62 @@ std::tuple<float, float, bool> of_align_refine_level_cpp(
     return {best_dx, best_dy, found};
 }
 
+template <bool PackedRefs>
+inline void accumulate_grid_score_block(
+    const uint16_t* rb, int64_t ref_sy, int64_t ref_sx,
+    const uint16_t* bb, int64_t b_sy, int64_t b_sx,
+    int64_t h, int64_t w, float hf, float wf,
+    const float* xs, int64_t nxx, const float* ys, int64_t nyy,
+    float tx_k, float ty_k, float cx_k, float cy_k,
+    float p08_k, float p0c_k, float p18_k, float p1c_k,
+    int64_t& acc_sum, int64_t& acc_sq, int64_t& acc_cnt
+) {
+    int64_t sum = 0, sq = 0, count = 0;
+    for (int64_t iy_i = 0; iy_i < nyy; ++iy_i) {
+        float v_dy = 0.0f, u_dy = 0.0f;
+        map_uv_row(ys[iy_i], cy_k, p1c_k, p0c_k, v_dy, u_dy);
+        const uint16_t* rrow = rb + iy_i * ref_sy;
+        for (int64_t ix_i = 0; ix_i < nxx; ++ix_i) {
+            float u = 0.0f, v = 0.0f;
+            map_uv_col(xs[ix_i], cx_k, p08_k, p18_k, tx_k, ty_k, v_dy, u_dy, u, v);
+            if (!(u >= 0.0f && u < wf && v >= 0.0f && v < hf)) {
+                continue;
+            }
+            int32_t ix = 0, jx = 0, iy = 0, jy = 0;
+            uint32_t fx = 0, fy = 0;
+            bool inv_x = false, inv_y = false;
+            axis_sample(u, w, ix, jx, fx, inv_x);
+            axis_sample(v, h, iy, jy, fy, inv_y);
+            const uint32_t gx = 256u - fx;
+            const uint32_t gy = 256u - fy;
+            const uint16_t* br0 = bb + iy * b_sy;
+            const uint16_t* br1 = bb + jy * b_sy;
+            uint32_t val;
+            int64_t ref_val;
+            if constexpr (PackedRefs) {
+                const uint32_t top = static_cast<uint32_t>(br0[ix]) * gx + static_cast<uint32_t>(br0[jx]) * fx;
+                const uint32_t bot = static_cast<uint32_t>(br1[ix]) * gx + static_cast<uint32_t>(br1[jx]) * fx;
+                val = (top * gy + bot * fy) >> 16u;
+                ref_val = static_cast<int64_t>(rrow[ix_i]);
+            } else {
+                const int64_t oix = static_cast<int64_t>(ix) * b_sx;
+                const int64_t ojx = static_cast<int64_t>(jx) * b_sx;
+                const uint32_t top = static_cast<uint32_t>(br0[oix]) * gx + static_cast<uint32_t>(br0[ojx]) * fx;
+                const uint32_t bot = static_cast<uint32_t>(br1[oix]) * gx + static_cast<uint32_t>(br1[ojx]) * fx;
+                val = (top * gy + bot * fy) >> 16u;
+                ref_val = static_cast<int64_t>(rrow[ix_i * ref_sx]);
+            }
+            const int64_t diff = ref_val - static_cast<int64_t>(val);
+            sum += diff;
+            sq += diff * diff;
+            count += 1;
+        }
+    }
+    acc_sum = sum;
+    acc_sq = sq;
+    acc_cnt = count;
+}
+
 void of_align_score_chunk_u16_slice_cpp(
     const ArrayView& ref, const ArrayView& img_b,
     const float* xs, int64_t nxx, const float* ys, int64_t nyy,
@@ -557,42 +757,34 @@ void of_align_score_chunk_u16_slice_cpp(
     const float wf = static_cast<float>(w);
     const uint16_t* rb = static_cast<const uint16_t*>(ref.data);
     const uint16_t* bb = static_cast<const uint16_t*>(img_b.data);
-    const int64_t b_sx = img_b.stride[1];
+    const bool packed_refs = (ref.stride[1] == 1 && img_b.stride[1] == 1);
+
+    if (packed_refs && simd::use_avx2() && nxx >= 8
+            && h <= std::numeric_limits<int32_t>::max()
+            && w <= std::numeric_limits<int32_t>::max()) {
+        simd::align_score_chunk_packed_avx2(
+            rb, ref.stride[0], bb, img_b.stride[0], h, w, xs, nxx, ys, nyy,
+            p08, p0c, p18, p1c, tx, ty, cx, cy, idx, k_start, k_stop, ssum, ssq, cnt);
+        return;
+    }
 
     for (int64_t k = k_start; k < k_stop; ++k) {
         const int64_t ci = idx[k];
-        const float p08_k = p08[ci], p0c_k = p0c[ci], p18_k = p18[ci], p1c_k = p1c[ci];
-        const float tx_k = tx[ci], ty_k = ty[ci], cx_k = cx[ci], cy_k = cy[ci];
         int64_t acc_sum = 0, acc_sq = 0, acc_cnt = 0;
-        for (int64_t iy_i = 0; iy_i < nyy; ++iy_i) {
-            float v_dy = 0.0f, u_dy = 0.0f;
-            map_uv_row(ys[iy_i], cy_k, p1c_k, p0c_k, v_dy, u_dy);
-            const uint16_t* rrow = rb + iy_i * ref.stride[0];
-            for (int64_t ix_i = 0; ix_i < nxx; ++ix_i) {
-                float u = 0.0f, v = 0.0f;
-                map_uv_col(xs[ix_i], cx_k, p08_k, p18_k, tx_k, ty_k, v_dy, u_dy, u, v);
-                if (!(u >= 0.0f && u < wf && v >= 0.0f && v < hf)) {
-                    continue;
-                }
-                int32_t ix = 0, jx = 0, iy = 0, jy = 0;
-                uint32_t fx = 0, fy = 0;
-                bool inv_x = false, inv_y = false;
-                axis_sample(u, w, ix, jx, fx, inv_x);
-                axis_sample(v, h, iy, jy, fy, inv_y);
-                const uint32_t gx = 256u - fx;
-                const uint32_t gy = 256u - fy;
-                const uint16_t* br0 = bb + iy * img_b.stride[0];
-                const uint16_t* br1 = bb + jy * img_b.stride[0];
-                const int64_t oix = static_cast<int64_t>(ix) * b_sx;
-                const int64_t ojx = static_cast<int64_t>(jx) * b_sx;
-                const uint32_t top = static_cast<uint32_t>(br0[oix]) * gx + static_cast<uint32_t>(br0[ojx]) * fx;
-                const uint32_t bot = static_cast<uint32_t>(br1[oix]) * gx + static_cast<uint32_t>(br1[ojx]) * fx;
-                const uint32_t val = (top * gy + bot * fy) >> 16u;
-                const int64_t diff = static_cast<int64_t>(rrow[ix_i * ref.stride[1]]) - static_cast<int64_t>(val);
-                acc_sum += diff;
-                acc_sq += diff * diff;
-                acc_cnt += 1;
-            }
+        if (packed_refs) {
+            accumulate_grid_score_block<true>(
+                rb, ref.stride[0], 1, bb, img_b.stride[0], 1,
+                h, w, hf, wf, xs, nxx, ys, nyy,
+                tx[ci], ty[ci], cx[ci], cy[ci],
+                p08[ci], p0c[ci], p18[ci], p1c[ci],
+                acc_sum, acc_sq, acc_cnt);
+        } else {
+            accumulate_grid_score_block<false>(
+                rb, ref.stride[0], ref.stride[1], bb, img_b.stride[0], img_b.stride[1],
+                h, w, hf, wf, xs, nxx, ys, nyy,
+                tx[ci], ty[ci], cx[ci], cy[ci],
+                p08[ci], p0c[ci], p18[ci], p1c[ci],
+                acc_sum, acc_sq, acc_cnt);
         }
         ssum[ci] = acc_sum;
         ssq[ci] = acc_sq;
@@ -618,9 +810,21 @@ void of_align_score_grid_4d_slice_cpp(
     const float y_lo = ys[0], y_hi = ys[nyy - 1];
     const uint16_t* rb = static_cast<const uint16_t*>(ref.data);
     const uint16_t* bb = static_cast<const uint16_t*>(img_b.data);
-    const int64_t b_sx = img_b.stride[1];
     const float* p08b = static_cast<const float*>(p08_tab.data);
     const float* p18b = static_cast<const float*>(p18_tab.data);
+    const bool packed_refs = (ref.stride[1] == 1 && img_b.stride[1] == 1);
+
+    if (packed_refs && simd::use_avx2() && nxx >= 8
+            && h <= std::numeric_limits<int32_t>::max()
+            && w <= std::numeric_limits<int32_t>::max()) {
+        simd::align_score_grid_4d_packed_avx2(
+            rb, ref.stride[0], bb, img_b.stride[0], h, w, xs, nxx, ys, nyy,
+            tx0, ty0, cx_tab, cy_tab,
+            p08b, p08_tab.stride[0], p08_tab.stride[1],
+            p18b, p18_tab.stride[0], p18_tab.stride[1],
+            n0, n1, n2, n3, k_start, k_stop, out_best_k, out_best_sc, slot);
+        return;
+    }
 
     float best_sc = std::numeric_limits<float>::infinity();
     int64_t best_k = -1;
@@ -659,35 +863,20 @@ void of_align_score_grid_4d_slice_cpp(
         }
 
         int64_t acc_sum = 0, acc_sq = 0, acc_cnt = 0;
-        for (int64_t iy_i = 0; iy_i < nyy; ++iy_i) {
-            float v_dy = 0.0f, u_dy = 0.0f;
-            map_uv_row(ys[iy_i], cy_k, p1c_k, p0c_k, v_dy, u_dy);
-            const uint16_t* rrow = rb + iy_i * ref.stride[0];
-            for (int64_t ix_i = 0; ix_i < nxx; ++ix_i) {
-                float u = 0.0f, v = 0.0f;
-                map_uv_col(xs[ix_i], cx_k, p08_k, p18_k, tx0, ty0, v_dy, u_dy, u, v);
-                if (!(u >= 0.0f && u < wf && v >= 0.0f && v < hf)) {
-                    continue;
-                }
-                int32_t ix = 0, jx = 0, iy = 0, jy = 0;
-                uint32_t fx = 0, fy = 0;
-                bool inv_x = false, inv_y = false;
-                axis_sample(u, w, ix, jx, fx, inv_x);
-                axis_sample(v, h, iy, jy, fy, inv_y);
-                const uint32_t gx = 256u - fx;
-                const uint32_t gy = 256u - fy;
-                const uint16_t* br0 = bb + iy * img_b.stride[0];
-                const uint16_t* br1 = bb + jy * img_b.stride[0];
-                const int64_t oix = static_cast<int64_t>(ix) * b_sx;
-                const int64_t ojx = static_cast<int64_t>(jx) * b_sx;
-                const uint32_t top = static_cast<uint32_t>(br0[oix]) * gx + static_cast<uint32_t>(br0[ojx]) * fx;
-                const uint32_t bot = static_cast<uint32_t>(br1[oix]) * gx + static_cast<uint32_t>(br1[ojx]) * fx;
-                const uint32_t val = (top * gy + bot * fy) >> 16u;
-                const int64_t diff = static_cast<int64_t>(rrow[ix_i * ref.stride[1]]) - static_cast<int64_t>(val);
-                acc_sum += diff;
-                acc_sq += diff * diff;
-                acc_cnt += 1;
-            }
+        if (packed_refs) {
+            accumulate_grid_score_block<true>(
+                rb, ref.stride[0], 1, bb, img_b.stride[0], 1,
+                h, w, hf, wf, xs, nxx, ys, nyy,
+                tx0, ty0, cx_k, cy_k,
+                p08_k, p0c_k, p18_k, p1c_k,
+                acc_sum, acc_sq, acc_cnt);
+        } else {
+            accumulate_grid_score_block<false>(
+                rb, ref.stride[0], ref.stride[1], bb, img_b.stride[0], img_b.stride[1],
+                h, w, hf, wf, xs, nxx, ys, nyy,
+                tx0, ty0, cx_k, cy_k,
+                p08_k, p0c_k, p18_k, p1c_k,
+                acc_sum, acc_sq, acc_cnt);
         }
         if (acc_cnt >= 2) {
             const double denom = static_cast<double>(static_cast<float>(acc_cnt));
@@ -740,9 +929,25 @@ void of_align_warp_alignment_region_int_rows_cpp(
 ) {
     const int64_t rw = out.shape[1];
     const int64_t channels = (out.ndim == 2) ? 1 : out.shape[2];
+    const bool use_simd = simd::use_avx2()
+        && is_warp_packed(image, out, channels)
+        && rw >= 8
+        && src_h <= std::numeric_limits<int32_t>::max()
+        && src_w <= std::numeric_limits<int32_t>::max()
+        && x_off >= -16777216 && x_off <= 16777216 - rw;
     for (int64_t oy = oy_start; oy < oy_stop; ++oy) {
         float v_dy = 0.0f, u_dy = 0.0f;
         map_uv_row(static_cast<float>(y_off + oy), cy, p1c, p0c, v_dy, u_dy);
+        if (use_simd) {
+            void* out_row = (out.itemsize == 1)
+                ? static_cast<void*>(static_cast<uint8_t*>(out.data) + oy * out.stride[0])
+                : static_cast<void*>(static_cast<uint16_t*>(out.data) + oy * out.stride[0]);
+            simd::align_warp_alignment_row_avx2(
+                image.data, image.stride[0], image.stride[1], image.itemsize == 1,
+                out_row, out.stride[1], src_h, src_w, src_y0, x_off, rw, channels, bgr_rev,
+                cx, p08, p18, tx, ty, v_dy, u_dy);
+            continue;
+        }
         for (int64_t ox = 0; ox < rw; ++ox) {
             float u = 0.0f, v = 0.0f;
             map_uv_col(static_cast<float>(x_off + ox), cx, p08, p18, tx, ty, v_dy, u_dy, u, v);
@@ -837,15 +1042,22 @@ void of_align_warp_translation_region_int_rows_cpp(
         inv_x[static_cast<size_t>(ox)] = inv ? 1 : 0;
     }
     const int64_t channels = (out.ndim == 2) ? 1 : out.shape[2];
+    const bool packed = is_warp_packed(image, out, channels);
     for (int64_t oy = oy_start; oy < oy_stop; ++oy) {
         int32_t iy = 0, jy = 0;
         uint32_t fy = 0;
         bool inv_y = false;
         axis_sample(static_cast<float>(y_off + oy) - dy, src_h, iy, jy, fy, inv_y);
         if (inv_y) {
-            for (int64_t ox = 0; ox < rw; ++ox) {
-                for (int64_t c = 0; c < channels; ++c) {
-                    write_u_val(out, oy, ox, 0, c);
+            if (packed) {
+                std::memset(
+                    static_cast<uint8_t*>(out.data) + oy * out.stride[0] * out.itemsize,
+                    0, static_cast<size_t>(rw * channels * out.itemsize));
+            } else {
+                for (int64_t ox = 0; ox < rw; ++ox) {
+                    for (int64_t c = 0; c < channels; ++c) {
+                        write_u_val(out, oy, ox, 0, c);
+                    }
                 }
             }
             continue;
@@ -853,6 +1065,12 @@ void of_align_warp_translation_region_int_rows_cpp(
         const uint32_t gy = 256u - fy;
         const int64_t iy_b = iy - src_y0;
         const int64_t jy_b = jy - src_y0;
+        if (packed) {
+            warp_translation_row_packed(
+                image, out, iy_b, jy_b, oy, rw, channels, bgr_rev,
+                ix.data(), jx.data(), fx.data(), inv_x.data(), gy, fy);
+            continue;
+        }
         for (int64_t ox = 0; ox < rw; ++ox) {
             if (inv_x[static_cast<size_t>(ox)]) {
                 for (int64_t c = 0; c < channels; ++c) {

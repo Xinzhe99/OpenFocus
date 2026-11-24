@@ -142,3 +142,388 @@ def test_pyramid_kernels_avx2_vs_scalar_zero_ulp(w):
 
     for arr_a, arr_s in zip(res_avx, res_sca):
         assert np.array_equal(arr_a.view(np.uint8), arr_s.view(np.uint8))
+
+
+@pytest.mark.parametrize("w", [1, 7, 8, 15, 16, 33, 129])
+@pytest.mark.parametrize("dtype", [np.uint8, np.uint16, np.float32])
+@pytest.mark.parametrize("channels", [1, 3, 4])
+def test_exposure_gain_avx2_vs_scalar_bit_exact(w, dtype, channels):
+    mod = _require_avx2()
+    rng = np.random.default_rng(500 + w + channels)
+    h = 25
+    shape = (h, w) if channels == 1 else (h, w, channels)
+    if dtype == np.float32:
+        img = rng.uniform(0.0, 260.0, shape).astype(np.float32)
+        if channels == 1 and w >= 8:
+            img[0, :8] = [np.nan, -0.0, np.inf, -np.inf, -1.0, 0.0, 50.0, 255.0]
+    else:
+        hi = 256 if dtype == np.uint8 else 65536
+        img = rng.integers(0, hi, shape, dtype=dtype)
+    gain = 1.137
+
+    try:
+        mod.set_force_scalar(False)
+        out_avx = np.empty_like(img)
+        mod.of_apply_exposure_gain(img, out_avx, gain, 0, h, 2)
+
+        mod.set_force_scalar(True)
+        out_sca = np.empty_like(img)
+        mod.of_apply_exposure_gain(img, out_sca, gain, 0, h, 2)
+    finally:
+        mod.set_force_scalar(False)
+
+    assert np.array_equal(out_avx.view(np.uint8), out_sca.view(np.uint8))
+
+
+@pytest.mark.parametrize("w", [7, 8, 17, 33, 129])
+def test_ab_packed_gray_down2_merge_select_avx2_vs_scalar(w):
+    mod = _require_avx2()
+    rng = np.random.default_rng(600 + w)
+    h = 33
+    rgb8 = rng.integers(0, 256, (h, w, 3), dtype=np.uint8)
+    rgb16 = rng.integers(0, 65536, (h, w, 3), dtype=np.uint16)
+    g2d16 = rng.integers(0, 65536, (h, w), dtype=np.uint16)
+    g2d32 = rng.integers(0, 100000, (h, w), dtype=np.int32)
+    oh, ow = (h + 1) // 2, (w + 1) // 2
+    depth = rng.integers(0, 1000, (h, w), dtype=np.uint16)
+
+    def _run_ab():
+        g_u8 = np.empty((h, w), dtype=np.uint16)
+        g_u16 = np.empty((h, w), dtype=np.int32)
+        mod.of_gray_rows(rgb8, g_u8, 0, h, 256, False)
+        mod.of_gray_rows(rgb16, g_u16, 0, h, 16, True)
+        d_16 = np.empty((oh, ow), dtype=np.int32)
+        d_32 = np.empty((oh, ow), dtype=np.int32)
+        mod.of_down2_rows(g2d16, d_16, 0, oh, 8)
+        mod.of_down2_rows(g2d32, d_32, 0, oh, 4)
+        acc = rgb16.copy()
+        mod.of_merge_rows(acc, rgb16, depth, 2, 100, 0, h, 1, False, False)
+        return g_u8, g_u16, d_16, d_32, acc
+
+    try:
+        mod.set_force_scalar(False)
+        res_avx = _run_ab()
+        mod.set_force_scalar(True)
+        res_sca = _run_ab()
+    finally:
+        mod.set_force_scalar(False)
+
+    for arr_a, arr_s in zip(res_avx, res_sca):
+        assert np.array_equal(arr_a, arr_s)
+
+
+def test_ab_gray_and_downsample_preserve_wide_codes():
+    mod = _require_avx2()
+    rgb = np.full((2, 17, 3), 40000, dtype=np.uint16)
+    gray = np.empty(rgb.shape[:2], dtype=np.uint16)
+    mod.of_gray_rows(rgb, gray, 0, 2, 2, False)
+    np.testing.assert_array_equal(gray, np.full(gray.shape, 14464, dtype=np.uint16))
+
+    source = np.full((2, 17), 1 << 30, dtype=np.int32)
+    source[:, -1] = -(1 << 30)
+    down = np.empty((1, 9), dtype=np.int32)
+    mod.of_down2_rows(source, down, 0, 1, 1)
+    np.testing.assert_array_equal(down, [[1 << 30] * 8 + [-(1 << 30)]])
+
+
+@pytest.mark.parametrize('channels', [1, 3])
+def test_float_tile_finalize_handles_nan_in_vector_and_tail(channels):
+    mod = _require_avx2()
+    values = np.array([[np.nan, -np.inf, np.inf, -0.0, 1, 2, 3, 4, np.nan]], dtype=np.float32)
+    expected = np.array([[0, 0, 255, 0, 1, 2, 3, 4, 0]], dtype=np.float32)
+    if channels == 3:
+        values = np.repeat(values[..., None], channels, axis=2)
+        expected = np.repeat(expected[..., None], channels, axis=2)
+    output = np.empty_like(values)
+    mod.of_tile_finalize(values, np.ones((1, 9), dtype=np.float32), output, 0, 1)
+    np.testing.assert_array_equal(output.view(np.uint32), expected.view(np.uint32))
+
+
+def test_ab_8k_width_and_500_layer_depth_parity():
+    mod = _require_avx2()
+    rng = np.random.default_rng(8500)
+    h, w = 4, 7680  # 8K row width
+    rgb8 = rng.integers(0, 256, (h, w, 3), dtype=np.uint8)
+    rgb16 = rng.integers(0, 65536, (h, w, 3), dtype=np.uint16)
+    g2d16 = rng.integers(0, 65536, (h, w), dtype=np.uint16)
+    # Sparse 500-layer depth map: layer 499 at step=131 (base=65369, mostly inactive)
+    depth_500 = rng.integers(0, 65536, (h, w), dtype=np.uint16)
+    depth_500[1, 100:250] = 65369
+    fsrc = rng.uniform(0.0, 260.0, (h, w, 3)).astype(np.float32)
+    w2d = rng.uniform(0.1, 1.0, (h, w)).astype(np.float32)
+
+    def _run_8k():
+        g_u8 = np.empty((h, w), dtype=np.uint16)
+        mod.of_gray_rows(rgb8, g_u8, 0, h, 256, False)
+        exp16 = np.empty_like(rgb16)
+        mod.of_apply_exposure_gain(rgb16, exp16, 1.07, 0, h, 2)
+        d_16 = np.empty((h // 2, w // 2), dtype=np.int32)
+        mod.of_down2_rows(g2d16, d_16, 0, h // 2, 8)
+        acc_m = rgb16.copy()
+        mod.of_merge_rows(acc_m, rgb16, depth_500, 499, 131, 0, h, 1, False, False)
+        t_acc = np.zeros((h, w, 3), dtype=np.float32)
+        t_wacc = np.zeros((h, w), dtype=np.float32)
+        mod.of_tile_accumulate(t_acc, t_wacc, fsrc, w2d, 0, 0, 2)
+        t_u8 = np.empty((h, w, 3), dtype=np.uint8)
+        t_f32 = np.empty((h, w, 3), dtype=np.float32)
+        mod.of_tile_finalize(t_acc, t_wacc, t_u8, 0, h)
+        mod.of_tile_finalize(t_acc, t_wacc, t_f32, 0, h)
+        return g_u8, exp16, d_16, acc_m, t_u8, t_f32
+
+    try:
+        mod.set_force_scalar(False)
+        res_avx = _run_8k()
+        mod.set_force_scalar(True)
+        res_sca = _run_8k()
+    finally:
+        mod.set_force_scalar(False)
+
+    for arr_a, arr_s in zip(res_avx, res_sca):
+        assert np.array_equal(arr_a.view(np.uint8), arr_s.view(np.uint8))
+
+
+def test_openfocus_c_full_8k_and_500_layer_simd_parity() -> None:
+    mod = _require_avx2()
+    rng = np.random.default_rng(202611)
+    for h, w in [(33, 129), (12, 7680)]:
+        cw = (w + 1) // 2
+        ch = (h + 1) // 2
+        fsrc3 = rng.uniform(-50.0, 65600.0, size=(h, w, 3)).astype(np.float32)
+        fsrc1 = rng.uniform(-50.0, 65600.0, size=(h, w)).astype(np.float32)
+        u16_3 = rng.integers(0, 65536, size=(h, w, 3), dtype=np.uint16)
+        coarse3 = rng.uniform(0.0, 65535.0, size=(ch, cw, 3)).astype(np.float32)
+        coarse1 = rng.uniform(0.0, 65535.0, size=(ch, cw)).astype(np.float32)
+        weight_u16 = rng.integers(0, 65535, size=(h, w), dtype=np.uint16)
+        # 500-layer sparse winner case: few pixels improve over existing best
+        best_u16_base = np.full((h, w), 60000, dtype=np.uint16)
+        weight_u16_sparse = np.zeros((h, w), dtype=np.uint16)
+        weight_u16_sparse[4, 3:71] = 61234
+        weight_u16_sparse[4, -1] = 61234
+        fsrc3_unit = rng.uniform(-0.2, 1.2, size=(h, w, 3)).astype(np.float32)
+
+        def _run_c() -> tuple[np.ndarray, ...]:
+            d_3 = np.empty((ch, cw, 3), dtype=np.float32)
+            d_1 = np.empty((ch, cw), dtype=np.float32)
+            sc3 = np.empty((h, cw, 3), dtype=np.float32)
+            sc1 = np.empty((h, cw), dtype=np.float32)
+            mod.of_pyr_down_f32(fsrc3, d_3, sc3, 0, ch)
+            mod.of_pyr_down_f32(fsrc1, d_1, sc1, 0, ch)
+
+            acc0_f = np.empty((h, w, 3), dtype=np.float32)
+            best0_f = np.empty((h, w), dtype=np.uint16)
+            win0_f = np.full((h, w), 99, dtype=np.uint16)
+            sc_up = np.empty((ch, w, 3), dtype=np.float32)
+            mod.of_pyr_level0_merge_from_raw(
+                coarse3, u16_3, weight_u16, acc0_f, best0_f, win0_f, sc_up, 257.0, True, 0, 0, h
+            )
+
+            acc0_s = fsrc3.copy()
+            best0_s = best_u16_base.copy()
+            win0_s = np.full((h, w), 123, dtype=np.uint16)
+            mod.of_pyr_level0_merge_from_raw(
+                coarse3, u16_3, weight_u16_sparse, acc0_s, best0_s, win0_s, sc_up, 257.0, False, 499, 0, h
+            )
+            assert best0_s[4, -1] == 61234 and win0_s[4, -1] == 499
+
+            acc_m = np.zeros((h, w, 3), dtype=np.float32)
+            best_m = best_u16_base.copy()
+            win_m = np.full((h, w), 77, dtype=np.uint16)
+            mod.of_pyr_merge_f32(fsrc3, weight_u16_sparse, acc_m, best_m, win_m, False, 499, 0, h)
+            assert best_m[4, -1] == 61234 and win_m[4, -1] == 499
+
+            rec3 = fsrc3.copy()
+            rec1 = fsrc1.copy()
+            sc_r1 = np.empty((ch, w), dtype=np.float32)
+            mod.of_pyr_reconstruct_f32(coarse3, rec3, sc_up, 0, h)
+            mod.of_pyr_reconstruct_f32(coarse1, rec1, sc_r1, 0, h)
+
+            out_u8 = np.empty((h, w, 3), dtype=np.uint8)
+            out_f32 = np.empty((h, w, 3), dtype=np.float32)
+            out_unit_u8 = np.empty((h, w, 3), dtype=np.uint8)
+            out_unit_f32 = np.empty((h, w, 3), dtype=np.float32)
+            mod.of_pyr_output_f32(fsrc3, out_u8, True, 0, h)
+            mod.of_pyr_output_f32(fsrc3, out_f32, False, 0, h)
+            mod.of_pyr_output_f32(fsrc3_unit, out_unit_u8, True, 0, h)
+            mod.of_pyr_output_f32(fsrc3_unit, out_unit_f32, False, 0, h)
+            return d_3, d_1, acc0_f, best0_f, win0_f, acc0_s, best0_s, win0_s, acc_m, best_m, win_m, rec3, rec1, out_u8, out_f32, out_unit_u8, out_unit_f32
+
+        try:
+            mod.set_force_scalar(False)
+            res_avx = _run_c()
+            mod.set_force_scalar(True)
+            res_sca = _run_c()
+        finally:
+            mod.set_force_scalar(False)
+
+        for idx, (arr_a, arr_s) in enumerate(zip(res_avx, res_sca)):
+            assert np.array_equal(arr_a.view(np.uint8), arr_s.view(np.uint8)), f"mismatch at {idx} for {(h, w)}"
+
+
+def test_float_pyramid_output_and_upsample_preserve_special_values():
+    mod = _require_avx2()
+    pixels = np.array([np.nan, -0.0, -np.inf, np.inf, 0.0, -1.0, 1.0, -0.0, np.nan],
+                      dtype=np.float32).reshape(1, 3, 3)
+    output = np.empty_like(pixels)
+    mod.of_pyr_output_f32(pixels, output, False, 0, 1)
+    expected = np.array([np.nan, -0.0, 0.0, 255.0, 0.0, 0.0, 255.0, -0.0, np.nan],
+                        dtype=np.float32).reshape(1, 3, 3)
+    np.testing.assert_array_equal(output, expected)
+    np.testing.assert_array_equal(np.signbit(output), np.signbit(expected))
+
+    coarse = np.full((5, 6, 3), -0.0, dtype=np.float32)
+    target = np.full((9, 11, 3), -0.0, dtype=np.float32)
+    scratch = np.empty((5, 11, 3), dtype=np.float32)
+    mod.of_pyr_reconstruct_f32(coarse, target, scratch, 0, target.shape[0])
+    np.testing.assert_array_equal(target[4, 4:6].view(np.uint32), np.zeros((2, 3), dtype=np.uint32))
+
+
+def test_alignment_kernels_simd_and_8k_parity() -> None:
+    mod = _require_avx2()
+    rng = np.random.default_rng(112233)
+
+    # Full sweep across odd, vector-tail, and 8K widths plus 8K region coordinates
+    for w in [7, 13, 33, 129, 7680]:
+        rgb8_3 = rng.integers(0, 256, size=(4, w, 3), dtype=np.uint8)
+        rgb8_4 = rng.integers(0, 256, size=(4, w, 4), dtype=np.uint8)
+        rgb16_3 = rng.integers(0, 65536, size=(4, w, 3), dtype=np.uint16)
+        rgb16_3[0, :4] = 65535
+        rgb16_4 = rng.integers(0, 65536, size=(4, w, 4), dtype=np.uint16)
+        dh_src = rng.integers(0, 65536, size=(12, w), dtype=np.uint16)
+        dh_src[0:4, :8] = 65535
+        w1 = rng.integers(0, 256, size=(16, w), dtype=np.uint8)
+        w3_u16 = rng.integers(0, 65536, size=(16, w, 3), dtype=np.uint16)
+        rw = max(17, min(w, 129))
+
+        def _run_align_clean(*, strided_translations=False):
+            g8_3 = np.empty((4, w), dtype=np.uint16)
+            g8_4 = np.empty((4, w), dtype=np.uint16)
+            g16_3 = np.empty((4, w), dtype=np.uint16)
+            g16_4 = np.empty((4, w), dtype=np.uint16)
+            mod.of_align_gray16_rows(rgb8_3, g8_3, 0, 4)
+            mod.of_align_gray16_rows(rgb8_4, g8_4, 0, 4)
+            mod.of_align_gray16_rows(rgb16_3, g16_3, 0, 4)
+            mod.of_align_gray16_rows(rgb16_4, g16_4, 0, 4)
+
+            dh_out = np.empty((6, (w + 1) // 2), dtype=np.uint16)
+            fd_out = np.empty((6, (w + 1) // 2), dtype=np.uint16)
+            mod.of_align_down_half_rows(dh_src, dh_out, 0, 6)
+            mod.of_align_fast_downsize_u16_rows(dh_src, fd_out, 0, 6)
+
+            mask = np.empty((16, w), dtype=np.uint8)
+            mod.of_align_valid_mask_rows(
+                mask, 16, w, 3.25, -1.75, float(w) * 0.5, 8.0, 0.015, 1.002, -0.015, 1.002, 0, 16
+            )
+
+            warp_1 = np.empty((16, w), dtype=np.uint8)
+            warp_3 = np.empty((16, w, 3), dtype=np.uint16)
+            warp_3_bgr = np.empty((16, w, 3), dtype=np.uint16)
+            step = 2 if strided_translations else 1
+            trans_3 = np.empty((16, w * step, 3), dtype=np.uint16)[:, ::step]
+            trans_reg = np.empty((8, rw * step, 3), dtype=np.uint16)[:, ::step]
+            mod.of_align_warp_alignment_int_rows(
+                w1, warp_1, 3.25, -1.75, float(w) * 0.5, 8.0, 0.015, 1.002, -0.015, 1.002, 0, 16, False
+            )
+            mod.of_align_warp_alignment_int_rows(
+                w3_u16, warp_3, 3.25, -1.75, float(w) * 0.5, 8.0, 0.015, 1.002, -0.015, 1.002, 0, 16, False
+            )
+            mod.of_align_warp_alignment_int_rows(
+                w3_u16, warp_3_bgr, 3.25, -1.75, float(w) * 0.5, 8.0, 0.015, 1.002, -0.015, 1.002, 0, 16, True
+            )
+            mod.of_align_warp_int_rows(w3_u16, trans_3, 2.25, -1.5, 0, 16, True)
+            mod.of_align_warp_translation_region_int_rows(
+                w3_u16, trans_reg, 16, w, 0, 2, 1, 1.25, -0.5, 0, 8, False
+            )
+
+            reg_src_w = max(w, 7680)
+            reg_out = np.empty((8, rw, 3), dtype=np.uint16)
+            # In-bounds region warp at 8K coordinates when w >= 7680
+            if w == 7680:
+                mod.of_align_warp_alignment_region_int_rows(
+                    w3_u16, reg_out, 4320, reg_src_w, 2100, 4096, 2102,
+                    3837.5, 2106.5, 3840.0, 2105.0, 0.002, 1.001, -0.002, 1.001, 0, 8, True
+                )
+            else:
+                mod.of_align_warp_alignment_region_int_rows(
+                    w3_u16, reg_out, 16, w, 0, 2, 1,
+                    1.2, -0.7, float(w) * 0.5, 8.0, 0.01, 1.0, -0.01, 1.0, 0, 8, False
+                )
+            return g8_3, g8_4, g16_3, g16_4, dh_out, fd_out, mask, warp_1, warp_3, warp_3_bgr, trans_3, trans_reg, reg_out
+
+        try:
+            mod.set_force_scalar(False)
+            res_avx = _run_align_clean()
+            mod.set_force_scalar(True)
+            res_sca = _run_align_clean(strided_translations=True)
+        finally:
+            mod.set_force_scalar(False)
+
+        for idx, (arr_a, arr_s) in enumerate(zip(res_avx, res_sca)):
+            assert np.array_equal(arr_a.view(np.uint8), arr_s.view(np.uint8)), f"align mismatch {idx} w={w}"
+
+    # 4. Score chunk & score grid 4d (non-8-multiple nxx=21, partial/OOB candidates, 65535 extremes)
+    ref_g = rng.integers(0, 65536, size=(24, 21), dtype=np.uint16)
+    ref_g[:4, :8] = 65535
+    img_b = rng.integers(0, 65536, size=(96, 128), dtype=np.uint16)
+    img_b[:8, :8] = 65535
+    xs = np.linspace(-4.0, 122.0, 21, dtype=np.float32)
+    ys = np.linspace(-2.0, 90.0, 24, dtype=np.float32)
+    kc = 16
+    p08 = rng.uniform(-0.04, 0.04, kc).astype(np.float32)
+    p0c = p08.copy()
+    p18 = rng.uniform(0.95, 1.05, kc).astype(np.float32)
+    p1c = p18.copy()
+    tx = rng.uniform(-10.0, 10.0, kc).astype(np.float32)
+    ty = rng.uniform(-10.0, 10.0, kc).astype(np.float32)
+    # Force an out-of-bounds candidate and boundary candidate
+    tx[3] = np.float32(500.0)
+    ty[3] = np.float32(-500.0)
+    cx = rng.uniform(40.0, 80.0, kc).astype(np.float32)
+    cy = rng.uniform(30.0, 60.0, kc).astype(np.float32)
+    cidx = np.arange(kc, dtype=np.int64)
+
+    cx_tab = np.array([50.0, 60.0, 70.0], dtype=np.float32)
+    cy_tab = np.array([40.0, 48.0, 56.0], dtype=np.float32)
+    p08_tab = np.array([[-0.02, 0.0, 0.02], [-0.01, 0.01, 0.0]], dtype=np.float32)
+    p18_tab = np.array([[0.99, 1.0, 1.02], [1.01, 1.0, 0.98]], dtype=np.float32)
+    n0, n1, n2, n3 = 3, 3, 3, 2
+
+    def _run_scores():
+        ssum = np.zeros(kc, dtype=np.int64)
+        ssq = np.zeros(kc, dtype=np.int64)
+        cnt = np.zeros(kc, dtype=np.int64)
+        mod.of_align_score_chunk_u16_slice(
+            ref_g, img_b, xs, ys, p08, p0c, p18, p1c, tx, ty, cx, cy, cidx, 0, kc, ssum, ssq, cnt
+        )
+        ok = np.empty(2, dtype=np.int64)
+        osc = np.empty(2, dtype=np.float32)
+        mod.of_align_score_grid_4d_slice(
+            ref_g, img_b, xs, ys, 60.0, 48.0, cx_tab, cy_tab, p08_tab, p18_tab,
+            n0, n1, n2, n3, 0, n0 * n1 * n2 * n3, ok, osc, 0
+        )
+        mod.of_align_score_grid_4d_slice(
+            ref_g, img_b, xs, ys, 5000.0, -5000.0, cx_tab, cy_tab, p08_tab, p18_tab,
+            n0, n1, n2, n3, 0, n0 * n1 * n2 * n3, ok, osc, 1
+        )
+        return ssum, ssq, cnt, ok, osc
+
+    try:
+        mod.set_force_scalar(False)
+        sc_avx = _run_scores()
+        mod.set_force_scalar(True)
+        sc_sca = _run_scores()
+    finally:
+        mod.set_force_scalar(False)
+
+    for idx, (arr_a, arr_s) in enumerate(zip(sc_avx, sc_sca)):
+        assert np.array_equal(arr_a.view(np.uint8), arr_s.view(np.uint8)), f"score mismatch {idx}"
+
+
+def test_alignment_region_preserves_coordinates_outside_float32_integer_range():
+    mod = _require_avx2()
+    image = np.tile(np.arange(1, 17, dtype=np.uint16), (2, 1))
+    output = np.empty((1, 8), dtype=np.uint16)
+    mod.of_align_warp_alignment_region_int_rows(
+        image, output, 2, 16, 0, -16777217, 0,
+        0.0, 0.0, -16777216.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0, 1, False,
+    )
+    np.testing.assert_array_equal(output, [[1, 1, 2, 3, 4, 5, 6, 7]])

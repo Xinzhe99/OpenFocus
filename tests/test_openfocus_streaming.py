@@ -188,6 +188,24 @@ def test_ram_snapshot_remains_independent_of_source_and_persistent_storage(tmp_p
     np.testing.assert_array_equal(persistent, expected)
 
 
+def test_openfocus_b_fuses_mapped_codes_under_a_bounded_ram_budget(tmp_path):
+    from core import resource_policy
+    from core.multi_focus_fusion import MultiFocusFusion
+
+    rng = np.random.default_rng(311)
+    frames = [rng.integers(0, 256, (1024, 1024, 3), dtype=np.uint8) for _ in range(2)]
+    options = dict(algorithm='openfocus_b', use_gpu=False, exposure_match=False,
+                   tile_enabled=False, sort_mode='off')
+    with frame_storage.scratch_directory(explicit_directory=str(tmp_path)):
+        expected = MultiFocusFusion(**options).fuse(frames, thread_count=1)
+        mapped = [frame_storage.store_frame(frame, prefer_ram=False) for frame in frames]
+        mib = 1024 ** 2
+        budget = resource_policy.ProcessBudget(44 * mib, 44 * mib, frame_ram=8 * mib)
+        with resource_policy.process_budget(budget):
+            actual = MultiFocusFusion(**options).fuse(mapped, thread_count=1)
+        np.testing.assert_array_equal(actual, expected)
+
+
 @pytest.mark.parametrize('method', ['openfocus_a', 'openfocus_b', 'openfocus_c'])
 def test_native_fusion_rejects_pre_materialization_and_preserves_sources(tmp_path, monkeypatch, method):
     from core.multi_focus_fusion import MultiFocusFusion
@@ -395,18 +413,20 @@ def test_comparison_openfocus_registration_reuses_plan_for_roi(tmp_path, monkeyp
     np.testing.assert_array_equal(source_frames.resolve_frame(cropped), original[2:10, 3:13])
 
 
-def test_nested_resolution_charges_full_decode_and_warp_for_roi(tmp_path, monkeypatch):
+@pytest.mark.parametrize('warp_dominates', [False, True], ids=['decode-peak', 'warp-peak'])
+def test_nested_resolution_admits_peak_workspace_for_roi(tmp_path, monkeypatch, warp_dominates):
     from core import resource_policy
     first, original = _source(tmp_path, 'charged.png', 18001)
-    warp_bytes = first.nbytes + first.shape[1] * 64
+    decode_bytes = source_frames.frame_resolution_bytes(first)
+    warp_bytes = decode_bytes if warp_dominates else first.nbytes + first.shape[1] * 64
     aligned = source_frames.process_frame(first, lambda pixels: pixels.copy(), scratch_bytes=warp_bytes)
     roi = source_frames.crop_frame(aligned, 3, 2, 10, 8)
-    expected = source_frames.frame_resolution_bytes(first) + warp_bytes
+    expected = first.nbytes + warp_bytes if warp_dominates else decode_bytes
     assert source_frames.frame_resolution_bytes(roi) == expected
     admitted = []
-    monkeypatch.setattr(resource_policy, 'require_memory', lambda size, **kwargs: admitted.append(size))
+    monkeypatch.setattr(resource_policy, 'require_memory', lambda size, *args, **kwargs: admitted.append(size))
     np.testing.assert_array_equal(source_frames.resolve_frame(roi), original[2:10, 3:13])
-    assert expected in admitted
+    assert max(admitted) == expected
     assert expected > roi.nbytes
 
 

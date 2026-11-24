@@ -1136,6 +1136,168 @@ def test_raw_jpeg_fallback_cancels_before_reading_next_preview(tmp_path, monkeyp
     assert frame.preview is None and attempts == [(1024, 768)]
 
 
+@pytest.mark.parametrize('scan', ['sequential', 'progressive', 'noninterleaved'])
+def test_jpeg_resolution_and_ecc_budget_account_for_first_scan(tmp_path, scan):
+    from core import registration
+
+    path = tmp_path / 'source.jpg'
+    width, height = 1536, 1024
+    Image.new('RGB', (width, height)).save(path, progressive=scan == 'progressive', subsampling=0)
+    if scan == 'noninterleaved':
+        # Header-only fixture with one component in the first sequential scan.
+        data = path.read_bytes()
+        start = data.index(b'\xff\xda')
+        path.write_bytes(data[:start + 2] + b'\x00\x08\x01' + data[start + 5:start + 7]
+                         + b'\x00\x3f\x00')
+
+    frame = sources.scan_source(path, header_only=True)[0]
+    encoded = frame.fingerprint[0]
+    assert frame._jpeg_single_scan is (scan == 'sequential')
+    estimate = sources.frame_resolution_bytes(frame, metadata_only=True)
+    ecc = registration._plan_jpeg_ecc(frame, 768)
+    if scan == 'sequential':
+        assert estimate < encoded + 3 * frame.nbytes
+        assert ecc.workspace_bytes < encoded + frame.nbytes
+    else:
+        assert estimate >= encoded + 3 * frame.nbytes
+        assert ecc.workspace_bytes >= encoded + 2 * frame.nbytes
+
+
+def test_deferred_jpeg_perspective_admits_one_full_size_output(tmp_path):
+    from dataclasses import replace
+    from core import registration
+
+    frame = sources.scan_source(_jpeg(tmp_path, shape=(24, 32)), header_only=True)[0]
+    shape = (8736, 11648, 3)
+    frame = replace(frame, shape=shape, native_shape=shape)
+    identity = registration._perspective_source_file(frame, None)
+    matrix = (1., 0., .25, 0., 1., .5, 0., 0., 1.)
+    stage = registration.PerspectiveStage('ecc', (identity, identity), (matrix, matrix),
+                                          ('float32', 'float32'), (0, 0, 0, 0), shape[1::-1])
+    warped, _ = stage.apply([frame, frame], defer_warps=True)
+
+    assert warped.nbytes <= warped.scratch_bytes < warped.nbytes * 2
+    assert sources.frame_resolution_bytes(warped) < 832 * 1024 ** 2
+
+
+@pytest.mark.parametrize('budget_mib', [2, 16])
+def test_mapped_jpeg_perspective_stages_exact_exposure_under_memory_limit(tmp_path, monkeypatch, budget_mib):
+    from core import frame_resolution_cache, frame_storage, registration, resource_policy
+
+    jpeg = pytest.importorskip('imagecodecs')
+    if not hasattr(getattr(jpeg.JPEG8, 'CS', None), 'EXT_BGR'):
+        pytest.skip('imagecodecs lacks packed BGR JPEG output')
+    first = tmp_path / 'detailed.jpg'
+    pixels = np.random.default_rng(311).integers(0, 256, (768, 1024, 3), dtype=np.uint8)
+    Image.fromarray(pixels).save(first, quality=100, subsampling=0)
+    second = tmp_path / 'darker.jpg'
+    Image.new('RGB', (1024, 768), (49, 62, 75)).save(second)
+    frames = [sources.scan_source(path, header_only=True)[0] for path in (first, second)]
+    identities = tuple(registration._perspective_source_file(frame, None) for frame in frames)
+    matrices = ((1., 0., -4., 0., 1., -2., 0., 0., 1.),
+                (1., 0., -4.25, 0., 1., -2.125, 0.000001, 0., 1.))
+    stage = registration.PerspectiveStage('ecc', identities, matrices, ('float32', 'float32'),
+                                         (2, 762, 4, 1012), (1008, 760))
+    warped = stage.apply(frames, defer_warps=True)
+    expected = sources.match_exposure_frames(
+        [frame.processor(image_loader.decode_image(frame.source.path)) for frame in warped],
+        reference_index=0,
+    )
+    expected = [sources.resolve_frame(frame) for frame in expected]
+    assert not np.array_equal(expected[1], warped[1].processor(image_loader.decode_image(second)))
+
+    decode_into = image_loader._decode_jpeg_bgr_into
+    paths = []
+
+    def decode_mapped(path, encoded, destination):
+        assert frame_storage.is_mapped_frame(destination)
+        paths.append(path)
+        return decode_into(path, encoded, destination)
+
+    def decode_heap(*args, **kwargs):
+        pytest.fail('Heap JPEG decoding exceeded the test budget')
+
+    monkeypatch.setattr(image_loader, '_decode_jpeg_bgr_into', decode_mapped)
+    monkeypatch.setattr(image_loader, 'decode_image', decode_heap)
+    mib = 1024 ** 2
+    limit = budget_mib * mib
+    assert frames[0].fingerprint[0] > 2 * mib
+    budget = resource_policy.ProcessBudget(limit, limit, frame_ram=2 * mib)
+    with (resource_policy.process_budget(budget),
+          frame_storage.scratch_directory(explicit_directory=str(tmp_path)),
+          frame_resolution_cache.render_scope(frames) as scope):
+        with scope.reuse_only(), sources.without_source_cache_growth():
+            matched = sources.match_exposure_frames(warped, reference_index=0)
+            staged = sources.materialize_for_repeated_access(matched, required=True)
+        # The reference can be resolved again because this job keeps no
+        # one-use aligned inputs in the resolution cache.
+        assert set(paths) == {frame.path for frame in frames}
+        for snapshot, pixels in zip(staged, expected):
+            assert isinstance(snapshot, sources.PreparedFrame)
+            actual = sources.resolve_frame(snapshot)
+            assert frame_storage.is_mapped_frame(actual)
+            np.testing.assert_array_equal(actual, pixels)
+    with open(second, 'ab') as stream:
+        stream.write(b'changed')
+    with pytest.raises(OSError, match='Source changed'):
+        sources.resolve_frame(staged[1])
+
+
+@pytest.mark.parametrize('cancel_decode', [False, True])
+def test_mapped_jpeg_perspective_stops_when_decode_cannot_finish(tmp_path, monkeypatch, cancel_decode):
+    from core import frame_storage, registration, resource_policy
+
+    frame = sources.scan_source(_jpeg(tmp_path, shape=(768, 1024)), header_only=True)[0]
+    identity = registration._perspective_source_file(frame, None)
+    matrix = (1., 0., 0., 0., 1., 0., 0., 0., 1.)
+    stage = registration.PerspectiveStage('ecc', (identity, identity), (matrix, matrix),
+                                         ('float32', 'float32'), (0, 0, 0, 0), (1024, 768))
+    warped, _ = stage.apply([frame, frame], defer_warps=True)
+    cancelled = False
+    attempts = []
+
+    def stop_decode(path, encoded, destination):
+        nonlocal cancelled
+        assert frame_storage.is_mapped_frame(destination)
+        attempts.append(path)
+        cancelled = cancel_decode
+        return cancel_decode
+
+    def unexpected_warp(*args, **kwargs):
+        pytest.fail('Warp started without a successful, current decode')
+
+    monkeypatch.setattr(image_loader, '_decode_jpeg_bgr_into', stop_decode)
+    monkeypatch.setattr(registration.PerspectiveWarp, '_call_mapped_jpeg', unexpected_warp)
+    limit = 2 * 1024 ** 2
+    error = registration.RegistrationCancelled if cancel_decode else resource_policy.ResourceLimitError
+    with (resource_policy.process_budget(resource_policy.ProcessBudget(limit, limit)),
+          frame_storage.scratch_directory(explicit_directory=str(tmp_path)), pytest.raises(error)):
+        sources.resolve_frame(warped, should_cancel=lambda: cancelled)
+    assert attempts == [frame.path]
+
+
+def test_full_size_jpeg_resolves_with_bounded_workspace(tmp_path, monkeypatch):
+    from core import resource_policy
+
+    path = _jpeg(tmp_path, shape=(480, 640))
+    frame = sources.scan_source(path, header_only=True)[0]
+    expected = image_loader.decode_image(path)
+    limit = 4 * 1024 ** 2
+
+    with resource_policy.process_budget(resource_policy.ProcessBudget(limit, limit)):
+        with sources.without_source_cache_growth():
+            np.testing.assert_array_equal(sources.resolve_frame(frame), expected)
+
+            # The fallback must admit Pillow's larger simultaneous copies.
+            jpeg_decoder = pytest.importorskip('imagecodecs')
+            monkeypatch.setattr(jpeg_decoder, 'jpeg8_decode', lambda *a, **kw: None)
+            monkeypatch.setattr(cv2, 'imdecode', lambda *a, **kw: None)
+            monkeypatch.setattr(image_loader, '_read_via_pil',
+                                lambda _path: pytest.fail('Pillow fallback started'))
+            with pytest.raises(resource_policy.ResourceLimitError):
+                sources.resolve_frame(frame)
+
+
 @pytest.mark.parametrize('replace_at', ['before_decode', 'after_decode'])
 def test_original_rejects_source_replaced_during_decode(tmp_path, monkeypatch, replace_at):
     import os
