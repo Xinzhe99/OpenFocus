@@ -4,7 +4,7 @@ Only explicit pixel consumers call resolve_frame. Metadata and display_image
 never cause a full-resolution decode; transforms retain that separation.
 """
 from collections import OrderedDict
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from functools import cache, partial
@@ -796,6 +796,35 @@ class SourceFrame:
         with _admit_source_decode(frame_resolution_bytes(self), should_cancel):
             return self._decode(key, cache, should_cancel)
 
+    def _mapped_jpeg_pixels(self, should_cancel):
+        from core import frame_resolution_cache
+        from core.frame_storage import create_frame, frame_region
+        from core.image_loader import _decode_jpeg_bgr_into
+        from core.registration import RegistrationCancelled
+        from utils.logging_setup import log_operation
+        from utils.performance_profile import current as current_profile
+
+        _check_resolution_cancel(should_cancel)
+        self.validate_source()
+        cache = frame_resolution_cache.current()
+        image = cache.get(self, should_cancel=should_cancel) if cache is not None else None
+        if image is None:
+            image = SOURCE_CACHE.get(self._source_cache_key())
+        if image is not None:
+            return image
+        encoded = self.fingerprint[0]
+        with _admit_source_decode(_jpeg_decode_workspace_bytes(self, encoded), should_cancel), \
+                log_operation('source_decode', path=self.path, page=self.page, scale=self.scale,
+                              cancel_on=(RegistrationCancelled,)), \
+                current_profile().stage('source_decode'):
+            image = create_frame(self.shape, self.dtype)
+            with frame_region(image, write=True) as destination:
+                _check_resolution_cancel(should_cancel)
+                decoded = _decode_jpeg_bgr_into(self.path, encoded, destination)
+            _check_resolution_cancel(should_cancel)
+            self.validate_source()
+            return image if decoded else None
+
     def _decode(self, key, cache, should_cancel=None):
         from core.image_loader import decode_image, is_scaled_jpeg
         from core.registration import RegistrationCancelled
@@ -979,43 +1008,29 @@ class ProcessedFrame:
                             return stored
                     _check_resolution_cancel(cancelled)
                     return direct
-            from core.resource_policy import require_memory
+            from core.resource_policy import ResourceLimitError, require_memory
+            image = None
+            mapped_exposure = False
             required = frame_resolution_bytes(self)
-            if required:
-                require_memory(required)
-            if isinstance(self.source, ProcessedFrame):
-                image = self.source.full_resolution(
-                    should_cancel=cancelled, store_result=store_result and self.store_source)
-                observer = _resolution_observer
-                if observer is not None:
-                    observer(self.source, image)
-            else:
-                image = resolve_frame(self.source, should_cancel=cancelled)
-            if cancelled():
-                raise RegistrationCancelled()
-            if self.scratch_bytes:
-                require_memory(self.scratch_bytes)
-            result = None
-            if is_direct_rgb_tiff(self.source):
-                from core.registration import PerspectiveWarp, _ORIGINAL_PERSPECTIVE_CALL
-                from core import openfocus_alignment as _oa
-                if (isinstance(self.processor, PerspectiveWarp)
-                        and PerspectiveWarp.__call__ is _ORIGINAL_PERSPECTIVE_CALL):
-                    result = self.processor.call_with_source(
-                        self.source, image, should_cancel=cancelled)
-                elif (isinstance(self.processor, partial)
-                        and self.processor.func is _oa.apply_alignment
-                        and _oa.apply_alignment is _oa._ORIGINAL_APPLY_ALIGNMENT):
-                    kw = self.processor.keywords
-                    proc_cancel = kw.get('should_cancel')
-                    merged = (cancelled if proc_cancel is None
-                              else (lambda: bool(cancelled() or proc_cancel())))
-                    result = _oa._apply_alignment_for_source(
-                        self.source, image, kw['transform'], should_cancel=merged)
-            if result is None:
-                result = self.processor(image)
-            del image
-            image = result
+            try:
+                if required:
+                    require_memory(required)
+            except ResourceLimitError:
+                if _is_mappable_jpeg_warp(self):
+                    source = self.source._mapped_jpeg_pixels(cancelled)
+                    if source is None:
+                        raise
+                    observer = _resolution_observer
+                    if observer is not None:
+                        observer(self.source, source)
+                    image = self.processor._call_mapped_jpeg(source, should_cancel=cancelled)
+                    del source
+                elif _can_map_exposure(self):
+                    mapped_exposure = True
+                else:
+                    raise
+            if image is None:
+                image = self._resolve_and_process(cancelled, store_result, mapped_exposure)
             if cancelled():
                 raise RegistrationCancelled()
             if image.shape != self.shape or image.dtype != self.dtype:
@@ -1028,6 +1043,52 @@ class ProcessedFrame:
         _check_resolution_cancel(cancelled)
         return image
 
+    def _resolve_and_process(self, cancelled, store_result, mapped_exposure):
+        from core.resource_policy import ResourceLimitError, require_memory
+
+        if isinstance(self.source, ProcessedFrame):
+            image = self.source.full_resolution(
+                should_cancel=cancelled, store_result=store_result and self.store_source)
+            observer = _resolution_observer
+            if observer is not None:
+                observer(self.source, image)
+        else:
+            image = resolve_frame(self.source, should_cancel=cancelled)
+        _check_resolution_cancel(cancelled)
+        if self.scratch_bytes and not mapped_exposure:
+            try:
+                require_memory(self.scratch_bytes)
+            except ResourceLimitError:
+                if _is_mappable_jpeg_warp(self):
+                    return self.processor._call_mapped_jpeg(image, should_cancel=cancelled)
+                if not _can_map_exposure(self):
+                    raise
+                mapped_exposure = True
+        if mapped_exposure:
+            if self.processor.gain == 1.0:
+                return image
+            from core.frame_storage import frame_region
+            require_memory(_exposure_workspace_bytes(self.source))
+            with frame_region(image) as borrowed:
+                matched = self.processor._apply(borrowed, cancelled, mapped=True)
+                return image if matched is borrowed else matched
+        if is_direct_rgb_tiff(self.source):
+            from core.registration import PerspectiveWarp, _ORIGINAL_PERSPECTIVE_CALL
+            from core import openfocus_alignment as _oa
+            if (isinstance(self.processor, PerspectiveWarp)
+                    and PerspectiveWarp.__call__ is _ORIGINAL_PERSPECTIVE_CALL):
+                return self.processor.call_with_source(self.source, image, should_cancel=cancelled)
+            if (isinstance(self.processor, partial)
+                    and self.processor.func is _oa.apply_alignment
+                    and _oa.apply_alignment is _oa._ORIGINAL_APPLY_ALIGNMENT):
+                kw = self.processor.keywords
+                proc_cancel = kw.get('should_cancel')
+                merged = (cancelled if proc_cancel is None
+                          else (lambda: bool(cancelled() or proc_cancel())))
+                return _oa._apply_alignment_for_source(
+                    self.source, image, kw['transform'], should_cancel=merged)
+        return self.processor(image)
+
     def __array__(self, dtype=None, copy=None):
         image = self.full_resolution()
         return np.array(image, dtype=dtype, copy=True) if copy else np.asarray(image, dtype=dtype)
@@ -1037,6 +1098,24 @@ class ProcessedFrame:
 
     def copy(self):
         return store_frame(self.full_resolution())
+
+
+def _is_mappable_jpeg_warp(frame):
+    from core.registration import PerspectiveWarp, _ORIGINAL_PERSPECTIVE_CALL
+
+    if type(frame) is not ProcessedFrame or not isinstance(frame.processor, PerspectiveWarp):
+        return False
+    source = frame.source
+    return (PerspectiveWarp.__call__ is _ORIGINAL_PERSPECTIVE_CALL
+            and type(source) is SourceFrame and source._jpeg_single_scan
+            and source._jpeg_components == 3 and source.scale == 1.0 and not source.transforms
+            and source.orientation == 1 and source.dtype == np.uint8
+            and source.shape == source.native_shape and source.shape[2:] == (3,))
+
+
+def _can_map_exposure(frame):
+    return (type(frame.processor) is _ExposureGain and not frame.processor.normalize
+            and _is_mappable_jpeg_warp(frame.source))
 
 
 @dataclass(frozen=True, eq=False)
@@ -1486,26 +1565,30 @@ class _ExposureGain:
     normalize: bool = False
 
     def __call__(self, image):
-        from core.frame_storage import create_transient_frame
-        from core.registration import RegistrationCancelled
+        return self._apply(image, self.should_cancel)
+
+    def _apply(self, image, should_cancel, *, mapped=False):
+        from core.frame_storage import create_frame, create_transient_frame, frame_region
         from utils.image_utils import _exposure_mean, apply_exposure_gain
 
         if self.gain is None:
-            mean = _exposure_mean(image, self.should_cancel, normalize_uint16=True)
+            mean = _exposure_mean(image, should_cancel, normalize_uint16=True)
             self.gain = 1.0 if self.target <= 1e-6 or mean <= 1e-6 else self.target / mean
         if self.normalize:
-            return _normalize_frame(image, should_cancel=self.should_cancel, gain=self.gain)
+            return _normalize_frame(image, should_cancel=should_cancel, gain=self.gain)
         if self.gain == 1.0:
             return image
-        output = create_transient_frame(image.shape, image.dtype)
-        if self.target is not None and _uses_exposure_table(image.shape, image.dtype):
-            _match_through_table(image, self.gain, output, self.should_cancel)
-            return output
-        adjust = _matched_strip if self.target is not None else apply_exposure_gain
-        for y in range(0, image.shape[0], 128):
-            if self.should_cancel is not None and self.should_cancel():
-                raise RegistrationCancelled()
-            output[y:y + 128] = adjust(image[y:y + 128], self.gain)
+        allocate = create_frame if mapped else create_transient_frame
+        output = allocate(image.shape, image.dtype)
+        # Keep mapped output pages outside the long-lived staged stack's views.
+        with (frame_region(output, write=True) if mapped else nullcontext(output)) as destination:
+            if self.target is not None and _uses_exposure_table(image.shape, image.dtype):
+                _match_through_table(image, self.gain, destination, should_cancel)
+            else:
+                adjust = _matched_strip if self.target is not None else apply_exposure_gain
+                for y in range(0, image.shape[0], 128):
+                    _check_resolution_cancel(should_cancel)
+                    destination[y:y + 128] = adjust(image[y:y + 128], self.gain)
         return output
 
     def preview(self, image, is_display, linear_metadata):
@@ -1733,6 +1816,10 @@ def frame_resolution_bytes(frame, *, metadata_only=False):
     return 0
 
 
+def _jpeg_decode_workspace_bytes(frame, encoded):
+    return encoded + 128 * max(frame.shape[:2]) + 128 * 1024
+
+
 def _jpeg_resolution_bytes(frame, encoded):
     height, width = frame.shape[:2]
     coefficients = (0 if frame._jpeg_single_scan else
@@ -1740,8 +1827,7 @@ def _jpeg_resolution_bytes(frame, encoded):
     # The OpenCV fallback can copy its decoded Mat into NumPy, and orientation
     # can allocate a second frame. Neither step overlaps libjpeg's coefficients.
     # The Pillow fallback checks its larger workspace before decoding.
-    return (encoded + max(frame.nbytes + coefficients, 2 * frame.nbytes)
-            + 128 * max(height, width) + 128 * 1024)
+    return _jpeg_decode_workspace_bytes(frame, encoded) + max(frame.nbytes + coefficients, 2 * frame.nbytes)
 
 
 def select_frame_scratch(frames, *, preferred_size=0, should_cancel=None):

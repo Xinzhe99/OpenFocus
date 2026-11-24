@@ -1180,6 +1180,95 @@ def test_deferred_jpeg_perspective_admits_one_full_size_output(tmp_path):
     assert sources.frame_resolution_bytes(warped) < 832 * 1024 ** 2
 
 
+def test_mapped_jpeg_perspective_stages_exact_exposure_under_memory_limit(tmp_path, monkeypatch):
+    from core import frame_resolution_cache, frame_storage, registration, resource_policy
+
+    jpeg = pytest.importorskip('imagecodecs')
+    if not hasattr(getattr(jpeg.JPEG8, 'CS', None), 'EXT_BGR'):
+        pytest.skip('imagecodecs lacks packed BGR JPEG output')
+    first = _jpeg(tmp_path, shape=(768, 1024))
+    second = tmp_path / 'darker.jpg'
+    Image.new('RGB', (1024, 768), (49, 62, 75)).save(second)
+    frames = [sources.scan_source(path, header_only=True)[0] for path in (first, second)]
+    identities = tuple(registration._perspective_source_file(frame, None) for frame in frames)
+    matrices = ((1., 0., -4., 0., 1., -2., 0., 0., 1.),
+                (1., 0., -4.25, 0., 1., -2.125, 0.000001, 0., 1.))
+    stage = registration.PerspectiveStage('ecc', identities, matrices, ('float32', 'float32'),
+                                         (2, 762, 4, 1012), (1008, 760))
+    warped = stage.apply(frames, defer_warps=True)
+    expected = sources.match_exposure_frames(
+        [frame.processor(image_loader.decode_image(frame.source.path)) for frame in warped],
+        reference_index=0,
+    )
+    expected = [sources.resolve_frame(frame) for frame in expected]
+    assert not np.array_equal(expected[1], warped[1].processor(image_loader.decode_image(second)))
+
+    decode_into = image_loader._decode_jpeg_bgr_into
+    paths = []
+
+    def decode_mapped(path, encoded, destination):
+        assert frame_storage.is_mapped_frame(destination)
+        paths.append(path)
+        return decode_into(path, encoded, destination)
+
+    def decode_heap(*args, **kwargs):
+        pytest.fail('Heap JPEG decoding exceeded the test budget')
+
+    monkeypatch.setattr(image_loader, '_decode_jpeg_bgr_into', decode_mapped)
+    monkeypatch.setattr(image_loader, 'decode_image', decode_heap)
+    limit = 2 * 1024 ** 2
+    assert limit < frames[0].nbytes < sources.frame_resolution_bytes(warped[0])
+    with (resource_policy.process_budget(resource_policy.ProcessBudget(limit, limit)),
+          frame_storage.scratch_directory(explicit_directory=str(tmp_path)),
+          frame_resolution_cache.render_scope(frames) as scope):
+        matched = sources.match_exposure_frames(warped, reference_index=0)
+        with scope.reuse_only(), sources.without_source_cache_growth():
+            staged = sources.materialize_for_repeated_access(matched, required=True)
+        assert paths == [frame.path for frame in frames]
+        for snapshot, pixels in zip(staged, expected):
+            assert isinstance(snapshot, sources.PreparedFrame)
+            actual = sources.resolve_frame(snapshot)
+            assert frame_storage.is_mapped_frame(actual)
+            np.testing.assert_array_equal(actual, pixels)
+    with open(second, 'ab') as stream:
+        stream.write(b'changed')
+    with pytest.raises(OSError, match='Source changed'):
+        sources.resolve_frame(staged[1])
+
+
+@pytest.mark.parametrize('cancel_decode', [False, True])
+def test_mapped_jpeg_perspective_stops_when_decode_cannot_finish(tmp_path, monkeypatch, cancel_decode):
+    from core import frame_storage, registration, resource_policy
+
+    frame = sources.scan_source(_jpeg(tmp_path, shape=(768, 1024)), header_only=True)[0]
+    identity = registration._perspective_source_file(frame, None)
+    matrix = (1., 0., 0., 0., 1., 0., 0., 0., 1.)
+    stage = registration.PerspectiveStage('ecc', (identity, identity), (matrix, matrix),
+                                         ('float32', 'float32'), (0, 0, 0, 0), (1024, 768))
+    warped, _ = stage.apply([frame, frame], defer_warps=True)
+    cancelled = False
+    attempts = []
+
+    def stop_decode(path, encoded, destination):
+        nonlocal cancelled
+        assert frame_storage.is_mapped_frame(destination)
+        attempts.append(path)
+        cancelled = cancel_decode
+        return cancel_decode
+
+    def unexpected_warp(*args, **kwargs):
+        pytest.fail('Warp started without a successful, current decode')
+
+    monkeypatch.setattr(image_loader, '_decode_jpeg_bgr_into', stop_decode)
+    monkeypatch.setattr(registration.PerspectiveWarp, '_call_mapped_jpeg', unexpected_warp)
+    limit = 2 * 1024 ** 2
+    error = registration.RegistrationCancelled if cancel_decode else resource_policy.ResourceLimitError
+    with (resource_policy.process_budget(resource_policy.ProcessBudget(limit, limit)),
+          frame_storage.scratch_directory(explicit_directory=str(tmp_path)), pytest.raises(error)):
+        sources.resolve_frame(warped, should_cancel=lambda: cancelled)
+    assert attempts == [frame.path]
+
+
 def test_full_size_jpeg_resolves_with_bounded_workspace(tmp_path, monkeypatch):
     from core import resource_policy
 

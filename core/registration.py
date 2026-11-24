@@ -709,18 +709,19 @@ class PerspectiveWarp:
             and int(tx) == tx and int(ty) == ty
         )
 
-    def _run_cv_warp(self, src, M, dsize, flags, threads):
+    def _run_cv_warp(self, src, M, dsize, flags, threads, *, destination=None):
+        args = (src, M, dsize) if destination is None else (src, M, dsize, destination)
         if threads <= 1:
-            return cv2.warpPerspective(src, M, dsize, flags=flags, borderMode=cv2.BORDER_CONSTANT)
+            return cv2.warpPerspective(*args, flags=flags, borderMode=cv2.BORDER_CONSTANT)
         with _warp_threads_lock:
             previous = cv2.getNumThreads()
             cv2.setNumThreads(threads)
             try:
-                return cv2.warpPerspective(src, M, dsize, flags=flags, borderMode=cv2.BORDER_CONSTANT)
+                return cv2.warpPerspective(*args, flags=flags, borderMode=cv2.BORDER_CONSTANT)
             finally:
                 cv2.setNumThreads(0 if previous == 1 else previous)
 
-    def _apply_to_image(self, image, *, should_cancel=None):
+    def _apply_to_image(self, image, *, should_cancel=None, destination=None):
         # At an integer sampling location Lanczos returns the source code
         # exactly for integer pixels. Keep the allocating/native path for
         # floats, where zero-weight taps can propagate NaNs or affect -0.
@@ -734,6 +735,11 @@ class PerspectiveWarp:
             crop = image[top:top + height, left:left + width]
             if crop.shape[2:] == (1,):
                 crop = crop[:, :, 0]
+            if destination is not None:
+                for start in range(0, height, 128):
+                    _check_cancel(cancel_fn)
+                    destination[start:start + 128] = crop[start:start + 128]
+                return destination
             if (crop.ndim == 3 and crop.shape[2] == 3
                     and _is_bgr_rev(image) and _native_kernels.available()):
                 out = np.empty((height, width, 3), dtype=image.dtype)
@@ -748,7 +754,7 @@ class PerspectiveWarp:
             return crop.copy(order='C')
         matrix = np.asarray(self.matrix, dtype=self.matrix_dtype).reshape(3, 3)
         backend = _deferred_ecc_gpu.get()
-        if backend is not None:
+        if backend is not None and destination is None:
             # Direct RGB TIFF frames arrive as a reversed view of contiguous storage.
             bgr_rev = _is_bgr_rev(image)
             result = backend.warp(image[..., ::-1] if bgr_rev else image, matrix, self.dsize,
@@ -758,7 +764,8 @@ class PerspectiveWarp:
         bgr_rev = _is_bgr_rev(image) and _native_kernels.available()
         src = image[..., ::-1] if bgr_rev else image
         threads = _warp_thread_budget()
-        warped = self._run_cv_warp(src, matrix, self.dsize, cv2.INTER_LANCZOS4, threads)
+        warped = self._run_cv_warp(src, matrix, self.dsize, cv2.INTER_LANCZOS4, threads,
+                                   destination=destination)
         if bgr_rev:
             swap_fn = (_native_kernels.swap_bgr_inplace_rows_u8 if warped.dtype == np.uint8
                        else _native_kernels.swap_bgr_inplace_rows_u16)
@@ -779,6 +786,23 @@ class PerspectiveWarp:
         cancel_fn = _merge_cancel_callbacks(self.should_cancel, should_cancel)
         self.source.validate_pixels(image, cancel_fn, source=source_frame)
         return self._apply_to_image(image, should_cancel=cancel_fn)
+
+    def _call_mapped_jpeg(self, image, *, should_cancel=None):
+        """Warp packed BGR pixels into an owned mapping with bounded CPU workspace."""
+        from core.frame_storage import create_frame, frame_region
+        from core.resource_policy import require_memory
+
+        cancel_fn = _merge_cancel_callbacks(self.should_cancel, should_cancel)
+        integer_crop = self._is_integer_crop(image.shape, image.dtype)
+        require_memory(128 * 1024 + (0 if integer_crop else _perspective_cpu_tile_bytes(self.dsize)))
+        self.source.validate_pixels(image, cancel_fn)
+        output = create_frame(_perspective_output_shape(image.shape, self.dsize), image.dtype)
+        # Close the written view before the root mapping enters the staged stack.
+        with (frame_region(image) as pixels, frame_region(output, write=True) as destination):
+            _check_cancel(cancel_fn)
+            self._apply_to_image(pixels, should_cancel=cancel_fn, destination=destination)
+        _check_cancel(cancel_fn)
+        return output
 
     def _full_warp_crop(self, image, x, y, width, height, channels, should_cancel):
         from core import _alignment_kernels
@@ -982,6 +1006,13 @@ def _perspective_output_shape(shape, dsize):
     return (dsize[1], dsize[0]) + channels
 
 
+def _perspective_cpu_tile_bytes(dsize):
+    # OpenCV uses 32x32 mapping tiles within each stripe.
+    width, height = dsize
+    stripes = min(height, (width * height + 65535) // 65536)
+    return stripes * 16 * 1024
+
+
 def _perspective_scratch_bytes(frame, warp, shape):
     from core.source_frames import SourceFrame
 
@@ -996,15 +1027,13 @@ def _perspective_scratch_bytes(frame, warp, shape):
         return output + hash_bytes
     from core._perspective_gpu import _MAX_SIDE, _MAX_WORKSPACE_BYTES, _MIN_PIXELS
 
-    # OpenCV uses 32x32 mapping tiles within each stripe. The exact GPU path
-    # packs at most one source band, bounded by its total device workspace.
+    # The exact GPU path packs at most one source band, bounded by its total
+    # device workspace.
     width, height = warp.dsize
-    stripes = min(height, (width * height + 65535) // 65536)
-    tile_bytes = stripes * 16 * 1024
     band_bytes = (min(frame.nbytes, _MAX_WORKSPACE_BYTES)
                   if width * height >= _MIN_PIXELS and max(width, height, *frame.shape[:2]) <= _MAX_SIDE
                   else 0)
-    return output + hash_bytes + max(tile_bytes, band_bytes)
+    return output + hash_bytes + max(_perspective_cpu_tile_bytes(warp.dsize), band_bytes)
 
 
 @dataclass(frozen=True)

@@ -497,6 +497,26 @@ def _read_raw(path: str, scale_factor: float = 1.0) -> Optional[np.ndarray]:
         return None
 
 
+def _decode_jpeg_bgr_into(path, encoded_bytes, destination):
+    """Decode a sequential RGB JPEG directly into packed caller-owned BGR pixels."""
+    try:
+        import imagecodecs
+        bgr = imagecodecs.JPEG8.CS.EXT_BGR
+    except (ImportError, AttributeError):
+        return False
+    with open(path, 'rb') as stream:
+        data = stream.read(encoded_bytes)
+        if len(data) != encoded_bytes or stream.read(1):
+            raise OSError(f'Source changed while decoding; reopen the stack: {path}')
+    try:
+        decoded = imagecodecs.jpeg8_decode(data, outcolorspace=bgr, out=destination)
+    except (ValueError, TypeError, RuntimeError):
+        return False
+    return (decoded is not None and decoded.shape == destination.shape
+            and decoded.dtype == destination.dtype
+            and decoded.ctypes.data == destination.ctypes.data)
+
+
 def decode_image(path: str, *, allow_transparent_png: bool = False,
                  preserve_grayscale: bool = False, scale_factor: float = 1.0,
                  area_resizer=None) -> Optional[np.ndarray]:

@@ -190,6 +190,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Budget sequential decode and processing peaks separately. Decode RGB JPEGs
   directly into BGR and stage large deferred stacks one processed frame at a
   time before OpenFocus fusion.
+- Use scratch-backed decode, perspective warps, and exposure matching for
+  eligible full-size JPEGs when the in-memory path exceeds available RAM.
 - Release the isolated render worker after a memory error so the next render
   starts with fresh native memory and device contexts.
 - Default new watermarks to fusion results. Apply removes unchecked watermark
