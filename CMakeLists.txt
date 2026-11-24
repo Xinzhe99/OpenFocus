@@ -27,6 +27,7 @@ nanobind_add_module(
   cpp/openfocus_ab.cpp
   cpp/openfocus_c.cpp
   cpp/openfocus_pipeline.cpp
+  cpp/alignment_kernels.cpp
 )
 
 target_include_directories(_openfocus_native PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/cpp")
@@ -36,7 +37,7 @@ if(MSVC)
 else()
   target_compile_options(_openfocus_native PRIVATE -O3 -fno-fast-math)
   # The pyramid and axis resampling kernels round each multiplication and addition separately.
-  set_property(SOURCE cpp/openfocus_c.cpp cpp/openfocus_pipeline.cpp APPEND PROPERTY COMPILE_OPTIONS -ffp-contract=off)
+  set_property(SOURCE cpp/openfocus_c.cpp cpp/openfocus_pipeline.cpp cpp/alignment_kernels.cpp APPEND PROPERTY COMPILE_OPTIONS -ffp-contract=off)
 endif()
 
 if(MINGW)
