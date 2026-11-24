@@ -545,51 +545,79 @@ def _perspective_source_file(frame, should_cancel):
     return source
 
 
-def _fast_jpeg_ecc_gray(source, downscale_width, should_cancel):
-    """Decode a reduced JPEG grayscale plane and return it with the ECC scale."""
-    from core.source_frames import SourceFrame, _orient
-    if type(source) is not SourceFrame or source.transforms or source.linear_metadata is not None:
+@dataclass(frozen=True)
+class _JpegEccPreparation:
+    size: tuple[int, int]
+    scale: float
+    flags: int
+    encoded_bytes: int
+    workspace_bytes: int
+
+
+def _plan_jpeg_ecc(source, downscale_width):
+    """Plan direct grayscale decoding for a full-size JPEG source."""
+    from core.source_frames import SourceFrame, _jpeg_full_buffer_bytes
+
+    if (type(source) is not SourceFrame or source.transforms or source.linear_metadata is not None
+            or source.scale != 1.0 or not source.path or source.dtype != np.uint8
+            or os.path.splitext(source.path)[1].lower() not in ('.jpg', '.jpeg', '.jpe', '.jfif')):
         return None
-    if source.scale != 1.0 or not source.path:
+    height, width, scale = _ecc_resize_geometry(source.shape, downscale_width)
+    if scale >= 1.0 or min(height, width) < 1:
         return None
-    ext = os.path.splitext(source.path)[1].lower()
-    if ext not in ('.jpg', '.jpeg', '.jpe', '.jfif'):
-        return None
-    target_height, target_width, scale = _ecc_resize_geometry(source.shape, downscale_width)
-    if scale >= 1.0:
-        return None
+    from PIL import Image
+
     try:
-        from PIL import Image as PILImage
-        with PILImage.open(source.path) as hdr:
-            if hdr.format != 'JPEG' or hdr.mode == 'CMYK' or 'A' in hdr.getbands():
+        with Image.open(source.path) as header:
+            if header.format != 'JPEG' or header.mode not in ('L', 'RGB'):
                 return None
-            raw_w, raw_h = hdr.size
-        with open(source.path, 'rb') as fh:
-            raw_bytes = fh.read()
+            raw_width, raw_height = header.size
+            bands = len(header.getbands())
+    except (OSError, Image.DecompressionBombError):
+        return None
+
+    rotated = source.orientation in (5, 6, 7, 8)
+    if (raw_height, raw_width) != (source.shape[:2][::-1] if rotated else source.shape[:2]):
+        return None
+    requested_width, requested_height = (height, width) if rotated else (width, height)
+    for divisor, flag in ((8, cv2.IMREAD_REDUCED_GRAYSCALE_8),
+                          (4, cv2.IMREAD_REDUCED_GRAYSCALE_4),
+                          (2, cv2.IMREAD_REDUCED_GRAYSCALE_2),
+                          (1, cv2.IMREAD_GRAYSCALE)):
+        decoded_width = (raw_width + divisor - 1) // divisor
+        decoded_height = (raw_height + divisor - 1) // divisor
+        if decoded_width >= requested_width and decoded_height >= requested_height:
+            break
+    # A reduced output still needs native-size coefficients for multiple scans.
+    coefficients = (0 if source._jpeg_single_scan else
+                    _jpeg_full_buffer_bytes(raw_width, raw_height, bands))
+    encoded = source.fingerprint[0]
+    workspace = (encoded + coefficients + 2 * decoded_width * decoded_height
+                 + 2 * width * height + 128 * raw_width + 128 * 1024)
+    return _JpegEccPreparation((width, height), scale, flag, encoded, workspace)
+
+
+def _decode_jpeg_ecc(source, plan, should_cancel):
+    from core.source_frames import _admit_source_decode, _orient
+
+    source.validate_source()
+    with _admit_source_decode(plan.workspace_bytes, should_cancel):
+        with open(source.path, 'rb') as stream:
+            encoded = stream.read(plan.encoded_bytes + 1)
+        if len(encoded) != plan.encoded_bytes:
+            raise OSError(f'Source changed since it was opened; reopen the stack: {source.path}')
         _check_cancel(should_cancel)
-        req_w, req_h = target_width, target_height
-        if source.orientation in (5, 6, 7, 8):
-            req_w, req_h = req_h, req_w
-        flags = cv2.IMREAD_GRAYSCALE
-        for div, reduced in ((8, cv2.IMREAD_REDUCED_GRAYSCALE_8),
-                             (4, cv2.IMREAD_REDUCED_GRAYSCALE_4),
-                             (2, cv2.IMREAD_REDUCED_GRAYSCALE_2)):
-            if (raw_w + div - 1) // div >= req_w and (raw_h + div - 1) // div >= req_h:
-                flags = reduced
-                break
-        gray = cv2.imdecode(np.frombuffer(raw_bytes, dtype=np.uint8),
-                            flags | cv2.IMREAD_IGNORE_ORIENTATION | cv2.IMREAD_ANYDEPTH)
+        gray = cv2.imdecode(np.frombuffer(encoded, dtype=np.uint8),
+                            plan.flags | cv2.IMREAD_IGNORE_ORIENTATION | cv2.IMREAD_ANYDEPTH)
+        del encoded
         if gray is None:
-            return None
+            raise ValueError(f'Could not decode source: {source.path}')
         if source.orientation != 1:
             gray = _orient(gray, source.orientation)
-        if gray.shape[1] != target_width or gray.shape[0] != target_height:
-            gray = cv2.resize(gray, (target_width, target_height), interpolation=cv2.INTER_AREA)
-        return gray, scale
-    except RegistrationCancelled:
-        raise
-    except Exception:
-        return None
+        if gray.shape[::-1] != plan.size:
+            gray = cv2.resize(gray, plan.size, interpolation=cv2.INTER_AREA)
+        _check_cancel(should_cancel)
+    return gray
 
 
 def _perspective_source(frame, image, should_cancel):
@@ -681,18 +709,19 @@ class PerspectiveWarp:
             and int(tx) == tx and int(ty) == ty
         )
 
-    def _run_cv_warp(self, src, M, dsize, flags, threads):
+    def _run_cv_warp(self, src, M, dsize, flags, threads, *, destination=None):
+        args = (src, M, dsize) if destination is None else (src, M, dsize, destination)
         if threads <= 1:
-            return cv2.warpPerspective(src, M, dsize, flags=flags, borderMode=cv2.BORDER_CONSTANT)
+            return cv2.warpPerspective(*args, flags=flags, borderMode=cv2.BORDER_CONSTANT)
         with _warp_threads_lock:
             previous = cv2.getNumThreads()
             cv2.setNumThreads(threads)
             try:
-                return cv2.warpPerspective(src, M, dsize, flags=flags, borderMode=cv2.BORDER_CONSTANT)
+                return cv2.warpPerspective(*args, flags=flags, borderMode=cv2.BORDER_CONSTANT)
             finally:
                 cv2.setNumThreads(0 if previous == 1 else previous)
 
-    def _apply_to_image(self, image, *, should_cancel=None):
+    def _apply_to_image(self, image, *, should_cancel=None, destination=None):
         # At an integer sampling location Lanczos returns the source code
         # exactly for integer pixels. Keep the allocating/native path for
         # floats, where zero-weight taps can propagate NaNs or affect -0.
@@ -706,6 +735,11 @@ class PerspectiveWarp:
             crop = image[top:top + height, left:left + width]
             if crop.shape[2:] == (1,):
                 crop = crop[:, :, 0]
+            if destination is not None:
+                for start in range(0, height, 128):
+                    _check_cancel(cancel_fn)
+                    destination[start:start + 128] = crop[start:start + 128]
+                return destination
             if (crop.ndim == 3 and crop.shape[2] == 3
                     and _is_bgr_rev(image) and _native_kernels.available()):
                 out = np.empty((height, width, 3), dtype=image.dtype)
@@ -720,7 +754,7 @@ class PerspectiveWarp:
             return crop.copy(order='C')
         matrix = np.asarray(self.matrix, dtype=self.matrix_dtype).reshape(3, 3)
         backend = _deferred_ecc_gpu.get()
-        if backend is not None:
+        if backend is not None and destination is None:
             # Direct RGB TIFF frames arrive as a reversed view of contiguous storage.
             bgr_rev = _is_bgr_rev(image)
             result = backend.warp(image[..., ::-1] if bgr_rev else image, matrix, self.dsize,
@@ -730,7 +764,8 @@ class PerspectiveWarp:
         bgr_rev = _is_bgr_rev(image) and _native_kernels.available()
         src = image[..., ::-1] if bgr_rev else image
         threads = _warp_thread_budget()
-        warped = self._run_cv_warp(src, matrix, self.dsize, cv2.INTER_LANCZOS4, threads)
+        warped = self._run_cv_warp(src, matrix, self.dsize, cv2.INTER_LANCZOS4, threads,
+                                   destination=destination)
         if bgr_rev:
             swap_fn = (_native_kernels.swap_bgr_inplace_rows_u8 if warped.dtype == np.uint8
                        else _native_kernels.swap_bgr_inplace_rows_u16)
@@ -751,6 +786,24 @@ class PerspectiveWarp:
         cancel_fn = _merge_cancel_callbacks(self.should_cancel, should_cancel)
         self.source.validate_pixels(image, cancel_fn, source=source_frame)
         return self._apply_to_image(image, should_cancel=cancel_fn)
+
+    def _call_mapped_jpeg(self, image, *, should_cancel=None):
+        """Warp packed BGR pixels into an owned mapping with bounded CPU workspace."""
+        from core.frame_storage import create_frame, frame_region
+        from core.resource_policy import require_memory
+
+        cancel_fn = _merge_cancel_callbacks(self.should_cancel, should_cancel)
+        integer_crop = self._is_integer_crop(image.shape, image.dtype)
+        require_memory(128 * 1024 + (0 if integer_crop else _perspective_cpu_tile_bytes(self.dsize)))
+        with frame_region(image) as pixels:
+            self.source.validate_pixels(pixels, cancel_fn)
+            output = create_frame(_perspective_output_shape(image.shape, self.dsize), image.dtype)
+            # Close the written view before the root mapping enters the staged stack.
+            with frame_region(output, write=True) as destination:
+                _check_cancel(cancel_fn)
+                self._apply_to_image(pixels, should_cancel=cancel_fn, destination=destination)
+        _check_cancel(cancel_fn)
+        return output
 
     def _full_warp_crop(self, image, x, y, width, height, channels, should_cancel):
         from core import _alignment_kernels
@@ -954,6 +1007,36 @@ def _perspective_output_shape(shape, dsize):
     return (dsize[1], dsize[0]) + channels
 
 
+def _perspective_cpu_tile_bytes(dsize):
+    # OpenCV uses 32x32 mapping tiles within each stripe.
+    width, height = dsize
+    stripes = min(height, (width * height + 65535) // 65536)
+    return stripes * 16 * 1024
+
+
+def _perspective_scratch_bytes(frame, warp, shape):
+    from core.source_frames import SourceFrame
+
+    if (type(frame) is not SourceFrame or not frame._jpeg_components
+            or frame.scale != 1.0 or frame.transforms):
+        return None
+    # JPEG decode, orientation and resolution-cache reads all return packed
+    # pixels. OpenCV can borrow that input and write one independent output.
+    output = math.prod(shape) * frame.dtype.itemsize
+    hash_bytes = 128 * 1024
+    if warp._is_integer_crop(frame.shape, frame.dtype):
+        return output + hash_bytes
+    from core._perspective_gpu import _MAX_SIDE, _MAX_WORKSPACE_BYTES, _MIN_PIXELS
+
+    # The exact GPU path packs at most one source band, bounded by its total
+    # device workspace.
+    width, height = warp.dsize
+    band_bytes = (min(frame.nbytes, _MAX_WORKSPACE_BYTES)
+                  if width * height >= _MIN_PIXELS and max(width, height, *frame.shape[:2]) <= _MAX_SIDE
+                  else 0)
+    return output + hash_bytes + max(_perspective_cpu_tile_bytes(warp.dsize), band_bytes)
+
+
 @dataclass(frozen=True)
 class PerspectiveStage:
     method: str
@@ -1011,11 +1094,12 @@ class PerspectiveStage:
     def apply(self, images, *, defer_warps, should_cancel=None, workers=1):
         from core.source_frames import process_frame, resolve_frame
         self.validate_sources(images, should_cancel=should_cancel)
-        frames = [process_frame(image, PerspectiveWarp(source, matrix, dtype, self.dsize,
-                                                       should_cancel, method=self.method),
-                    shape=_perspective_output_shape(image.shape, self.dsize), should_cancel=should_cancel)
-                  for image, source, matrix, dtype in
-                  zip(images, self.sources, self.matrices, self.matrix_dtypes)]
+        frames = []
+        for image, source, matrix, dtype in zip(images, self.sources, self.matrices, self.matrix_dtypes):
+            warp = PerspectiveWarp(source, matrix, dtype, self.dsize, should_cancel, method=self.method)
+            shape = _perspective_output_shape(image.shape, self.dsize)
+            frames.append(process_frame(image, warp, shape=shape, should_cancel=should_cancel,
+                                        scratch_bytes=_perspective_scratch_bytes(image, warp, shape)))
         if defer_warps:
             return frames
         with _bounded_registration_map(resolve_frame, frames, workers, should_cancel,
@@ -1483,6 +1567,7 @@ class _EccStageBudget:
     task_bytes: int
     prepare_bytes: int
     solve_bytes: int
+    jpeg_inputs: dict[int, _JpegEccPreparation]
 
 
 def _plan_deferred_ecc(images, downscale_width, accelerate_ecc, preference, thread_count,
@@ -1496,11 +1581,17 @@ def _plan_deferred_ecc(images, downscale_width, accelerate_ecc, preference, thre
 
     width = _ecc_width(images[0].shape, downscale_width)
     max_pixels = prepare_bytes = 0
+    jpeg_inputs = {}
     for frame in images:
         _check_cancel(should_cancel)
         h, w, scale = _ecc_resize_geometry(frame.shape, width)
         pixels = max(1, h) * max(1, w)
         max_pixels = max(max_pixels, pixels)
+        jpeg = _plan_jpeg_ecc(frame, width)
+        if jpeg is not None:
+            jpeg_inputs[id(frame)] = jpeg
+            prepare_bytes = max(prepare_bytes, jpeg.workspace_bytes, 2 * pixels + 64 * 1024)
+            continue
         channels = frame.shape[2] if frame.ndim == 3 else 1
         itemsize = frame.dtype.itemsize
         decode = frame_resolution_bytes(frame)
@@ -1527,7 +1618,8 @@ def _plan_deferred_ecc(images, downscale_width, accelerate_ecc, preference, thre
             prepare = max(prepare, decoded + packed + gray)
         prepare_bytes = max(prepare_bytes, prepare)
 
-    gray_bytes = 4 * max_pixels
+    # Each prepared float32 plane can retain its lower-resolution pyramid levels.
+    gray_bytes = 6 * max_pixels
     # OpenCV's homography ECC uses an eight-plane Jacobian, float grids,
     # warped/zero-mean images and gradients, masks and Jacobian temporaries.
     # Allow 30 float planes for live buffers and expression temporaries, four
@@ -1548,8 +1640,9 @@ def _plan_deferred_ecc(images, downscale_width, accelerate_ecc, preference, thre
                workers=workers, native_threads=1, ram_budget=ram, vram_budget=0,
                gpu_requested=False, accelerated_resize_requested=accelerate_ecc,
                prepare_bytes=prepare_bytes,
-               solve_bytes=solve_bytes, retained_gray_bytes=(workers + 1) * gray_bytes)
-    return _EccStageBudget(workers, task_bytes, prepare_bytes, solve_bytes)
+               solve_bytes=solve_bytes, retained_gray_bytes=(workers + 1) * gray_bytes,
+               reduced_jpeg_frames=len(jpeg_inputs))
+    return _EccStageBudget(workers, task_bytes, prepare_bytes, solve_bytes, jpeg_inputs)
 
 
 
@@ -1624,9 +1717,13 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
     def preprocess(source):
         from core.openfocus_alignment import _is_bgr_rev
         from core.source_frames import resolve_frame, source_area_resizer
-        fast = _fast_jpeg_ecc_gray(source, downscale_width, should_cancel) if area_gpu is None else None
-        if fast is not None:
-            pixels, scale = fast
+        # Resizing during JPEG decode avoids loading and transferring full-size
+        # color pixels. Keep OpenCL area resizing for sources that need it.
+        jpeg = (stage_budget.jpeg_inputs.get(id(source)) if stage_budget is not None
+                else _plan_jpeg_ecc(source, downscale_width))
+        if jpeg is not None:
+            pixels = _decode_jpeg_ecc(source, jpeg, should_cancel)
+            scale = jpeg.scale
             identity = _perspective_source_file(source, should_cancel)
         else:
             # Replace each intermediate so a deferred full-size decode can be

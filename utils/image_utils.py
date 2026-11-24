@@ -1362,9 +1362,18 @@ def _exposure_mean(frame, should_cancel=None, *, normalize_uint16=False):
         native = load_native()
         if native is not None and hasattr(native, 'of_exposure_mean') and frame.dtype.isnative:
             f_nd = frame if type(frame) is np.ndarray else frame.view(np.ndarray)
-            mean_val = native.of_exposure_mean(f_nd, bool(normalized), 4)
+            if should_cancel is None:
+                return float(native.of_exposure_mean(f_nd, bool(normalized), 4))
+
+            def weighted_strip_means():
+                for y in range(0, f_nd.shape[0], 128):
+                    check()
+                    strip = f_nd[y:y + 128]
+                    yield native.of_exposure_mean(strip, bool(normalized), 1) * strip.shape[0]
+
+            total = math.fsum(weighted_strip_means())
             check()
-            return float(mean_val)
+            return total / f_nd.shape[0]
         kernels = _load_image_kernels()
         if kernels is not None:
             height = frame.shape[0]

@@ -1,5 +1,6 @@
 """Behavioral bounds for registration scheduling, cancellation and admission."""
 from dataclasses import replace
+from importlib import import_module
 from threading import Event, Lock, Thread
 
 import cv2
@@ -327,11 +328,15 @@ def test_deferred_ecc_keeps_solvers_parallel_with_one_decode_slot(tmp_path, monk
     # Models a source with expensive decode or upstream processing. At 72 MiB
     # there is room for one preparation or three solvers, but not for both
     # kinds of work at once. At 64 MiB even one preparation cannot fit.
-    scratch = 66 * mib - source_frames.frame_resolution_bytes(source)
-    assert scratch > 0
+    prepare_peak = 66 * mib
+    assert source_frames.frame_resolution_bytes(source) < prepare_peak
+    scratch = prepare_peak - source.nbytes
     # Distinct prepared planes keep the exact-pair cache from skipping a batch.
     frames = [source_frames.process_frame(source, lambda pixels, offset=i: pixels + offset,
                                          scratch_bytes=scratch) for i in range(7)]
+    if outcome == 'native':
+        # The native preparation helpers load before the test caps stage RAM.
+        import_module('core._ecc_native')
     snapshot = resource_policy.ResourceSnapshot(
         available_ram=1024 ** 3 + (64 if outcome == 'reject' else 72) * mib,
         total_ram=4 * 1024 ** 3, physical_cores=3, logical_cpus=3)
