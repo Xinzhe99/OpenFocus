@@ -204,40 +204,33 @@ def openfocus_b_impl(input_source, img_resize=None, kernel_size: int = 17,
                    use_gpu=use_gpu, gpu=gpu, live_preview=live_preview)
     if gpu is not None and gpu.failed:
         gpu = None
-    resident = False
-    if gpu is not None:
-        try:
-            resident = gpu.begin_merge(depth, shape, should_cancel)
-        except GpuError as exc:
-            gpu.failed = True
-            log_fallback(exc)
-            gpu = None
     is_8bit = all(frame.dtype == np.uint8 for frame in frames)
-    tiles = None
-    if not resident:
-        bands, columns = ((side + _MERGE_TILE - 1) // _MERGE_TILE for side in depth.shape)
-        # Limit the auxiliary mask even for stacks much deeper than the 8K target.
-        tiles = (np.zeros((bands, columns, count), dtype=bool)
-                 if bands * columns * count <= _MAX_MERGE_MASK_BYTES else None)
-    active = _active_sources(depth, count, should_cancel, tiles=tiles)
-    source_frames.SOURCE_CACHE.clear()
-    result = None if (resident and is_8bit and hasattr(gpu, 'finish_merge_u8')) else create_frame(shape, np.uint16)
-    output = None
+    active = tiles = None
+    result = output = None
     merge_progress = activity_steps
     def merge_sources(resident_flag):
         nonlocal gpu, merge_progress
         if resident_flag:
+            from math import prod
             from core import resource_policy
+            from core.multi_focus_fusion import memory_budget_bytes
             from fusion_methods._openfocus_gpu import _iter_prefetched, _prefetch_window
 
-            snapshot = resource_policy.probe_memory()
-            host_budget = resource_policy.ram_ceiling(snapshot)
-            sample_nbytes = max(int(getattr(f, 'nbytes', 0)) for f in frames) if frames else 0
-            # Result buffer may be deferred until readback; keep decoded frames within headroom.
-            per_slot = max(sample_nbytes * 2, int(np.prod(shape)) * (1 if frames and frames[0].dtype == np.uint8 else 2))
+            host_budget = min(memory_budget_bytes(),
+                              resource_policy.ram_ceiling(resource_policy.probe_memory()))
+            samples = prod(shape)
+            per_slot = max(
+                source_frames.frame_resolution_bytes(frame, metadata_only=True)
+                + (2 * frame.nbytes if img_resize is None and frame.dtype in (np.uint8, np.uint16)
+                   else 8 * (frame.size + samples))
+                for frame in frames
+            )
+            # Charge the current decode and any other upload still holding its host buffer.
+            fixed_host = per_slot * (2 if getattr(gpu, '_merge_ping_pong', False) else 1)
+            if result is not None:
+                fixed_host += result.nbytes
             slots = _prefetch_window(
-                host_budget, 0 if result is None else result.nbytes, per_slot, count,
-                max_slots=3, thread_count=getattr(gpu, 'thread_count', None),
+                host_budget, fixed_host, per_slot, count, thread_count=thread_count,
             )
 
             def prepare_merge_source(index, source, cancelled):
@@ -312,38 +305,48 @@ def openfocus_b_impl(input_source, img_resize=None, kernel_size: int = 17,
                 merge_progress = current
         return None
 
-    if resident:
-        failure = None
+    resident = False
+    failure = None
+    if gpu is not None:
         try:
+            resident = gpu.begin_merge(depth, shape, should_cancel)
+        except GpuError as exc:
+            gpu.failed = True
+            log_fallback(exc)
+            gpu = None
+    if resident:
+        try:
+            active = _active_sources(depth, count, should_cancel)
+            source_frames.SOURCE_CACHE.clear()
+            direct_u8 = is_8bit and hasattr(gpu, 'finish_merge_u8')
+            if not direct_u8:
+                result = create_frame(shape, np.uint16)
             failure = merge_sources(True)
             if failure is None:
-                if is_8bit and hasattr(gpu, 'finish_merge_u8'):
-                    output = create_frame(shape, np.uint8)
-                    try:
+                try:
+                    if direct_u8:
+                        output = create_frame(shape, np.uint8)
                         gpu.finish_merge_u8(output)
-                    except GpuError as exc:
-                        output = None
-                        failure = exc
-                else:
-                    try:
+                    else:
                         gpu.finish_merge(result)
-                    except GpuError as exc:
-                        failure = exc
+                except GpuError as exc:
+                    output = None
+                    failure = exc
         finally:
             gpu.end_merge()
         if failure is not None:
             gpu.failed = True
             log_fallback(failure)
             gpu = None
-            bands, columns = ((side + _MERGE_TILE - 1) // _MERGE_TILE for side in depth.shape)
-            tiles = (np.zeros((bands, columns, count), dtype=bool)
-                     if bands * columns * count <= _MAX_MERGE_MASK_BYTES else None)
-            if tiles is not None:
-                active = _active_sources(depth, count, should_cancel, tiles=tiles)
-            if result is None:
-                result = create_frame(shape, np.uint16)
-            merge_sources(False)
-    else:
+    if not resident or failure is not None:
+        bands, columns = ((side + _MERGE_TILE - 1) // _MERGE_TILE for side in depth.shape)
+        # Limit the auxiliary mask for deep stacks.
+        tiles = (np.zeros((bands, columns, count), dtype=bool)
+                 if bands * columns * count <= _MAX_MERGE_MASK_BYTES else None)
+        active = _active_sources(depth, count, should_cancel, tiles=tiles)
+        source_frames.SOURCE_CACHE.clear()
+        if result is None:
+            result = create_frame(shape, np.uint16)
         merge_sources(False)
     if focus_callback is not None:
         focus_callback(depth, (65535 // (count - 1)) * (count - 1))

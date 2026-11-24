@@ -327,9 +327,9 @@ def test_alignment_memory_is_stack_independent_and_admitted_before_decode(monkey
     admitted = []
     original = alignment.resolve_frame
 
-    def resolve(frame):
+    def resolve(frame, *, should_cancel=None):
         assert admitted
-        return original(frame)
+        return original(frame, should_cancel=should_cancel)
 
     monkeypatch.setattr(alignment.resource_policy, 'plan_execution', lambda workload, **kw: admitted.append(workload.fixed_bytes))
     monkeypatch.setattr(alignment, 'resolve_frame', resolve)
