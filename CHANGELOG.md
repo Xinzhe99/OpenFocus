@@ -187,8 +187,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 - Admit large JPEG stacks for ECC using reduced grayscale decodes, including
   with GPU acceleration enabled. Keep registration warps at full resolution.
-- Budget sequential decode and processing peaks separately. Stage full-size
-  frames on scratch storage for OpenFocus A/B/C when memory is tight.
+- Budget sequential decode and processing peaks separately. Decode RGB JPEGs
+  directly into BGR and stage large deferred stacks one processed frame at a
+  time before OpenFocus fusion.
 - Release the isolated render worker after a memory error so the next render
   starts with fresh native memory and device contexts.
 - Default new watermarks to fusion results. Apply removes unchecked watermark

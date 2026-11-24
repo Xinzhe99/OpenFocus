@@ -556,7 +556,7 @@ class _JpegEccPreparation:
 
 def _plan_jpeg_ecc(source, downscale_width):
     """Plan direct grayscale decoding for a full-size JPEG source."""
-    from core.source_frames import SourceFrame
+    from core.source_frames import SourceFrame, _jpeg_full_buffer_bytes
 
     if (type(source) is not SourceFrame or source.transforms or source.linear_metadata is not None
             or source.scale != 1.0 or not source.path or source.dtype != np.uint8
@@ -573,7 +573,6 @@ def _plan_jpeg_ecc(source, downscale_width):
                 return None
             raw_width, raw_height = header.size
             bands = len(header.getbands())
-            progressive = header.info.get('progressive') or header.info.get('progression')
     except (OSError, Image.DecompressionBombError):
         return None
 
@@ -589,9 +588,9 @@ def _plan_jpeg_ecc(source, downscale_width):
         decoded_height = (raw_height + divisor - 1) // divisor
         if decoded_width >= requested_width and decoded_height >= requested_height:
             break
-    # Progressive JPEG decoders keep coefficients at the original geometry.
-    coefficients = (128 * bands * ((raw_width + 7) // 8) * ((raw_height + 7) // 8)
-                    if progressive else 0)
+    # A reduced output still needs native-size coefficients for multiple scans.
+    coefficients = (0 if source._jpeg_single_scan else
+                    _jpeg_full_buffer_bytes(raw_width, raw_height, bands))
     encoded = source.fingerprint[0]
     workspace = (encoded + coefficients + 2 * decoded_width * decoded_height
                  + 2 * width * height + 128 * raw_width + 128 * 1024)
@@ -983,6 +982,31 @@ def _perspective_output_shape(shape, dsize):
     return (dsize[1], dsize[0]) + channels
 
 
+def _perspective_scratch_bytes(frame, warp, shape):
+    from core.source_frames import SourceFrame
+
+    if (type(frame) is not SourceFrame or not frame._jpeg_components
+            or frame.scale != 1.0 or frame.transforms):
+        return None
+    # JPEG decode, orientation and resolution-cache reads all return packed
+    # pixels. OpenCV can borrow that input and write one independent output.
+    output = math.prod(shape) * frame.dtype.itemsize
+    hash_bytes = 128 * 1024
+    if warp._is_integer_crop(frame.shape, frame.dtype):
+        return output + hash_bytes
+    from core._perspective_gpu import _MAX_SIDE, _MAX_WORKSPACE_BYTES, _MIN_PIXELS
+
+    # OpenCV uses 32x32 mapping tiles within each stripe. The exact GPU path
+    # packs at most one source band, bounded by its total device workspace.
+    width, height = warp.dsize
+    stripes = min(height, (width * height + 65535) // 65536)
+    tile_bytes = stripes * 16 * 1024
+    band_bytes = (min(frame.nbytes, _MAX_WORKSPACE_BYTES)
+                  if width * height >= _MIN_PIXELS and max(width, height, *frame.shape[:2]) <= _MAX_SIDE
+                  else 0)
+    return output + hash_bytes + max(tile_bytes, band_bytes)
+
+
 @dataclass(frozen=True)
 class PerspectiveStage:
     method: str
@@ -1040,11 +1064,12 @@ class PerspectiveStage:
     def apply(self, images, *, defer_warps, should_cancel=None, workers=1):
         from core.source_frames import process_frame, resolve_frame
         self.validate_sources(images, should_cancel=should_cancel)
-        frames = [process_frame(image, PerspectiveWarp(source, matrix, dtype, self.dsize,
-                                                       should_cancel, method=self.method),
-                    shape=_perspective_output_shape(image.shape, self.dsize), should_cancel=should_cancel)
-                  for image, source, matrix, dtype in
-                  zip(images, self.sources, self.matrices, self.matrix_dtypes)]
+        frames = []
+        for image, source, matrix, dtype in zip(images, self.sources, self.matrices, self.matrix_dtypes):
+            warp = PerspectiveWarp(source, matrix, dtype, self.dsize, should_cancel, method=self.method)
+            shape = _perspective_output_shape(image.shape, self.dsize)
+            frames.append(process_frame(image, warp, shape=shape, should_cancel=should_cancel,
+                                        scratch_bytes=_perspective_scratch_bytes(image, warp, shape)))
         if defer_warps:
             return frames
         with _bounded_registration_map(resolve_frame, frames, workers, should_cancel,

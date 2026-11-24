@@ -537,9 +537,14 @@ def decode_image(path: str, *, allow_transparent_png: bool = False,
                 if img is not None and img.ndim == 2 and not preserve_grayscale:
                     img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
             else:
-                img = imagecodecs.jpeg8_decode(raw_bytes, outcolorspace='RGB')
+                # Use the decoder's explicit extension enum. Older wheels
+                # without it retain the portable RGB conversion path.
+                colors = getattr(imagecodecs.JPEG8, 'CS', None)
+                bgr = getattr(colors, 'EXT_BGR', None) if jpeg_mode == 'RGB' else None
+                img = imagecodecs.jpeg8_decode(raw_bytes, outcolorspace=bgr if bgr is not None else 'RGB')
                 if img is not None and img.ndim == 3 and img.shape[2] == 3:
-                    img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+                    if bgr is None:
+                        img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
                 elif img is not None and img.ndim == 2 and not preserve_grayscale:
                     img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
                 else:
@@ -547,6 +552,7 @@ def decode_image(path: str, *, allow_transparent_png: bool = False,
         except Exception:
             img = None
         if img is not None:
+            del raw_bytes
             _validate_depth(path, img.dtype)
             img = _downscale_page(img, jpeg_scale, area_resizer)
             return apply_exif_orientation(path, img)

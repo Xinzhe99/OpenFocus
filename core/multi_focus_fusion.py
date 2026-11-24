@@ -1067,6 +1067,8 @@ class MultiFocusFusion:
                 try:
                     # Borrow decoded sources already in the resolution scope
                     # without writing one-use intermediates.
+                    # Large stacks serialize full-frame warps and exposure
+                    # matching while keeping row-level parallelism.
                     with (cache_access, without_source_cache_growth(),
                           _profile().stage('snapshot_openfocus_b' if method_b else 'snapshot_native_sources')):
                         prepared = materialize_for_repeated_access(
@@ -1074,7 +1076,7 @@ class MultiFocusFusion:
                             resource_preference=self.resource_preference,
                             progress_callback=getattr(progress_callback, 'preparation', None),
                             required=required, staging_bytes=height * width * 48,
-                            parallel_processed=True)
+                            parallel_processed=not large_native_stack)
                 except ScratchSpaceError:
                     if required:
                         raise

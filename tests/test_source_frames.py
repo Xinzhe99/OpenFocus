@@ -1136,6 +1136,50 @@ def test_raw_jpeg_fallback_cancels_before_reading_next_preview(tmp_path, monkeyp
     assert frame.preview is None and attempts == [(1024, 768)]
 
 
+@pytest.mark.parametrize('scan', ['sequential', 'progressive', 'noninterleaved'])
+def test_jpeg_resolution_and_ecc_budget_account_for_first_scan(tmp_path, scan):
+    from core import registration
+
+    path = tmp_path / 'source.jpg'
+    width, height = 1536, 1024
+    Image.new('RGB', (width, height)).save(path, progressive=scan == 'progressive', subsampling=0)
+    if scan == 'noninterleaved':
+        # Header-only fixture with one component in the first sequential scan.
+        data = path.read_bytes()
+        start = data.index(b'\xff\xda')
+        path.write_bytes(data[:start + 2] + b'\x00\x08\x01' + data[start + 5:start + 7]
+                         + b'\x00\x3f\x00')
+
+    frame = sources.scan_source(path, header_only=True)[0]
+    encoded = frame.fingerprint[0]
+    assert frame._jpeg_single_scan is (scan == 'sequential')
+    estimate = sources.frame_resolution_bytes(frame, metadata_only=True)
+    ecc = registration._plan_jpeg_ecc(frame, 768)
+    if scan == 'sequential':
+        assert estimate < encoded + 3 * frame.nbytes
+        assert ecc.workspace_bytes < encoded + frame.nbytes
+    else:
+        assert estimate >= encoded + 3 * frame.nbytes
+        assert ecc.workspace_bytes >= encoded + 2 * frame.nbytes
+
+
+def test_deferred_jpeg_perspective_admits_one_full_size_output(tmp_path):
+    from dataclasses import replace
+    from core import registration
+
+    frame = sources.scan_source(_jpeg(tmp_path, shape=(24, 32)), header_only=True)[0]
+    shape = (8736, 11648, 3)
+    frame = replace(frame, shape=shape, native_shape=shape)
+    identity = registration._perspective_source_file(frame, None)
+    matrix = (1., 0., .25, 0., 1., .5, 0., 0., 1.)
+    stage = registration.PerspectiveStage('ecc', (identity, identity), (matrix, matrix),
+                                          ('float32', 'float32'), (0, 0, 0, 0), shape[1::-1])
+    warped, _ = stage.apply([frame, frame], defer_warps=True)
+
+    assert warped.nbytes <= warped.scratch_bytes < warped.nbytes * 2
+    assert sources.frame_resolution_bytes(warped) < 832 * 1024 ** 2
+
+
 def test_full_size_jpeg_resolves_with_bounded_workspace(tmp_path, monkeypatch):
     from core import resource_policy
 
