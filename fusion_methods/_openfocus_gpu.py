@@ -7,6 +7,7 @@ import hashlib
 import logging
 import os
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from threading import Event, Lock
 
 import numpy as np
@@ -148,12 +149,17 @@ def _program_cache_path(device, source: str, options=None) -> Path | None:
     if cache_dir is None:
         return None
     opts = tuple(str(opt) for opt in options) if options else ()
+    platform = getattr(device, 'platform', None)
     key = '|'.join((
         str(getattr(device, 'name', '')),
         str(getattr(device, 'vendor', '')),
         str(getattr(device, 'driver_version', '')),
         str(getattr(device, 'version', '')),
+        str(getattr(platform, 'name', '')),
+        str(getattr(platform, 'vendor', '')),
+        str(getattr(platform, 'version', '')),
         str(opts),
+        os.environ.get('PYOPENCL_BUILD_OPTIONS', ''),
     )).encode('utf-8', errors='replace')
     digest = hashlib.sha256(key + b'\0' + source.encode('utf-8')).hexdigest()
     return cache_dir / f'{digest}.clbin'
@@ -168,30 +174,36 @@ def _build_cached_program(cl, device, context, source, *, options=None):
         and hasattr(cl, 'program_info')
         and hasattr(cl.program_info, 'BINARIES')
     )
-    if can_binary and cache_path.is_file():
+    if can_binary:
         try:
             blob = cache_path.read_bytes()
             if blob:
                 prg = cl.Program(context, [device], [blob])
                 return prg.build(options=build_opts) if build_opts else prg.build()
         except Exception:
-            try:
-                cache_path.unlink(missing_ok=True)
-            except OSError:
-                pass
+            pass  # Missing, unreadable, or stale cache entries are rebuilt from source.
     prg = cl.Program(context, source)
     program = prg.build(options=build_opts) if build_opts else prg.build()
     if can_binary:
+        tmp_path = None
         try:
             binaries = program.get_info(cl.program_info.BINARIES)
             if isinstance(binaries, (list, tuple)) and binaries:
                 blob = binaries[0]
                 if isinstance(blob, (bytes, bytearray)) and blob:
-                    tmp_path = cache_path.with_suffix(f'.tmp.{os.getpid()}')
-                    tmp_path.write_bytes(blob)
-                    os.replace(tmp_path, cache_path)
+                    with NamedTemporaryFile(dir=cache_path.parent, prefix=cache_path.stem,
+                                            suffix='.tmp', delete=False) as stream:
+                        tmp_path = Path(stream.name)
+                        stream.write(blob)
+                    tmp_path.replace(cache_path)
         except Exception:
             pass
+        finally:
+            if tmp_path is not None:
+                try:
+                    tmp_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
     return program
 
 
@@ -229,6 +241,8 @@ def _prefetch_window(host_budget: int, host_staging: int, frame_bytes: int, coun
     headroom = max(0, int(host_budget) - int(host_staging))
     cpu_cap = max(1, (os.cpu_count() or 2) // 2)
     slot_cap = min(int(max_slots), cpu_cap)
+    if thread_count is not None and thread_count > 0:
+        slot_cap = min(slot_cap, thread_count - 1)
     return max(0, min(slot_cap, int(headroom // int(frame_bytes)), int(count) - 1))
 
 
@@ -283,11 +297,12 @@ def _iter_prefetched(items, prepare_fn, *, enabled: bool, should_cancel=None,
                 pending.append(submit_item(pool, next_submit))
                 next_submit += 1
             for index in range(total):
-                future = pending.popleft()
+                future = pending[0]
                 while not future.done():
                     _check_cancel(should_cancel)
                     wait((future,), timeout=0.05)
                 _check_cancel(should_cancel)
+                pending.popleft()
                 result = future.result()
                 while next_submit < total and len(pending) < slots:
                     pending.append(submit_item(pool, next_submit))
@@ -800,11 +815,11 @@ class Merge:
 
         self.acquire(should_cancel)
         try:
-            vram_cap = None
             if self.device.host_unified_memory:
                 # Device allocations share the same physical RAM as staging.
+                vram_cap = int(self.device.global_mem_size)
                 host_staging += vram_need
-                if host_staging > host_budget or vram_need > int(self.device.global_mem_size):
+                if host_staging > host_budget or vram_need > vram_cap:
                     logging.getLogger(__name__).info('OpenFocus full GPU depth exceeds unified memory budget')
                     return None
             else:
@@ -828,12 +843,13 @@ class Merge:
                 prefetch_slots = _prefetch_window(
                     host_budget, host_staging, source_peak, len(frames),
                 )
-                extra_host = max_src_bytes if max_src_bytes else (oh * ow * 8)
+                extra_host = max(max_src_bytes, pixels * 2)
                 unified_extra_vram = max_src_bytes if self.device.host_unified_memory else 0
                 ping_pong = (
                     len(frames) >= 2
-                    and (host_staging + prefetch_slots * source_peak + extra_host + unified_extra_vram) <= host_budget
-                    and (self.device.host_unified_memory or (vram_need + max_src_bytes) <= vram_cap)
+                    and (host_staging + prefetch_slots * source_peak + 2 * extra_host
+                         + unified_extra_vram) <= host_budget
+                    and (vram_need + max_src_bytes) <= vram_cap
                 )
                 engine = _GpuB(
                     self, img_resize, depth_kernels=depth_k, filter_kernels=filt_k,
@@ -1063,6 +1079,9 @@ class Merge:
         dst_buf = None
         try:
             self._flush_merge_slots()
+            _release_buffers(self._merge_src, self._merge_src_alt)
+            self._merge_src = self._merge_src_alt = None
+            self._merge_src_bytes = self._merge_src_alt_bytes = 0
             direct = (isinstance(output, np.ndarray)
                       and output.dtype == np.uint8
                       and output.shape == tuple(self._merge_shape)

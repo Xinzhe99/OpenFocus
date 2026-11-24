@@ -5,6 +5,7 @@ identities, never decoded frame stacks.
 """
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor, wait
+from contextvars import copy_context
 import hashlib
 import math
 import mmap
@@ -220,7 +221,7 @@ def _source_file_identity(frame):
 
 def _fast_file_digest(path: str, shape: tuple, dtype_str: str, page: int, file_stamp: tuple,
                       should_cancel=None) -> str:
-    """Compute a 64-hex SHA-256 identity from file size, stamp, geometry, and head/mid/tail bytes."""
+    """Compute a 64-hex SHA-256 identity from file size, stamp, geometry, and head/tail bytes."""
     _check_cancel(should_cancel)
     chunk = 65536
     digest = hashlib.sha256()
@@ -231,35 +232,11 @@ def _fast_file_digest(path: str, shape: tuple, dtype_str: str, page: int, file_s
         digest.update(str(size).encode('ascii'))
         fh.seek(0)
         digest.update(fh.read(chunk))
-        if size > 2 * chunk:
-            fh.seek((size - chunk) // 2)
-            digest.update(fh.read(chunk))
         if size > chunk:
             fh.seek(max(chunk, size - chunk))
             digest.update(fh.read(chunk))
     _check_cancel(should_cancel)
     return digest.hexdigest()
-
-
-def _alignment_source_identity(frame, image, should_cancel=None):
-    """Build a SourceFingerprint retaining pixel SHA-256 and O(1) file digest for SourceFrames."""
-    from core.source_frames import SourceFrame, is_direct_rgb_tiff
-
-    path, page, file_stamp = _source_file_identity(frame)
-    context = _source_context(frame)
-    pixel_sha = _pixel_digest(image, should_cancel, source=frame)
-    file_sha = ''
-    if (isinstance(frame, SourceFrame) and not is_direct_rgb_tiff(frame)
-            and path and file_stamp):
-        file_sha = _fast_file_digest(
-            path, tuple(image.shape), image.dtype.str, page, file_stamp, should_cancel,
-        )
-    identity = SourceFingerprint(
-        tuple(image.shape), image.dtype.str, pixel_sha, path, page, file_stamp,
-        context, 'pixel', file_sha,
-    )
-    identity.validate_file()
-    return identity
 
 
 @dataclass(frozen=True)
@@ -274,7 +251,6 @@ class SourceFingerprint:
     file_stamp: tuple = ()
     context: str = ''
     digest_kind: str = 'pixel'
-    file_sha256: str = ''
 
     def validate_file(self):
         if self.path and self.file_stamp:
@@ -306,14 +282,6 @@ class SourceFingerprint:
         self.validate_file()
         if tuple(image.shape) != self.shape or np.dtype(image.dtype).str != self.dtype:
             raise ValueError('Alignment source shape or dtype changed')
-        if (self.file_sha256 and self.path
-                and source is not None and not isinstance(source, np.ndarray)
-                and _source_file_identity(source) == (self.path, self.page, self.file_stamp)):
-            if _fast_file_digest(self.path, self.shape, self.dtype, self.page, self.file_stamp,
-                                 should_cancel) != self.file_sha256:
-                raise ValueError('Alignment source file changed')
-            self.validate_file()
-            return
         if self.digest_kind == 'file' and self.path:
             if _fast_file_digest(self.path, self.shape, self.dtype, self.page, self.file_stamp,
                                  should_cancel) != self.sha256:
@@ -1671,7 +1639,7 @@ class AlignmentPlan:
                 raise ValueError('Invalid source digest')
             fingerprint = SourceFingerprint(shape, dtype.str, digest, source['path'],
                 int(source['page']), tuple(source['file_stamp']), source.get('context', ''),
-                source.get('digest_kind', 'pixel'), source.get('file_sha256', ''))
+                source.get('digest_kind', 'pixel'))
             transforms.append(AlignmentTransform(int(item['source_index']), tuple(item['f8']),
                 tuple(item['pair_f8']), fingerprint, int(item['reference_index']),
                 int(item['rounds']), item['failure']))
@@ -1687,7 +1655,7 @@ def alignment_resolution_bytes(frame):
     return math.prod(shape) * dtype.itemsize + shape[1] * (channels * 64 + 256)
 
 
-def estimate_alignment_bytes(sources):
+def estimate_alignment_bytes(sources, *, decode_peak=None):
     """Anchor/previous gray, two pyramids, current decode and bounded scoring."""
     if not sources:
         raise ValueError('Alignment requires at least one source')
@@ -1695,8 +1663,9 @@ def estimate_alignment_bytes(sources):
     for source in sources:
         if _alignment_geometry(source)[0][:2] != (h, w):
             raise ValueError('Alignment sources must have equal shapes in both spatial axes')
-    return (h * w * 16 + max(_decode_bytes(frame) for frame in sources)
-            + w * 1024 + 16 * 1024 * 1024)
+    if decode_peak is None:
+        decode_peak = max(_decode_bytes(frame) for frame in sources)
+    return h * w * 16 + decode_peak + w * 1024 + 16 * 1024 * 1024
 
 
 def _warp_alignment(image, f8, should_cancel, *, spillable: bool = False):
@@ -2025,6 +1994,7 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
     use_prefetch = (
         not low_ram_spill
         and len(sources) >= 2
+        and _alignment_workers(h * w, min_items=1) > 1
         and frame_bytes > 0
         and (needed + frame_bytes + gray_bytes) <= host_budget
     )
@@ -2038,7 +2008,7 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
     def prepare_source(source_index, cancelled):
         _check_cancel(cancelled)
         frame = sources[source_index]
-        image = resolve_frame(frame)
+        image = resolve_frame(frame, should_cancel=cancelled)
         _check_cancel(cancelled)
         if not isinstance(image, np.ndarray) or _alignment_geometry(image) != _alignment_geometry(frame):
             raise ValueError('Alignment source metadata does not match decoded pixels')
@@ -2046,7 +2016,11 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
             from core.image_loader import _has_transparency, UnsupportedTransparency
             if _has_transparency(image):
                 raise UnsupportedTransparency('Registration of transparent images is unsupported')
-        identity = _alignment_source_identity(frame, image, cancelled)
+        path, page, file_stamp = _source_file_identity(frame)
+        identity = SourceFingerprint(tuple(image.shape), image.dtype.str,
+            _pixel_digest(image, cancelled, source=frame), path, page, file_stamp,
+            _source_context(frame))
+        identity.validate_file()
         gray = _alignment_gray16(image, cancelled, spillable=low_ram_spill)
         del image
         return identity, gray
@@ -2063,7 +2037,7 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
             return stop.is_set() or (should_cancel is not None and should_cancel())
 
         with ThreadPoolExecutor(max_workers=1, thread_name_prefix='openfocus-align-io') as pool:
-            pending = pool.submit(prepare_source, order[0], cancelled)
+            pending = pool.submit(copy_context().run, prepare_source, order[0], cancelled)
             try:
                 for pos in range(len(order)):
                     while not pending.done():
@@ -2073,7 +2047,7 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
                     prepared = pending.result()
                     pending = None
                     if pos + 1 < len(order):
-                        pending = pool.submit(prepare_source, order[pos + 1], cancelled)
+                        pending = pool.submit(copy_context().run, prepare_source, order[pos + 1], cancelled)
                     yield prepared
                     del prepared
             finally:

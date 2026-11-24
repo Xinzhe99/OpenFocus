@@ -61,8 +61,7 @@ def _estimate_registration_ram(frames, height, width, alignment, preview, source
         return sum(policy.registration_working_set(height, width, worker))
     if alignment == 'ecc':
         from constants import ECC_DOWNSCALE_WIDTH
-        from core._native import native_available
-        from core.registration import _ecc_resize_geometry, _ecc_width, _plan_jpeg_ecc
+        from core.registration import _ecc_resize_geometry, _ecc_solve_bytes, _ecc_width, _plan_jpeg_ecc
 
         ecc_w = _ecc_width(frames[0].shape, ECC_DOWNSCALE_WIDTH)
         max_pixels = prepare_bytes = 0
@@ -70,10 +69,7 @@ def _estimate_registration_ram(frames, height, width, alignment, preview, source
             h_r, w_r, _ = _ecc_resize_geometry(frame.shape, ecc_w)
             pixels = max(1, h_r) * max(1, w_r)
             max_pixels = max(max_pixels, pixels)
-            try:
-                jpeg = _plan_jpeg_ecc(frame, ecc_w)
-            except OSError:
-                jpeg = None
+            jpeg = _plan_jpeg_ecc(frame, ecc_w, metadata_only=True)
             if jpeg is not None:
                 prepare_bytes = max(prepare_bytes, jpeg.workspace_bytes, 2 * pixels + 64 * 1024)
                 continue
@@ -84,7 +80,7 @@ def _estimate_registration_ram(frames, height, width, alignment, preview, source
                    + 32 * (sum(frame.shape[:2]) + h_r + w_r * channels))
             prepare_bytes = max(prepare_bytes, req)
         gray_bytes = 6 * max_pixels
-        solve_bytes = (36 if native_available() else 124) * max_pixels + 128 * 1024
+        solve_bytes = _ecc_solve_bytes(max_pixels)
         return 2 * gray_bytes + max(prepare_bytes, solve_bytes)
     if alignment == 'openfocus':
         plane_cap = (policy.frame_ram_budget(snapshot)

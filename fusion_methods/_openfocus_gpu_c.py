@@ -572,7 +572,7 @@ class GpuC:
             ping_pong = (
                 bool(detail_levels) and total >= 2
                 and (need + upload_bytes) <= limit
-                and (staging + prefetch_slots * source_peak + upload_bytes
+                and (staging + prefetch_slots * source_peak + 2 * upload_bytes
                      + (upload_bytes if unified_memory else 0)) <= prefetch_budget
             )
             srcs = tuple(

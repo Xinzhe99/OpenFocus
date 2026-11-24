@@ -517,7 +517,7 @@ class GpuA:
             ping_pong = (
                 total >= 2
                 and (need + src_bytes) <= limit
-                and (staging + prefetch_slots * source_peak + src_bytes
+                and (staging + prefetch_slots * source_peak + 2 * src_bytes
                      + (src_bytes if unified_memory else 0)) <= prefetch_budget
             )
             src_bufs = tuple(

@@ -440,10 +440,30 @@ class ExactPerspectiveGpu:
                 if isinstance(exc, RegistrationCancelled):
                     raise
                 self.close()
-                self._vram_cache = None
                 self._disabled = True
                 _log.info('Deferred Lanczos4 warp using OpenCV: %s', exc)
                 return None
+
+    def _plan_bands(self, inverse, rect, src_size, channels, itemsize, fixed_bytes):
+        from core import resource_policy as policy
+
+        now = time.monotonic()
+        cache = self._vram_cache
+        cached = cache is not None and now - cache[0] < 2.0
+        memory = cache[1] if cached else None
+        while True:
+            if not cached:
+                memory = _free_vram(self._device)
+                self._vram_cache = (now, memory) if memory is not None else None
+            if memory is None:
+                return None
+            snapshot = policy.ResourceSnapshot(free_vram=memory[0], total_vram=memory[1])
+            budget = min(_MAX_WORKSPACE_BYTES, policy.vram_budget(snapshot))
+            plan = _band_plan(inverse, rect, src_size, channels, itemsize, budget,
+                              int(self._device.max_mem_alloc_size), fixed_bytes)
+            if plan is not None or not cached:
+                return plan
+            cached = False
 
     def _dispatch(self, program, image, inverse, tolerance, bgr_rev, rect, dsize, should_cancel):
         from core import resource_policy as policy
@@ -456,21 +476,8 @@ class ExactPerspectiveGpu:
         channels = image.shape[2] if image.ndim == 3 else 1
         itemsize = image.dtype.itemsize
         weights = weights8 if itemsize == 1 else weights16
-        now = time.monotonic()
-        memory = None
-        if self._vram_cache is not None and (now - self._vram_cache[0]) < 2.0:
-            memory = self._vram_cache[1]
-        if memory is None:
-            memory = _free_vram(self._device)
-            if memory is not None:
-                self._vram_cache = (now, memory)
-        if memory is None:
-            self._disabled = True
-            return None
-        snapshot = policy.ResourceSnapshot(free_vram=memory[0], total_vram=memory[1])
-        budget = min(_MAX_WORKSPACE_BYTES, policy.vram_budget(snapshot))
-        plan = _band_plan(inverse, rect, image.shape[:2], channels, itemsize, budget,
-                          int(self._device.max_mem_alloc_size), weights8.size + weights16.size + _REPAIR_BYTES)
+        plan = self._plan_bands(inverse, rect, (src_h, src_w), channels, itemsize,
+                                weights8.size + weights16.size + _REPAIR_BYTES)
         if plan is None:
             self._disabled = True
             return None
