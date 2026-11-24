@@ -424,11 +424,14 @@ class BatchConverterDialog(QDialog):
                     candidates.append(path)
             except OSError:
                 skipped += 1
+        images = [path for path in candidates if path.suffix.lower() in INPUT_EXTENSIONS]
+        skipped += len(candidates) - len(images)
+        images.sort(key=natural_sort_key)
         seen = {os.path.normcase(os.path.realpath(p)) for p in self.sources}
         added = 0
-        for path in sorted(candidates, key=natural_sort_key):
+        for path in images:
             key = os.path.normcase(os.path.realpath(path))
-            if key in seen or not path.is_file() or path.suffix.lower() not in INPUT_EXTENSIONS:
+            if key in seen or not path.is_file():
                 skipped += 1
                 continue
             seen.add(key)
