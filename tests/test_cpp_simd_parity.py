@@ -154,6 +154,8 @@ def test_exposure_gain_avx2_vs_scalar_bit_exact(w, dtype, channels):
     shape = (h, w) if channels == 1 else (h, w, channels)
     if dtype == np.float32:
         img = rng.uniform(0.0, 260.0, shape).astype(np.float32)
+        if channels == 1 and w >= 8:
+            img[0, :8] = [np.nan, -0.0, np.inf, -np.inf, -1.0, 0.0, 50.0, 255.0]
     else:
         hi = 256 if dtype == np.uint8 else 65536
         img = rng.integers(0, hi, shape, dtype=dtype)
@@ -210,6 +212,33 @@ def test_ab_packed_gray_down2_merge_select_avx2_vs_scalar(w):
         assert np.array_equal(arr_a, arr_s)
 
 
+def test_ab_gray_and_downsample_preserve_wide_codes():
+    mod = _require_avx2()
+    rgb = np.full((2, 17, 3), 40000, dtype=np.uint16)
+    gray = np.empty(rgb.shape[:2], dtype=np.uint16)
+    mod.of_gray_rows(rgb, gray, 0, 2, 2, False)
+    np.testing.assert_array_equal(gray, np.full(gray.shape, 14464, dtype=np.uint16))
+
+    source = np.full((2, 17), 1 << 30, dtype=np.int32)
+    source[:, -1] = -(1 << 30)
+    down = np.empty((1, 9), dtype=np.int32)
+    mod.of_down2_rows(source, down, 0, 1, 1)
+    np.testing.assert_array_equal(down, [[1 << 30] * 8 + [-(1 << 30)]])
+
+
+@pytest.mark.parametrize('channels', [1, 3])
+def test_float_tile_finalize_handles_nan_in_vector_and_tail(channels):
+    mod = _require_avx2()
+    values = np.array([[np.nan, -np.inf, np.inf, -0.0, 1, 2, 3, 4, np.nan]], dtype=np.float32)
+    expected = np.array([[0, 0, 255, 0, 1, 2, 3, 4, 0]], dtype=np.float32)
+    if channels == 3:
+        values = np.repeat(values[..., None], channels, axis=2)
+        expected = np.repeat(expected[..., None], channels, axis=2)
+    output = np.empty_like(values)
+    mod.of_tile_finalize(values, np.ones((1, 9), dtype=np.float32), output, 0, 1)
+    np.testing.assert_array_equal(output.view(np.uint32), expected.view(np.uint32))
+
+
 def test_ab_8k_width_and_500_layer_depth_parity():
     mod = _require_avx2()
     rng = np.random.default_rng(8500)
@@ -256,7 +285,7 @@ def test_ab_8k_width_and_500_layer_depth_parity():
 def test_openfocus_c_full_8k_and_500_layer_simd_parity() -> None:
     mod = _require_avx2()
     rng = np.random.default_rng(202611)
-    for h, w in [(33, 129), (8, 7680)]:
+    for h, w in [(33, 129), (12, 7680)]:
         cw = (w + 1) // 2
         ch = (h + 1) // 2
         fsrc3 = rng.uniform(-50.0, 65600.0, size=(h, w, 3)).astype(np.float32)
@@ -265,13 +294,11 @@ def test_openfocus_c_full_8k_and_500_layer_simd_parity() -> None:
         coarse3 = rng.uniform(0.0, 65535.0, size=(ch, cw, 3)).astype(np.float32)
         coarse1 = rng.uniform(0.0, 65535.0, size=(ch, cw)).astype(np.float32)
         weight_u16 = rng.integers(0, 65535, size=(h, w), dtype=np.uint16)
-        weight_f32 = rng.uniform(0.0, 5000.0, size=(h, w)).astype(np.float32)
         # 500-layer sparse winner case: few pixels improve over existing best
         best_u16_base = np.full((h, w), 60000, dtype=np.uint16)
         weight_u16_sparse = np.zeros((h, w), dtype=np.uint16)
-        weight_u16_sparse[1, 3:71] = np.uint16(61234)
-        best_f32_base = np.full((h, w), 4500.0, dtype=np.float32)
-        weight_f32_sparse = np.where(weight_f32 > 4500.0, weight_f32, np.float32(100.0))
+        weight_u16_sparse[4, 3:71] = 61234
+        weight_u16_sparse[4, -1] = 61234
         fsrc3_unit = rng.uniform(-0.2, 1.2, size=(h, w, 3)).astype(np.float32)
 
         def _run_c() -> tuple[np.ndarray, ...]:
@@ -296,11 +323,13 @@ def test_openfocus_c_full_8k_and_500_layer_simd_parity() -> None:
             mod.of_pyr_level0_merge_from_raw(
                 coarse3, u16_3, weight_u16_sparse, acc0_s, best0_s, win0_s, sc_up, 257.0, False, 499, 0, h
             )
+            assert best0_s[4, -1] == 61234 and win0_s[4, -1] == 499
 
             acc_m = np.zeros((h, w, 3), dtype=np.float32)
-            best_m = best_f32_base.copy()
+            best_m = best_u16_base.copy()
             win_m = np.full((h, w), 77, dtype=np.uint16)
-            mod.of_pyr_merge_f32(fsrc3, weight_f32_sparse, acc_m, best_m, win_m, False, 499, 0, h)
+            mod.of_pyr_merge_f32(fsrc3, weight_u16_sparse, acc_m, best_m, win_m, False, 499, 0, h)
+            assert best_m[4, -1] == 61234 and win_m[4, -1] == 499
 
             rec3 = fsrc3.copy()
             rec1 = fsrc1.copy()
@@ -330,6 +359,24 @@ def test_openfocus_c_full_8k_and_500_layer_simd_parity() -> None:
             assert np.array_equal(arr_a.view(np.uint8), arr_s.view(np.uint8)), f"mismatch at {idx} for {(h, w)}"
 
 
+def test_float_pyramid_output_and_upsample_preserve_special_values():
+    mod = _require_avx2()
+    pixels = np.array([np.nan, -0.0, -np.inf, np.inf, 0.0, -1.0, 1.0, -0.0, np.nan],
+                      dtype=np.float32).reshape(1, 3, 3)
+    output = np.empty_like(pixels)
+    mod.of_pyr_output_f32(pixels, output, False, 0, 1)
+    expected = np.array([np.nan, -0.0, 0.0, 255.0, 0.0, 0.0, 255.0, -0.0, np.nan],
+                        dtype=np.float32).reshape(1, 3, 3)
+    np.testing.assert_array_equal(output, expected)
+    np.testing.assert_array_equal(np.signbit(output), np.signbit(expected))
+
+    coarse = np.full((5, 6, 3), -0.0, dtype=np.float32)
+    target = np.full((9, 11, 3), -0.0, dtype=np.float32)
+    scratch = np.empty((5, 11, 3), dtype=np.float32)
+    mod.of_pyr_reconstruct_f32(coarse, target, scratch, 0, target.shape[0])
+    np.testing.assert_array_equal(target[4, 4:6].view(np.uint32), np.zeros((2, 3), dtype=np.uint32))
+
+
 def test_alignment_kernels_simd_and_8k_parity() -> None:
     mod = _require_avx2()
     rng = np.random.default_rng(112233)
@@ -347,7 +394,7 @@ def test_alignment_kernels_simd_and_8k_parity() -> None:
         w3_u16 = rng.integers(0, 65536, size=(16, w, 3), dtype=np.uint16)
         rw = max(17, min(w, 129))
 
-        def _run_align_clean():
+        def _run_align_clean(*, strided_translations=False):
             g8_3 = np.empty((4, w), dtype=np.uint16)
             g8_4 = np.empty((4, w), dtype=np.uint16)
             g16_3 = np.empty((4, w), dtype=np.uint16)
@@ -370,8 +417,9 @@ def test_alignment_kernels_simd_and_8k_parity() -> None:
             warp_1 = np.empty((16, w), dtype=np.uint8)
             warp_3 = np.empty((16, w, 3), dtype=np.uint16)
             warp_3_bgr = np.empty((16, w, 3), dtype=np.uint16)
-            trans_3 = np.empty((16, w, 3), dtype=np.uint16)
-            trans_reg = np.empty((8, rw, 3), dtype=np.uint16)
+            step = 2 if strided_translations else 1
+            trans_3 = np.empty((16, w * step, 3), dtype=np.uint16)[:, ::step]
+            trans_reg = np.empty((8, rw * step, 3), dtype=np.uint16)[:, ::step]
             mod.of_align_warp_alignment_int_rows(
                 w1, warp_1, 3.25, -1.75, float(w) * 0.5, 8.0, 0.015, 1.002, -0.015, 1.002, 0, 16, False
             )
@@ -405,7 +453,7 @@ def test_alignment_kernels_simd_and_8k_parity() -> None:
             mod.set_force_scalar(False)
             res_avx = _run_align_clean()
             mod.set_force_scalar(True)
-            res_sca = _run_align_clean()
+            res_sca = _run_align_clean(strided_translations=True)
         finally:
             mod.set_force_scalar(False)
 
@@ -470,6 +518,17 @@ def test_alignment_kernels_simd_and_8k_parity() -> None:
         assert np.array_equal(arr_a.view(np.uint8), arr_s.view(np.uint8)), f"score mismatch {idx}"
 
 
+def test_alignment_region_preserves_coordinates_outside_float32_integer_range():
+    mod = _require_avx2()
+    image = np.tile(np.arange(1, 17, dtype=np.uint16), (2, 1))
+    output = np.empty((1, 8), dtype=np.uint16)
+    mod.of_align_warp_alignment_region_int_rows(
+        image, output, 2, 16, 0, -16777217, 0,
+        0.0, 0.0, -16777216.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0, 1, False,
+    )
+    np.testing.assert_array_equal(output, [[1, 1, 2, 3, 4, 5, 6, 7]])
+
+
 def test_ab_depth_resample_and_8k_tile_acc_parity() -> None:
     mod = _require_avx2()
     rng = np.random.default_rng(121212)
@@ -488,6 +547,8 @@ def test_ab_depth_resample_and_8k_tile_acc_parity() -> None:
         act_det_sparse = np.full((h // 2, w // 2), 10000, dtype=np.uint16)
         act_det_sparse[1, 3:40] = np.uint16(55000)
         act_det_sparse[2, 3:40] = np.uint16(63000)
+        sec_init[4, : w // 2] = 64000
+        act_det_sparse[4] = 62000
 
         # 2. Half-axis u16 resample with repeating columns
         src_r = rng.integers(0, 65536, size=(h, w), dtype=np.uint16)
@@ -524,9 +585,7 @@ def test_ab_depth_resample_and_8k_tile_acc_parity() -> None:
 
             b_act = best_a_init.copy()
             d_act = np.full((h, w), 7, dtype=np.uint16)
-            v_act = rng.integers(0, 65536, size=(h, w), dtype=np.uint16)
-            # Force deterministic votes input across AVX2/Scalar
-            v_act[:] = g16
+            v_act = g16.copy()
             mod.of_select_activity_rows(act_sparse, b_act, d_act, v_act, 499, 1073741824, 0, h)
 
             b_det = best_a_init[: h // 2, : w // 2].copy()
@@ -552,9 +611,10 @@ def test_ab_depth_resample_and_8k_tile_acc_parity() -> None:
             w_8 = np.zeros((4, w), dtype=np.float32)
             acc_16 = np.zeros((4, w, 3), dtype=np.float32)
             w_16 = np.zeros((4, w), dtype=np.float32)
-            mod.of_tile_accumulate(acc_f, w_f, tile_f32, w2d, 0, 0, 2)
-            mod.of_tile_accumulate(acc_8, w_8, tile_u8, w2d, 0, 0, 2)
-            mod.of_tile_accumulate(acc_16, w_16, tile_u16, w2d, 0, 0, 2)
+            for weights in (w2d, w2d[::-1]):
+                mod.of_tile_accumulate(acc_f, w_f, tile_f32, weights, 0, 0, 2)
+                mod.of_tile_accumulate(acc_8, w_8, tile_u8, weights, 0, 0, 2)
+                mod.of_tile_accumulate(acc_16, w_16, tile_u16, weights, 0, 0, 2)
 
             return act, det, sm_det, b_act, d_act, v_act, b_det, s_det, w_det, out_res, u8_3_f, u8_3_t, u8_4_t, f32_3, acc_f, w_f, acc_8, w_8, acc_16, w_16
 
@@ -567,5 +627,114 @@ def test_ab_depth_resample_and_8k_tile_acc_parity() -> None:
             mod.set_force_scalar(False)
 
         for idx, (arr_a, arr_s) in enumerate(zip(res_a, res_s)):
-            assert np.array_equal(arr_a.view(np.uint8), arr_s.view(np.uint8)), f"pr12 mismatch {idx} w={w}"
+            assert np.array_equal(arr_a.view(np.uint8), arr_s.view(np.uint8)), f"depth/tile mismatch {idx} w={w}"
 
+
+def test_activity_preserves_shifted_input_view() -> None:
+    mod = _require_avx2()
+    gray = np.zeros((1, 8), dtype=np.uint16)
+    inputs = np.zeros((1, 9), dtype=np.uint16)
+    inputs[0, 0] = 1
+    actual = inputs.copy()
+    try:
+        mod.set_force_scalar(False)
+        mod.of_activity_rows(gray, actual[:, :8], actual[:, 1:], 0, 1)
+        mod.set_force_scalar(True)
+        mod.of_activity_rows(gray, inputs[:, :8], inputs[:, 1:], 0, 1)
+    finally:
+        mod.set_force_scalar(False)
+    np.testing.assert_array_equal(actual, inputs)
+
+
+def test_rgb_tile_accumulation_preserves_shifted_input_view() -> None:
+    mod = _require_avx2()
+    acc = np.zeros((1, 9, 3), dtype=np.float32)
+    acc[:, 0] = 1
+    weights = np.ones((1, 8), dtype=np.float32)
+    weight_acc = np.zeros((1, 9), dtype=np.float32)
+
+    mod.of_tile_accumulate(acc, weight_acc, acc[:, :8], weights, 1, 0, 1)
+
+    np.testing.assert_array_equal(acc, np.ones_like(acc))
+
+
+def test_ecc_solver_avx2_parity() -> None:
+    import cv2
+    from core._ecc_native import find_transform_ecc_homography
+
+    mod = _require_avx2()
+    rng = np.random.default_rng(131313)
+
+    for (h, w), (tx, ty, scale, ang, px, py) in [
+        ((163, 251), (2.4, -1.7, 1.006, 0.35, 0.0, 0.0)),
+        ((576, 1024), (1.8, 1.2, 1.004, -0.25, 6e-6, -5e-6)),
+    ]:
+        yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+        base = (
+            0.5
+            + 0.2 * np.sin(xx * (2.0 * np.pi / 43.0)) * np.cos(yy * (2.0 * np.pi / 37.0))
+            + 0.12 * np.cos((xx * 0.7 + yy * 1.2) * (2.0 * np.pi / 19.0))
+            + 0.08 * rng.normal(0.0, 1.0, size=(h, w)).astype(np.float32)
+        )
+        tpl = np.clip(cv2.GaussianBlur(base, (0, 0), 1.4), 0.0, 1.0).astype(np.float32)
+        cx, cy = (w - 1) * 0.5, (h - 1) * 0.5
+        th = np.deg2rad(ang)
+        c, s = np.cos(th) * scale, np.sin(th) * scale
+        M = np.array(
+            [
+                [c, -s, tx + cx - (c * cx - s * cy)],
+                [s, c, ty + cy - (s * cx + c * cy)],
+                [px, py, 1.0],
+            ],
+            dtype=np.float64,
+        )
+        src = cv2.warpPerspective(
+            tpl, M, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT
+        ).astype(np.float32)
+
+        try:
+            mod.set_force_scalar(False)
+            cc_a, W_a = find_transform_ecc_homography(tpl, src, max_iter=50, eps=1e-4, num_threads=2)
+            mod.set_force_scalar(True)
+            cc_s, W_s = find_transform_ecc_homography(tpl, src, max_iter=50, eps=1e-4, num_threads=2)
+        finally:
+            mod.set_force_scalar(False)
+
+        assert cc_a is not None and cc_s is not None
+        assert W_a is not None and W_s is not None
+        assert abs(cc_a - cc_s) < 1e-8
+        corners = np.array([[0.0, 0.0, 1.0], [w - 1.0, 0.0, 1.0], [w - 1.0, h - 1.0, 1.0], [0.0, h - 1.0, 1.0]])
+        pa = (corners @ W_a.astype(np.float64).T)
+        pa = pa[:, :2] / pa[:, 2:3]
+        ps = (corners @ W_s.astype(np.float64).T)
+        ps = ps[:, :2] / ps[:, 2:3]
+        max_corner_diff = float(np.sqrt(np.sum((pa - ps) ** 2, axis=1)).max())
+        assert max_corner_diff < 1e-5, f"shape={(h, w)} corner diff={max_corner_diff}"
+
+
+def test_ecc_preserves_scalar_variance_cutoff_decision() -> None:
+    mod = _require_avx2()
+    tpl = np.repeat((np.arange(16, dtype=np.float32) / 16)[:, None], 1024, axis=1)
+    src = np.full_like(tpl, 0.75)
+    src[1, 513:529] -= 3 * 2.0**-24
+    src[14, 513:529] += 3 * 2.0**-24
+    src[0, :] -= 2.0**-8
+    src[-1, :] += 2.0**-8
+    src[0, 1000:] = 1.0
+    src[-1, 1000:] = 0.5
+    _, _, _, rho_identity = mod.ecc_check_identical_and_stats(tpl, src, 1)
+    seed = np.eye(3, dtype=np.float64)
+
+    try:
+        mod.set_force_scalar(True)
+        scalar_ok, scalar_cc, scalar_warp = mod.ecc_refine_pyramids(
+            [tpl], [src], seed, rho_identity, 1, 1e-4, 1)
+        mod.set_force_scalar(False)
+        simd_ok, simd_cc, simd_warp = mod.ecc_refine_pyramids(
+            [tpl], [src], seed, rho_identity, 1, 1e-4, 1)
+    finally:
+        mod.set_force_scalar(False)
+
+    assert scalar_ok and simd_ok
+    assert simd_cc == pytest.approx(scalar_cc, abs=1e-8)
+    np.testing.assert_allclose(simd_warp, scalar_warp, rtol=0, atol=1e-7)

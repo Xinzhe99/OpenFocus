@@ -36,14 +36,20 @@ target_include_directories(_openfocus_native PRIVATE "${CMAKE_CURRENT_SOURCE_DIR
 if(MSVC)
   target_compile_options(_openfocus_native PRIVATE /O2 /fp:precise /EHsc)
   if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
-    set_property(SOURCE cpp/simd_avx2.cpp APPEND PROPERTY COMPILE_OPTIONS /arch:AVX2 /fp:precise)
+    # SIMD and scalar kernels use separate rounding for multiply and add.
+    set_property(SOURCE cpp/simd_avx2.cpp APPEND PROPERTY COMPILE_OPTIONS /arch:AVX2)
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+      set_property(SOURCE cpp/simd_avx2.cpp APPEND PROPERTY COMPILE_OPTIONS /clang:-ffp-contract=off)
+    else()
+      set_property(SOURCE cpp/simd_avx2.cpp APPEND PROPERTY COMPILE_OPTIONS /fp:strict)
+    endif()
   endif()
 else()
   target_compile_options(_openfocus_native PRIVATE -O3 -fno-fast-math)
   # The pyramid and axis resampling kernels round each multiplication and addition separately.
   set_property(SOURCE cpp/openfocus_c.cpp cpp/openfocus_pipeline.cpp cpp/alignment_kernels.cpp APPEND PROPERTY COMPILE_OPTIONS -ffp-contract=off)
   if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
-    set_property(SOURCE cpp/simd_avx2.cpp APPEND PROPERTY COMPILE_OPTIONS -mavx2 -mfma -ffp-contract=off)
+    set_property(SOURCE cpp/simd_avx2.cpp APPEND PROPERTY COMPILE_OPTIONS -mavx2 -ffp-contract=off)
   endif()
 endif()
 

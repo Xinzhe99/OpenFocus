@@ -1,4 +1,5 @@
 #include "ecc_solver.hpp"
+#include "simd_dispatch.hpp"
 #include "thread_pool.hpp"
 
 #include <algorithm>
@@ -332,6 +333,7 @@ void prepare_level_impl(
 
     const double g_scale = s * 0.125;
     const bool stride2 = rh >= 64 && rw >= 64;
+    const bool use_avx2 = rw >= 8 && simd::use_avx2();
 
     struct PrepBand {
         double norm_T2 = 0.0;
@@ -356,6 +358,14 @@ void prepare_level_impl(
             float* dst_t0 = out.T0.data() + ry * rw;
             float* dst_gx = out.gx.data() + ry * rw;
             float* dst_gy = out.gy.data() + ry * rw;
+
+            if (use_avx2) {
+                simd::ecc_prepare_level_row_avx2(
+                    rm1, r0, rp1, x0, rw, cx, inv_s, mean_t, g_scale, v,
+                    P, sample_h_row, stride2, dst_t0, dst_gx, dst_gy,
+                    local.norm_T2, local.js, local.tv, local.H);
+                continue;
+            }
 
             for (int rx = 0; rx < rw; ++rx) {
                 const int x = x0 + rx;
@@ -468,6 +478,7 @@ IcPassAccum<P> ic_pass_impl(
     double s,
     double inv_s,
     bool all_in,
+    bool use_avx2,
     int num_threads
 ) {
     const int rh = lvl.rh;
@@ -505,7 +516,13 @@ IcPassAccum<P> ic_pass_impl(
                 const double dsx = m00;
                 const double dsy = m10;
                 if (all_in) {
-                    for (int rx = 0; rx < rw; ++rx) {
+                    if (use_avx2) {
+                        simd::ecc_ic_pass_all_in_row_p6_avx2(
+                            src.data, w, h, t0_row, gx_row, gy_row, rw,
+                            sx, sy, dsx, dsy, u0, inv_s, v,
+                            rs_iw, rs_iw2, rs_tiw, local.raw_g);
+                    } else {
+                        for (int rx = 0; rx < rw; ++rx) {
                         int ix = static_cast<int>(sx);
                         int iy = static_cast<int>(sy);
                         if (ix >= w - 1) ix = w - 2; else if (ix < 0) ix = 0;
@@ -533,6 +550,7 @@ IcPassAccum<P> ic_pass_impl(
                         sx += dsx;
                         sy += dsy;
                         u += inv_s;
+                        }
                     }
                     local.cnt += rw;
                 } else {
@@ -587,7 +605,13 @@ IcPassAccum<P> ic_pass_impl(
                 double nsx = (m00 * u0 + m01 * v + m02) * s + cx * den;
                 double nsy = (m10 * u0 + m11 * v + m12) * s + cy * den;
                 if (all_in) {
-                    for (int rx = 0; rx < rw; ++rx) {
+                    if (use_avx2) {
+                        simd::ecc_ic_pass_all_in_row_p8_avx2(
+                            src.data, w, h, t0_row, gx_row, gy_row, rw,
+                            nsx, nsy, den, d_nsx, d_nsy, d_den, u0, inv_s, v,
+                            rs_iw, rs_iw2, rs_tiw, local.raw_g);
+                    } else {
+                        for (int rx = 0; rx < rw; ++rx) {
                         const double inv_d = 1.0 / den;
                         const double sx = nsx * inv_d;
                         const double sy = nsy * inv_d;
@@ -622,6 +646,7 @@ IcPassAccum<P> ic_pass_impl(
                         nsy += d_nsy;
                         den += d_den;
                         u += inv_s;
+                        }
                     }
                     local.cnt += rw;
                 } else {
@@ -792,6 +817,10 @@ void solve_level_impl(
     }
 
     const int64_t n_pix = static_cast<int64_t>(y1 - y0) * (x1 - x0);
+    const bool use_avx2 = lvl.rw >= 8 && simd::use_avx2();
+    constexpr double min_variance = 1e-12;
+    const double variance_error_scale = 8.0 * std::numeric_limits<double>::epsilon()
+        * (static_cast<double>(lvl.rw) + lvl.rh);
     double best_rho = -2.0;
     double best_M[9];
     std::memcpy(best_M, M, sizeof(double) * 9);
@@ -808,14 +837,24 @@ void solve_level_impl(
             iter_all_in = roi_all_in(W_tmp, w, h, y0, y1, x0, x1);
         }
 
-        const auto acc = ic_pass_impl<P>(lvl, src, M, y0, x0, cx, cy, s, inv_s, iter_all_in, num_threads);
+        const bool vector_pass = iter_all_in && use_avx2;
+        auto acc = ic_pass_impl<P>(lvl, src, M, y0, x0, cx, cy, s, inv_s,
+                                   iter_all_in, vector_pass, num_threads);
         if (acc.cnt * 4 < n_pix || acc.cnt <= 0) {
             break;
         }
         const double n_f = static_cast<double>(acc.cnt);
-        const double mean_iw = acc.sum_iw / n_f;
-        const double var_iw = acc.sum_iw2 - acc.sum_iw * mean_iw;
-        if (!std::isfinite(var_iw) || var_iw <= 1e-12) {
+        double mean_iw = acc.sum_iw / n_f;
+        double var_iw = acc.sum_iw2 - acc.sum_iw * mean_iw;
+        // Centering can cancel nearly the entire sum of squares. Keep the
+        // scalar decision when reduction rounding can cross the cutoff.
+        if (vector_pass && std::abs(var_iw - min_variance) <= variance_error_scale * acc.sum_iw2) {
+            acc = ic_pass_impl<P>(lvl, src, M, y0, x0, cx, cy, s, inv_s,
+                                  iter_all_in, false, num_threads);
+            mean_iw = acc.sum_iw / n_f;
+            var_iw = acc.sum_iw2 - acc.sum_iw * mean_iw;
+        }
+        if (!std::isfinite(var_iw) || var_iw <= min_variance) {
             break;
         }
 

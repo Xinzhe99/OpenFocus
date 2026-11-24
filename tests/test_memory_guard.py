@@ -179,6 +179,7 @@ def test_exposure_statistics_stream_mapped_source(tmp_path, dtype):
 @pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
 def test_exposure_statistics_cancel_between_source_strips(monkeypatch, dtype):
     from utils import image_utils
+    from core import _native
     from core.multi_focus_fusion import MultiFocusFusion
     from core.registration import RegistrationCancelled
 
@@ -191,6 +192,7 @@ def test_exposure_statistics_cancel_between_source_strips(monkeypatch, dtype):
         converted.append(result.shape[0])
         return result
 
+    monkeypatch.setattr(_native, 'load_native', lambda: None)
     monkeypatch.setattr(image_utils, '_load_image_kernels', lambda: None)
     monkeypatch.setattr(image_utils.np, 'ascontiguousarray', contiguous)
     with pytest.raises(RegistrationCancelled):

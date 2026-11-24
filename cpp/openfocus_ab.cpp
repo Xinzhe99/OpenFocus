@@ -537,20 +537,19 @@ void of_down2_rows_cpp(const ArrayView& image, const ArrayView& output,
                     const int32_t* ib = static_cast<const int32_t*>(image.data);
                     const int32_t* r0 = ib + top * image.stride[0];
                     const int32_t* r1 = ib + bottom * image.stride[0];
-                    if (avx2_ok) {
-                        simd::down2_row_i32_to_i32_avx2(r0, r1, dst, full_w, static_cast<int32_t>(scale));
-                    } else {
-                        for (int64_t x = 0; x < full_w; ++x) {
-                            const int64_t left = 2 * x;
-                            const int32_t tot = r0[left] + r0[left + 1] + r1[left] + r1[left + 1];
-                            dst[x] = (tot * static_cast<int32_t>(scale)) >> 2;
-                        }
+                    // Keep the sum and scaled product wide for int32 inputs.
+                    for (int64_t x = 0; x < full_w; ++x) {
+                        const int64_t left = 2 * x;
+                        const int64_t tot = static_cast<int64_t>(r0[left]) + r0[left + 1]
+                                          + r1[left] + r1[left + 1];
+                        dst[x] = static_cast<int32_t>((tot * scale) >> 2);
                     }
                     for (int64_t x = full_w; x < out_w; ++x) {
                         const int64_t left = 2 * x;
                         const int64_t right = (left + 1 < width) ? (left + 1) : (width - 1);
-                        const int32_t tot = r0[left] + r0[right] + r1[left] + r1[right];
-                        dst[x] = (tot * static_cast<int32_t>(scale)) >> 2;
+                        const int64_t tot = static_cast<int64_t>(r0[left]) + r0[right]
+                                          + r1[left] + r1[right];
+                        dst[x] = static_cast<int32_t>((tot * scale) >> 2);
                     }
                 }
             }
@@ -1316,11 +1315,13 @@ void of_activity_rows_cpp(const uint16_t* gray, int64_t g_sy,
                           uint16_t* out, int64_t o_sy,
                           int64_t w, int64_t start, int64_t stop) {
     const bool use_simd = simd::use_avx2() && w >= 8;
+    const auto row_bytes = w * sizeof(uint16_t);
     for (int64_t y = start; y < stop; ++y) {
         const uint16_t* gr = gray + y * g_sy;
         const uint16_t* fr = fine + y * f_sy;
         uint16_t* orow = out + y * o_sy;
-        if (use_simd) {
+        if (use_simd && !byte_ranges_overlap(orow, row_bytes, gr, row_bytes)
+                     && !byte_ranges_overlap(orow, row_bytes, fr, row_bytes)) {
             simd::activity_row_u16_avx2(gr, fr, orow, w);
         } else {
             for (int64_t x = 0; x < w; ++x) {
@@ -1338,6 +1339,7 @@ void of_detail_rows_cpp(const uint16_t* gray, int64_t g_sy, int64_t gh, int64_t 
     }
     const int64_t full_w = std::min(gw / 2, ow);
     const bool use_simd = simd::use_avx2() && full_w >= 8;
+    const auto row_bytes = full_w * sizeof(uint16_t);
     for (int64_t y = 0; y < oh; ++y) {
         int64_t y0 = 2 * (y + row_offset);
         if (y0 >= gh) {
@@ -1347,7 +1349,8 @@ void of_detail_rows_cpp(const uint16_t* gray, int64_t g_sy, int64_t gh, int64_t 
         const uint16_t* r0 = gray + y0 * g_sy;
         const uint16_t* r1 = gray + y1 * g_sy;
         uint16_t* orow = out + y * o_sy;
-        if (use_simd) {
+        if (use_simd && !byte_ranges_overlap(orow, row_bytes, r0, 2 * row_bytes)
+                     && !byte_ranges_overlap(orow, row_bytes, r1, 2 * row_bytes)) {
             simd::detail_row_u16_avx2(r0, r1, orow, full_w);
         } else {
             for (int64_t x = 0; x < full_w; ++x) {

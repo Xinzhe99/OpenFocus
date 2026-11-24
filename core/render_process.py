@@ -931,7 +931,11 @@ class RenderProcessWorker(RenderWorker):
                 self._child_error_evidence = evidence
                 raise RuntimeError(trans.t('render_worker_crashed').format(
                     reason=_exit_reason(exit_code_raw)))
-            reusable = idle_confirmed and process.is_alive() and not cancel_event.is_set()
+            category = (exchange.error_metadata or {}).get('error_category')
+            # A retry after memory exhaustion needs fresh native allocators
+            # and device contexts.
+            reusable = (idle_confirmed and process.is_alive() and not cancel_event.is_set()
+                        and category not in ('resource_limit', 'memory'))
             if exchange.error is not None:
                 self._child_error_evidence = exchange.error_metadata
                 if source_revision is not None and exchange.error == LEGACY_SOURCE_REQUEST_ERROR:

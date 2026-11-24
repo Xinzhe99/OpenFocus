@@ -10,6 +10,7 @@ from utils.image_utils import apply_exposure_gain, normalize_fuse_input
 from utils.logging_setup import log_action, log_debug
 from utils.performance_profile import current as _profile
 from utils.sorting import natural_sort_key
+from constants import FRAME_RAM_BUDGET_BYTES
 from core.algorithms import (FUSION_DEFAULT, _NEURAL_TILE_RUNNERS, get_fusion,
                              resolve_fusion_parameters, resolve_runner)
 from core.frame_storage import (capture_scratch, create_frame, is_mapped_frame,
@@ -1024,7 +1025,7 @@ class MultiFocusFusion:
                     self.prepared_cache = TileExposureCache(input_source, tuple(exposure_gains_))
             elif not native_neural_tiles and input_source is not before_snapshot:
                 self.prepared_cache = input_source
-        if self.algorithm == 'openfocus_b' and streaming_sources and not reuse_native:
+        if native_codes and streaming_sources and not reuse_native:
             from contextlib import nullcontext
             from core.frame_resolution_cache import ScopedCache, current
             from core.frame_storage import ScratchSpaceError
@@ -1039,9 +1040,10 @@ class MultiFocusFusion:
                     original = original.source
                 if isinstance(original, SourceFrame):
                     indices.append(index)
-            # Explicit tiles require repeated access. Whole-image B also
-            # stages expensive sources when disk can save a second decode.
-            required = stage = self.tile_enabled and needs_tiles and img_resize is None
+            # B can read a source twice. A and C stage only when the serial
+            # fusion working set cannot coexist with resolving one frame.
+            method_b = self.algorithm == 'openfocus_b'
+            required = stage = method_b and self.tile_enabled and needs_tiles and img_resize is None
             if indices and not required:
                 fixed, worker = resolve_runner(spec.resource_estimator)(
                     max(h, height), max(w, width), kwargs, count)
@@ -1050,26 +1052,31 @@ class MultiFocusFusion:
                 # Keep staging mandatory when the streamed peak exceeds RAM.
                 required = (fixed + worker + decode + source_cache_growth_bytes(input_source)
                             > budget)
-                expensive_decode = max(128 * 1024 ** 2, budget // 4)
-                stage = required or (decode > expensive_decode and any(
+                # Stage decodes that cannot fit the frame cache even on a
+                # machine that has spare RAM at the start of this render.
+                expensive_decode = max(128 * 1024 ** 2, min(budget // 4, FRAME_RAM_BUDGET_BYTES))
+                stage = required or (method_b and decode > expensive_decode and any(
                     frame_resolution_bytes(input_source[index]) > expensive_decode
                     for index in indices))
             if indices and stage:
                 sources = [input_source[index] for index in indices]
                 scope = current()
                 cache_access = (scope.reuse_only() if isinstance(scope, ScopedCache)
-                                and not self.retain_aligned_pixels else nullcontext())
+                                and (large_native_stack or not self.retain_aligned_pixels)
+                                else nullcontext())
                 try:
-                    # The snapshot supplies both passes. Borrow ECC's decoded
-                    # frames without writing one-use intermediates.
+                    # Borrow decoded sources already in the resolution scope
+                    # without writing one-use intermediates.
+                    # Large stacks serialize full-frame warps and exposure
+                    # matching while keeping row-level parallelism.
                     with (cache_access, without_source_cache_growth(),
-                          _profile().stage('snapshot_openfocus_b')):
+                          _profile().stage('snapshot_openfocus_b' if method_b else 'snapshot_native_sources')):
                         prepared = materialize_for_repeated_access(
                             sources, should_cancel, thread_count=kwargs.get('thread_count', 0),
                             resource_preference=self.resource_preference,
                             progress_callback=getattr(progress_callback, 'preparation', None),
                             required=required, staging_bytes=height * width * 48,
-                            parallel_processed=True)
+                            parallel_processed=not large_native_stack)
                 except ScratchSpaceError:
                     if required:
                         raise
@@ -1132,8 +1139,15 @@ class MultiFocusFusion:
                 if spec.resource_estimator:
                     fixed, per_worker = resolve_runner(spec.resource_estimator)(height, width, kwargs, count)
                     if streaming_sources:
-                        from core.source_frames import (frame_resolution_bytes,
+                        from core.source_frames import (frame_has_mapped_pixels, frame_resolution_bytes,
                                                         source_cache_growth_bytes)
+                        if (self.algorithm == 'openfocus_b' and img_resize is None
+                                and all(frame.dtype in (np.uint8, np.uint16) and frame_has_mapped_pixels(frame)
+                                        for frame in input_source)):
+                            # Its integer depth and merge planes spill to scratch
+                            # above the transient RAM cap. Device paths separately
+                            # admit their own host staging and VRAM.
+                            per_worker = min(per_worker, policy.frame_ram_budget(policy.probe_memory()))
                         per_worker += max(frame_resolution_bytes(frame) for frame in input_source)
                         fixed += source_cache_growth_bytes(input_source)
                     estimates = {'fixed_bytes': fixed, 'per_worker_bytes': per_worker}

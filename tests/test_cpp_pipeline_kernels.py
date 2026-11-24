@@ -72,7 +72,7 @@ def test_cpp_axis_plan_fill_matches_numba_exact(monkeypatch, src_len, dst_len, l
     (np.uint16, True),
 ])
 @pytest.mark.parametrize('shape,bgr_rev', [
-    ((256, 300, 3), False),
+    ((257, 400, 3), False),
     ((256, 300, 3), True),
     ((200, 220, 4), False),
 ])
@@ -90,10 +90,40 @@ def test_cpp_exposure_mean_matches_fallback(monkeypatch, dtype, norm, shape, bgr
         img = img[:, :, ::-1].copy()[:, :, ::-1]
 
     mean_cpp = image_utils._exposure_mean(img, normalize_uint16=norm)
+    mean_cancellable = image_utils._exposure_mean(img, lambda: False, normalize_uint16=norm)
     monkeypatch.setattr(_native, 'load_native', lambda: None)
+    monkeypatch.setattr(image_utils, '_load_image_kernels', lambda: None)
     mean_fb = image_utils._exposure_mean(img, normalize_uint16=norm)
 
-    assert abs(mean_cpp - mean_fb) <= 1e-4
+    assert mean_cpp == pytest.approx(mean_fb, rel=1e-13)
+    assert mean_cancellable == pytest.approx(mean_fb, rel=1e-13)
+
+
+@pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
+def test_cpp_exposure_mean_cancels_between_strips(monkeypatch, dtype):
+    from core import _native
+    from core.multi_focus_fusion import MultiFocusFusion
+    from core.registration import RegistrationCancelled
+
+    native = _native.load_native()
+    if native is None:
+        pytest.skip('Native module not built')
+
+    frame = np.full((1025, 31, 3), 120, dtype)
+    original = native.of_exposure_mean
+    reduced = []
+
+    def exposure_mean(strip, normalize_uint16, num_threads):
+        mean = original(strip, normalize_uint16, num_threads)
+        reduced.append(strip.shape[0])
+        return mean
+
+    monkeypatch.setattr(native, 'of_exposure_mean', exposure_mean)
+    with pytest.raises(RegistrationCancelled):
+        MultiFocusFusion('dct')._exposure_gains_for_source(
+            [frame], lambda: bool(reduced), normalize_uint16=True)
+    assert reduced == [128]
+    assert np.all(frame == 120)
 
 
 @pytest.mark.parametrize('dtype', [np.uint8, np.uint16, np.float32])
@@ -120,6 +150,35 @@ def test_cpp_apply_exposure_gain_matches_fallback(monkeypatch, dtype, shape):
         np.testing.assert_allclose(out_cpp, out_fb, rtol=1e-6, atol=1e-4)
     else:
         np.testing.assert_array_equal(out_cpp, out_fb)
+
+
+def test_cpp_parallel_exposure_preserves_shifted_row_aliases():
+    from core._native import load_native
+
+    native = load_native()
+    if native is None:
+        pytest.skip('Native module not built')
+    values = np.zeros((258, 512), dtype=np.float32)
+    values[0] = 1
+    gain = np.float32(1.003)
+    native.of_apply_exposure_gain(values[:-1], values[1:], float(gain), 0, 257, 4)
+
+    expected = np.full(258, gain, dtype=np.float32)
+    expected[0] = 1
+    np.multiply.accumulate(expected, out=expected)
+    np.testing.assert_array_equal(values, np.broadcast_to(expected[:, None], values.shape))
+
+
+def test_cpp_exposure_reads_alpha_in_source_type():
+    from core._native import load_native
+
+    native = load_native()
+    if native is None:
+        pytest.skip('Native module not built')
+    image = np.array([[[37, 62, 100, 201]]], dtype=np.uint8)
+    output = np.empty(image.shape, dtype=np.float32)
+    native.of_apply_exposure_gain(image, output, 2.0, 0, 1)
+    np.testing.assert_array_equal(output, [[[74.0, 124.0, 200.0, 201.0]]])
 
 
 @pytest.mark.parametrize('src_dtype', [np.float32, np.float64])

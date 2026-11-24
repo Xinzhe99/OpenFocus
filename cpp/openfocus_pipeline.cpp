@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <utility>
 #include <vector>
 
 #if defined(__SSE2__) || defined(_M_X64) || defined(_M_AMD64)
@@ -263,89 +264,92 @@ void of_fill_linear_axis_cpp(
     }
 }
 
+namespace {
+
+template <typename SampleT, typename Convert>
+double exposure_mean(const ArrayView& image, int num_threads, Convert convert) {
+    const int64_t height = image.shape[0];
+    const int64_t width = image.shape[1];
+    const int64_t channels = (image.ndim == 2) ? 1 : image.shape[2];
+    const int64_t take_c = std::min<int64_t>(3, channels);
+    const int64_t count = height * width * take_c;
+    if (count == 0) {
+        return std::nan("");
+    }
+
+    constexpr int64_t band = 128;
+    const int threads = (count >= 262144) ? std::max(1, num_threads) : 1;
+    const auto* base = static_cast<const SampleT*>(image.data);
+    const int64_t channel_stride = (image.ndim == 2) ? 0 : image.stride[2];
+    const bool packed_gray = image.ndim == 2 && image.stride[1] == 1;
+    const bool packed_color = channels == 3 && image.stride[1] == 3
+                              && (channel_stride == 1 || channel_stride == -1);
+    using SumT = decltype(convert(SampleT{}));
+    auto sum_band = [&](int64_t start, int64_t stop) {
+        SumT local = 0;
+        for (int64_t y = start; y < stop; ++y) {
+            const SampleT* row = base + y * image.stride[0];
+            SumT row_sum = 0;
+            if (packed_gray || packed_color) {
+                const SampleT* pixels = (channel_stride == -1) ? row - 2 : row;
+                const int64_t elems = width * take_c;
+                for (int64_t i = 0; i < elems; ++i) {
+                    row_sum += convert(pixels[i]);
+                }
+            } else {
+                for (int64_t x = 0; x < width; ++x) {
+                    const SampleT* px = row + x * image.stride[1];
+                    for (int64_t c = 0; c < take_c; ++c) {
+                        row_sum += convert(px[c * channel_stride]);
+                    }
+                }
+            }
+            local += row_sum;
+        }
+        return local;
+    };
+
+    SumT total = 0;
+    if (threads == 1 || height <= band) {
+        for (int64_t start = 0; start < height; start += band) {
+            total += sum_band(start, std::min(start + band, height));
+        }
+    } else {
+        const int64_t n_tasks = (height + band - 1) / band;
+        std::vector<SumT> partials(static_cast<size_t>(n_tasks));
+        parallel_bands(height, band, threads, [&](int64_t start, int64_t stop) {
+            partials[static_cast<size_t>(start / band)] = sum_band(start, stop);
+        });
+        for (SumT part : partials) {
+            total += part;
+        }
+    }
+    return static_cast<double>(total) / static_cast<double>(count);
+}
+
+}  // namespace
+
 double of_exposure_mean_cpp(
     const ArrayView& image,
     bool normalize_uint16,
     int num_threads
 ) {
-    const int64_t height = image.shape[0];
-    const int64_t width = image.shape[1];
-    if (height <= 0 || width <= 0) {
-        return std::nan("");
-    }
-    const int64_t channels = (image.ndim == 2) ? 1 : image.shape[2];
-    const int64_t take_c = std::min<int64_t>(3, channels);
-    const int64_t count = height * width * take_c;
-    const int64_t band = 128;
-    const int64_t n_tasks = (height + band - 1) / band;
-    const int threads = (count >= 262144) ? std::max(1, num_threads) : 1;
-
-    std::vector<uint64_t> partials(static_cast<size_t>(n_tasks), 0ULL);
     if (image.itemsize == 1) {
-        const auto* base = static_cast<const uint8_t*>(image.data);
-        parallel_bands(height, band, threads, [&](int64_t start, int64_t stop) {
-            uint64_t local = 0ULL;
-            for (int64_t y = start; y < stop; ++y) {
-                const uint8_t* row = base + y * image.stride[0];
-                uint64_t row_sum = 0ULL;
-                if (image.ndim == 2 && image.stride[1] == 1) {
-                    for (int64_t x = 0; x < width; ++x) {
-                        row_sum += row[x];
-                    }
-                } else if (channels == 3 && image.stride[1] == 3 && (image.stride[2] == 1 || image.stride[2] == -1)) {
-                    const uint8_t* rp = (image.stride[2] == 1) ? row : (row - 2);
-                    const int64_t elems = width * 3;
-                    for (int64_t i = 0; i < elems; ++i) {
-                        row_sum += rp[i];
-                    }
-                } else {
-                    for (int64_t x = 0; x < width; ++x) {
-                        const uint8_t* px = row + x * image.stride[1];
-                        for (int64_t c = 0; c < take_c; ++c) {
-                            row_sum += px[(image.ndim == 3 ? c * image.stride[2] : 0)];
-                        }
-                    }
-                }
-                local += row_sum;
-            }
-            partials[static_cast<size_t>(start / band)] = local;
-        });
-    } else {
-        const auto* base = static_cast<const uint16_t*>(image.data);
-        parallel_bands(height, band, threads, [&](int64_t start, int64_t stop) {
-            uint64_t local = 0ULL;
-            for (int64_t y = start; y < stop; ++y) {
-                const uint16_t* row = base + y * image.stride[0];
-                uint64_t row_sum = 0ULL;
-                if (image.ndim == 2 && image.stride[1] == 1) {
-                    for (int64_t x = 0; x < width; ++x) {
-                        row_sum += row[x];
-                    }
-                } else if (channels == 3 && image.stride[1] == 3 && (image.stride[2] == 1 || image.stride[2] == -1)) {
-                    const uint16_t* rp = (image.stride[2] == 1) ? row : (row - 2);
-                    const int64_t elems = width * 3;
-                    for (int64_t i = 0; i < elems; ++i) {
-                        row_sum += rp[i];
-                    }
-                } else {
-                    for (int64_t x = 0; x < width; ++x) {
-                        const uint16_t* px = row + x * image.stride[1];
-                        for (int64_t c = 0; c < take_c; ++c) {
-                            row_sum += px[(image.ndim == 3 ? c * image.stride[2] : 0)];
-                        }
-                    }
-                }
-                local += row_sum;
-            }
-            partials[static_cast<size_t>(start / band)] = local;
+        return exposure_mean<uint8_t>(image, num_threads, [](uint8_t value) {
+            return static_cast<uint64_t>(value);
         });
     }
-    uint64_t total = 0ULL;
-    for (uint64_t p : partials) {
-        total += p;
+    if (normalize_uint16) {
+        return exposure_mean<uint16_t>(image, num_threads, [](uint16_t value) {
+            // Match float32 fusion input normalization before summing in double.
+            constexpr float scale = 255.0f / 65535.0f;
+            const float normalized = static_cast<float>(value) * scale;
+            return static_cast<double>(normalized);
+        });
     }
-    const double scale = (image.itemsize == 2 && normalize_uint16) ? (255.0 / 65535.0) : 1.0;
-    return (static_cast<double>(total) * scale) / static_cast<double>(count);
+    return exposure_mean<uint16_t>(image, num_threads, [](uint16_t value) {
+        return static_cast<uint64_t>(value);
+    });
 }
 
 void of_apply_exposure_gain_cpp(
@@ -364,13 +368,35 @@ void of_apply_exposure_gain_cpp(
     const bool keep_alpha = (image.ndim == 3 && channels == 4);
     const int64_t color_c = keep_alpha ? 3 : channels;
     const int64_t rows = stop - start;
-    const int64_t total_elems = rows * width * channels;
-    const int threads = (total_elems >= 65536) ? std::max(1, num_threads) : 1;
-
-    const bool packed = (image.ndim == 2 && image.stride[1] == 1 && output.stride[1] == 1)
-                     || (image.ndim == 3 && image.stride[2] == 1 && image.stride[1] == channels
-                         && output.stride[2] == 1 && output.stride[1] == channels);
     const int64_t row_elems = width * channels;
+    const bool packed = image.ndim == output.ndim
+        && ((image.ndim == 2 && image.stride[1] == 1 && output.stride[1] == 1)
+            || (image.ndim == 3 && image.stride[2] == 1 && image.stride[1] == channels
+                && output.stride[2] == 1 && output.stride[1] == channels));
+    int threads = 1;
+    if (num_threads > 1 && rows > 128 && rows * row_elems >= 65536 && packed
+            && (output.stride[0] >= row_elems || output.stride[0] <= -row_elems)) {
+        // Parallel bands may write their own source samples in place, or
+        // write separate storage. Shifted aliases must keep serial row order.
+        const bool in_place = image.data == output.data && image.itemsize == output.itemsize
+            && image.stride[0] == output.stride[0];
+        if (in_place) {
+            threads = num_threads;
+        } else {
+            const auto byte_range = [&](const ArrayView& view) {
+                const auto base = reinterpret_cast<uintptr_t>(view.data);
+                const int64_t first = start * view.stride[0];
+                const int64_t last = (stop - 1) * view.stride[0];
+                return std::pair{base + std::min(first, last) * view.itemsize,
+                                 base + (std::max(first, last) + row_elems) * view.itemsize};
+            };
+            const auto [src_begin, src_end] = byte_range(image);
+            const auto [dst_begin, dst_end] = byte_range(output);
+            if (src_end <= dst_begin || dst_end <= src_begin) {
+                threads = num_threads;
+            }
+        }
+    }
     const bool use_avx2 = packed && (!keep_alpha) && simd::use_avx2() && row_elems >= 8;
 
     if (image.is_float && output.is_float && image.itemsize == 4 && output.itemsize == 4) {
@@ -526,10 +552,12 @@ void of_apply_exposure_gain_cpp(
                 }
             }
             if (keep_alpha) {
+                const double alpha = image.is_float ? read_f64_or_f32(image, y, x, 3)
+                                                    : static_cast<double>(read_u_idx(image, y, x, 3));
                 if (output.is_float) {
-                    write_f32_2d3d(output, y, x, 3, read_f32_2d3d(image, y, x, 3));
+                    write_f32_2d3d(output, y, x, 3, static_cast<float>(alpha));
                 } else {
-                    write_sample(output, y, x, 3, read_u_idx(image, y, x, 3));
+                    write_sample(output, y, x, 3, static_cast<int64_t>(alpha));
                 }
             }
         }
@@ -667,8 +695,20 @@ void of_tile_accumulate_cpp(
                                  || (tile.ndim == 3 && acc.ndim == 3 && tile.stride[2] == 1 && tile.stride[1] == channels
                                      && acc.stride[2] == 1 && acc.stride[1] == acc.shape[2]
                                      && acc.shape[2] == channels)));
-    const bool use_avx2_1c = packed_all && tile.is_float && tile.itemsize == 4 && channels == 1
-                          && simd::use_avx2() && fw >= 8;
+    const bool use_avx2 = packed_all && fw >= 8 && simd::use_avx2();
+    const bool use_avx2_1c = use_avx2 && channels == 1 && tile.is_float && tile.itemsize == 4;
+    const bool use_avx2_3c = use_avx2 && channels == 3;
+    const auto weight_bytes = fw * sizeof(float);
+    const auto tile_bytes = fw * 3 * tile.itemsize;
+    const auto rgb_bytes = weight_bytes * 3;
+    const auto disjoint_rgb_row = [&](const void* tr, const float* wr,
+                                      const float* war, const float* ar) {
+        return !byte_ranges_overlap(ar, rgb_bytes, tr, tile_bytes)
+            && !byte_ranges_overlap(ar, rgb_bytes, wr, weight_bytes)
+            && !byte_ranges_overlap(war, weight_bytes, tr, tile_bytes)
+            && !byte_ranges_overlap(war, weight_bytes, wr, weight_bytes)
+            && !byte_ranges_overlap(ar, rgb_bytes, war, weight_bytes);
+    };
 
     parallel_bands(fh, 64, threads, [&](int64_t start, int64_t stop) {
         for (int64_t dy = start; dy < stop; ++dy) {
@@ -681,7 +721,7 @@ void of_tile_accumulate_cpp(
                 if (use_avx2_1c) {
                     simd::tile_accumulate_f32_1c_row_avx2(tr, wr, ar, war, fw);
                 } else if (channels == 3) {
-                    if (simd::use_avx2() && fw >= 8) {
+                    if (use_avx2_3c && disjoint_rgb_row(tr, wr, war, ar)) {
                         simd::tile_accumulate_3c_row_avx2(tr, 0, wr, ar, war, fw);
                     } else {
                         for (int64_t dx = 0; dx < fw; ++dx) {
@@ -703,10 +743,8 @@ void of_tile_accumulate_cpp(
                     }
                 }
             } else if (packed_all && !tile.is_float && (tile.itemsize == 1 || tile.itemsize == 2)) {
-                if (channels == 3 && simd::use_avx2() && fw >= 8) {
-                    const void* tr = (tile.itemsize == 1)
-                        ? static_cast<const void*>(static_cast<const uint8_t*>(tile.data) + dy * tile.stride[0])
-                        : static_cast<const void*>(static_cast<const uint16_t*>(tile.data) + dy * tile.stride[0]);
+                const auto* tr = static_cast<const uint8_t*>(tile.data) + dy * tile.stride[0] * tile.itemsize;
+                if (use_avx2_3c && disjoint_rgb_row(tr, wr, war, ar)) {
                     simd::tile_accumulate_3c_row_avx2(tr, tile.itemsize == 1 ? 1 : 2, wr, ar, war, fw);
                 } else {
                     for (int64_t dx = 0; dx < fw; ++dx) {

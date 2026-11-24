@@ -1054,7 +1054,7 @@ NB_MODULE(_openfocus_native, m) {
           nb::arg("image"), nb::arg("normalize_uint16"), nb::arg("num_threads") = 4);
     m.def("of_apply_exposure_gain", &of_apply_exposure_gain_py,
           nb::arg("image"), nb::arg("output"), nb::arg("gain"),
-          nb::arg("start"), nb::arg("stop"), nb::arg("num_threads") = 4);
+          nb::arg("start"), nb::arg("stop"), nb::arg("num_threads") = 1);
     m.def("of_quantize_output", &of_quantize_output_py,
           nb::arg("src"), nb::arg("dst"), nb::arg("is_16bit"), nb::arg("num_threads") = 4);
     m.def("of_tile_accumulate", &of_tile_accumulate_py,
