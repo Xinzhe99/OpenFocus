@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools>=77"]
-build-backend = "setuptools.build_meta"
+requires = ["scikit-build-core>=0.10", "nanobind>=2.0"]
+build-backend = "scikit_build_core.build"
 
 [project]
 name = "openfocus"
@@ -61,18 +61,20 @@ Homepage = "https://github.com/Xinzhe99/OpenFocus"
 Documentation = "https://github.com/Xinzhe99/OpenFocus#command-line-usage"
 Changelog = "https://github.com/Xinzhe99/OpenFocus/blob/main/CHANGELOG.md"
 
-[tool.setuptools]
-packages = ["core", "core.control", "core.models", "core.models.stackmff_v3",
-            "core.models.stackmff_v1", "core.models.stackmff_v2",
-            "fusion_methods", "utils", "weights", "locales"]
-# Release languages are registered in TranslationManager.PACK_ORDER. The
-# package ships their importable modules even when no .py files are unpacked;
-# source installations may additionally discover extra language modules.
-py-modules = ["constants", "build_identity"]
+[tool.scikit-build]
+cmake.build-type = "Release"
+wheel.packages = ["core", "fusion_methods", "utils", "weights", "locales"]
+sdist.include = [
+    "CMakeLists.txt",
+    "cpp/**",
+    "constants.py",
+    "build_identity.py",
+    "LICENSE",
+    "README.md",
+    "docs/THIRD_PARTY_NOTICES.md",
+]
 
-[tool.setuptools.dynamic]
-version = { attr = "constants.APP_VERSION" }
-
-[tool.setuptools.package-data]
-weights = ["*.onnx", "*.pth"]
-core = ["py.typed", "accelerator_*.json"]
+[tool.scikit-build.metadata.version]
+provider = "scikit_build_core.metadata.regex"
+input = "constants.py"
+regex = 'APP_VERSION\s*=\s*"(?P<value>[^"]+)"'
