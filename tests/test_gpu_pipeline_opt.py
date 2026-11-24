@@ -21,14 +21,10 @@ from fusion_methods.openfocus_bc import openfocus_b_impl, openfocus_c_impl
 
 
 def _require_opencl_gpu():
-    try:
-        import pyopencl as cl
-    except Exception:
-        pytest.skip('pyopencl unavailable')
-    device = _openfocus_gpu._device(cl)
-    if device is None:
+    device_name = _openfocus_gpu.probe_device_name()
+    if not device_name:
         pytest.skip('OpenCL GPU unavailable')
-    return cl, device
+    return device_name
 
 
 def test_prefetch_window_and_multi_worker_order(monkeypatch):
@@ -368,7 +364,7 @@ def test_ecc_plan_still_admits_opencv_fallback_with_native_solver(monkeypatch):
 
 @pytest.mark.parametrize('algo', ['a', 'b', 'c'])
 def test_openfocus_abc_gpu_ping_pong_matches_cpu(algo):
-    _, device = _require_opencl_gpu()
+    device_name = _require_opencl_gpu()
     rng = np.random.default_rng(101)
     base = rng.integers(20, 235, (128, 128, 3), dtype=np.uint8)
     frames = []
@@ -382,7 +378,7 @@ def test_openfocus_abc_gpu_ping_pong_matches_cpu(algo):
     cpu = fuse(frames, use_gpu=False)
     devices = []
     gpu = fuse(frames, use_gpu=True, device_callback=devices.append)
-    assert devices == [_openfocus_gpu.opencl_device_name(device)]
+    assert devices == [device_name]
 
     diff = np.abs(cpu.astype(np.int32) - gpu.astype(np.int32))
     assert int(diff.max()) <= 1
