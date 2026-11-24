@@ -531,6 +531,62 @@ def _check_cancel(should_cancel):
         raise RegistrationCancelled()
 
 
+def _perspective_source_file(frame, should_cancel):
+    """Build a file-backed SourceFingerprint without decoding full-resolution pixels."""
+    from core.openfocus_alignment import (SourceFingerprint, _fast_file_digest,
+                                        _source_context, _source_file_identity)
+    path, page, stamp = _source_file_identity(frame)
+    dtype_str = np.dtype(frame.dtype).str
+    shape = tuple(frame.shape)
+    digest = _fast_file_digest(path, shape, dtype_str, page, stamp, should_cancel)
+    source = SourceFingerprint(shape, dtype_str, digest, path, page,
+                               stamp, _source_context(frame), digest_kind='file')
+    source.validate_file()
+    return source
+
+
+def _fast_jpeg_ecc_gray(source, downscale_width, should_cancel):
+    """Decode JPEG directly to scaled grayscale for ECC, returning (gray_u8, target_h, target_w) or None."""
+    from core.source_frames import SourceFrame, _orient
+    if type(source) is not SourceFrame or source.transforms or source.linear_metadata is not None:
+        return None
+    if source.scale != 1.0 or not source.path:
+        return None
+    ext = os.path.splitext(source.path)[1].lower()
+    if ext not in ('.jpg', '.jpeg', '.jpe', '.jfif'):
+        return None
+    target_height, target_width, scale = _ecc_resize_geometry(source.shape, downscale_width)
+    if scale >= 1.0:
+        return None
+    try:
+        import imagecodecs
+        from PIL import Image as PILImage
+        with PILImage.open(source.path) as hdr:
+            if hdr.format != 'JPEG' or hdr.mode == 'CMYK' or 'A' in hdr.getbands():
+                return None
+            raw_w, raw_h = hdr.size
+        with open(source.path, 'rb') as fh:
+            raw_bytes = fh.read()
+        _check_cancel(should_cancel)
+        req_w = target_width
+        req_h = target_height
+        if source.orientation in (5, 6, 7, 8):
+            req_w, req_h = target_height, target_width
+        scale_den = 1
+        for k in (8, 4, 2):
+            if (raw_w + k - 1) // k >= req_w and (raw_h + k - 1) // k >= req_h:
+                scale_den = k
+                break
+        gray = imagecodecs.jpeg8_decode(raw_bytes, outcolorspace='GRAY', scale=(1, scale_den))
+        if source.orientation != 1:
+            gray = _orient(gray, source.orientation)
+        if gray.shape[1] != target_width or gray.shape[0] != target_height:
+            gray = cv2.resize(gray, (target_width, target_height), interpolation=cv2.INTER_AREA)
+        return gray, scale
+    except Exception:
+        return None
+
+
 def _perspective_source(frame, image, should_cancel):
     from core.openfocus_alignment import (SourceFingerprint, _source_file_identity,
                                     _pixel_digest, _source_context)
@@ -1000,7 +1056,7 @@ class PerspectiveAlignmentPlan:
         for item in data['stages']:
             sources = tuple(SourceFingerprint(tuple(source['shape']), source['dtype'],
                 source['sha256'], source['path'], source['page'], tuple(source['file_stamp']),
-                source['context']) for source in item['sources'])
+                source['context'], source.get('digest_kind', 'pixel')) for source in item['sources'])
             stages.append(PerspectiveStage(item['method'], sources,
                 tuple(tuple(matrix) for matrix in item['matrices']), tuple(item['matrix_dtypes']),
                 tuple(item['bounds']), tuple(item['dsize'])))
@@ -1537,9 +1593,22 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
     termination_eps = 1e-4
     criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, number_of_iterations, termination_eps)
     ecc_native = None
+    use_pyr_reuse = False
+    pyr_builder = None
+    pyr_solver = None
     if (warp_mode == cv2.MOTION_HOMOGRAPHY
             and cv2.findTransformECC is _ORIGINAL_FIND_TRANSFORM_ECC):
         ecc_native = _load_ecc_native()
+        if ecc_native is not None:
+            from core._ecc_native import (
+                build_ecc_pyramid as _build_ecc_pyramid,
+                find_transform_ecc_homography as _default_ecc_native,
+                find_transform_ecc_homography_pyramids as _solve_ecc_pyramids,
+            )
+            if ecc_native is _default_ecc_native:
+                use_pyr_reuse = True
+                pyr_builder = _build_ecc_pyramid
+                pyr_solver = _solve_ecc_pyramids
 
     # A stack can revisit the same adjacent pair. Cache only small, successful
     # solve results, keyed by exact prepared pixels in their original order.
@@ -1550,38 +1619,43 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
     def preprocess(source):
         from core.openfocus_alignment import _is_bgr_rev
         from core.source_frames import resolve_frame, source_area_resizer
-        # Replace each intermediate so a deferred full-size decode can be
-        # released as soon as resize or color conversion no longer needs it.
-        with source_area_resizer(area_gpu):
-            pixels = resolve_frame(source, should_cancel=should_cancel)
-        identity = _perspective_source(source, pixels, should_cancel)
-        target_height, _, scale = _ecc_resize_geometry(pixels.shape, downscale_width)
-        is_rgb = False
-        if scale < 1.0:
-            resized = None
-            if area_gpu is not None:
-                # OpenCV keeps fx/fy when it rounds the destination height.
-                # An explicit size is equivalent only if it gives the same scale.
-                height = pixels.shape[0]
-                if target_height > 0 and target_height / height == scale:
-                    resized = area_gpu.resize(pixels, (downscale_width, target_height))
-            if resized is not None:
-                pixels = resized
+        fast = _fast_jpeg_ecc_gray(source, downscale_width, should_cancel) if area_gpu is None else None
+        if fast is not None:
+            pixels, scale = fast
+            identity = _perspective_source_file(source, should_cancel)
+        else:
+            # Replace each intermediate so a deferred full-size decode can be
+            # released as soon as resize or color conversion no longer needs it.
+            with source_area_resizer(area_gpu):
+                pixels = resolve_frame(source, should_cancel=should_cancel)
+            identity = _perspective_source(source, pixels, should_cancel)
+            target_height, _, scale = _ecc_resize_geometry(pixels.shape, downscale_width)
+            is_rgb = False
+            if scale < 1.0:
+                resized = None
+                if area_gpu is not None:
+                    # OpenCV keeps fx/fy when it rounds the destination height.
+                    # An explicit size is equivalent only if it gives the same scale.
+                    height = pixels.shape[0]
+                    if target_height > 0 and target_height / height == scale:
+                        resized = area_gpu.resize(pixels, (downscale_width, target_height))
+                if resized is not None:
+                    pixels = resized
+                elif _is_bgr_rev(pixels):
+                    pixels = cv2.resize(pixels[..., ::-1], (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+                    is_rgb = True
+                else:
+                    pixels = cv2.resize(pixels, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+                del resized
             elif _is_bgr_rev(pixels):
-                pixels = cv2.resize(pixels[..., ::-1], (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+                pixels = pixels[..., ::-1]
                 is_rgb = True
-            else:
-                pixels = cv2.resize(pixels, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
-            del resized
-        elif _is_bgr_rev(pixels):
-            pixels = pixels[..., ::-1]
-            is_rgb = True
 
-        if pixels.ndim != 2:
-            if pixels.shape[2] == 1:
-                pixels = pixels[:, :, 0]
-            else:
-                pixels = cv2.cvtColor(pixels, cv2.COLOR_RGB2GRAY if is_rgb else cv2.COLOR_BGR2GRAY)
+            if pixels.ndim != 2:
+                if pixels.shape[2] == 1:
+                    pixels = pixels[:, :, 0]
+                else:
+                    pixels = cv2.cvtColor(pixels, cv2.COLOR_RGB2GRAY if is_rgb else cv2.COLOR_BGR2GRAY)
         pixels = cv2.GaussianBlur(pixels, (5, 5), 0)
         # findTransformECC 的数值稳定性依赖归一化的浮点输入：uint8 的
         # 大幅值梯度会让优化步长过大，常见于小位移场景直接不收敛
@@ -1591,7 +1665,8 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
         key = None
         if recent_pairs is not None:
             key = gray.shape, hashlib.sha256(memoryview(gray)).digest()
-        return gray, scale, key, identity
+        prepared_data = pyr_builder(gray) if use_pyr_reuse else gray
+        return prepared_data, scale, key, identity
 
     print(f"Aligning {len(images)} images using ECC (Parallel Optimized)...")
 
@@ -1639,7 +1714,15 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
 
         cc, warp_matrix = None, None
         try:
-            if ecc_native is not None:
+            if use_pyr_reuse:
+                cc, warp_matrix = pyr_solver(
+                    prev_gray,
+                    curr_gray,
+                    max_iter=number_of_iterations,
+                    eps=termination_eps,
+                    num_threads=max_workers if len(images) == 2 else 1,
+                )
+            elif ecc_native is not None:
                 cc, warp_matrix = ecc_native(
                     prev_gray,
                     curr_gray,
@@ -1647,11 +1730,13 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
                     eps=termination_eps,
                 )
             if cc is None or warp_matrix is None:
+                tpl_full = prev_gray[0] if use_pyr_reuse else prev_gray
+                src_full = curr_gray[0] if use_pyr_reuse else curr_gray
                 rows = 3 if warp_mode == cv2.MOTION_HOMOGRAPHY else 2
                 warp_matrix = np.eye(rows, 3, dtype=np.float32)
                 cc, warp_matrix = cv2.findTransformECC(
-                    prev_gray,  # template
-                    curr_gray,  # input
+                    tpl_full,  # template
+                    src_full,  # input
                     warp_matrix,
                     warp_mode,
                     criteria,

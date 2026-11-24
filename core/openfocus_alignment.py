@@ -218,6 +218,26 @@ def _source_file_identity(frame):
             tuple(getattr(frame, 'fingerprint', ())))
 
 
+def _fast_file_digest(path: str, shape: tuple, dtype_str: str, page: int, file_stamp: tuple,
+                      should_cancel=None) -> str:
+    """Compute a 64-hex SHA-256 identity from file size, stamp, geometry, and head/tail bytes."""
+    _check_cancel(should_cancel)
+    chunk = 65536
+    digest = hashlib.sha256()
+    digest.update(f'{shape!r}:{dtype_str}:{int(page)}:{file_stamp!r}'.encode('utf-8'))
+    with open(path, 'rb') as fh:
+        fh.seek(0, os.SEEK_END)
+        size = fh.tell()
+        digest.update(str(size).encode('ascii'))
+        fh.seek(0)
+        digest.update(fh.read(chunk))
+        if size > chunk:
+            fh.seek(max(chunk, size - chunk))
+            digest.update(fh.read(chunk))
+    _check_cancel(should_cancel)
+    return digest.hexdigest()
+
+
 @dataclass(frozen=True)
 class SourceFingerprint:
     """Decoded pixel identity plus the descriptor's file identity, if present."""
@@ -229,6 +249,7 @@ class SourceFingerprint:
     page: int = 0
     file_stamp: tuple = ()
     context: str = ''
+    digest_kind: str = 'pixel'
 
     def validate_file(self):
         if self.path and self.file_stamp:
@@ -260,6 +281,12 @@ class SourceFingerprint:
         self.validate_file()
         if tuple(image.shape) != self.shape or np.dtype(image.dtype).str != self.dtype:
             raise ValueError('Alignment source shape or dtype changed')
+        if self.digest_kind == 'file' and self.path:
+            if _fast_file_digest(self.path, self.shape, self.dtype, self.page, self.file_stamp,
+                                 should_cancel) != self.sha256:
+                raise ValueError('Alignment source file changed')
+            self.validate_file()
+            return
         if _pixel_digest(image, should_cancel, source=source) != self.sha256:
             raise ValueError('Alignment source pixels changed')
         self.validate_file()
@@ -1601,7 +1628,8 @@ class AlignmentPlan:
             if len(digest) != 64 or any(c not in '0123456789abcdef' for c in digest):
                 raise ValueError('Invalid source digest')
             fingerprint = SourceFingerprint(shape, dtype.str, digest, source['path'],
-                int(source['page']), tuple(source['file_stamp']), source.get('context', ''))
+                int(source['page']), tuple(source['file_stamp']), source.get('context', ''),
+                source.get('digest_kind', 'pixel'))
             transforms.append(AlignmentTransform(int(item['source_index']), tuple(item['f8']),
                 tuple(item['pair_f8']), fingerprint, int(item['reference_index']),
                 int(item['rounds']), item['failure']))

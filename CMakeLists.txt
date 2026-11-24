@@ -23,6 +23,7 @@ nanobind_add_module(
   _openfocus_native
   NB_STATIC
   cpp/module.cpp
+  cpp/ecc_solver.cpp
 )
 
 target_include_directories(_openfocus_native PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/cpp")

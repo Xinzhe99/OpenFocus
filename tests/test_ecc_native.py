@@ -236,3 +236,83 @@ def test_registration_multithread_determinism(dtype_name, defer_warps):
                 assert np.allclose(a, b, atol=1e-5, rtol=1e-5)
             for p_cur, p_ref in zip(resolved, ref_pixels):
                 assert np.array_equal(p_cur, p_ref)
+
+
+def test_ecc_cpp_matches_numba_fallback_and_pyramid_api(monkeypatch):
+    from core import _ecc_native, _native
+
+    assert _native.native_available()
+    tpl = _make_textured_gray(320, 480, seed=77)
+    M_true = _build_homography(480, 320, 4.2, -3.1, scale=1.007, angle_deg=0.35, px=4e-6, py=-3e-6)
+    src = cv2.warpPerspective(tpl, M_true, (480, 320), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+
+    cc_cpp, W_cpp = _ecc_native.find_transform_ecc_homography(tpl, src, num_threads=2)
+    tpl_pyr = _ecc_native.build_ecc_pyramid(tpl)
+    src_pyr = _ecc_native.build_ecc_pyramid(src)
+    cc_pyr, W_pyr = _ecc_native.find_transform_ecc_homography_pyramids(tpl_pyr, src_pyr, num_threads=1)
+    assert cc_cpp is not None and W_cpp is not None and W_pyr is not None
+    assert cc_cpp == pytest.approx(cc_pyr, abs=1e-6)
+    assert _corner_error(W_cpp, W_pyr, 480, 320) < 1e-4
+
+    monkeypatch.setattr(_native, 'load_native', lambda: None)
+    cc_nb, W_nb = _ecc_native.find_transform_ecc_homography(tpl, src)
+    assert cc_nb is not None and W_nb is not None
+    assert cc_cpp == pytest.approx(cc_nb, abs=1e-5)
+    assert _corner_error(W_cpp, W_nb, 480, 320) < 0.01
+
+
+def test_jpeg_ecc_dct_fast_path_and_file_fingerprint_roundtrip(tmp_path, monkeypatch):
+    from PIL import Image
+    from core import frame_resolution_cache, frame_storage, source_frames
+    from core.openfocus_alignment import SourceFingerprint
+    from core.registration import PerspectiveAlignmentPlan, PerspectiveStage
+
+    scratch = tmp_path / 'scratch'
+    scratch.mkdir()
+    monkeypatch.setattr(frame_storage, '_storage_directory', str(scratch))
+    tpl = _make_textured_gray(1500, 2000, seed=31)
+    M_true = _build_homography(2000, 1500, 3.5, -2.5, scale=1.003, angle_deg=0.15)
+    src = cv2.warpPerspective(tpl, M_true, (2000, 1500), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+    frames = []
+    for idx, plane in enumerate((tpl, src)):
+        rgb = np.repeat(np.clip(np.rint(plane * 255.0), 0, 255).astype(np.uint8)[:, :, None], 3, axis=2)
+        p = tmp_path / f'frame_{idx}.jpg'
+        Image.fromarray(rgb, 'RGB').save(p, format='JPEG', quality=95)
+        frames.append(source_frames.scan_source(str(p), header_only=True)[0])
+
+    # Clear SOURCE_CACHE so we prove _align_ecc_impl did not populate full-res source cache via resolve_frame.
+    source_frames.SOURCE_CACHE.clear()
+    report = []
+    token = alignment_report.set(report)
+    stages = []
+    try:
+        with frame_storage.scratch_directory(), frame_resolution_cache.render_scope(frames):
+            out = _align_ecc_impl(
+                frames,
+                downscale_width=1000,
+                thread_count=2,
+                defer_warps=True,
+                plan_callback=stages.append,
+            )
+            cache_entries = len(list(scratch.glob('*')))
+    finally:
+        alignment_report.reset(token)
+
+    assert len(out) == 2 and len(stages) == 1
+    assert cache_entries == 0
+    assert all(src_fp.digest_kind == 'file' for src_fp in stages[0].sources)
+    assert report[1]['status'] == 'aligned'
+    err = _corner_error(np.linalg.inv(report[1]['transform']), M_true, 2000, 1500)
+    assert err < 0.25
+
+    plan = PerspectiveAlignmentPlan((stages[0],), '{}', 1000)
+    restored = PerspectiveAlignmentPlan.from_dict(plan.to_dict())
+    assert restored == plan
+    # validate_pixels succeeds on matching shape/dtype & unchanged disk file
+    dummy_arr = np.empty(frames[0].shape, dtype=frames[0].dtype)
+    restored.stages[0].sources[0].validate_pixels(dummy_arr, source=frames[0])
+    # File tampering invalidates file-digest fingerprint
+    with open(frames[0].path, 'ab') as fh:
+        fh.write(b'x')
+    with pytest.raises((OSError, ValueError)):
+        restored.stages[0].sources[0].validate_pixels(dummy_arr, source=frames[0])
