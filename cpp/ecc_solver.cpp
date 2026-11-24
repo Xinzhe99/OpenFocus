@@ -478,6 +478,7 @@ IcPassAccum<P> ic_pass_impl(
     double s,
     double inv_s,
     bool all_in,
+    bool use_avx2,
     int num_threads
 ) {
     const int rh = lvl.rh;
@@ -487,7 +488,6 @@ IcPassAccum<P> ic_pass_impl(
     const double m00 = M[0], m01 = M[1], m02 = M[2];
     const double m10 = M[3], m11 = M[4], m12 = M[5];
     const double m20 = M[6], m21 = M[7], m22 = M[8];
-    const bool use_avx2 = all_in && rw >= 8 && simd::use_avx2();
 
     const double u0 = (static_cast<double>(x0) - cx) * inv_s;
     const double w_max = static_cast<double>(w - 1);
@@ -817,6 +817,10 @@ void solve_level_impl(
     }
 
     const int64_t n_pix = static_cast<int64_t>(y1 - y0) * (x1 - x0);
+    const bool use_avx2 = lvl.rw >= 8 && simd::use_avx2();
+    constexpr double min_variance = 1e-12;
+    const double variance_error_scale = 8.0 * std::numeric_limits<double>::epsilon()
+        * (static_cast<double>(lvl.rw) + lvl.rh);
     double best_rho = -2.0;
     double best_M[9];
     std::memcpy(best_M, M, sizeof(double) * 9);
@@ -833,14 +837,24 @@ void solve_level_impl(
             iter_all_in = roi_all_in(W_tmp, w, h, y0, y1, x0, x1);
         }
 
-        const auto acc = ic_pass_impl<P>(lvl, src, M, y0, x0, cx, cy, s, inv_s, iter_all_in, num_threads);
+        const bool vector_pass = iter_all_in && use_avx2;
+        auto acc = ic_pass_impl<P>(lvl, src, M, y0, x0, cx, cy, s, inv_s,
+                                   iter_all_in, vector_pass, num_threads);
         if (acc.cnt * 4 < n_pix || acc.cnt <= 0) {
             break;
         }
         const double n_f = static_cast<double>(acc.cnt);
-        const double mean_iw = acc.sum_iw / n_f;
-        const double var_iw = acc.sum_iw2 - acc.sum_iw * mean_iw;
-        if (!std::isfinite(var_iw) || var_iw <= 1e-12) {
+        double mean_iw = acc.sum_iw / n_f;
+        double var_iw = acc.sum_iw2 - acc.sum_iw * mean_iw;
+        // Centering can cancel nearly the entire sum of squares. Keep the
+        // scalar decision when reduction rounding can cross the cutoff.
+        if (vector_pass && std::abs(var_iw - min_variance) <= variance_error_scale * acc.sum_iw2) {
+            acc = ic_pass_impl<P>(lvl, src, M, y0, x0, cx, cy, s, inv_s,
+                                  iter_all_in, false, num_threads);
+            mean_iw = acc.sum_iw / n_f;
+            var_iw = acc.sum_iw2 - acc.sum_iw * mean_iw;
+        }
+        if (!std::isfinite(var_iw) || var_iw <= min_variance) {
             break;
         }
 

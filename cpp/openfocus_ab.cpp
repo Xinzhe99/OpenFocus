@@ -1315,11 +1315,13 @@ void of_activity_rows_cpp(const uint16_t* gray, int64_t g_sy,
                           uint16_t* out, int64_t o_sy,
                           int64_t w, int64_t start, int64_t stop) {
     const bool use_simd = simd::use_avx2() && w >= 8;
+    const auto row_bytes = w * sizeof(uint16_t);
     for (int64_t y = start; y < stop; ++y) {
         const uint16_t* gr = gray + y * g_sy;
         const uint16_t* fr = fine + y * f_sy;
         uint16_t* orow = out + y * o_sy;
-        if (use_simd) {
+        if (use_simd && !byte_ranges_overlap(orow, row_bytes, gr, row_bytes)
+                     && !byte_ranges_overlap(orow, row_bytes, fr, row_bytes)) {
             simd::activity_row_u16_avx2(gr, fr, orow, w);
         } else {
             for (int64_t x = 0; x < w; ++x) {
@@ -1337,6 +1339,7 @@ void of_detail_rows_cpp(const uint16_t* gray, int64_t g_sy, int64_t gh, int64_t 
     }
     const int64_t full_w = std::min(gw / 2, ow);
     const bool use_simd = simd::use_avx2() && full_w >= 8;
+    const auto row_bytes = full_w * sizeof(uint16_t);
     for (int64_t y = 0; y < oh; ++y) {
         int64_t y0 = 2 * (y + row_offset);
         if (y0 >= gh) {
@@ -1346,7 +1349,8 @@ void of_detail_rows_cpp(const uint16_t* gray, int64_t g_sy, int64_t gh, int64_t 
         const uint16_t* r0 = gray + y0 * g_sy;
         const uint16_t* r1 = gray + y1 * g_sy;
         uint16_t* orow = out + y * o_sy;
-        if (use_simd) {
+        if (use_simd && !byte_ranges_overlap(orow, row_bytes, r0, 2 * row_bytes)
+                     && !byte_ranges_overlap(orow, row_bytes, r1, 2 * row_bytes)) {
             simd::detail_row_u16_avx2(r0, r1, orow, full_w);
         } else {
             for (int64_t x = 0; x < full_w; ++x) {

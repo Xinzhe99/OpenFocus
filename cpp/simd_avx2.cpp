@@ -2501,15 +2501,18 @@ void select_detail_row_u16_avx2(
     for (; x + 16 <= w; x += 16) {
         const __m256i va = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(ar + x));
         const __m256i vs = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(sr + x));
-        const __m256i le_s = _mm256_cmpeq_epi16(_mm256_max_epu16(va, vs), vs);
+        const __m256i max_s = _mm256_max_epu16(va, vs);
         const __m256i vb = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(br + x));
         const __m256i le_b = _mm256_cmpeq_epi16(_mm256_max_epu16(va, vb), vb);
-        if (_mm256_testc_si256(_mm256_and_si256(le_s, le_b), all_ones)) {
+        if (_mm256_testc_si256(le_b, all_ones)) {
+            const __m256i le_s = _mm256_cmpeq_epi16(max_s, vs);
+            if (!_mm256_testc_si256(le_s, all_ones)) {
+                _mm256_storeu_si256(reinterpret_cast<__m256i*>(sr + x), max_s);
+            }
             continue;
         }
         const __m256i vw = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(wr + x));
-        const __m256i sr_step1 = _mm256_blendv_epi8(va, vs, le_s);
-        const __m256i new_sr = _mm256_blendv_epi8(vb, sr_step1, le_b);
+        const __m256i new_sr = _mm256_blendv_epi8(vb, max_s, le_b);
         const __m256i new_br = _mm256_blendv_epi8(va, vb, le_b);
         const __m256i new_wr = _mm256_blendv_epi8(v_code, vw, le_b);
         _mm256_storeu_si256(reinterpret_cast<__m256i*>(sr + x), new_sr);

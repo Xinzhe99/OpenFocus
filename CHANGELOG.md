@@ -186,7 +186,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   arithmetic for strided views, wide integer sums, and float rounding.
 - Use AVX2 for OpenFocus A/B depth selection, RGB tile accumulation, and ECC
   affine and homography refinement. Use fused multiply-add for depth
-  resampling on supported CPUs while preserving scalar rounding.
+  resampling on supported CPUs. Retain scalar update order for overlapping
+  image views and scalar variance decisions for nearly flat ECC samples.
 - Check repeated original paths once when validating a desktop export
   destination, including exports from large image stacks.
 

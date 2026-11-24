@@ -695,8 +695,20 @@ void of_tile_accumulate_cpp(
                                  || (tile.ndim == 3 && acc.ndim == 3 && tile.stride[2] == 1 && tile.stride[1] == channels
                                      && acc.stride[2] == 1 && acc.stride[1] == acc.shape[2]
                                      && acc.shape[2] == channels)));
-    const bool use_avx2_1c = packed_all && tile.is_float && tile.itemsize == 4 && channels == 1
-                          && simd::use_avx2() && fw >= 8;
+    const bool use_avx2 = packed_all && fw >= 8 && simd::use_avx2();
+    const bool use_avx2_1c = use_avx2 && channels == 1 && tile.is_float && tile.itemsize == 4;
+    const bool use_avx2_3c = use_avx2 && channels == 3;
+    const auto weight_bytes = fw * sizeof(float);
+    const auto tile_bytes = fw * 3 * tile.itemsize;
+    const auto rgb_bytes = weight_bytes * 3;
+    const auto disjoint_rgb_row = [&](const void* tr, const float* wr,
+                                      const float* war, const float* ar) {
+        return !byte_ranges_overlap(ar, rgb_bytes, tr, tile_bytes)
+            && !byte_ranges_overlap(ar, rgb_bytes, wr, weight_bytes)
+            && !byte_ranges_overlap(war, weight_bytes, tr, tile_bytes)
+            && !byte_ranges_overlap(war, weight_bytes, wr, weight_bytes)
+            && !byte_ranges_overlap(ar, rgb_bytes, war, weight_bytes);
+    };
 
     parallel_bands(fh, 64, threads, [&](int64_t start, int64_t stop) {
         for (int64_t dy = start; dy < stop; ++dy) {
@@ -709,7 +721,7 @@ void of_tile_accumulate_cpp(
                 if (use_avx2_1c) {
                     simd::tile_accumulate_f32_1c_row_avx2(tr, wr, ar, war, fw);
                 } else if (channels == 3) {
-                    if (simd::use_avx2() && fw >= 8) {
+                    if (use_avx2_3c && disjoint_rgb_row(tr, wr, war, ar)) {
                         simd::tile_accumulate_3c_row_avx2(tr, 0, wr, ar, war, fw);
                     } else {
                         for (int64_t dx = 0; dx < fw; ++dx) {
@@ -731,10 +743,8 @@ void of_tile_accumulate_cpp(
                     }
                 }
             } else if (packed_all && !tile.is_float && (tile.itemsize == 1 || tile.itemsize == 2)) {
-                if (channels == 3 && simd::use_avx2() && fw >= 8) {
-                    const void* tr = (tile.itemsize == 1)
-                        ? static_cast<const void*>(static_cast<const uint8_t*>(tile.data) + dy * tile.stride[0])
-                        : static_cast<const void*>(static_cast<const uint16_t*>(tile.data) + dy * tile.stride[0]);
+                const auto* tr = static_cast<const uint8_t*>(tile.data) + dy * tile.stride[0] * tile.itemsize;
+                if (use_avx2_3c && disjoint_rgb_row(tr, wr, war, ar)) {
                     simd::tile_accumulate_3c_row_avx2(tr, tile.itemsize == 1 ? 1 : 2, wr, ar, war, fw);
                 } else {
                     for (int64_t dx = 0; dx < fw; ++dx) {

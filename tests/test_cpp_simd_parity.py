@@ -630,6 +630,34 @@ def test_ab_depth_resample_and_8k_tile_acc_parity() -> None:
             assert np.array_equal(arr_a.view(np.uint8), arr_s.view(np.uint8)), f"depth/tile mismatch {idx} w={w}"
 
 
+def test_activity_preserves_shifted_input_view() -> None:
+    mod = _require_avx2()
+    gray = np.zeros((1, 8), dtype=np.uint16)
+    inputs = np.zeros((1, 9), dtype=np.uint16)
+    inputs[0, 0] = 1
+    actual = inputs.copy()
+    try:
+        mod.set_force_scalar(False)
+        mod.of_activity_rows(gray, actual[:, :8], actual[:, 1:], 0, 1)
+        mod.set_force_scalar(True)
+        mod.of_activity_rows(gray, inputs[:, :8], inputs[:, 1:], 0, 1)
+    finally:
+        mod.set_force_scalar(False)
+    np.testing.assert_array_equal(actual, inputs)
+
+
+def test_rgb_tile_accumulation_preserves_shifted_input_view() -> None:
+    mod = _require_avx2()
+    acc = np.zeros((1, 9, 3), dtype=np.float32)
+    acc[:, 0] = 1
+    weights = np.ones((1, 8), dtype=np.float32)
+    weight_acc = np.zeros((1, 9), dtype=np.float32)
+
+    mod.of_tile_accumulate(acc, weight_acc, acc[:, :8], weights, 1, 0, 1)
+
+    np.testing.assert_array_equal(acc, np.ones_like(acc))
+
+
 def test_ecc_solver_avx2_parity() -> None:
     import cv2
     from core._ecc_native import find_transform_ecc_homography
@@ -682,3 +710,31 @@ def test_ecc_solver_avx2_parity() -> None:
         ps = ps[:, :2] / ps[:, 2:3]
         max_corner_diff = float(np.sqrt(np.sum((pa - ps) ** 2, axis=1)).max())
         assert max_corner_diff < 1e-5, f"shape={(h, w)} corner diff={max_corner_diff}"
+
+
+def test_ecc_preserves_scalar_variance_cutoff_decision() -> None:
+    mod = _require_avx2()
+    tpl = np.repeat((np.arange(16, dtype=np.float32) / 16)[:, None], 1024, axis=1)
+    src = np.full_like(tpl, 0.75)
+    src[1, 513:529] -= 3 * 2.0**-24
+    src[14, 513:529] += 3 * 2.0**-24
+    src[0, :] -= 2.0**-8
+    src[-1, :] += 2.0**-8
+    src[0, 1000:] = 1.0
+    src[-1, 1000:] = 0.5
+    _, _, _, rho_identity = mod.ecc_check_identical_and_stats(tpl, src, 1)
+    seed = np.eye(3, dtype=np.float64)
+
+    try:
+        mod.set_force_scalar(True)
+        scalar_ok, scalar_cc, scalar_warp = mod.ecc_refine_pyramids(
+            [tpl], [src], seed, rho_identity, 1, 1e-4, 1)
+        mod.set_force_scalar(False)
+        simd_ok, simd_cc, simd_warp = mod.ecc_refine_pyramids(
+            [tpl], [src], seed, rho_identity, 1, 1e-4, 1)
+    finally:
+        mod.set_force_scalar(False)
+
+    assert scalar_ok and simd_ok
+    assert simd_cc == pytest.approx(scalar_cc, abs=1e-8)
+    np.testing.assert_allclose(simd_warp, scalar_warp, rtol=0, atol=1e-7)

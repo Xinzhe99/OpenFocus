@@ -14,6 +14,16 @@ struct ArrayView {
     bool is_float = false;
 };
 
+inline bool byte_ranges_overlap(const void* lhs, uint64_t lhs_bytes,
+                                const void* rhs, uint64_t rhs_bytes) {
+    if (lhs_bytes == 0 || rhs_bytes == 0) {
+        return false;
+    }
+    const auto left = reinterpret_cast<uintptr_t>(lhs);
+    const auto right = reinterpret_cast<uintptr_t>(rhs);
+    return left <= right ? right - left < lhs_bytes : left - right < rhs_bytes;
+}
+
 void of_gray_rows_cpp(const ArrayView& image, const ArrayView& output,
                       int64_t start, int64_t stop, int64_t scale, bool depth_color);
 
