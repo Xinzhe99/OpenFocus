@@ -36,11 +36,36 @@ class _UnavailablePreview(np.ndarray):
 
 class FrameCache:
     """Strong references to decoded pixels, bounded by actual array bytes."""
-    def __init__(self, max_bytes=256 * 1024 * 1024):
-        self.max_bytes = max(0, int(max_bytes))
+    def __init__(self, max_bytes=None):
+        self.max_bytes = 256 * 1024 ** 2 if max_bytes is None else max(0, int(max_bytes))
+        self._last_adapted_max = self.max_bytes if max_bytes is None else None
         self.bytes = 0
         self._items = OrderedDict()
         self._lock = threading.RLock()
+
+    def adapt_to_memory(self, snapshot=None) -> int:
+        """Scale cache capacity to free RAM unless externally pinned."""
+        if self._last_adapted_max != self.max_bytes:
+            return self.max_bytes
+        try:
+            from core import resource_policy as policy
+            snap = snapshot or policy.probe_memory()
+            if not getattr(snap, 'ram_known', False):
+                return self.max_bytes
+            budget = policy.ram_budget(snap)
+        except Exception:
+            return self.max_bytes
+        target = min(1024 * 1024 ** 2, max(min(64 * 1024 ** 2, budget // 2), budget // 8))
+        with self._lock:
+            if self._last_adapted_max != self.max_bytes:
+                return self.max_bytes
+            self.max_bytes = target
+            self._last_adapted_max = target
+            while self._items and self.bytes > self.max_bytes:
+                _, removed = self._items.popitem(last=False)
+                self.bytes -= removed.nbytes
+                logger.debug('source cache eviction bytes=%d released=%d', self.bytes, removed.nbytes)
+        return target
 
     def get(self, key):
         with self._lock:
@@ -1836,7 +1861,7 @@ def _jpeg_resolution_bytes(frame, encoded):
     return encoded + _jpeg_scanline_workspace_bytes(frame) + max(frame.nbytes + coefficients, 2 * frame.nbytes)
 
 
-def select_frame_scratch(frames, *, preferred_size=0, should_cancel=None):
+def select_frame_scratch(frames, *, preferred_size=0, working_size=None, should_cancel=None):
     """Bind a local volume using metadata without staging decoded pixels.
 
     A bounded frame workspace is an optional placement hint. RAM-only work
@@ -1861,7 +1886,7 @@ def select_frame_scratch(frames, *, preferred_size=0, should_cancel=None):
                 paths.append(path)
             break
     return select_scratch(0, paths, preferred_size=max(peak * 4, preferred_size),
-                          working_size=peak * 4)
+                          working_size=peak * 4 if working_size is None else working_size)
 
 
 def resolve_frame(frame, *, should_cancel=None):
@@ -1912,10 +1937,6 @@ def materialize_frames(frames, should_cancel=None, *, staging_bytes=0,
         if should_cancel is not None and should_cancel():
             raise RegistrationCancelled()
 
-    def save(image):
-        check_cancel()
-        return image if is_mapped_frame(image) else store_frame(image, prefer_ram=prefer_ram)
-
     def resolve_with_threads(frame, threads):
         with deferred_warp_threads(threads):
             return resolve_frame(frame, should_cancel=should_cancel)
@@ -1925,6 +1946,7 @@ def materialize_frames(frames, should_cancel=None, *, staging_bytes=0,
         known = isinstance(frames, Sequence)
         total = len(frames) if known else 0
         workers = 1
+        decode_peak = 0
         if known:
             size = sum(frame.nbytes for frame in frames if not frame_has_mapped_pixels(frame))
             paths = [frame.path for frame in frames if isinstance(frame, SourceFrame)]
@@ -1932,22 +1954,35 @@ def materialize_frames(frames, should_cancel=None, *, staging_bytes=0,
                            preferred_size=size + staging_bytes + preferred_staging_bytes)
             sources = (frames if parallel_processed else
                        [frame for frame in frames if isinstance(frame, SourceFrame)])
+            if len(sources) > 1 or (prefer_ram and total > 1):
+                decode_peak = max((frame_resolution_bytes(frame) for frame in sources), default=0)
             if len(sources) > 1:
-                per_worker = max(frame_resolution_bytes(frame) for frame in sources)
                 plan = policy.plan_execution(
                     policy.Workload(algorithm='decode', frames=len(sources),
                                     fixed_bytes=(source_cache_growth_bytes(sources)
                                                  if _retain_decoded_sources.get() else 0),
-                                    per_worker_bytes=per_worker,
+                                    per_worker_bytes=decode_peak,
                                     outer_tasks=min(8, len(sources))),
                     preference=resource_preference, user_threads=thread_count or 0)
                 workers = min(plan.workers, plan.max_in_flight, len(sources))
+            if prefer_ram and total > 1 and not parallel_processed:
+                decode_peak = max(decode_peak, max((frame_resolution_bytes(frame) for frame in frames
+                                                   if isinstance(frame, ProcessedFrame)), default=0))
         if max_in_flight is not None:
             workers = min(workers, max(1, int(max_in_flight)))
         result = []
 
         def append(image):
-            result.append(save(image))
+            check_cancel()
+            if not is_mapped_frame(image):
+                # The next decode must still fit after this copy becomes resident.
+                # Iterator sources have no bound for the remaining decode peak.
+                use_ram = prefer_ram and known
+                pending_bytes = min(workers, max(0, total - len(result) - 1)) * decode_peak
+                if use_ram and pending_bytes:
+                    use_ram = image.nbytes + pending_bytes <= policy.ram_ceiling(policy.probe_memory())
+                image = store_frame(image, prefer_ram=use_ram)
+            result.append(image)
             if progress_callback is not None and total:
                 progress_callback(len(result), total)
 

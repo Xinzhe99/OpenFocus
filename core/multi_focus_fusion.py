@@ -706,6 +706,8 @@ class MultiFocusFusion:
                 raise RegistrationCancelled()
 
         check_cancel()
+        from core.source_frames import SOURCE_CACHE
+        SOURCE_CACHE.adapt_to_memory()
         self._tile_grid = None
         supplied = kwargs.pop('parameters', None)
         values = dict(self.fusion_parameters)
@@ -1049,9 +1051,15 @@ class MultiFocusFusion:
                     max(h, height), max(w, width), kwargs, count)
                 decode = max(frame_resolution_bytes(frame) for frame in input_source)
                 budget = memory_budget_bytes()
-                # Keep staging mandatory when the streamed peak exceeds RAM.
-                required = (fixed + worker + decode + source_cache_growth_bytes(input_source)
-                            > budget)
+                if method_b and not self.use_gpu:
+                    # Both CPU passes stream without retaining decoded sources.
+                    cache_growth = 0
+                    if img_resize is None and all(frame.dtype in (np.uint8, np.uint16)
+                                                  for frame in input_source):
+                        worker = min(worker, policy.frame_ram_budget(policy.probe_memory()))
+                else:
+                    cache_growth = source_cache_growth_bytes(input_source)
+                required = fixed + worker + decode + cache_growth > budget
                 # Stage decodes that cannot fit the frame cache even on a
                 # machine that has spare RAM at the start of this render, or
                 # processed disk stacks in OpenFocus B when scratch space is
@@ -1158,11 +1166,10 @@ class MultiFocusFusion:
                 if spec.resource_estimator:
                     fixed, per_worker = resolve_runner(spec.resource_estimator)(height, width, kwargs, count)
                     if streaming_sources:
-                        from core.source_frames import (frame_has_mapped_pixels, frame_resolution_bytes,
+                        from core.source_frames import (frame_resolution_bytes,
                                                         source_cache_growth_bytes)
                         if (openfocus_native_family and img_resize is None
                                 and all(frame.dtype in (np.uint8, np.uint16)
-                                        and (self.algorithm != 'openfocus_b' or frame_has_mapped_pixels(frame))
                                         for frame in input_source)):
                             # OpenFocus A/B/C spill large transient planes to disk above
                             # the shared frame RAM cap; device passes admit separately.

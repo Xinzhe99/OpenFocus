@@ -42,6 +42,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   OpenCL binaries across launches. Keep exact pixel checks on alignment plans,
   estimate registration memory from imported metadata, and retain enough
   working memory for ECC's OpenCV fallback.
+- Adapt decoded-frame caches and transient RAM to available memory. Spill
+  OpenFocus alignment planes to scratch under pressure while reserving RAM
+  for source decoding. Keep OpenFocus B staging optional when streaming fits.
 - Write disk-backed frames, preview pixels and imported video frames to scratch
   in chunks up to 8 MiB, with bounded packing of strided images and exact pixel
   bytes in C order.
