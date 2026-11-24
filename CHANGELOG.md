@@ -38,6 +38,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Read eligible uncompressed 8-bit and 16-bit gray and RGB TIFF pages directly
   from the file, preserving pixel values. Keep decoder validation for incomplete
   strip tables, configured limits, and other TIFF layouts.
+- Reuse the open stack's import mode when appending a folder, skipping the
+  mode-selection scan before the loader starts.
 - Compute deferred perspective, OpenFocus alignment, and OpenFocus translation
   crops directly over the requested ROI or tile, reuse direct-mapped RGB TIFF
   digests within a render scope, reuse adjacent-pair pyramids, and fuse
