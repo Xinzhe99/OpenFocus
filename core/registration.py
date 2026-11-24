@@ -1523,15 +1523,25 @@ def _align_openfocus_impl(input_source, output_path=None, img_filenames=None, *,
         img_filenames = [os.path.basename(path) for path in paths]
     if images is None or not len(images):
         return []
+    from contextlib import nullcontext
+    from core.frame_resolution_cache import ScopedCache, current, within_retention_limit
     from core.frame_storage import scratch_directory
-    from core.source_frames import select_frame_scratch
+    from core.source_frames import select_frame_scratch, without_source_cache_growth
+
+    cache = current()
+    large_stack = not within_retention_limit(images)
+    # Estimation only needs one color frame at a time. Once the stack exceeds
+    # the retention limit, reuse existing mappings and let fusion stage its own.
+    cache_reads = cache.reuse_only() if large_stack and isinstance(cache, ScopedCache) else nullcontext()
+    source_reads = without_source_cache_growth() if large_stack else nullcontext()
     with scratch_directory():
         select_frame_scratch(images, should_cancel=should_cancel)
         try:
-            plan = estimate_alignment_plan(images, max_shift_ratio=max_shift_ratio,
-                reference_frame=reference_frame, rotation=rotation, magnification=magnification,
-                should_cancel=should_cancel,
-                failure_policy=failure_policy)
+            with cache_reads, source_reads:
+                plan = estimate_alignment_plan(images, max_shift_ratio=max_shift_ratio,
+                    reference_frame=reference_frame, rotation=rotation, magnification=magnification,
+                    should_cancel=should_cancel,
+                    failure_policy=failure_policy)
         except RejectedAlignmentFrame as error:
             for transform in error.completed_transforms:
                 _report_openfocus_transform(transform, reference_frame - 1)

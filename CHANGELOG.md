@@ -198,6 +198,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   input read-only and release temporary views after each source pass.
 - Plan OpenFocus B's mapped integer-frame fusion using its bounded RAM
   working set and release source mappings after their depth and merge passes.
+- Bound OpenFocus alignment memory for deep stacks by reusing cached source
+  pixels during estimation and staging the resolved frames during fusion.
 - Release the isolated render worker after a memory error so the next render
   starts with fresh native memory and device contexts.
 - Default new watermarks to fusion results. Apply removes unchecked watermark
