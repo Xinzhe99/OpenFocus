@@ -546,7 +546,7 @@ def _perspective_source_file(frame, should_cancel):
 
 
 def _fast_jpeg_ecc_gray(source, downscale_width, should_cancel):
-    """Decode JPEG directly to scaled grayscale for ECC, returning (gray_u8, target_h, target_w) or None."""
+    """Decode a reduced JPEG grayscale plane and return it with the ECC scale."""
     from core.source_frames import SourceFrame, _orient
     if type(source) is not SourceFrame or source.transforms or source.linear_metadata is not None:
         return None
@@ -559,7 +559,6 @@ def _fast_jpeg_ecc_gray(source, downscale_width, should_cancel):
     if scale >= 1.0:
         return None
     try:
-        import imagecodecs
         from PIL import Image as PILImage
         with PILImage.open(source.path) as hdr:
             if hdr.format != 'JPEG' or hdr.mode == 'CMYK' or 'A' in hdr.getbands():
@@ -568,21 +567,27 @@ def _fast_jpeg_ecc_gray(source, downscale_width, should_cancel):
         with open(source.path, 'rb') as fh:
             raw_bytes = fh.read()
         _check_cancel(should_cancel)
-        req_w = target_width
-        req_h = target_height
+        req_w, req_h = target_width, target_height
         if source.orientation in (5, 6, 7, 8):
-            req_w, req_h = target_height, target_width
-        scale_den = 1
-        for k in (8, 4, 2):
-            if (raw_w + k - 1) // k >= req_w and (raw_h + k - 1) // k >= req_h:
-                scale_den = k
+            req_w, req_h = req_h, req_w
+        flags = cv2.IMREAD_GRAYSCALE
+        for div, reduced in ((8, cv2.IMREAD_REDUCED_GRAYSCALE_8),
+                             (4, cv2.IMREAD_REDUCED_GRAYSCALE_4),
+                             (2, cv2.IMREAD_REDUCED_GRAYSCALE_2)):
+            if (raw_w + div - 1) // div >= req_w and (raw_h + div - 1) // div >= req_h:
+                flags = reduced
                 break
-        gray = imagecodecs.jpeg8_decode(raw_bytes, outcolorspace='GRAY', scale=(1, scale_den))
+        gray = cv2.imdecode(np.frombuffer(raw_bytes, dtype=np.uint8),
+                            flags | cv2.IMREAD_IGNORE_ORIENTATION | cv2.IMREAD_ANYDEPTH)
+        if gray is None:
+            return None
         if source.orientation != 1:
             gray = _orient(gray, source.orientation)
         if gray.shape[1] != target_width or gray.shape[0] != target_height:
             gray = cv2.resize(gray, (target_width, target_height), interpolation=cv2.INTER_AREA)
         return gray, scale
+    except RegistrationCancelled:
+        raise
     except Exception:
         return None
 

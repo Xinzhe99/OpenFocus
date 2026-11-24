@@ -29,7 +29,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 - Build desktop packages and platform wheels with C++17 CPU kernels for
   homography ECC and OpenFocus A, B, and C. Reuse per-frame ECC pyramids and
-  estimate eligible JPEG stacks from reduced grayscale decodes.
+  estimate eligible JPEG stacks from reduced grayscale decodes. Preserve
+  OpenFocus depth codes and pyramid rounding across platform builds.
 - Read stack previews and metadata in a single scan and reuse compatible
   isolated render workers between renders.
 - Use OpenCL for eligible large integer ECC reductions, including 8×8 area

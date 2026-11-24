@@ -34,9 +34,15 @@ if(MSVC)
   target_compile_options(_openfocus_native PRIVATE /O2 /fp:precise /EHsc)
 else()
   target_compile_options(_openfocus_native PRIVATE -O3 -fno-fast-math)
+  # The pyramid kernels round each multiplication and addition separately.
+  set_property(SOURCE cpp/openfocus_c.cpp APPEND PROPERTY COMPILE_OPTIONS -ffp-contract=off)
 endif()
 
 if(MINGW)
+  if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+    # Older CPython headers select the 32-bit object layout under MinGW.
+    target_compile_definitions(nanobind-static PUBLIC "MS_WIN64=")
+  endif()
   target_link_options(
     _openfocus_native
     PRIVATE

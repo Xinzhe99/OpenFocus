@@ -7,7 +7,6 @@
 #if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC optimize("no-math-errno")
 #endif
-#pragma STDC FP_CONTRACT OFF
 
 namespace openfocus {
 namespace {
