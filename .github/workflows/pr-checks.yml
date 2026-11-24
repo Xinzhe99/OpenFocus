@@ -1,0 +1,43 @@
+name: PR checks
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-static-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  static:
+    name: PR static checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 2
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.10'
+
+      - name: Check patch whitespace and Python syntax
+        run: |
+          git -c core.whitespace=trailing-space,space-before-tab,cr-at-eol diff --check HEAD^1 HEAD
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          import subprocess
+
+          changed = subprocess.check_output([
+              'git', 'diff', '--name-only', '--diff-filter=ACMR', '-z',
+              'HEAD^1', 'HEAD', '--', '*.py',
+          ])
+          paths = os.fsdecode(changed).split('\0')
+          for name in filter(None, paths):
+              path = Path(name)
+              compile(path.read_bytes(), name, 'exec')
+          PY
