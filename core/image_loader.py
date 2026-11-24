@@ -531,8 +531,18 @@ def decode_image(path: str, *, allow_transparent_png: bool = False,
         img = None
         try:
             import imagecodecs
-            outcs = 'GRAY' if (preserve_grayscale and jpeg_mode == 'L') else 'BGR'
-            img = imagecodecs.jpeg8_decode(raw_bytes, outcolorspace=outcs)
+            if jpeg_mode == 'L':
+                img = imagecodecs.jpeg8_decode(raw_bytes, outcolorspace='GRAY')
+                if img is not None and img.ndim == 2 and not preserve_grayscale:
+                    img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+            else:
+                img = imagecodecs.jpeg8_decode(raw_bytes, outcolorspace='RGB')
+                if img is not None and img.ndim == 3 and img.shape[2] == 3:
+                    img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+                elif img is not None and img.ndim == 2 and not preserve_grayscale:
+                    img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+                else:
+                    img = None
         except Exception:
             img = None
         if img is not None:
