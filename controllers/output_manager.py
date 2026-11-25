@@ -32,7 +32,8 @@ from utils.file_manager import select_in_file_manager
 from utils.output_share import (encode_jpeg_preview, file_urls_mime_data,
                                 jpeg_mime_data, set_clipboard_payload)
 from core.source_frames import resolve_frame
-from utils.frame_pixels import preview_pixels as source_display_image, run_pixel_worker
+from utils.frame_pixels import (is_qobject_alive, preview_pixels as source_display_image,
+                                run_pixel_worker, safe_disconnect)
 
 from utils.platform_utils import configure_native_worker_stack
 # Item-data roles: the folder of an align-only result, and the stable
@@ -454,6 +455,14 @@ class OutputRecord:
         return self.annotations_changed or (self.exported_image is not None
                                             and self.exported_image is not self.image)
 
+    def snapshot_for_export(self) -> "OutputRecord":
+        """Clone the record with isolated annotation configs for an export job."""
+        return replace(
+            self,
+            scale_bar_config=deepcopy(self.scale_bar_config),
+            watermark_config=deepcopy(self.watermark_config),
+        )
+
 
 def _thumbnail_bgr(image, size: int):
     """Downscale a result frame to a `size`-px square thumbnail, in uint8.
@@ -513,8 +522,7 @@ class OutputManager:
             self._start_stack_thumbnail()
 
     def _start_stack_thumbnail(self) -> None:
-        from PyQt6 import sip
-        if sip.isdeleted(self.window) or getattr(self.window, '_shutting_down', False):
+        if _window_unavailable(self.window):
             self._stack_thumbnail_queue.clear()
             return
         while self._stack_thumbnail_queue:
@@ -529,7 +537,7 @@ class OutputManager:
 
             def complete():
                 self._stack_thumbnail_worker = None
-                if not sip.isdeleted(self.window) and not getattr(self.window, '_shutting_down', False):
+                if not _window_unavailable(self.window):
                     for row in range(self.window.output_list.count()):
                         item = self.window.output_list.item(row)
                         record = self.record_for_item(item)
@@ -988,6 +996,40 @@ class OutputManager:
             return None
         return current
 
+    def _publish_output_transaction(self, record: OutputRecord) -> OutputRecord:
+        """Atomically insert and display an output, rolling back on display failure."""
+        window = self.window
+        previous = getattr(window, "fusion_result", None)
+        previous_row = window.output_list.currentRow()
+        previous_view = self._capture_result_view()
+        item = None
+        try:
+            window.fusion_result = record.image
+            # trim=False: history eviction happens only after the new result
+            # is committed. Evicting first meant a failed display could still
+            # have dropped an older output permanently.
+            item = self._insert_output(
+                record.image, record.label, record,
+                tooltip=trans.t("retouch_unexported"), trim=False)
+            if self.display_specific_fusion_result(record.image) is False:
+                raise RuntimeError(trans.t("msg_display_fusion_failed_text"))
+        except Exception:
+            # Publication is atomic: a failed display must not leave a
+            # half-created entry, a switched view, or a changed selection.
+            if item is not None:
+                row = window.output_list.row(item)
+                if row >= 0:
+                    self._remove_row(row)
+            window.fusion_result = previous
+            if previous_row >= 0:
+                window.output_list.setCurrentRow(previous_row)
+            self._restore_result_view(previous_view)
+            self.update_output_count()
+            raise
+        self._trim_history()
+        self.update_output_count()
+        return record
+
     def add_retouched_output(self, base_record: OutputRecord,
                              image) -> OutputRecord:
         """Publish an independent snapshot of pixels borrowed for this call."""
@@ -1018,37 +1060,7 @@ class OutputManager:
         record.annotations_baked = base_record.annotations_baked
         record.linear_dng_metadata = deepcopy(base_record.linear_dng_metadata)
         record.source_paths = base_record.source_paths
-        window = self.window
-        previous = getattr(window, "fusion_result", None)
-        previous_row = window.output_list.currentRow()
-        previous_view = self._capture_result_view()
-        item = None
-        try:
-            window.fusion_result = image
-            # trim=False: history eviction happens only after the new result
-            # is committed. Evicting first meant a failed display could still
-            # have dropped an older output permanently.
-            item = self._insert_output(
-                image, label, record, tooltip=trans.t("retouch_unexported"),
-                trim=False)
-            if self.display_specific_fusion_result(image) is False:
-                raise RuntimeError(trans.t("msg_display_fusion_failed_text"))
-        except Exception:
-            # Publication is atomic: a failed display must not leave a
-            # half-created entry, a switched view, or a changed selection.
-            if item is not None:
-                row = window.output_list.row(item)
-                if row >= 0:
-                    self._remove_row(row)
-            window.fusion_result = previous
-            if previous_row >= 0:
-                window.output_list.setCurrentRow(previous_row)
-            self._restore_result_view(previous_view)
-            self.update_output_count()
-            raise
-        self._trim_history()
-        self.update_output_count()
-        return record
+        return self._publish_output_transaction(record)
 
     def publish_compare_output(self, record: OutputRecord) -> OutputRecord:
         """Add a full-frame result adopted from the method comparison.
@@ -1059,47 +1071,34 @@ class OutputManager:
         """
         if record is None or record.image is None:
             raise ValueError("a result image is required")
-        window = self.window
         if not getattr(record, "stack_lineage", 0):
-            record.stack_lineage = watermark.stack_lineage(window)
-        previous = getattr(window, "fusion_result", None)
-        previous_row = window.output_list.currentRow()
-        previous_view = self._capture_result_view()
-        item = None
-        try:
-            window.fusion_result = record.image
-            item = self._insert_output(
-                record.image, record.label, record,
-                tooltip=trans.t("retouch_unexported"), trim=False)
-            if self.display_specific_fusion_result(record.image) is False:
-                raise RuntimeError(trans.t("msg_display_fusion_failed_text"))
-        except Exception:
-            if item is not None:
-                row = window.output_list.row(item)
-                if row >= 0:
-                    self._remove_row(row)
-            window.fusion_result = previous
-            if previous_row >= 0:
-                window.output_list.setCurrentRow(previous_row)
-            self._restore_result_view(previous_view)
-            self.update_output_count()
-            raise
-        self._trim_history()
-        self.update_output_count()
-        return record
+            record.stack_lineage = watermark.stack_lineage(self.window)
+        return self._publish_output_transaction(record)
 
     # ------------------------------------------------------------------
     # Export protection for unexported retouched outputs
     # ------------------------------------------------------------------
+    def _validate_export_path(self, path: str, record: Optional[OutputRecord] = None) -> None:
+        source_paths = record.source_paths if record is not None else ()
+        if source_paths:
+            self.window.export_manager._safe_export_path(path, source_paths)
+        else:
+            self.window.export_manager._safe_export_path(path)
+
+    @staticmethod
+    def _format_failure_details(failures) -> str:
+        return "\n".join(
+            f"{path}: {image_write_error_text(error) if isinstance(error, ImageWriteError) else (error or trans.t('msg_save_failed_info_write'))}"
+            for path, error in failures
+        )
+
     def export_records(self, records) -> bool:
         """Export a frozen selection; preserve existing targets and all failures."""
         records = [record for record in records if record is not None]
         if not records:
             return True
         window = self.window
-        snapshots = [(record, replace(record, scale_bar_config=deepcopy(record.scale_bar_config),
-                                      watermark_config=deepcopy(record.watermark_config)))
-                     for record in records]
+        snapshots = [(record, record.snapshot_for_export()) for record in records]
         labels = window.label_manager.snapshot()
         folder = FileDialog.getExistingDirectory(
             window, trans.t('action_save'), get_last_dialog_dir(), FileDialog.Option.ShowDirsOnly)
@@ -1118,11 +1117,7 @@ class OutputManager:
                 aligned_entries.append((original, record, path, annotation_state))
                 continue
             try:
-                source_paths = record.source_paths
-                if source_paths:
-                    window.export_manager._safe_export_path(path, source_paths)
-                else:
-                    window.export_manager._safe_export_path(path)
+                self._validate_export_path(path, record)
                 cfg = scalebar.export_cfg(window, record=record)
                 calibration = scalebar.calibration_px_um(window, record)
                 prepared_images.append(
@@ -1193,11 +1188,7 @@ class OutputManager:
         return not failed
 
     def _write_record(self, record, path, labels):
-        source_paths = record.source_paths
-        if source_paths:
-            self.window.export_manager._safe_export_path(path, source_paths)
-        else:
-            self.window.export_manager._safe_export_path(path)
+        self._validate_export_path(path, record)
         cfg = scalebar.export_cfg(self.window, record=record)
         calibration = scalebar.calibration_px_um(self.window, record)
         state = self._annotation_state(record, labels)
@@ -1290,9 +1281,7 @@ class OutputManager:
                 8000,
             )
             return
-        detail = "\n".join(
-            f"{path}: {image_write_error_text(error) if isinstance(error, ImageWriteError) else (error or trans.t('msg_save_failed_info_write'))}"
-            for path, error in failed)
+        detail = self._format_failure_details(failed)
         show_error_box(
             window, trans.t("msg_save_failed_title"),
             trans.t("msg_export_partial_text").format(
@@ -1485,9 +1474,7 @@ class OutputManager:
             try:
                 if not self._share_temp_dir or not os.path.isdir(self._share_temp_dir):
                     self._share_temp_dir = tempfile.mkdtemp(prefix='openfocus-share-')
-                record = replace(
-                    original, scale_bar_config=deepcopy(original.scale_bar_config),
-                    watermark_config=deepcopy(original.watermark_config))
+                record = original.snapshot_for_export()
                 name = self.window.export_manager.filename_from_label(record.label)
                 path = unique_path(os.path.join(
                     self._share_temp_dir, os.path.splitext(name)[0] + '.png'))
@@ -1508,9 +1495,7 @@ class OutputManager:
 
     def _report_share_failure(self, paths, failures) -> None:
         ok = sum(1 for path in paths or () if path)
-        detail = "\n".join(
-            f"{path}: {image_write_error_text(error) if isinstance(error, ImageWriteError) else (error or trans.t('msg_save_failed_info_write'))}"
-            for path, error in failures)
+        detail = self._format_failure_details(failures)
         show_error_box(
             self.window, trans.t("msg_share_failed_title"),
             trans.t("msg_export_partial_text").format(
@@ -1528,9 +1513,7 @@ class OutputManager:
         window = self.window
         try:
             labels = window.label_manager.snapshot()
-            snapshot = replace(
-                record, scale_bar_config=deepcopy(record.scale_bar_config),
-                watermark_config=deepcopy(record.watermark_config))
+            snapshot = record.snapshot_for_export()
             jpeg = run_pixel_worker(
                 window, trans.t("share_copy_preview"),
                 lambda: encode_jpeg_preview(
@@ -1640,7 +1623,7 @@ class OutputManager:
         window = self.window
         menu = QMenu(window.output_list)
 
-        delete_action = QAction(trans.t("action_delete"), window)
+        delete_action = QAction(trans.t("action_delete"), menu)
         delete_action.triggered.connect(self.delete_selected_output_images)
         menu.addAction(delete_action)
 
@@ -1648,13 +1631,13 @@ class OutputManager:
         # they retain the previous current-row behaviour.
         action_target = (target_item if target_item is not None
                          else window.output_list.currentItem())
-        save_as_action = QAction(trans.t("action_save_as"), window)
+        save_as_action = QAction(trans.t("action_save_as"), menu)
         save_as_action.triggered.connect(
             lambda: self.save_output_image_as(action_target))
         save_as_action.setEnabled(action_target is not None)
         menu.addAction(save_as_action)
 
-        retouch_action = QAction(trans.t("action_retouch"), window)
+        retouch_action = QAction(trans.t("action_retouch"), menu)
         retouch_action.triggered.connect(
             lambda: window.show_retouch_dialog(action_target))
         record = self.record_for_item(action_target)
@@ -1662,7 +1645,7 @@ class OutputManager:
         menu.addAction(retouch_action)
 
         share_menu = menu.addMenu(trans.t("menu_share"))
-        preview_action = QAction(trans.t("share_copy_preview"), window)
+        preview_action = QAction(trans.t("share_copy_preview"), share_menu)
         preview_action.triggered.connect(
             lambda: self.share_copy_preview(target_item))
         preview_action.setEnabled(self._share_item_supported(target_item))
@@ -1673,19 +1656,19 @@ class OutputManager:
             selected = [target_item]
         paths_ok = (target_item is not None and bool(selected) and all(
             self._share_item_supported(item) for item in selected))
-        paths_action = QAction(trans.t("share_copy_paths"), window)
+        paths_action = QAction(trans.t("share_copy_paths"), share_menu)
         paths_action.triggered.connect(
             lambda: self.share_copy_paths(target_item))
         paths_action.setEnabled(paths_ok)
         share_menu.addAction(paths_action)
 
-        reveal_action = QAction(trans.t("share_reveal"), window)
+        reveal_action = QAction(trans.t("share_reveal"), share_menu)
         reveal_action.triggered.connect(
             lambda: self.share_reveal(target_item))
         reveal_action.setEnabled(self._share_reveal_item_supported(target_item))
         share_menu.addAction(reveal_action)
 
-        private_action = QAction(trans.t("share_private_link"), window)
+        private_action = QAction(trans.t("share_private_link"), share_menu)
         private_action.setEnabled(False)
         share_menu.addAction(private_action)
 
@@ -1706,7 +1689,25 @@ class OutputManager:
     def show_output_context_menu(self, position: QPoint) -> None:
         target_item = self._prepare_output_context_selection(position)
         menu = self._build_output_context_menu(target_item)
-        menu.exec(self.window.output_list.mapToGlobal(position))
+        try:
+            menu.exec(self.window.output_list.mapToGlobal(position))
+        finally:
+            menu.deleteLater()
+
+    def _sync_output_selection_after_removal(self, min_row: int) -> None:
+        window = self.window
+        if window.fusion_results:
+            new_index = min(max(0, min_row), len(window.fusion_results) - 1)
+            window.output_list.setCurrentRow(new_index)
+            self.display_output_image_in_result_view(window.output_list.item(new_index))
+        else:
+            window.fusion_result = None
+            window.lbl_result_img.clear()
+            window.lbl_result_img.setText(trans.t("result_hint"))
+            window.result_control_bar.setVisible(False)
+        if getattr(window, "wipe_active", False) and hasattr(window, "refresh_wipe_controls"):
+            window.refresh_wipe_controls()
+
 
     def delete_output_image(self, item: QListWidgetItem) -> None:
         window = self.window
@@ -1718,20 +1719,7 @@ class OutputManager:
             return
 
         self._remove_row(row)
-
-        # Output history changed: resync the wipe B-side slider range
-        if getattr(window, "wipe_active", False) and hasattr(window, "refresh_wipe_controls"):
-            window.refresh_wipe_controls()
-
-        if window.fusion_results:
-            new_index = min(row, len(window.fusion_results) - 1)
-            window.output_list.setCurrentRow(new_index)
-            self.display_output_image_in_result_view(window.output_list.item(new_index))
-        else:
-            window.fusion_result = None
-            window.lbl_result_img.clear()
-            window.lbl_result_img.setText(trans.t("result_hint"))
-            window.result_control_bar.setVisible(False)
+        self._sync_output_selection_after_removal(row)
 
     def export_all_results(self) -> None:
         records = [self.record_for_row(row) for row in range(self.window.output_list.count())]
@@ -1748,10 +1736,7 @@ class OutputManager:
         if (record.image is None or record.linear_dng_metadata is None
                 or record.annotations_baked or record.watermark_baked):
             raise ValueError(trans.t('linear_dng_export_failed'))
-        if record.source_paths:
-            self.window.export_manager._safe_export_path(path, record.source_paths)
-        else:
-            self.window.export_manager._safe_export_path(path)
+        self._validate_export_path(path, record)
         if px_size_um is None:
             px_size_um = scalebar.calibration_px_um(self.window, record)
         state = self._annotation_state(record, labels)
@@ -1768,11 +1753,12 @@ class OutputManager:
         _ACTIVE_LINEAR_DNG_WORKERS.add(worker)
         if progress is not None:
             progress.canceled.connect(worker.cancel)
-        self.window.destroyed.connect(worker.cancel)
+        destroyed_signal = getattr(self.window, 'destroyed', None)
+        if destroyed_signal is not None:
+            destroyed_signal.connect(worker.cancel)
 
         def completed(success, message):
-            from PyQt6 import sip
-            if sip.isdeleted(self.window):
+            if _window_unavailable(self.window):
                 return
             if success:
                 if original is not None:
@@ -1787,9 +1773,10 @@ class OutputManager:
                 completion(success, message)
 
         def finished():
-            from PyQt6 import sip
             _ACTIVE_LINEAR_DNG_WORKERS.discard(worker)
-            if progress is not None and not sip.isdeleted(progress):
+            if is_qobject_alive(self.window) and destroyed_signal is not None:
+                safe_disconnect(destroyed_signal, worker.cancel)
+            if is_qobject_alive(progress):
                 progress.close()
             self.linear_dng_worker = None
             self.linear_dng_progress = None
@@ -1812,9 +1799,7 @@ class OutputManager:
             image = window.fusion_results[row] if 0 <= row < len(window.fusion_results) else None
             original = OutputRecord.create(image, item.text())
             item.setData(OUTPUT_RECORD_ROLE, original)
-        record = replace(original,
-                         scale_bar_config=deepcopy(original.scale_bar_config),
-                         watermark_config=deepcopy(original.watermark_config))
+        record = original.snapshot_for_export()
         try:
             labels = window.label_manager.snapshot()
             if record.kind == 'aligned':
@@ -1882,16 +1867,7 @@ class OutputManager:
         for row in rows:
             self._remove_row(row)
 
-        if window.fusion_results:
-            min_row = min(rows) if rows else 0
-            new_index = min(min_row, len(window.fusion_results) - 1)
-            window.output_list.setCurrentRow(new_index)
-            self.display_output_image_in_result_view(window.output_list.item(new_index))
-        else:
-            window.fusion_result = None
-            window.lbl_result_img.clear()
-            window.lbl_result_img.setText(trans.t("result_hint"))
-            window.result_control_bar.setVisible(False)
+        self._sync_output_selection_after_removal(min(rows) if rows else 0)
 
     # ------------------------------------------------------------------
     # Display helpers
@@ -2080,13 +2056,12 @@ class OutputManager:
         _ACTIVE_REGISTRATION_PREVIEW_WORKERS.add(worker)
 
         def complete():
-            from PyQt6 import sip
             self._registration_preview_worker = None
             _ACTIVE_REGISTRATION_PREVIEW_WORKERS.discard(worker)
             if prefetch and worker.isInterruptionRequested():
                 self._registration_prefetched.discard(self._registration_cache_key(index, frame, record))
             window = self.window
-            if not sip.isdeleted(window) and not getattr(window, '_shutting_down', False):
+            if not _window_unavailable(window):
                 frames = window.registration_results
                 current_record = self.record_for_item(window.output_list.currentItem())
                 valid = (generation == self._registration_preview_generation
@@ -2224,25 +2199,20 @@ class OutputManager:
         _ACTIVE_REGISTRATION_REGION_WORKERS.add(worker)
 
         def ready(decoded_key, completed_request, pixels, rect):
-            from PyQt6 import sip
-            if (not sip.isdeleted(window) and not getattr(window, '_shutting_down', False)
-                    and decoded_key == self._registration_region_key):
+            if not _window_unavailable(window) and decoded_key == self._registration_region_key:
                 window.lbl_result_img.set_source_region(cv2_to_pixmap(pixels), rect,
                     source_key=decoded_key, request=completed_request)
 
         def failed(decoded_key, message):
-            from PyQt6 import sip
-            if (not sip.isdeleted(window) and not getattr(window, '_shutting_down', False)
-                    and decoded_key == self._registration_region_key):
+            if not _window_unavailable(window) and decoded_key == self._registration_region_key:
                 window.statusBar().showMessage(message)
 
         def finished():
-            from PyQt6 import sip
             _ACTIVE_REGISTRATION_REGION_WORKERS.discard(worker)
             if self._registration_region_worker is worker:
                 self._registration_region_worker = None
             worker.deleteLater()
-            if not sip.isdeleted(window) and not getattr(window, '_shutting_down', False):
+            if not _window_unavailable(window):
                 pending = list(self._registration_region_pending.values())
                 self._registration_region_pending.clear()
                 for pending_key, pending_request in pending:

@@ -1353,7 +1353,9 @@ class ControlServer(QObject):
     # ------------------------------------------------------------- dialogs
     @staticmethod
     def _dialog_busy(dialog):
-        if (getattr(dialog, "_import_busy", False)
+        importing_stack = (getattr(dialog, "_import_busy", False)
+                           and getattr(dialog, "_import_mode", None) != "thumbnails")
+        if (importing_stack
                 or getattr(dialog, "_source_loading", False)
                 or getattr(dialog, "_busy", False)
                 or getattr(dialog, "_close_pending", False)):

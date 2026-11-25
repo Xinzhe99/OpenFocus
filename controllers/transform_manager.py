@@ -6,6 +6,7 @@ from core.source_frames import PreviewPixels, SourceFrame, display_image, previe
 from PyQt6.QtGui import QFont
 
 from utils import show_error_box, show_success_box, show_warning_box, get_default_font
+from utils.frame_pixels import block_signals
 from locales import trans
 
 
@@ -151,9 +152,8 @@ class TransformManager:
                 window.stack_images = []
                 window.source_manager.update_file_list([], [])
                 window.source_manager.update_slider_range()
-                window.stack_slider.blockSignals(True)
-                window.stack_slider.setValue(0)
-                window.stack_slider.blockSignals(False)
+                with block_signals(window.stack_slider):
+                    window.stack_slider.setValue(0)
                 window.source_control_bar.setVisible(False)
                 window.lbl_stack_info.setText("-- / --")
                 window.add_label_action.setEnabled(False)
@@ -329,9 +329,8 @@ class TransformManager:
         if roi_button is not None:
             # Signals blocked: toggling it would re-enter the main window's
             # ROI-mode handler from the middle of a reset.
-            roi_button.blockSignals(True)
-            roi_button.setChecked(False)
-            roi_button.blockSignals(False)
+            with block_signals(roi_button):
+                roi_button.setChecked(False)
 
     def invalidate_processing_results(self, clear_output_view: bool = False, preserve_outputs: bool = False) -> None:
         """Expose processing reset so other controllers can reuse it."""
@@ -384,10 +383,9 @@ class TransformManager:
         window.add_label_action.setEnabled(False)
         window.resize_action.setEnabled(False)
 
-        window.result_slider.blockSignals(True)
-        window.result_slider.setRange(0, 0)
-        window.result_slider.setValue(0)
-        window.result_slider.blockSignals(False)
+        with block_signals(window.result_slider):
+            window.result_slider.setRange(0, 0)
+            window.result_slider.setValue(0)
         window.result_slider.setEnabled(False)
         window.result_control_bar.setVisible(False)
         window.lbl_result_info.setText("-- / --")

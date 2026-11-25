@@ -90,7 +90,7 @@ _STACK_FUNCTIONS = {
     'registration.py': frozenset(('_align_homography_impl', 'align', 'register')),
     'multi_focus_fusion.py': frozenset(('fuse', '_fuse_tiled_ai_batched', '_fuse_stackmffv3', '_fuse_openfocus_a', '_fuse_openfocus_b', '_fuse_openfocus_c')),
     'image_loader.py': frozenset(('load_from_filepaths', 'load_from_folder', 'load_from_video', 'load_linear_raw_stack')),
-    'render_process.py': frozenset(('run', '_run_process', '_render_child')),
+    'render_process.py': frozenset(('run', '_run_process', '_render_child', '_run_decoded_render_job')),
     'resource_policy.py': frozenset(('require_memory', 'plan_execution')),
     'source_frames.py': frozenset(('resolve', 'decode', 'full_resolution', '_decode', 'resolve_frame')),
     'batch_converter.py': frozenset(('convert_one', 'convert_batch', '_decode', '_decode_tiff')),

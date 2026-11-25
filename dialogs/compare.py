@@ -143,6 +143,7 @@ class CompareDialog(QDialog):
             "compare/preview_size", DEFAULT_DETAIL_SIZE, type=int)))
         self._auto_enabled = False
         self._closing = False
+        self._finalized = False
         self._close_code = QDialog.DialogCode.Rejected
         self._ref_index = 0
         self._shared = self._collect_shared_settings()
@@ -562,16 +563,29 @@ class CompareDialog(QDialog):
     def _selected_methods(self):
         return [m for m, check in self._checks.items() if check.isChecked()]
 
+    def _cancel_display_workers(self, methods=None):
+        targets = (self._display_workers.values() if methods is None
+                   else (self._display_workers.get(m) for m in methods))
+        for worker in tuple(targets):
+            if worker is not None:
+                worker.cancel()
+
+    def _clear_compare_results(self):
+        self._stale_methods.update(self._results)
+        self._cancel_display_workers()
+        self._results.clear()
+        self._full_results.clear()
+        self._errors.clear()
+
     def _methods_changed(self, _checked):
         selected = self._selected_methods()
-        for method in set(self._results) - set(selected):
+        deselected = set(self._results) - set(selected)
+        for method in deselected:
             self._results.pop(method, None)
             self._full_results.pop(method, None)
             self._errors.pop(method, None)
             self._canvases[method].set_result(None, None)
-            worker = self._display_workers.get(method)
-            if worker is not None:
-                worker.cancel()
+        self._cancel_display_workers(deselected)
         reverse = self._registration_is_reversed(selected)
         if reverse != self._reverse_registration:
             self._reverse_registration = reverse
@@ -629,23 +643,17 @@ class CompareDialog(QDialog):
         self._request_changed()
 
     def _invalidate_alignment(self):
-        self._stale_methods.update(self._results)
         self._epoch += 1
         self._aligned_frames = None
         self._frames = self._raw_frames
-        self._results.clear()
-        self._full_results.clear()
-        self._errors.clear()
+        self._clear_compare_results()
         self._show_frame(self._ref_index)
         self._update_adopt_actions()
 
     def _mode_changed(self, _index):
         roi = bool(self.mode_combo.currentData())
         self.preview_note.setVisible(roi)
-        self._stale_methods.update(self._results)
-        self._results.clear()
-        self._full_results.clear()
-        self._errors.clear()
+        self._clear_compare_results()
         self._update_adopt_actions()
         self._request_changed()
 
@@ -735,9 +743,12 @@ class CompareDialog(QDialog):
 
     def _source_preview_finished(self):
         worker = self.sender()
+        if worker is None:
+            return
         self._source_preview_workers.pop(worker, None)
         if (isinstance(worker, BoundedPreviewWorker) and not self._closing
-                and worker.key == self._source_preview_generation):
+                and worker.key == self._source_preview_generation
+                and 0 <= self._ref_index < len(self._frames)):
             if worker.error:
                 self._source_preview_failed(worker.key, worker.error)
             else:
@@ -1568,8 +1579,7 @@ class CompareDialog(QDialog):
         self._revision += 1
         self._preview_timer.stop()
         self._layout_timer.stop()
-        for worker in self._display_workers.values():
-            worker.cancel()
+        self._cancel_display_workers()
         self._cancel_source_previews()
         if self._worker is not None:
             self._worker.cancel()
@@ -1589,8 +1599,9 @@ class CompareDialog(QDialog):
                     or self._source_preview_workers or self._display_workers)
 
     def _finalize_close(self):
-        if self._has_workers():
+        if self._finalized or self._has_workers():
             return
+        self._finalized = True
         self._results.clear()
         self._full_results.clear()
         self._errors.clear()

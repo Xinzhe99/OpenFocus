@@ -10,6 +10,7 @@ from utils.file_dialogs import FileDialog
 from PyQt6.QtWidgets import QListWidgetItem, QMenu, QMessageBox, QDialog
 
 from utils import show_message_box, show_warning_box
+from utils.frame_pixels import window_unavailable
 from ui import styles as ui_styles
 from locales import trans
 
@@ -76,6 +77,7 @@ class SourceManager(QObject):
         super().__init__()
         self.window = window
         self._review_worker = None
+        self._retiring_review_workers = set()
         self._review_action = None
         self._review_frames = ()
         self._review_results = []
@@ -149,11 +151,8 @@ class SourceManager(QObject):
             show_warning_box(window, trans.t("reset_stack_title"), trans.t("reset_stack_busy"))
             return
         self._load_generation = getattr(self, "_load_generation", 0) + 1
-        if self._review_worker is not None:
-            self._review_worker.cancel()
-        self._review_frames = ()
-        self._review_results = []
-        self._review_status_key = None
+        self._cancel_render_prewarm()
+        self._clear_review()
         window.raw_images = list(baseline["images"])
         window.base_images = list(baseline["images"])
         window.image_filenames = list(baseline["filenames"])
@@ -225,6 +224,12 @@ class SourceManager(QObject):
             worker.deleteLater()
             return
         self._review_worker = None
+        if window_unavailable(self.window):
+            self._review_frames = ()
+            self._review_results = []
+            self._review_status_key = None
+            worker.deleteLater()
+            return
         if not self._review_matches_stack(worker.frames):
             self._review_status_key = "stack_review_stale"
         elif worker._cancelled:
@@ -245,6 +250,8 @@ class SourceManager(QObject):
         self.decorate_source_items()
 
     def _expire_review_notice(self):
+        if window_unavailable(self.window):
+            return
         if self._review_status_key == 'stack_review_cancelled':
             self._review_status_key = None
             self.refresh_review_text()
@@ -316,7 +323,12 @@ class SourceManager(QObject):
             self._review_results = []
             self._review_status_key = "stack_review_stale"
 
+    def _cancel_render_prewarm(self) -> None:
+        self._render_prewarm_timer.stop()
+        self._render_prewarm_stack = None
+
     def _clear_review(self):
+        self._review_notice_timer.stop()
         worker = self._review_worker
         if worker is not None:
             worker.cancel()
@@ -327,7 +339,8 @@ class SourceManager(QObject):
         self._review_results = []
         self._review_status_key = None
         self._review_error = ''
-        self.refresh_review_text()
+        if not window_unavailable(self.window):
+            self.refresh_review_text()
 
     # ------------------------------------------------------------------
     # UI helpers
@@ -355,18 +368,13 @@ class SourceManager(QObject):
         if label is not None:
             label.setText(self._source_count_text())
 
-    def _confirm_mixed_sizes(self, images) -> bool:
-        """Frames of different sizes in one dropped file set: ask whether to
-        continue (fusion needs one size; the user may resize afterwards)."""
-        shapes = {(img.shape[0], img.shape[1]) for img in images}
-        if len(shapes) <= 1:
-            return True
+    def _confirm_size_mismatch(self, text: str, informative_text: str) -> bool:
         msg = QMessageBox(self.window)
         from utils.ui_utils import style_message_box
         style_message_box(msg)
         msg.setWindowTitle(trans.t("msg_size_mismatch_title"))
-        msg.setText(trans.t("msg_size_mismatch_stack_text"))
-        msg.setInformativeText(trans.t("msg_size_mismatch_open_info"))
+        msg.setText(text)
+        msg.setInformativeText(informative_text)
         msg.setIcon(QMessageBox.Icon.Warning)
         msg.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         yes_btn = msg.button(QMessageBox.StandardButton.Yes)
@@ -377,6 +385,17 @@ class SourceManager(QObject):
             no_btn.setText(trans.t("btn_cancel_generic"))
         msg.setStyleSheet(ui_styles.MESSAGE_BOX_STYLE)
         return msg.exec() == QMessageBox.StandardButton.Yes
+
+    def _confirm_mixed_sizes(self, images) -> bool:
+        """Frames of different sizes in one dropped file set: ask whether to
+        continue (fusion needs one size; the user may resize afterwards)."""
+        shapes = {(img.shape[0], img.shape[1]) for img in images}
+        if len(shapes) <= 1:
+            return True
+        return self._confirm_size_mismatch(
+            trans.t("msg_size_mismatch_stack_text"),
+            trans.t("msg_size_mismatch_open_info"),
+        )
 
     def _show_linear_profile_notice(self, metadata) -> None:
         if getattr(metadata, "profile_tags", None):
@@ -533,10 +552,8 @@ class SourceManager(QObject):
         generation = self._load_generation
 
         def load_is_current():
-            from PyQt6 import sip
-            return (not (isinstance(window, QObject) and sip.isdeleted(window))
+            return (not window_unavailable(window)
                     and not getattr(worker, "is_cancelled", False)
-                    and not getattr(window, "_shutting_down", False)
                     and generation == getattr(self, "_load_generation", -1))
 
         # Preparing or displaying frames may run a nested Qt event loop. Keep
@@ -745,12 +762,10 @@ class SourceManager(QObject):
         worker.start()
 
     def _start_render_prewarm(self) -> None:
-        from PyQt6 import sip
-
         window = self.window
         stack = self._render_prewarm_stack
         self._render_prewarm_stack = None
-        if (isinstance(window, QObject) and sip.isdeleted(window)) or getattr(window, "_shutting_down", False):
+        if window_unavailable(window):
             return
         if (os.environ.get("QT_QPA_PLATFORM") == "offscreen"
                 or os.environ.get("OPENFOCUS_DISABLE_PERSISTENT_RENDER_WORKER")):
@@ -811,13 +826,11 @@ class SourceManager(QObject):
                 if render._render_after_load is not request:
                     return
                 render._render_after_load = None
-                from PyQt6 import sip
-                if isinstance(self.window, QObject) and sip.isdeleted(self.window):
+                if window_unavailable(self.window):
                     return
                 render._hide_progress_bar()
                 render.refresh_action_labels()
-                current = (not getattr(self.window, '_shutting_down', False)
-                           and getattr(self, "_load_worker", None) is None
+                current = (getattr(self, "_load_worker", None) is None
                            and request["load_generation"] == getattr(self, "_load_generation", 0)
                            and self.window.raw_images is source_ref
                            and getattr(self.window, "source_revision", 0) == revision
@@ -1362,24 +1375,14 @@ class SourceManager(QObject):
         except Exception:
             return True
 
-        msg = QMessageBox(window)
-        msg.setWindowTitle(trans.t("msg_size_mismatch_title"))
-        msg.setText(trans.t("msg_size_mismatch_text"))
-        msg.setInformativeText(trans.t("msg_size_mismatch_info"))
-        msg.setIcon(QMessageBox.Icon.Warning)
-        msg.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-        yes_btn = msg.button(QMessageBox.StandardButton.Yes)
-        no_btn = msg.button(QMessageBox.StandardButton.No)
-        if yes_btn:
-            yes_btn.setText(trans.t("btn_continue"))
-        if no_btn:
-            no_btn.setText(trans.t("btn_cancel_generic"))
-        msg.setStyleSheet(ui_styles.MESSAGE_BOX_STYLE)
-        ret = msg.exec()
-        return ret == QMessageBox.StandardButton.Yes
+        return self._confirm_size_mismatch(
+            trans.t("msg_size_mismatch_text"),
+            trans.t("msg_size_mismatch_info"),
+        )
 
     def clear_image_stack(self) -> None:
         window = self.window
+        self._cancel_render_prewarm()
         worker = getattr(self, "_load_worker", None)
         if worker is not None:
             worker.request_cancel()
@@ -1543,12 +1546,7 @@ class SourceManager(QObject):
 
         window.transform_manager.invalidate_processing_results(clear_output_view=False, preserve_outputs=True)
 
-        self._pop_sequence(window.image_filenames, row)
-        self._pop_sequence(window.raw_images, row)
-        self._pop_sequence(getattr(window, "base_images", None), row)
-        self._pop_sequence(getattr(window, "image_source_paths", None), row)
-        self._pop_sequence(getattr(window, "image_source_exifs", None), row)
-        self._pop_sequence(getattr(window, "image_icc_profiles", None), row)
+        self._pop_frame_at(row)
         self._remap_exclusions_after_delete([row])
 
         if window.raw_images:
@@ -1594,12 +1592,7 @@ class SourceManager(QObject):
         rows.sort(reverse=True)
 
         for row in rows:
-            self._pop_sequence(window.image_filenames, row)
-            self._pop_sequence(window.raw_images, row)
-            self._pop_sequence(getattr(window, "base_images", None), row)
-            self._pop_sequence(getattr(window, "image_source_paths", None), row)
-            self._pop_sequence(getattr(window, "image_source_exifs", None), row)
-            self._pop_sequence(getattr(window, "image_icc_profiles", None), row)
+            self._pop_frame_at(row)
         self._remap_exclusions_after_delete(rows)
 
         if window.raw_images:
@@ -1607,6 +1600,12 @@ class SourceManager(QObject):
             window.transform_manager.reload_image_stack(initial_index=target_index)
         else:
             self.clear_image_stack()
+
+    def _pop_frame_at(self, row: int) -> None:
+        window = self.window
+        for attr in ("image_filenames", "raw_images", "base_images",
+                     "image_source_paths", "image_source_exifs", "image_icc_profiles"):
+            self._pop_sequence(getattr(window, attr, None), row)
 
     def _remap_exclusions_after_delete(self, rows) -> None:
         removed = set(rows)

@@ -19,7 +19,7 @@ from utils import resource_path
 from utils.image_utils import prepare_fusion_input, to_display_uint8
 from utils.output_sharpen import DEFAULT_SHARPEN_STRENGTH, validate_sharpen_strength
 from copy import deepcopy
-from utils.export_paths import create_stack_directory, frame_export_name
+from utils.export_paths import create_stack_directory, frame_export_name, resolve_output_subfolder
 from utils.logging_setup import frame_details, get_logger, log_action, log_operation
 from utils import performance_profile
 from core.storage_preflight import defers_warps
@@ -1712,14 +1712,32 @@ class BatchWorker(QThread):
                 operation.fail()
                 self.error.emit(str(exc))
 
-    def _split_images_for_processing(self):
-        """分割单文件夹中的图像"""
+    def _is_correction_reference(self, path) -> bool:
         from utils.path_identity import same_path
         references = (self.processing_settings.get('flat_field_path', ''),
                       self.processing_settings.get('defect_mask_path', ''))
+        return any(same_path(path, reference) for reference in references if reference)
+
+    def _resolve_tile_kwargs(self, method: str) -> dict:
+        runtime = self.runtime_settings
+        tile_kwargs = {
+            'tile_enabled': self.tile_enabled if self.tile_enabled is not None else True,
+            'tile_block_size': self.tile_block_size if self.tile_block_size is not None else TILE_BLOCK_SIZE,
+            'tile_overlap': self.tile_overlap if self.tile_overlap is not None else TILE_OVERLAP,
+            'tile_threshold': self.tile_threshold if self.tile_threshold is not None else TILE_THRESHOLD,
+            'ai_batch_size': self.ai_batch_size,
+        }
+        for key in tile_kwargs:
+            if runtime.get(key) is not None:
+                tile_kwargs[key] = runtime[key]
+        if method in ('openfocus_a', 'openfocus_b', 'openfocus_c'):
+            tile_kwargs['tile_enabled'] = False
+        return tile_kwargs
+
+    def _split_images_for_processing(self):
+        """分割单文件夹中的图像"""
         def keep(item):
-            return not any(same_path(item[0], reference)
-                           for reference in references if reference)
+            return not self._is_correction_reference(item[0])
         if self._frozen_stacks is not None:
             if not self._frozen_stacks or any(not stack for stack in self._frozen_stacks):
                 raise ValueError('Frozen batch plan contains no frames')
@@ -1779,13 +1797,8 @@ class BatchWorker(QThread):
         align-only mode used to be nested inside the fusion branch, so it
         wrote no files at all while still being counted as a success.
         """
-        images = [item[1] for item in stack_images_with_times]
-        from utils.path_identity import same_path
-        references = (self.processing_settings.get('flat_field_path', ''),
-                      self.processing_settings.get('defect_mask_path', ''))
         stack_images_with_times = [item for item in stack_images_with_times
-            if not any(same_path(item[0], reference)
-                       for reference in references if reference)]
+                                   if not self._is_correction_reference(item[0])]
         images = [item[1] for item in stack_images_with_times]
         with log_operation("batch_stack", stack_name=stack_name, stack_index=stack_index,
                            method=self.processing_settings.get('fusion_method'),
@@ -1905,17 +1918,7 @@ class BatchWorker(QThread):
                     fusion_params = resolve_fusion_parameters(fusion_method,
                         self.processing_settings.get('fusion_params'))
                     runtime = self.runtime_settings
-                    tile_kwargs = {
-                        'tile_enabled': self.tile_enabled if self.tile_enabled is not None else True,
-                        'tile_block_size': self.tile_block_size if self.tile_block_size is not None else TILE_BLOCK_SIZE,
-                        'tile_overlap': self.tile_overlap if self.tile_overlap is not None else TILE_OVERLAP,
-                        'tile_threshold': self.tile_threshold if self.tile_threshold is not None else TILE_THRESHOLD,
-                        'ai_batch_size': self.ai_batch_size}
-                    for key in tile_kwargs:
-                        if runtime.get(key) is not None:
-                            tile_kwargs[key] = runtime[key]
-                    if fusion_method in ('openfocus_a', 'openfocus_b', 'openfocus_c'):
-                        tile_kwargs['tile_enabled'] = False
+                    tile_kwargs = self._resolve_tile_kwargs(fusion_method)
         
                     from utils.image_utils import quantize_fuse_output
                     save_aligned = bool(self.processing_settings.get('save_aligned', False))
@@ -2059,10 +2062,7 @@ class BatchWorker(QThread):
         files = [(name, os.path.join(folder_path, name)) for name in os.listdir(folder_path)
                  if os.path.splitext(name)[1].lower() in self.image_loader.SUPPORTED_FORMATS]
         files = self.image_loader._drop_derived_aligned_copies(files)
-        from utils.path_identity import same_path
-        references = (settings.get('flat_field_path', ''), settings.get('defect_mask_path', ''))
-        files = [(name, path) for name, path in files if not any(
-            same_path(path, reference) for reference in references if reference)]
+        files = [(name, path) for name, path in files if not self._is_correction_reference(path)]
         files.sort(key=lambda item: natural_sort_key(item[0]))
         paths = [path for _, path in files]
         if len(paths) < 2:
@@ -2082,18 +2082,7 @@ class BatchWorker(QThread):
         if ('openfocus' in alignment_steps(alignment)
                 and self.registration_parameters.get('reference_frame', 1) != 1):
             raise ValueError('Grouped fusion cannot use a stack-wide alignment reference; use frame 1 or disable grouping')
-        tile_kwargs = {
-            'tile_enabled': self.tile_enabled if self.tile_enabled is not None else True,
-            'tile_block_size': self.tile_block_size if self.tile_block_size is not None else TILE_BLOCK_SIZE,
-            'tile_overlap': self.tile_overlap if self.tile_overlap is not None else TILE_OVERLAP,
-            'tile_threshold': self.tile_threshold if self.tile_threshold is not None else TILE_THRESHOLD,
-            'ai_batch_size': self.ai_batch_size,
-        }
-        for key in tile_kwargs:
-            if runtime.get(key) is not None:
-                tile_kwargs[key] = runtime[key]
-        if method in ('openfocus_a', 'openfocus_b', 'openfocus_c'):
-            tile_kwargs['tile_enabled'] = False
+        tile_kwargs = self._resolve_tile_kwargs(method)
         fusion = MultiFocusFusion(algorithm=method, fusion_parameters=params, use_gpu=self.use_gpu,
             resource_preference=self.resource_preference, base_frame=runtime.get('base_frame', 'none'),
             sort_mode=sort_mode, exposure_match=self.exposure_match, **tile_kwargs)
@@ -2177,10 +2166,7 @@ class BatchWorker(QThread):
 
     def _get_output_path_for_single_folder(self, source_folder_path):
         if self.output_type == 'subfolder':
-            root = os.path.realpath(source_folder_path)
-            output_dir = os.path.realpath(os.path.join(root, self.output_path))
-            if os.path.isabs(self.output_path) or os.path.commonpath((root, output_dir)) != root:
-                raise ValueError('Output subfolder must be inside the source folder')
+            output_dir = resolve_output_subfolder(source_folder_path, self.output_path)
         elif self.output_type == 'same':
             output_dir = source_folder_path
         else:
