@@ -54,6 +54,20 @@ def _runtime_error_child(connection, cancel_event, request, budget, directory, l
     render_process._render_child(connection, cancel_event, request, budget, directory, language)
 
 
+def _transport_failure_child(connection, cancel_event, request, budget, directory, language,
+                             *, operation):
+    from core import render_process
+
+    def fail_transfer(*_args, **_kwargs):
+        raise ValueError('private transfer detail')
+
+    if operation == 'decode':
+        render_process.FrameDecoder.decode = fail_transfer
+    else:
+        render_process.FrameEncoder.encode = fail_transfer
+    render_process._render_child(connection, cancel_event, request, budget, directory, language)
+
+
 def _diagnostic_cancel_child(connection, cancel_event, request, budget, directory, language):
     connection.send(('error', 'CANCELLED: render cancelled', None, None))
     connection.close()
@@ -102,8 +116,8 @@ def _render_with_prepared_cache(connection, cancel_event, request, budget, direc
         self.alignment_report = [{'probe': 'alignment diagnostic'}]
         self.alignment_report_provenance = {'probe': 'child'}
 
-    def fail_sharpen(image, should_cancel=None, *, strength):
-        assert strength == 175
+    def fail_sharpen(image, should_cancel=None, *, strength, thread_count=None):
+        assert (strength, thread_count) == (175, 1)
         snapshot = ResourceSnapshot(available_ram=8 * 1024**3, total_ram=16 * 1024**3,
                                     commit_headroom=9 * 1024**2,
                                     process_commit_headroom=5 * 1024**2)
@@ -475,6 +489,38 @@ def test_worker_error_reports_original_stack_through_ipc(qapp, scratch, monkeypa
         ('workers.py', 'run'), ('workers.py', '_run_admitted')]
     assert all(type(line) is int and line > 0 for line in fields['error']['stack_lines'])
     assert 'synthetic/source.tif' not in json.dumps(fields)
+
+
+def test_child_diagnostics_distinguish_request_decode_from_result_encode(qapp, scratch, monkeypatch, caplog):
+    from functools import partial
+    from core import render_process
+    from utils.report_bundle import snapshot_failure
+
+    caplog.set_level(logging.INFO, logger='openfocus')
+    monkeypatch.setattr(logging.getLogger('openfocus'), 'propagate', True)
+    fingerprints, lines = [], []
+    for operation in ('decode', 'encode'):
+        caplog.clear()
+        monkeypatch.setattr(render_process, '_render_child',
+                            partial(_transport_failure_child, operation=operation))
+        image = np.zeros((8, 8, 3), dtype=np.uint8)
+        worker = render_process.RenderProcessWorker(
+            [image], algorithm=None, need_fusion=False, thread_count=1, use_gpu=False)
+        results, errors = _start(worker)
+        _wait(worker, qapp)
+        assert not results and errors == ['private transfer detail']
+
+        failure, = {record for record in caplog.records if hasattr(record, 'report_child_evidence')}
+        evidence = failure.report_child_evidence
+        assert evidence['error_origin'] == 'child_setup_or_transfer'
+        assert evidence['render_stage'] == ('prepare' if operation == 'decode' else 'publish')
+        stack = evidence['error']['stack']
+        assert stack[-1]['function'] == '_run_decoded_render_job'
+        lines.append(stack[-1]['line'])
+        fingerprints.append(snapshot_failure(failure, {}).fingerprint)
+
+    assert lines[0] != lines[1]
+    assert fingerprints[0] != fingerprints[1]
 
 
 def test_exchange_filters_malformed_child_details():

@@ -134,13 +134,12 @@ def resolve_output_subfolder(source_folder: str, subfolder_name: str) -> str:
     Raises ``ValueError`` if ``subfolder_name`` is empty, absolute, traverses
     above ``source_folder``, or resolves onto a different drive.
     """
-    subfolder = (subfolder_name or "").strip()
-    if not subfolder:
+    if not (subfolder_name or "").strip():
         raise ValueError("Output subfolder name is required")
-    if os.path.isabs(subfolder):
+    if os.path.isabs(subfolder_name):
         raise ValueError("Output subfolder must be inside the source folder")
     root = os.path.realpath(source_folder)
-    target = os.path.realpath(os.path.join(root, subfolder))
+    target = os.path.realpath(os.path.join(root, subfolder_name))
     try:
         common = os.path.commonpath((root, target))
     except ValueError as exc:

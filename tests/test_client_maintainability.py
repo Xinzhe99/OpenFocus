@@ -119,9 +119,9 @@ def test_resolve_output_subfolder_enforces_containment(tmp_path):
             resolve_output_subfolder(str(source), bad)
 
     if os.name == "nt":
-        other_drive = "Z:\\elsewhere" if not str(source).upper().startswith("Z:") else "Y:\\elsewhere"
+        other_drive = 'Y:' if source.drive.upper() == 'Z:' else 'Z:'
         with pytest.raises(ValueError):
-            resolve_output_subfolder(str(source), other_drive)
+            resolve_output_subfolder(str(source), other_drive + 'elsewhere')
 
 
 def test_batch_worker_shared_reference_and_tile_helpers(tmp_path):
@@ -489,8 +489,13 @@ def test_batch_manager_teardown_closes_dialog_and_handles_orphans():
 # 6. core/render_process shared child & parent exchange helpers
 # ---------------------------------------------------------------------------
 
-def test_render_process_shared_helpers_preserve_stack_and_poll_idle():
+def test_render_process_shared_helpers_preserve_stack_and_poll_idle(monkeypatch):
     from core import render_process
+    from utils import diagnostics, logging_setup
+
+    monkeypatch.setattr(logging_setup, 'setup_logging', lambda: None)
+    monkeypatch.setattr(diagnostics, 'install_exception_hooks', lambda: None)
+    monkeypatch.setattr(render_process.trans, 'current_lang', 'en')
 
     class FakeConn:
         def __init__(self, messages=()):
