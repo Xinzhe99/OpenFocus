@@ -409,8 +409,9 @@ class AdvancedSettingsDialog(QDialog):
         w = self.window_main
         spins = [editor for editor, _ in self._tile_fields.values() if editor.isEnabled()]
         spins.append(self.spin_reg_width)
-        spins.extend(editor for editor in self.openfocus_registration_panel.editors.values()
-                     if isinstance(editor, StepperSpinBox))
+        if self.chk_experimental_features.isChecked():
+            spins.extend(editor for editor in self.openfocus_registration_panel.editors.values()
+                         if isinstance(editor, StepperSpinBox))
         for spin in spins:
             if not spin.lineEdit().hasAcceptableInput():
                 self._show_error(trans.t('msg_error'), spin.lineEdit())
@@ -429,17 +430,18 @@ class AdvancedSettingsDialog(QDialog):
         for key, (editor, initial) in self._tile_fields.items():
             if editor.isEnabled() and editor.value() != initial:
                 draft[key] = int(editor.value())
-        try:
-            openfocus_values = self.openfocus_registration_panel.values()
-        except (TypeError, ValueError) as exc:
-            self._show_error(str(exc), self.openfocus_registration_panel)
-            return
-        reg_edits = {key: value for key, value in openfocus_values.items()
-                     if value != self._initial_registration_fields[key]}
-        if reg_edits:
-            draft['_registration_parameters_by_method'] = {
-                **getattr(w, '_registration_parameters_by_method', {}),
-                'openfocus': {**self._initial_openfocus, **reg_edits}}
+        if self.chk_experimental_features.isChecked():
+            try:
+                openfocus_values = self.openfocus_registration_panel.values()
+            except (TypeError, ValueError) as exc:
+                self._show_error(str(exc), self.openfocus_registration_panel)
+                return
+            reg_edits = {key: value for key, value in openfocus_values.items()
+                         if value != self._initial_registration_fields[key]}
+            if reg_edits:
+                draft['_registration_parameters_by_method'] = {
+                    **getattr(w, '_registration_parameters_by_method', {}),
+                    'openfocus': {**self._initial_openfocus, **reg_edits}}
         if not draft and not self._reports_choice_touched:
             self.accept()
             return
@@ -539,11 +541,8 @@ class AdvancedSettingsDialog(QDialog):
             return
         apply_experimental = getattr(w, "apply_experimental_features", None)
         if 'experimental_features' in draft and callable(apply_experimental):
-            turned_off = bool(previous.get('experimental_features')) and not bool(draft['experimental_features'])
-            try:
-                apply_experimental(fallback_to_stable=turned_off)
-            except TypeError:
-                apply_experimental()
+            turned_off = self._initial_fields['experimental_features'] and not draft['experimental_features']
+            apply_experimental(fallback_to_stable=turned_off)
         if draft.get('auto_error_reports') is False:
             from ui.report_retry import discard_automatic_reports
             discard_automatic_reports()

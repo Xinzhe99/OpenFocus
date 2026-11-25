@@ -156,8 +156,8 @@ from PyQt6.QtWidgets import (
     QDialog,
     QPushButton,
 )
-from PyQt6.QtCore import Qt, QThread, QUrl, QEvent, QSignalBlocker, pyqtSignal
-from PyQt6.QtGui import QKeySequence, QShortcut
+from PyQt6.QtCore import QPoint, QPointF, Qt, QThread, QUrl, QEvent, QSignalBlocker, pyqtSignal
+from PyQt6.QtGui import QKeySequence, QShortcut, QWheelEvent
 from PyQt6.QtGui import QFont, QIcon, QDesktopServices, QDragEnterEvent, QDropEvent, QPixmap
 from core import ImageStackLoader
 from core.app import OpenFocusApplication, _serve_instance_request, process_command_line_args
@@ -887,9 +887,13 @@ class OpenFocus(QMainWindow):
                 if direction == 0:
                     wipe.reset_view()
                 else:
-                    factor = 1.2 if direction > 0 else 1.0 / 1.2
-                    wipe._zoom = max(0.5, min(20.0, float(getattr(wipe, "_zoom", 1.0)) * factor))
-                    wipe.update()
+                    center = wipe.rect().center()
+                    wheel = QWheelEvent(
+                        QPointF(center), QPointF(wipe.mapToGlobal(center)), QPoint(),
+                        QPoint(0, 120 if direction > 0 else -120), Qt.MouseButton.NoButton,
+                        Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.NoScrollPhase, False,
+                    )
+                    QApplication.sendEvent(wipe, wheel)
             return
         source = getattr(self, "lbl_source_img", None)
         result = getattr(self, "lbl_result_img", None)
@@ -1675,17 +1679,26 @@ class OpenFocus(QMainWindow):
             from ui.right_panel import ALIGN_DEFAULT
             switched = []
             fusion = self.current_fusion_method()
-            if fusion != 'none' and get_fusion(fusion).experimental:
-                self.set_fusion_method(FUSION_DEFAULT)
-                self._preferred_fusion_method = FUSION_DEFAULT
-                switched.append(trans.t(get_fusion(FUSION_DEFAULT).label_key))
             align = self.current_alignment_method()
-            if alignment_is_experimental(align):
+            switch_fusion = fusion != 'none' and get_fusion(fusion).experimental
+            switch_align = alignment_is_experimental(align)
+            if switch_fusion:
+                self.set_fusion_method(FUSION_DEFAULT)
+                switched.append(trans.t(get_fusion(FUSION_DEFAULT).label_key))
+            if switch_align:
                 self.set_alignment_method(ALIGN_DEFAULT)
-                self._preferred_alignment_method = ALIGN_DEFAULT
                 switched.append(trans.t(get_registration(ALIGN_DEFAULT).label_key))
-            if switched:
+            preferred_fusion = getattr(self, '_preferred_fusion_method', None)
+            preferred_align = getattr(self, '_preferred_alignment_method', None)
+            if switch_fusion or (
+                    preferred_fusion not in (None, 'none') and get_fusion(preferred_fusion).experimental):
+                self._preferred_fusion_method = FUSION_DEFAULT if switch_fusion else fusion
+            if switch_align or alignment_is_experimental(preferred_align):
+                self._preferred_alignment_method = ALIGN_DEFAULT if switch_align else align
+            if (preferred_fusion != getattr(self, '_preferred_fusion_method', None)
+                    or preferred_align != getattr(self, '_preferred_alignment_method', None)):
                 self.persist_settings()
+            if switched:
                 self._show_status_message(
                     trans.t('experimental_fallback_notice').format(methods=', '.join(switched)),
                     6000,
@@ -5263,12 +5276,12 @@ if __name__ == "__main__":
             source = getattr(window, "source_manager", None)
             if (getattr(window, "_shutting_down", False)
                     or getattr(window, "_close_confirmation_active", False)
+                    or QApplication.activeModalWidget() is not None
+                    or QApplication.activePopupWidget() is not None
                     or getattr(window, "raw_images", None)
                     or getattr(source, "_load_worker", None) is not None
                     or getattr(window, "project_path", None)
-                    or getattr(window, "_startup_import_active", False)
-                    or bool(getattr(app, "_import_queue", None))
-                    or bool(getattr(app, "_import_processing", False))):
+                    or app._pending or app._import_queue or app._import_processing):
                 return
             window.show_quick_start()
             get_settings().setValue("ui/first_run_done", "1")

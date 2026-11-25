@@ -542,6 +542,7 @@ def test_openfocus_advanced_draft_accept_and_persistence(settings_window, tmp_pa
     store = QSettings(str(tmp_path / 'settings.ini'), QSettings.Format.IniFormat)
     monkeypatch.setattr(settings_store, 'get_settings', lambda: store)
     window = settings_window
+    window.experimental_features = True
     window._registration_parameters_by_method = {
         'openfocus': {'max_shift_ratio': .12, 'reference_frame': 4, 'failure_policy': 'fail'},
         'ecc': {'failure_policy': 'continue'},
@@ -581,6 +582,7 @@ def test_openfocus_advanced_invalid_and_save_failure_roll_back(settings_window):
     from dialogs.advanced_settings import AdvancedSettingsDialog
 
     window = settings_window
+    window.experimental_features = True
     original = {'openfocus': {'reference_frame': 3}, 'ecc': {'failure_policy': 'continue'}}
     window._registration_parameters_by_method = original
     window.current_alignment_method = lambda: 'ecc'

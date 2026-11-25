@@ -7,9 +7,9 @@ import pytest
 
 pytest.importorskip("PyQt6")
 
-from PyQt6.QtCore import QEvent, QPoint, Qt
-from PyQt6.QtGui import QKeyEvent, QPixmap
-from PyQt6.QtWidgets import QDialog, QLineEdit, QListWidget, QWidget
+from PyQt6.QtCore import QEvent, Qt
+from PyQt6.QtGui import QKeyEvent
+from PyQt6.QtWidgets import QDialog, QLineEdit, QListWidget, QPushButton, QWidget
 
 
 def test_openfocus_a_hides_noop_smoothing_while_preserving_value(qapp):
@@ -86,9 +86,16 @@ def test_advanced_settings_gates_openfocus_registration_and_clarifies_tiles(qapp
 
         dialog.registration_options_disclosure.setChecked(True)
         assert dialog.registration_options_disclosure.isChecked()
+        dialog.openfocus_registration_panel.editors['max_shift_ratio'].setValue(.2)
+        dialog.openfocus_registration_panel.editors['rotation'].lineEdit().setText('')
         dialog.chk_experimental_features.setChecked(False)
         assert not dialog.registration_options_disclosure.isChecked()
         assert not dialog.registration_options_disclosure.isEnabled()
+        dialog.chk_restore.setChecked(True)
+        dialog._apply()
+        assert dialog.result() == QDialog.DialogCode.Accepted
+        assert host.restore_last_stack
+        assert not hasattr(host, '_registration_parameters_by_method')
     finally:
         dialog.reject()
         dialog.deleteLater()
@@ -146,16 +153,15 @@ def test_render_manager_cancel_calls_worker_cancel_and_emits_lifecycle(qapp):
     mgr._cancel_worker()
     worker.cancel.assert_called_once()
 
-    mgr.last_state = "cancelled"
-    mgr.last_result = None
+    # An aborted preflight can restore the previous render's state.
+    mgr.last_state = "done"
+    mgr.last_result = {"method": "openfocus_b"}
     mgr._hide_progress_bar()
     assert finished == [False]
 
     # Completed run with a result emits True.
     mgr._show_progress_bar("Fusing")
-    mgr.last_state = "done"
-    mgr.last_result = {"method": "openfocus_b"}
-    mgr._hide_progress_bar()
+    mgr._hide_progress_bar(produced_output=True)
     assert finished == [False, True]
 
 
@@ -198,8 +204,20 @@ def test_render_progress_updates_smoothly_and_guards_frame1_eta(qapp, monkeypatc
     assert "30%" in text3 and "(3/10)" in text3
     assert "~" in text3
 
+    mgr.on_render_progress(12, 10)
+    assert mgr._status_bar_progress.value() == 10
+    assert "100% (10/10)" in mgr._status_bar_label.text()
+    assert mgr._control_progress == (12, 10)
 
-def test_live_preview_stops_hijacking_source_row_after_user_selection(qapp):
+    clock[0] = 11.5
+    mgr.on_render_progress(-2, 10)
+    assert mgr._status_bar_progress.value() == 0
+    assert "0% (0/10)" in mgr._status_bar_label.text()
+    assert mgr._control_progress == (-2, 10)
+
+
+@pytest.mark.parametrize('select_before_first_frame', [False, True])
+def test_live_preview_stops_hijacking_source_row_after_user_selection(qapp, select_before_first_frame):
     from controllers.render_manager import RenderManager
 
     file_list = QListWidget()
@@ -235,15 +253,12 @@ def test_live_preview_stops_hijacking_source_row_after_user_selection(qapp):
     }
     mgr._start_live_preview()
     try:
-        # First tick follows row 0 -> stays 0
-        mgr._poll_live_preview()
-        assert file_list.currentRow() == 0
-        # Second tick advances to row 1
-        mgr._poll_live_preview()
-        assert file_list.currentRow() == 1
-        # User manually jumps to row 4
+        if not select_before_first_frame:
+            mgr._poll_live_preview()
+            assert file_list.currentRow() == 0
+            mgr._poll_live_preview()
+            assert file_list.currentRow() == 1
         file_list.setCurrentRow(4)
-        # Third tick must respect user selection instead of snapping to row 2
         mgr._poll_live_preview()
         assert file_list.currentRow() == 4
         assert mgr._live_preview_user_selected is True
@@ -273,6 +288,10 @@ def test_onboarding_tour_never_wedges_on_cancel_and_guards_step4(qapp):
     win.fusion_result = None
     win.fusion_results = []
     win.registration_results = []
+    win.btn_render = QPushButton('Render', win)
+    win.btn_render.move(20, 80)
+    win.btn_wipe = QPushButton('Wipe', win)
+    win.btn_wipe.move(20, 160)
     win.wipe_active = False
     sb = _FakeStatusBar()
     win.statusBar = lambda: sb
@@ -292,6 +311,8 @@ def test_onboarding_tour_never_wedges_on_cancel_and_guards_step4(qapp):
         assert tour._is_rendering()
         assert not tour.backdrop.isVisible()
 
+        cancel_target = win.btn_render.mapTo(win, win.btn_render.rect().center())
+        assert win.childAt(cancel_target) is win.btn_render
         # Render cancelled -> NOT wedged, stays on Step 3, spotlight restored
         win.render_manager.last_state = "cancelled"
         win.render_manager.last_result = None
@@ -302,12 +323,29 @@ def test_onboarding_tour_never_wedges_on_cancel_and_guards_step4(qapp):
         assert tour.backdrop.isVisible()
         assert tour.card.btn_action.isVisible()
 
+        clicks = []
+        win.btn_render.clicked.connect(lambda: clicks.append(True))
+        dialog = QDialog(win)
+        dialog.setModal(True)
+        dialog.show()
+        qapp.processEvents()
+        tour.trigger_step_action()
+        assert not clicks
+        assert not tour.eventFilter(win, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Escape,
+                                                  Qt.KeyboardModifier.NoModifier))
+        assert tour.is_active
+        dialog.close()
+        tour.trigger_step_action()
+        assert clicks == [True]
+
         # Step 4 without output hides action button and explains why
         tour.go_to(3)
         qapp.processEvents()
         assert tour.steps[tour.current_index].key == "compare"
         assert not tour.card.btn_action.isVisible()
         assert tour.card.lbl_status.text() == trans.t("wipe_need_result")
+        wipe_target = win.btn_wipe.mapTo(win, win.btn_wipe.rect().center())
+        assert win.childAt(wipe_target) is tour.backdrop
 
         # retranslate() method works cleanly
         tour.retranslate()

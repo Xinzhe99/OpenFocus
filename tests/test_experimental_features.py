@@ -25,7 +25,7 @@ def window(qapp, monkeypatch, tmp_path):
     qapp.processEvents()
 
 
-def test_experimental_default_toggle_and_preserved_selection(window):
+def test_experimental_default_toggle_and_stable_fallback(window):
     from dialogs.advanced_settings import AdvancedSettingsDialog
     from core.algorithms import fusion_algorithms, registration_algorithms
     from locales import trans
@@ -56,6 +56,7 @@ def test_experimental_default_toggle_and_preserved_selection(window):
     assert not w.ui_objs['mosaic_title'].isEnabled()
     assert not w.ui_objs['menu_dust_map'].isEnabled()
     w.set_fusion_method('guided_filter')
+    w.set_alignment_method('openfocus')
     assert w.current_fusion_method() == 'guided_filter'
 
     dialog = AdvancedSettingsDialog(w)
@@ -65,6 +66,8 @@ def test_experimental_default_toggle_and_preserved_selection(window):
     # Turning off experimental features falls back to Stable defaults instead of stranding the user.
     assert w.current_fusion_method() == 'openfocus_b'
     assert w.current_alignment_method() == 'ecc'
+    assert w._preferred_fusion_method == 'openfocus_b'
+    assert w._preferred_alignment_method == 'ecc'
     assert w.btn_render.isEnabled()
     assert not w.ui_objs['mosaic_title'].isEnabled()
     assert not w.ui_objs['menu_dust_map'].isEnabled()
@@ -78,6 +81,26 @@ def test_experimental_default_toggle_and_preserved_selection(window):
     w.set_fusion_method('guided_filter')
     assert w.current_fusion_method() == 'guided_filter'
     assert w.btn_render.isEnabled()
+
+
+def test_disabling_experiments_keeps_stable_project_methods_and_updates_preferences(window):
+    from dialogs.advanced_settings import AdvancedSettingsDialog
+    from utils.settings_store import ALIGNMENT_METHOD_KEY, FUSION_METHOD_KEY
+
+    w, settings = window
+    w.experimental_features = True
+    w._preferred_fusion_method = 'guided_filter'
+    w._preferred_alignment_method = 'openfocus'
+    w.set_fusion_method('openfocus_a')
+    w.set_alignment_method('none')
+    dialog = AdvancedSettingsDialog(w)
+    dialog.chk_experimental_features.setChecked(False)
+    dialog._apply()
+
+    assert w.current_fusion_method() == 'openfocus_a'
+    assert w.current_alignment_method() == 'none'
+    assert settings.value(FUSION_METHOD_KEY) == 'openfocus_a'
+    assert settings.value(ALIGNMENT_METHOD_KEY) == 'none'
 
 
 def test_clicking_locked_alignment_explains_opt_in(window, qapp):
@@ -104,6 +127,7 @@ def test_project_restores_locked_fusion_selection(window, alignment):
     w, _settings = window
     _apply_after_load(w, {'openfocus_project': 4, 'settings': {
         'fusion_method': 'guided_filter', 'alignment_method': alignment}})
+    w.apply_experimental_features()
     assert not w.experimental_features
     assert w.current_fusion_method() == 'guided_filter'
     assert w.current_alignment_method() == alignment

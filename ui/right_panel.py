@@ -142,8 +142,8 @@ class ElidingButton(QPushButton):
 
     def __init__(self, text: str = "", parent=None):
         super().__init__("", parent)
-        self._full_text = text or ""
-        self._elided_text = self._full_text
+        self._full_text = ""
+        self._elided_text = ""
         # An explicitly assigned tooltip survives caption and size changes.
         self._explicit_tip = ""
         self.setSizePolicy(QSizePolicy.Policy.Preferred,
@@ -157,7 +157,10 @@ class ElidingButton(QPushButton):
         self.setText(text)
 
     def setText(self, text: str) -> None:  # noqa: N802 (Qt casing)
-        self._full_text = text or ""
+        text = text or ""
+        if text == self._full_text:
+            return
+        self._full_text = text
         self.setAccessibleName(self._full_text)
         self._refresh_display()
         self.updateGeometry()
@@ -331,7 +334,7 @@ class ElidingLabel(QLabel):
 
     def minimumSizeHint(self):
         hint = super().minimumSizeHint()
-        return QSize(0, hint.height())
+        return QSize(0, max(hint.height(), self.fontMetrics().height() + 2 * self.margin()))
 
     def sizeHint(self):
         hint = super().sizeHint()
@@ -345,7 +348,10 @@ class ElidingLabel(QLabel):
         return self._full_text
 
     def setText(self, text):
-        self._full_text = text or ""
+        text = text or ""
+        if text == self._full_text:
+            return
+        self._full_text = text
         self.setAccessibleName(self._full_text)
         self._refit()
         self.updateGeometry()

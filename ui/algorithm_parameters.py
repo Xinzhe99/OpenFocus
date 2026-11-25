@@ -93,14 +93,12 @@ class AlgorithmParameterPanel(QWidget):
             raise ValueError(f"Unknown parameters: {', '.join(sorted(unknown))}")
         resolved = {spec.key: validate_parameter(spec, supplied.get(spec.key, spec.default))
                     for spec in specs}
-        self._hidden_values = {
-            spec.key: resolved[spec.key] for spec in specs
-            if spec.key in self._hidden_parameters or spec.hint_key == 'label_of_smoothing_a_hint'
-        }
-        specs = tuple(
-            spec for spec in specs
-            if spec.key not in self._hidden_parameters and spec.hint_key != 'label_of_smoothing_a_hint'
-        )
+        # OpenFocus A's smoothing is a no-op. Keep its serialized value for
+        # existing projects and recipes, as with explicitly hidden controls.
+        hidden = {spec.key for spec in specs if spec.key in self._hidden_parameters
+                  or spec.hint_key == 'label_of_smoothing_a_hint'}
+        self._hidden_values = {key: resolved[key] for key in hidden}
+        specs = tuple(spec for spec in specs if spec.key not in hidden)
         if specs == self._specs:
             for spec in specs:
                 editor = self.editors[spec.key]
@@ -164,7 +162,7 @@ class AlgorithmParameterPanel(QWidget):
             self.editors[spec.key] = editor
             self._labels[spec.key] = label
             help_spec = _ILLUSTRATED_HELP.get(spec.label_key)
-            if help_spec and spec.hint_key != 'label_of_smoothing_a_hint':
+            if help_spec:
                 _, self._help_buttons[spec.key] = add_help_row(self._form, label, editor, *help_spec)
             else:
                 self._form.addRow(label, editor)

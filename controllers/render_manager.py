@@ -691,6 +691,16 @@ class RenderManager:
         method = force_algorithm or getattr(self.window, 'current_fusion_method', lambda: 'none')()
         return desktop_fusion_lock_reason(self.window, method) or self._alignment_lock_reason()
 
+    def _render_worker_active(self) -> bool:
+        worker = self.worker
+        # Keep ownership until the GUI processes the queued result or error.
+        return worker is not None and (getattr(self, '_render_active', False) or worker.isRunning())
+
+    def _render_is_cancelling(self) -> bool:
+        return bool(getattr(self, '_compare_cancelling', False)
+                    or getattr(self.worker, 'is_cancelled', False)
+                    or getattr(getattr(self, 'context_worker', None), 'is_cancelled', False))
+
     def refresh_action_labels(self) -> None:
         """Re-apply render/compare captions after a language or state change.
 
@@ -699,19 +709,18 @@ class RenderManager:
         """
         window = self.window
         render = getattr(window, "btn_render", None)
-        busy = ((self.worker is not None and self.worker.isRunning())
-                or getattr(self, "context_worker", None) is not None)
+        busy = self._render_worker_active() or getattr(self, 'context_worker', None) is not None
         if self._render_after_load is not None or self._pending_storage is not None:
             self._show_progress_bar(trans.t('render_stage_loading'))
             if render is not None:
                 render.setEnabled(True)
                 render.setText(trans.t('btn_cancel_render'))
             self._set_compare_button('cancel' if self._compare_mode else 'disabled')
-        elif getattr(self, '_compare_cancelling', False):
+        elif self._render_is_cancelling():
             if render is not None:
                 render.setEnabled(False)
                 render.setText(trans.t('depth_cancelling'))
-            self._set_compare_button("cancelling")
+            self._set_compare_button('cancelling' if getattr(self, '_compare_cancelling', False) else 'disabled')
         elif getattr(self, '_compare_mode', False):
             if render is not None:
                 render.setEnabled(False)
@@ -841,7 +850,7 @@ class RenderManager:
                 self.last_state = 'cancelled'
                 self._hide_progress_bar()
             context_worker = getattr(self, "context_worker", None)
-            running = context_worker is not None or (self.worker is not None and self.worker.isRunning())
+            running = context_worker is not None or self._render_worker_active()
             if running:
                 # Keep the truth visible until the worker acknowledges the
                 # cancel: no enabled button that would silently do nothing.
@@ -865,7 +874,7 @@ class RenderManager:
             window.statusBar().showMessage(trans.t(key), 3000)
             return
 
-        if self.worker is not None and self.worker.isRunning():
+        if getattr(self, 'context_worker', None) is not None or self._render_worker_active():
             # A single render owns the pipeline. The button is disabled in
             # that state, but keep the programmatic path truthful too.
             window.statusBar().showMessage(trans.t('btn_render_processing'), 3000)
@@ -952,6 +961,7 @@ class RenderManager:
             self._preview_mode = False
             self._abort_compare_run()
             self._restore_ui_controls()
+            self._hide_progress_bar()
             raise
         finally:
             self._render_pending = False
@@ -969,15 +979,15 @@ class RenderManager:
         context_worker = getattr(self, "context_worker", None)
         if context_worker is not None:
             self._start_status = "busy"
-            if interactive:
+            if interactive and not getattr(context_worker, 'is_cancelled', False):
                 context_worker.cancel()
                 window.btn_render.setEnabled(False)
                 window.btn_render.setText(trans.t('depth_cancelling'))
                 self._show_progress_bar(trans.t('depth_cancelling'))
             return
-        if self.worker is not None and self.worker.isRunning():
+        if self._render_worker_active():
             self._start_status = "busy"
-            if interactive:
+            if interactive and not getattr(self.worker, 'is_cancelled', False):
                 self._cancel_worker()
                 self.dismiss_live_preview()
                 window.btn_render.setEnabled(False)
@@ -1133,6 +1143,7 @@ class RenderManager:
                 show_warning_box(window, trans.t('storage_low_title'),
                                  trans.t('advanced_storage_invalid').format(error=str(exc)))
                 self._start_status = "cancelled"
+                self._abort_compare_run()
                 return
 
         if force_algorithm:
@@ -1483,6 +1494,7 @@ class RenderManager:
         self._render_interactive = interactive
         if publish_cached_alignment:
             self._render_context["registration_reuse"] = 'session'
+            self.on_render_stage('waiting')
             self.on_render_finished(effective_aligned_images, None, True, 0.0, 0.0, "CPU")
             return
 
@@ -1596,7 +1608,7 @@ class RenderManager:
             self._start_live_preview()
 
     def _start_live_preview(self):
-        self._live_preview_row = None
+        self._live_preview_row = self.window.file_list.currentRow()
         self._live_preview_user_selected = False
         if self._live_preview_timer is None:
             timer = self._live_preview_timer = QTimer(self.window.live_preview_page)
@@ -1615,6 +1627,10 @@ class RenderManager:
                 or window.wipe_active or getattr(window, 'roi_mode_active', False)):
             self.dismiss_live_preview()
             return
+        source_list = window.file_list
+        current_row = source_list.currentRow()
+        if current_row != self._live_preview_row:
+            self._live_preview_user_selected = True
         frame = worker.take_live_preview()
         if frame is not None:
             page = window.live_preview_page
@@ -1623,18 +1639,12 @@ class RenderManager:
             # Fusion order follows the included, possibly reversed subset.
             rows = context['live_source_rows']
             index = frame[3] - 1
-            source_list = window.file_list
             # Do not replace the pane's source during a held loupe or drag.
-            if 0 <= index < len(rows) and not QApplication.mouseButtons():
+            if (not self._live_preview_user_selected and 0 <= index < len(rows)
+                    and not QApplication.mouseButtons()):
                 row = rows[index]
                 item = source_list.item(row)
-                follow = getattr(self, '_live_preview_row', None)
-                # Once the user picks another source row, stop following.
-                user_moved = follow is not None and source_list.currentRow() not in (follow, -1)
-                if user_moved:
-                    self._live_preview_user_selected = True
-                if (item is not None and row != source_list.currentRow()
-                        and not getattr(self, '_live_preview_user_selected', False)):
+                if item is not None and row != current_row:
                     self._live_preview_row = row
                     source_list.setCurrentRow(row)
                     source_list.scrollToItem(item)
@@ -2103,7 +2113,12 @@ class RenderManager:
                 )
 
         finally:
-            self._hide_progress_bar()
+            self._dispose_worker()
+            if not compare:
+                self._restore_ui_controls()
+            produced_output = self.last_state == 'done' and (
+                fusion_result is not None or (effective_registration and not preview))
+            self._hide_progress_bar(produced_output=produced_output)
             if compare:
                 if self._compare_queue:
                     # Keep controls locked and chain the next method. The
@@ -2113,10 +2128,6 @@ class RenderManager:
                     self._queue_next_compare()
                 else:
                     self._finish_compare_run()
-            else:
-                # 恢复 UI 控件
-                self._restore_ui_controls()
-            self._dispose_worker()
 
     def _render_context_kwargs(self, context, compare, registration_performed):
         ctx = context or {}
@@ -2270,20 +2281,16 @@ class RenderManager:
         except Exception:
             pass
 
-    def _hide_progress_bar(self, *, produced_output: Optional[bool] = None) -> None:
+    def _hide_progress_bar(self, *, produced_output: bool = False) -> None:
         bar = getattr(self, "_status_bar_progress", None)
         if bar is not None:
             bar.hide()
             self._status_bar_label.hide()
         if getattr(self, "_render_active", False):
             self._render_active = False
-            if produced_output is None:
-                # Cancel, error, quick preview and alignment-only runs all end up
-                # here; only a completed run counts as having produced output.
-                produced_output = self.last_state == "done" and self.last_result is not None
             signals = getattr(self, "signals", None)
             if signals is not None:
-                signals.render_finished.emit(bool(produced_output))
+                signals.render_finished.emit(produced_output)
 
     def _cancel_worker(self) -> None:
         """Ask the running worker to stop, waking its cancel event at once."""
@@ -2299,7 +2306,7 @@ class RenderManager:
 
     def on_render_stage(self, stage: str) -> None:
         self._render_progress_stage = stage
-        if self.worker is not None and getattr(self.worker, 'is_cancelled', False):
+        if self._render_is_cancelling():
             text = trans.t('depth_cancelling')
         else:
             text = trans.t(_RENDER_STAGE_KEYS.get(stage, 'render_progress'))
@@ -2312,23 +2319,24 @@ class RenderManager:
         """Surface completed preparation frames or fusion tiles with an ETA."""
         if total <= 0:
             return
-        if self.worker is not None and getattr(self.worker, 'is_cancelled', False):
+        if self._render_is_cancelling():
             self.on_render_stage('cancelling')
             return
+        self._control_progress = (int(done), int(total))
+        done = min(max(0, done), total)
         bar = getattr(self, "_status_bar_progress", None)
-        if bar is not None and total > 0:
+        if bar is not None:
             # Range first, then value: Qt clamps a value outside the current
             # range, so setting the value while the bar is still in its
             # indeterminate (0..0) mode silently drops it and the bar looks
             # frozen for the rest of the run.
             bar.setRange(0, int(total))
             bar.setValue(int(done))
-        self._control_progress = (int(done), int(total))
         now = monotonic()
         last = getattr(self, '_progress_last_t', None)
-        if last is None or now - last > 0.25 or (total > 0 and done >= total):
+        if last is None or now - last > 0.25 or done == total:
             self._progress_last_t = now
-            pct = int(done * 100 / max(1, total))
+            pct = done * 100 // total
             eta = ''
             first = getattr(self, '_progress_first_t', None)
             # The first frame carries worker/OpenCL start-up time, so an ETA
@@ -2394,7 +2402,6 @@ class RenderManager:
         self._preview_mode = False
         self._render_context = None
         self._dispose_worker()
-        self._hide_progress_bar(produced_output=False)
 
         if (getattr(self, '_compare_mode', False)
                 and not error_message.startswith("CANCELLED") and stack_changed):
@@ -2406,6 +2413,7 @@ class RenderManager:
             self.last_result = None
             self._control_progress = None
             self._restore_ui_controls()
+            self._hide_progress_bar()
             window.statusBar().showMessage(self.last_error, 8000)
             return
         if (getattr(self, '_compare_mode', False)
@@ -2421,10 +2429,12 @@ class RenderManager:
             self.last_error = str(error_message)
             self._control_progress = None
             if self._compare_queue:
+                self._hide_progress_bar()
                 self._queue_next_compare()
             else:
                 self.last_state = "error"
                 self.last_result = None
+                self._hide_progress_bar()
                 self._finish_compare_run()
             return
         if getattr(self, '_compare_mode', False):
@@ -2444,11 +2454,13 @@ class RenderManager:
             self.last_state = "cancelled"
             self.last_result = None
             self.last_error = None
+            self._hide_progress_bar()
             window.statusBar().showMessage(trans.t('msg_render_cancelled'), 4000)
             return
         self.last_error = str(error_message)
         self.last_state = "error"
         self.last_result = None
+        self._hide_progress_bar()
 
         import logging
         logging.getLogger("openfocus").error("render failed: %s", error_message)
