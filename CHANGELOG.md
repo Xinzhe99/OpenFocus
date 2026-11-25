@@ -221,6 +221,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Keep desktop sign-in responsive when the browser opens an idle connection,
   handle unsupported system proxy schemes, and recover stale macOS Keychain
   sessions after a confirmed write mismatch.
+- Restore embedded TIFF thumbnail previews in Batch Image Converter.
 - Use the Darwin C ABI for system memory and CPU topology probes, including
   64-bit page sizes and validated system counter lengths.
 - Admit large JPEG stacks for ECC using reduced grayscale decodes, including
