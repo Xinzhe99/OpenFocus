@@ -121,6 +121,19 @@ the static binding. Every page and asset request counts as a Worker invocation.
 - Everything else — `site/dist` with `html_handling: auto-trailing-slash`,
   `not_found_handling: 404-page`, and the headers in `dist/_headers`.
 
+### Website traffic totals
+
+An account-specific Worker config can bind `SITE_ANALYTICS` to a D1 database
+with `site/migrations/0002_website_traffic.sql` applied. Keep this binding on
+subsequent deployments. For the apex domain, it keeps daily Beijing-time
+totals for successful English and Chinese homepage requests and desktop
+download starts through `/download/latest/*`. Locale redirects,
+prefetch requests and HEAD probes are excluded. The download counter includes
+successful full or byte-zero responses and redirects to GitHub. The counts
+contain dates and totals. Publish the homepage privacy text with this change.
+The separate `ANALYTICS` binding below enables desktop usage reports and
+detailed download statistics.
+
 ### Optional private analytics
 
 The Worker can count download starts and receive desktop activity
