@@ -1,4 +1,4 @@
-"""Regression and correctness tests for I/O, codec, save, cache, and OpenCL PCIe optimizations."""
+"""Codec round trips, metadata validation, and decoded-frame cache admission."""
 from __future__ import annotations
 
 import io
@@ -14,10 +14,6 @@ from core import image_loader, resource_policy
 from core._native import load_native
 from core.image_loader import UnsupportedTransparency, decode_image
 from core.source_frames import FrameCache
-from fusion_methods import _openfocus_gpu
-from fusion_methods._openfocus_gpu import _PinnedUploadPool
-from fusion_methods.openfocus_a import openfocus_a_impl
-from fusion_methods.openfocus_bc import openfocus_b_impl, openfocus_c_impl
 from utils import image_utils
 from utils.image_utils import (
     SourceExifTooLarge,
@@ -50,6 +46,8 @@ def _make_png_after_idat_exif(png_bytes: bytes, tiff_exif: bytes) -> bytes:
     ((64, 97), np.uint16),
     ((64, 97, 3), np.uint16),
     ((64, 97, 4), np.uint16),
+    ((1, 97, 1), np.uint16),
+    ((128, 1100, 3), np.uint16),
 ])
 def test_native_pack_png_scanlines_matches_numpy(shape, dtype):
     native = load_native()
@@ -58,6 +56,8 @@ def test_native_pack_png_scanlines_matches_numpy(shape, dtype):
     rng = np.random.default_rng(100 + len(shape) + np.dtype(dtype).itemsize)
     hi = 256 if dtype == np.uint8 else 65536
     src = rng.integers(0, hi, shape, dtype=dtype)
+    if len(shape) == 3 and shape[2] == 1:
+        src = src[:, :, 0][:, :, None]
     samples = 1 if len(shape) == 2 else shape[2]
     row_bytes = shape[1] * samples * np.dtype(dtype).itemsize
 
@@ -76,17 +76,6 @@ def test_native_pack_png_scanlines_matches_numpy(shape, dtype):
     np.testing.assert_array_equal(actual, expected)
 
 
-def test_native_parallel_copy_bytes():
-    native = load_native()
-    if native is None or not hasattr(native, 'parallel_copy_bytes'):
-        pytest.skip('_openfocus_native.parallel_copy_bytes unavailable')
-    rng = np.random.default_rng(202)
-    src = rng.integers(0, 65536, (512, 512, 3), dtype=np.uint16)
-    dst = np.empty(src.nbytes, dtype=np.uint8)
-    native.parallel_copy_bytes(src, dst, 4)
-    np.testing.assert_array_equal(dst, np.frombuffer(src.tobytes(), dtype=np.uint8))
-
-
 def test_mmap_png_exif_scanner_and_error_contracts(tmp_path):
     arr = np.zeros((32, 32, 3), dtype=np.uint8)
     raw_png = cv2.imencode('.png', arr)[1].tobytes()
@@ -103,9 +92,14 @@ def test_mmap_png_exif_scanner_and_error_contracts(tmp_path):
         p = tmp_path / f'{mode}.png'
         p.write_bytes(blob)
         with Image.open(p) as im:
+            position = im.fp.tell()
             parsed = read_image_exif(im)
             assert parsed.get(274) == 6
             assert parsed.get(271) == 'OpenFocusCam'
+            assert im.fp.tell() == position
+
+    with Image.open(io.BytesIO(blob)) as im:
+        assert read_image_exif(im).get(274) == 6
 
     assert _scan_png_exif_bytes(raw_png) is None
 
@@ -161,7 +155,7 @@ def test_decode_image_fast_png_and_single_open_jpeg(tmp_path, monkeypatch):
     rot_png = tmp_path / 'rot6.png'
     rot_png.write_bytes(rot_png_bytes)
 
-    # Fast PNG path must not invoke PILImage.open at all.
+    # Read each format's Pillow header only once per decode.
     pil_calls = []
     orig_pil_open = image_loader.PILImage.open
 
@@ -182,14 +176,33 @@ def test_decode_image_fast_png_and_single_open_jpeg(tmp_path, monkeypatch):
     with pytest.raises(UnsupportedTransparency):
         decode_image(paths['trans4'], allow_transparent_png=False)
     np.testing.assert_array_equal(decode_image(str(rot_png)), np.ascontiguousarray(np.rot90(bgr8, -1)))
-    assert pil_calls == []
+    assert len(pil_calls) == 9
+    pil_calls.clear()
 
-    # JPEG decode must open Pillow only once (no second reopen in apply_exif_orientation).
+    # JPEG orientation is read from the same header used for validation.
     jpg_p = tmp_path / 'rot6.jpg'
     Image.fromarray(bgr8[:, :, ::-1], 'RGB').save(jpg_p, format='JPEG', quality=95, exif=exif.tobytes())
     dec_jpg = decode_image(str(jpg_p))
     assert dec_jpg.shape == (63, 48, 3)
     assert len(pil_calls) == 1
+
+
+def test_png_decode_checks_dimensions_before_reading_pixels(tmp_path, monkeypatch):
+    path = tmp_path / 'bounded.png'
+    assert cv2.imwrite(str(path), np.zeros((32, 32), np.uint8))
+    monkeypatch.setattr(Image, 'MAX_IMAGE_PIXELS', 256)
+    with pytest.raises(Image.DecompressionBombError):
+        decode_image(str(path))
+
+
+def test_png_color_key_preserves_opencv_transparency(tmp_path):
+    path = tmp_path / 'color_key.png'
+    rgb = np.array([[(9, 70, 207), (9, 70, 208)]], np.uint8)
+    Image.fromarray(rgb).save(path, transparency=(9, 70, 207))
+    expected = np.array([[(207, 70, 9, 0), (208, 70, 9, 255)]], np.uint8)
+    np.testing.assert_array_equal(decode_image(str(path), allow_transparent_png=True), expected)
+    with pytest.raises(UnsupportedTransparency):
+        decode_image(str(path))
 
 
 @pytest.mark.parametrize('with_meta', [False, True])
@@ -267,59 +280,19 @@ def test_fast_jpeg_and_streamed_png_roundtrip(tmp_path, monkeypatch):
     assert decode_image(str(p_tight)).shape == bgr8.shape
 
 
-def test_source_cache_adapt_budget_one_fifth():
+def test_source_cache_retains_two_frames_with_midrange_budget():
     GiB = 1024 ** 3
     MiB = 1024 ** 2
     cache = FrameCache()
     snap = resource_policy.ResourceSnapshot(
         available_ram=6 * GiB, total_ram=16 * GiB, physical_cores=8, logical_cpus=16,
     )
-    budget = resource_policy.ram_budget(snap)
-    expected = min(1024 * MiB, max(min(64 * MiB, budget // 2), budget // 5))
-    assert cache.adapt_to_memory(snap) == expected
-
-
-def test_pinned_upload_pool_contracts_and_opencl_roundtrip():
-    try:
-        import pyopencl as cl
-    except Exception:
-        pytest.skip('pyopencl unavailable')
-    device = _openfocus_gpu._device(cl)
-    if device is None:
-        pytest.skip('OpenCL GPU unavailable')
-
-    ctx = cl.Context([device])
-    queue = cl.CommandQueue(ctx)
-    nbytes = 32 * 1024 * 1024
-
-    # Unified-memory or insufficient headroom cleanly skips pinned staging.
-    pool_small = _PinnedUploadPool(cl, ctx, queue, device, 2, 1024, 1024 ** 3)
-    assert pool_small.enabled is False
-
-    pool_tight = _PinnedUploadPool(cl, ctx, queue, device, 2, nbytes, nbytes)
-    assert pool_tight.enabled is False
-
-    if not getattr(device, 'host_unified_memory', False):
-        pool = _PinnedUploadPool(cl, ctx, queue, device, 2, nbytes, nbytes * 4)
-        try:
-            assert pool.enabled is True
-            src = np.arange(nbytes // 4, dtype=np.uint32).reshape(-1, 4)
-            staged = pool.stage(0, src)
-            dev_buf = cl.Buffer(ctx, cl.mem_flags.READ_WRITE, nbytes)
-            try:
-                cl.enqueue_copy(queue, dev_buf, staged, is_blocking=True)
-                out = np.empty_like(src)
-                cl.enqueue_copy(queue, out, dev_buf, is_blocking=True)
-                np.testing.assert_array_equal(out, src)
-            finally:
-                dev_buf.release()
-        finally:
-            pool.release()
-        assert pool.enabled is False
-
-    # End-to-end A/B/C GPU vs CPU sanity
-    rng = np.random.default_rng(606)
-    frames = [rng.integers(0, 256, (128, 128, 3), dtype=np.uint8) for _ in range(3)]
-    np.testing.assert_array_equal(openfocus_a_impl(frames, use_gpu=True), openfocus_a_impl(frames, use_gpu=False))
-    np.testing.assert_array_equal(openfocus_b_impl(frames, use_gpu=True), openfocus_b_impl(frames, use_gpu=False))
-    np.testing.assert_array_equal(openfocus_c_impl(frames, use_gpu=True), openfocus_c_impl(frames, use_gpu=False))
+    budget = resource_policy.ProcessBudget(400 * MiB, 400 * MiB, 200 * MiB)
+    first = np.empty((40, 1024, 1024), np.uint8)
+    second = np.empty_like(first)
+    with resource_policy.process_budget(budget):
+        cache.adapt_to_memory(snap)
+        cache.put('first', first)
+        cache.put('second', second)
+    assert cache.get('first') is first
+    assert cache.get('second') is second

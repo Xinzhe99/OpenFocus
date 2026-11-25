@@ -237,11 +237,17 @@ def _orient_tiff_pixels(page, image):
 # Rows exchanged at once while turning stored RGB samples into BGR in place.
 _TIFF_SWAP_BAND_BYTES = 4 << 20
 # OpenCV enforces these defaults before allocating a decoded image.
-_TIFF_DECODE_MAX_DIMENSION = 1 << 20
-_TIFF_DECODE_MAX_PIXELS = 1 << 30
-_TIFF_DECODE_LIMIT_OVERRIDES = (
+_OPENCV_DECODE_MAX_DIMENSION = 1 << 20
+_OPENCV_DECODE_MAX_PIXELS = 1 << 30
+_OPENCV_DECODE_LIMIT_OVERRIDES = (
     'OPENCV_IO_MAX_IMAGE_WIDTH', 'OPENCV_IO_MAX_IMAGE_HEIGHT', 'OPENCV_IO_MAX_IMAGE_PIXELS',
 )
+
+
+def _within_opencv_decode_limits(width, height):
+    return (min(width, height) > 0 and max(width, height) <= _OPENCV_DECODE_MAX_DIMENSION
+            and width * height <= _OPENCV_DECODE_MAX_PIXELS
+            and not any(name in os.environ for name in _OPENCV_DECODE_LIMIT_OVERRIDES))
 
 
 def _stored_tiff_layout(page):
@@ -267,10 +273,9 @@ def _stored_tiff_layout(page):
     rows, width, per_strip = int(page.imagelength), int(page.imagewidth), int(page.rowsperstrip)
     row_bytes = width * page.samplesperpixel * page.dtype.itemsize
     shape = (rows, width, 3) if rgb else (rows, width)
-    if (min(rows, width, per_strip) < 1 or tuple(page.shape) != shape
-            or max(rows, width) > _TIFF_DECODE_MAX_DIMENSION or rows * width > _TIFF_DECODE_MAX_PIXELS
-            or (rgb and row_bytes > _TIFF_SWAP_BAND_BYTES)
-            or any(name in os.environ for name in _TIFF_DECODE_LIMIT_OVERRIDES)):
+    if (per_strip < 1 or tuple(page.shape) != shape
+            or not _within_opencv_decode_limits(width, rows)
+            or (rgb and row_bytes > _TIFF_SWAP_BAND_BYTES)):
         return None
 
     offsets, counts = page.dataoffsets, page.databytecounts
@@ -539,28 +544,13 @@ def _decode_png_fast(path: str, raw_bytes: bytes, *, allow_transparent_png: bool
         decoded = decoder(raw_bytes)
     except Exception:
         return None
-    if decoded is None or decoded.dtype not in (np.uint8, np.uint16):
+    if decoded is None or decoded.dtype.type not in (np.uint8, np.uint16):
         return None
     if not decoded.dtype.isnative:
         decoded = np.ascontiguousarray(decoded, dtype=decoded.dtype.newbyteorder('='))
-    _validate_depth(path, decoded.dtype)
-    orientation = 1
-    if PIL_AVAILABLE:
-        try:
-            from utils.image_utils import _scan_png_exif_bytes
-            exif_payload = _scan_png_exif_bytes(raw_bytes, path)
-            if exif_payload:
-                exif = PILImage.Exif()
-                exif.load(exif_payload)
-                orientation = int(exif.get(274, 1))
-        except SourceExifTooLarge:
-            raise
-        except Exception:
-            orientation = 1
     if _has_transparency(decoded):
         if allow_transparent_png:
-            bgra = cv2.cvtColor(decoded, cv2.COLOR_RGBA2BGRA)
-            return _apply_orientation_value(bgra, orientation)
+            return cv2.cvtColor(decoded, cv2.COLOR_RGBA2BGRA)
         raise UnsupportedTransparency(
             f"Transparent input is unsupported here: {path}. "
             "Matching rectangular PNG transparency is supported in the desktop and CLI workflows; see the manual.")
@@ -572,8 +562,7 @@ def _decode_png_fast(path: str, raw_bytes: bytes, *, allow_transparent_png: bool
         img = cv2.cvtColor(decoded, cv2.COLOR_RGBA2BGR)
     else:
         return None
-    _validate_depth(path, img.dtype)
-    return _apply_orientation_value(img, orientation)
+    return img
 
 
 def decode_image(path: str, *, allow_transparent_png: bool = False,
@@ -592,46 +581,40 @@ def decode_image(path: str, *, allow_transparent_png: bool = False,
         return _read_raw(path, scale_factor)
     if ext in ('.tif', '.tiff'):
         return decode_tiff_page(path, preserve_grayscale=preserve_grayscale)
-    if ext == '.png':
+    jpeg_scale = scale_factor if is_scaled_jpeg(path, scale_factor) else 1.0
+    jpeg_mode = None
+    png_fast = False
+    orientation = 1
+    if PIL_AVAILABLE:
+        with PILImage.open(path) as header:
+            validate_pil_header(path, header)
+            if ext in _JPEG_EXTENSIONS and header.format == 'JPEG':
+                jpeg_mode = header.mode
+                jpeg_size = header.size
+            if ext in _JPEG_EXTENSIONS + ('.png', '.webp'):
+                try:
+                    orientation = int(read_image_exif(header).get(274, 1))
+                except SourceExifTooLarge:
+                    raise
+                except Exception:
+                    pass
+            if header.mode == 'CMYK':
+                image = cmyk_to_bgr(header, path, header.info.get('icc_profile', b''))
+                return _apply_orientation_value(_downscale_page(image, jpeg_scale, area_resizer), orientation)
+            # Color-key transparency follows OpenCV's existing PNG semantics.
+            png_fast = (ext == '.png' and header.format == 'PNG'
+                        and 'transparency' not in header.info
+                        and _within_opencv_decode_limits(*header.size))
+    if png_fast or jpeg_mode is not None:
         with open(path, 'rb') as fh:
             raw_bytes = fh.read()
-        img = _decode_png_fast(
-            path, raw_bytes,
-            allow_transparent_png=allow_transparent_png,
-            preserve_grayscale=preserve_grayscale,
-        )
-        if img is not None:
-            del raw_bytes
-            return _downscale_page(img, 1.0, area_resizer)
-        data = np.frombuffer(raw_bytes, dtype=np.uint8)
-        jpeg_scale = 1.0
-        jpeg_mode = None
-        jpeg_orientation = None
-    else:
-        # _downscale_page leaves the image alone at a scale of one.
-        jpeg_scale = scale_factor if is_scaled_jpeg(path, scale_factor) else 1.0
-        jpeg_mode = None
-        jpeg_orientation = None
-        if PIL_AVAILABLE:
-            with PILImage.open(path) as header:
-                validate_pil_header(path, header)
-                if header.mode == 'CMYK':
-                    image = cmyk_to_bgr(header, path, header.info.get('icc_profile', b''))
-                    image = _downscale_page(image, jpeg_scale, area_resizer)
-                    return apply_exif_orientation(path, image)
-                if ext in ('.jpg', '.jpeg', '.jpe', '.jfif') and header.format == 'JPEG':
-                    jpeg_mode = header.mode
-                    jpeg_size = header.size
-                    try:
-                        jpeg_orientation = int(read_image_exif(header).get(274, 1))
-                    except Exception:
-                        jpeg_orientation = 1
-        if jpeg_mode is not None:
-            with open(path, 'rb') as fh:
-                raw_bytes = fh.read()
-            img = None
+        if png_fast:
+            img = _decode_png_fast(path, raw_bytes, allow_transparent_png=allow_transparent_png,
+                                   preserve_grayscale=preserve_grayscale)
+        else:
             try:
                 import imagecodecs
+
                 if jpeg_mode == 'L':
                     img = imagecodecs.jpeg8_decode(raw_bytes, outcolorspace='GRAY')
                     if img is not None and img.ndim == 2 and not preserve_grayscale:
@@ -651,22 +634,19 @@ def decode_image(path: str, *, allow_transparent_png: bool = False,
                         img = None
             except Exception:
                 img = None
-            if img is not None:
-                del raw_bytes
-                _validate_depth(path, img.dtype)
-                img = _downscale_page(img, jpeg_scale, area_resizer)
-                if jpeg_orientation is not None:
-                    return _apply_orientation_value(img, jpeg_orientation)
-                return apply_exif_orientation(path, img)
-            data = np.frombuffer(raw_bytes, dtype=np.uint8)
-        else:
-            data = np.fromfile(path, dtype=np.uint8)
+        if img is not None:
+            del raw_bytes
+            _validate_depth(path, img.dtype)
+            return _apply_orientation_value(_downscale_page(img, jpeg_scale, area_resizer), orientation)
+        data = np.frombuffer(raw_bytes, dtype=np.uint8)
+    else:
+        data = np.fromfile(path, dtype=np.uint8)
     unchanged = cv2.imdecode(data, cv2.IMREAD_UNCHANGED)
     if unchanged is not None:
         _validate_depth(path, unchanged.dtype)
     if unchanged is not None and _has_transparency(unchanged):
         if allow_transparent_png and ext == '.png':
-            return apply_exif_orientation(path, unchanged)
+            return _apply_orientation_value(unchanged, orientation)
         raise UnsupportedTransparency(
             f"Transparent input is unsupported here: {path}. "
             "Matching rectangular PNG transparency is supported in the desktop and CLI workflows; see the manual.")
@@ -696,10 +676,7 @@ def decode_image(path: str, *, allow_transparent_png: bool = False,
     if img is not None:
         _validate_depth(path, img.dtype)
         img = _downscale_page(img, jpeg_scale, area_resizer)
-        if jpeg_orientation is not None:
-            img = _apply_orientation_value(img, jpeg_orientation)
-        else:
-            img = apply_exif_orientation(path, img)
+        img = _apply_orientation_value(img, orientation)
     return img
 
 

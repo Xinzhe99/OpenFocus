@@ -1,4 +1,5 @@
 """Real codec round trips and resource boundaries for automatic banded exports."""
+from contextlib import contextmanager
 from threading import Event
 
 import cv2
@@ -39,6 +40,7 @@ def bounded(monkeypatch, tmp_path):
         return 4 * 1024 ** 2
 
     monkeypatch.setattr(resource_policy, 'require_memory', admit)
+    monkeypatch.setattr(resource_policy, 'ram_budget', lambda snapshot: 4 * 1024 ** 2)
     scratch = tmp_path / '临时缓存'
     scratch.mkdir()
     # Use a real, isolated scratch directory; avoid changing global preferences.
@@ -79,15 +81,17 @@ def test_automatic_lossless_export_preserves_low_bits_and_metadata(
                if channels > 1 else b'')
     monkeypatch.setattr(image_utils, 'SOURCE_EXIF', _metadata())
     destination = tmp_path / ('相机结果' + extension)
-    conversions = []
-    original = cv2.cvtColor
+    regions = []
+    frame_region = frame_storage.frame_region
 
-    def observe_conversion(pixels, *args, **kwargs):
-        conversions.append(pixels.nbytes)
-        assert pixels.shape[0] < image.shape[0]
-        return original(pixels, *args, **kwargs)
+    @contextmanager
+    def observe_source_band(pixels, *args, **kwargs):
+        with frame_region(pixels, *args, **kwargs) as band:
+            if pixels is image:
+                regions.append(band.nbytes)
+            yield band
 
-    monkeypatch.setattr(cv2, 'cvtColor', observe_conversion)
+    monkeypatch.setattr(frame_storage, 'frame_region', observe_source_band)
     assert image_utils.imwrite_auto(destination, image, image_utils.get_imwrite_params(extension),
                                     icc_profile=profile)
     np.testing.assert_array_equal(_read_pixels(destination), image)
@@ -99,8 +103,7 @@ def test_automatic_lossless_export_preserves_low_bits_and_metadata(
             assert not saved.info.get('icc_profile')
     assert np.any(image % 257), 'fixture must exercise native uint16 low bits'
     assert bounded[0]
-    if channels > 1:
-        assert conversions and max(conversions) <= image_utils._TIFF_STRIP_TARGET_BYTES
+    assert regions and max(regions) <= image_utils._TIFF_STRIP_TARGET_BYTES
     assert not list(bounded[1].iterdir())
 
 

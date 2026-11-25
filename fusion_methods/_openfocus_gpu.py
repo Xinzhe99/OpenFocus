@@ -121,87 +121,6 @@ def _prepare_gpu_upload(array, dtype=None):
     return np.ascontiguousarray(array), False
 
 
-_PINNED_UPLOAD_MIN_BYTES = 32 * 1024 * 1024
-
-
-class _PinnedUploadPool:
-    """Reusable mapped pinned host buffers for high-throughput discrete-GPU uploads."""
-
-    def __init__(self, cl, context, queue, device, slots: int, nbytes: int,
-                 host_headroom: int, *, min_bytes: int = _PINNED_UPLOAD_MIN_BYTES):
-        self._cl = cl
-        self._queue = queue
-        self._nbytes = max(0, int(nbytes))
-        self._entries = []
-        self._threads = 8
-        self.enabled = False
-        if (device is None or slots <= 0 or self._nbytes < min_bytes
-                or bool(getattr(device, 'host_unified_memory', False))
-                or not hasattr(cl, 'enqueue_map_buffer')
-                or not hasattr(cl.mem_flags, 'ALLOC_HOST_PTR')):
-            return
-        total_needed = int(slots) * self._nbytes
-        if host_headroom < total_needed + 16 * 1024 * 1024:
-            return
-        try:
-            from core.resource_policy import native_thread_ceiling
-            self._threads = max(1, min(8, native_thread_ceiling()))
-        except Exception:
-            self._threads = 4
-        map_flags = getattr(cl, 'map_flags', None)
-        write_flag = getattr(map_flags, 'WRITE', None)
-        if write_flag is None:
-            return
-        try:
-            flags = cl.mem_flags.READ_ONLY | cl.mem_flags.ALLOC_HOST_PTR
-            for _ in range(int(slots)):
-                buf = cl.Buffer(context, flags, self._nbytes)
-                try:
-                    mapped, _ = cl.enqueue_map_buffer(
-                        queue, buf, write_flag, 0, (self._nbytes,), np.uint8,
-                        is_blocking=True,
-                    )
-                except Exception:
-                    _release_buffers(buf)
-                    raise
-                self._entries.append((buf, mapped))
-            self.enabled = True
-        except Exception:
-            self.release()
-
-    def stage(self, slot: int, array):
-        if (not self.enabled or not isinstance(array, np.ndarray)
-                or not array.flags.c_contiguous or array.nbytes > self._nbytes
-                or not (0 <= slot < len(self._entries))):
-            return array
-        _, mapped = self._entries[slot]
-        dst = mapped[:array.nbytes]
-        try:
-            from core._native import load_native
-            native = load_native()
-            copy_fn = getattr(native, 'parallel_copy_bytes', None) if native is not None else None
-            if copy_fn is not None and array.dtype.isnative:
-                copy_fn(array, dst, self._threads)
-            else:
-                np.copyto(dst, np.frombuffer(memoryview(array).cast('B'), dtype=np.uint8))
-            return dst
-        except Exception:
-            return array
-
-    def release(self):
-        self.enabled = False
-        entries = list(self._entries)
-        self._entries.clear()
-        for buf, mapped in entries:
-            try:
-                base = getattr(mapped, 'base', None)
-                if base is not None and hasattr(base, 'release'):
-                    base.release(self._queue)
-            except Exception:
-                pass
-            _release_buffers(buf)
-
-
 def _supports_tiled_transpose(device):
     item_sizes = getattr(device, 'max_work_item_sizes', (16, 16))
     return (getattr(device, 'max_work_group_size', 256) >= 256
@@ -938,8 +857,6 @@ class Merge:
                 )
                 engine._prefetch_slots = prefetch_slots
                 engine._ping_pong = ping_pong
-                engine._pinned_headroom = max(0, host_budget - host_staging - prefetch_slots * source_peak)
-                engine._max_src_bytes = max_src_bytes
                 return engine.depth(
                     frames, kernel_size, smoothing, feather, shape, len(frames),
                     should_cancel, progress, prefetch=prefetch_slots > 0,
@@ -1046,9 +963,6 @@ class Merge:
                                         pixels * channels * 2)
             self._merge_shape = shape
             self._merge_u16_depth = u16_depth
-            self._merge_pinned_pool = None
-            self._merge_pinned_budget = max(0, host - host_staging - (extra_src if ping_pong else 0))
-            self._merge_pinned_tried = False
             return True
         except BaseException as exc:
             if hasattr(self, 'cl') and isinstance(exc, (self.cl.Error, MemoryError)):
@@ -1114,18 +1028,8 @@ class Merge:
                 )
                 setattr(self, src_attr, src_buf)
                 setattr(self, bytes_attr, image.nbytes)
-            if not getattr(self, '_merge_pinned_tried', False):
-                self._merge_pinned_tried = True
-                dev = getattr(self, 'device', None)
-                self._merge_pinned_pool = _PinnedUploadPool(
-                    cl, self.context, self.queue, dev,
-                    2 if ping_pong else 1, image.nbytes,
-                    getattr(self, '_merge_pinned_budget', 0),
-                )
-            staged = (self._merge_pinned_pool.stage(slot, image)
-                      if getattr(self, '_merge_pinned_pool', None) is not None else image)
             self._merge_needs_drain = True
-            upload = cl.enqueue_copy(self.queue, src_buf, staged, is_blocking=False)
+            upload = cl.enqueue_copy(self.queue, src_buf, image, is_blocking=False)
             height, width = self._merge_shape[:2]
             channels = 1 if image.ndim == 2 else image.shape[2]
             event = kern(self.queue, (height * width,), None, self._merge_acc,
@@ -1134,7 +1038,7 @@ class Merge:
                          np.int32(index), np.int32(scale), np.int32(index == 0))
             if ping_pong and event is not None and hasattr(event, 'wait'):
                 self._merge_slot_events[slot] = event
-                self._merge_slot_hosts[slot] = ((staged, upload) if staged is not image else (image, upload))
+                self._merge_slot_hosts[slot] = (image, upload)
             else:
                 event.wait()
                 del upload
@@ -1216,10 +1120,6 @@ class Merge:
             self._merge_slot_hosts = [None, None]
         _release_buffers(self._merge_acc, self._merge_depth, self._merge_src,
                          getattr(self, '_merge_src_alt', None))
-        if getattr(self, '_merge_pinned_pool', None) is not None:
-            self._merge_pinned_pool.release()
-            self._merge_pinned_pool = None
-        self._merge_pinned_tried = False
         self._merge_acc = self._merge_depth = self._merge_src = self._merge_src_alt = None
         self._merge_src_bytes = self._merge_src_alt_bytes = 0
         self._merge_slot = 0
@@ -1829,19 +1729,18 @@ class _GpuB:
         host_gray = np.ascontiguousarray(gray, dtype=np.uint16)
         return False, host_gray, 1, False
 
-    def _gray_into(self, prepared, gray_buf, height, width, slot=0, pinned_pool=None):
+    def _gray_into(self, prepared, gray_buf, height, width, slot=0):
         is_raw, host_buf, channels, is_u8 = prepared
         if is_raw:
             ib = self._source_buffer(host_buf.nbytes, slot=slot)
-            staged = pinned_pool.stage(slot, host_buf) if pinned_pool is not None else host_buf
-            upload = self.cl.enqueue_copy(self.q, ib, staged, is_blocking=False)
+            upload = self.cl.enqueue_copy(self.q, ib, host_buf, is_blocking=False)
             kern = self.kernels['gray_u8' if is_u8 else 'gray_u16']
             kern(self.q, (width, height), None, ib, gray_buf,
                  np.int32(height), np.int32(width), np.int32(channels),
                  np.int32(256 if is_u8 else 1))
             self.gpu.used = True
-            return upload, staged
-        return self.cl.enqueue_copy(self.q, gray_buf, host_buf, is_blocking=False), host_buf
+            return upload
+        return self.cl.enqueue_copy(self.q, gray_buf, host_buf, is_blocking=False)
 
     # -- depth_map equivalent ---------------------------------------------
     def depth(self, frames, kernel_size, smoothing, feather, shape, count,
@@ -1871,19 +1770,11 @@ class _GpuB:
         completed = False
         prepared_iter = None
         reader = None
-        pinned_pool = None
         allocated = []
         try:
             def _alloc(buf):
                 allocated.append(buf)
                 return buf
-
-            pinned_pool = _PinnedUploadPool(
-                self.cl, self.ctx, self.q, self.gpu.device,
-                2 if ping_pong else 1,
-                getattr(self, '_max_src_bytes', 0),
-                getattr(self, '_pinned_headroom', 0),
-            )
 
             gray_buf = _alloc(self.cl.Buffer(self.ctx, self.mf.READ_WRITE, height * width * 2))
             pb = _alloc(self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes))
@@ -1920,9 +1811,7 @@ class _GpuB:
                     slot_events[slot] = None
                     slot_hosts[slot] = None
                 cancel()
-                upload, staged_host = self._gray_into(
-                    prepared, gray_buf, height, width, slot=slot, pinned_pool=pinned_pool,
-                )
+                upload = self._gray_into(prepared, gray_buf, height, width, slot=slot)
                 cancel()
                 self.kernels['detail_pool'](self.q, (ow, oh), None, gray_buf, pb,
                                             np.int32(height), np.int32(width),
@@ -1957,9 +1846,7 @@ class _GpuB:
                     )
                 if ping_pong and last_event is not None and hasattr(last_event, 'wait'):
                     slot_events[slot] = last_event
-                    slot_hosts[slot] = (
-                        (staged_host, upload) if staged_host is not prepared[1] else (prepared, upload)
-                    )
+                    slot_hosts[slot] = (prepared, upload)
                     if reader is not None and live_preview.ready():
                         _wait_event(last_event, cancel)
                         slot_events[slot] = None
@@ -1976,7 +1863,7 @@ class _GpuB:
                         if sample is not None:
                             live_preview.show_positions(sample, idx, count, step * (count - 1),
                                                         sampled=True)
-                    del upload, staged_host, prepared
+                    del upload, prepared
                 if progress_callback is not None:
                     progress_callback(idx, count)
 
@@ -2042,8 +1929,6 @@ class _GpuB:
                 prepared_iter.close()
             if reader is not None:
                 reader.close()
-            if pinned_pool is not None:
-                pinned_pool.release()
             _release_buffers(
                 allocated,
                 self._cbuf,

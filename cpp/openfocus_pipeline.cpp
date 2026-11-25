@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <utility>
 #include <vector>
@@ -871,21 +872,24 @@ void pack_png_scanlines_cpp(
     if (height <= 0 || width <= 0) {
         return;
     }
-    const bool src_packed = (src.ndim == 2)
-        ? (src.stride[1] == 1 && src.stride[0] == width)
-        : (src.stride[2] == 1 && src.stride[1] == channels && src.stride[0] == width * channels);
-    const bool dst_packed = (dst.stride[1] == 1 && dst.stride[0] == row_bytes + 1);
+    const int64_t src_stride = width * channels;
+    const int64_t dst_stride = row_bytes + 1;
+    const bool src_packed = (height == 1 || src.stride[0] == src_stride)
+        && (width == 1 || src.stride[1] == channels)
+        && (channels == 1 || src.stride[2] == 1);
+    const bool dst_packed = (height == 1 || dst.stride[0] == dst_stride) && dst.stride[1] == 1;
     if (!src_packed || !dst_packed) {
         throw std::invalid_argument("pack_png_scanlines requires C-contiguous arrays");
+    }
+    if (src.itemsize == 2 && reinterpret_cast<std::uintptr_t>(src.data) % alignof(uint16_t) != 0) {
+        throw std::invalid_argument("16-bit PNG samples require aligned storage");
     }
 
     const int threads = (height * row_bytes >= 262144) ? std::max(1, num_threads) : 1;
     uint8_t* dst_base = static_cast<uint8_t*>(dst.data);
-    const int64_t dst_stride = dst.stride[0];
 
     if (src.itemsize == 1) {
         const uint8_t* src_base = static_cast<const uint8_t*>(src.data);
-        const int64_t src_stride = src.stride[0];
         parallel_bands(height, 64, threads, [&](int64_t start, int64_t stop) {
             for (int64_t y = start; y < stop; ++y) {
                 const uint8_t* sr = src_base + y * src_stride;
@@ -919,7 +923,6 @@ void pack_png_scanlines_cpp(
         });
     } else {
         const uint16_t* src_base = static_cast<const uint16_t*>(src.data);
-        const int64_t src_stride = src.stride[0];
         parallel_bands(height, 64, threads, [&](int64_t start, int64_t stop) {
             for (int64_t y = start; y < stop; ++y) {
                 const uint16_t* sr = src_base + y * src_stride;
@@ -963,22 +966,6 @@ void pack_png_scanlines_cpp(
             }
         });
     }
-}
-
-void parallel_copy_bytes_cpp(
-    const uint8_t* src,
-    uint8_t* dst,
-    int64_t nbytes,
-    int num_threads
-) {
-    if (nbytes <= 0 || src == dst) {
-        return;
-    }
-    constexpr int64_t kChunk = 4LL << 20;
-    const int threads = (nbytes >= (16LL << 20)) ? std::max(1, num_threads) : 1;
-    parallel_bands(nbytes, kChunk, threads, [&](int64_t start, int64_t stop) {
-        std::memcpy(dst + start, src + start, static_cast<size_t>(stop - start));
-    });
 }
 
 }  // namespace openfocus

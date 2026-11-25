@@ -919,41 +919,6 @@ void pack_png_scanlines_py(ConstAnyCpuArray src, AnyCpuArray dst, int num_thread
     openfocus::pack_png_scanlines_cpp(sv, dv, num_threads);
 }
 
-void parallel_copy_bytes_py(ConstAnyCpuArray src, AnyCpuArray dst, int num_threads) {
-    const auto sv = make_array_view(src);
-    const auto dv = make_array_view(dst);
-    if (sv.ndim <= 0 || dv.ndim <= 0) {
-        throw std::invalid_argument("Unsupported array dimensions for parallel_copy_bytes");
-    }
-    int64_t s_elem = 1;
-    int64_t expected_stride = 1;
-    for (int i = sv.ndim - 1; i >= 0; --i) {
-        if (sv.shape[i] > 1 && sv.stride[i] != expected_stride) {
-            throw std::invalid_argument("Source array must be C-contiguous");
-        }
-        expected_stride *= sv.shape[i];
-        s_elem *= sv.shape[i];
-    }
-    int64_t d_elem = 1;
-    expected_stride = 1;
-    for (int i = dv.ndim - 1; i >= 0; --i) {
-        if (dv.shape[i] > 1 && dv.stride[i] != expected_stride) {
-            throw std::invalid_argument("Destination array must be C-contiguous");
-        }
-        expected_stride *= dv.shape[i];
-        d_elem *= dv.shape[i];
-    }
-    const int64_t nbytes = s_elem * sv.itemsize;
-    const int64_t dbytes = d_elem * dv.itemsize;
-    if (dbytes < nbytes) {
-        throw std::invalid_argument("Destination buffer smaller than source");
-    }
-    const auto* sp = static_cast<const uint8_t*>(sv.data);
-    auto* dp = static_cast<uint8_t*>(dv.data);
-    nb::gil_scoped_release release;
-    openfocus::parallel_copy_bytes_cpp(sp, dp, nbytes, num_threads);
-}
-
 }  // namespace
 
 NB_MODULE(_openfocus_native, m) {
@@ -1120,7 +1085,5 @@ NB_MODULE(_openfocus_native, m) {
     m.def("of_align_warp_alignment_region_float_rows", &of_align_warp_alignment_region_float_rows_py);
     m.def("of_align_warp_translation_region_int_rows", &of_align_warp_translation_region_int_rows_py);
     m.def("pack_png_scanlines", &pack_png_scanlines_py,
-          nb::arg("src"), nb::arg("dst"), nb::arg("num_threads") = 8);
-    m.def("parallel_copy_bytes", &parallel_copy_bytes_py,
           nb::arg("src"), nb::arg("dst"), nb::arg("num_threads") = 8);
 }
