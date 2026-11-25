@@ -12,15 +12,24 @@ from PyQt6.QtCore import QEvent, QRect, QRectF, QTimer, Qt, QUrl
 from PyQt6.QtGui import QColor, QFont, QFontDatabase, QFontInfo, QImage
 from PyQt6.QtWidgets import (
     QDialog,
+    QFrame,
+    QHBoxLayout,
     QVBoxLayout,
     QGridLayout,
     QLabel,
+    QPushButton,
     QSizePolicy,
     QTextEdit,
+    QWidget,
 )
 from dialogs._community_download import CommunityDownloads
 from locales import trans
 from utils.account_client import BASE_URL
+from utils.license_info import (
+    OSS_LICENSE_NAME,
+    format_oss_license_document,
+    get_license_summary,
+)
 
 
 class _EnvironmentProbe(threading.Thread):
@@ -341,12 +350,16 @@ class ContactInfoDialog(QDialog):
     _MAX_CONTACT_INFO_BYTES = 32 * 1024
     _QR_SIZE = 152
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, license_search_dirs=None):
         from ._community_layout import add_published_qr, community_body, community_card, community_label, community_qr
 
         super().__init__(parent)
         self._contact_cards = QGridLayout()
         self._contact_columns = 0
+        self._license_search_dirs = license_search_dirs
+        self._license_info = get_license_summary(
+            search_dirs=license_search_dirs,
+        )
         title = trans.t('dialog_contact_title')
         self.setWindowTitle(title)
         self._contact_scroll, body = community_body(self, title, trans.t('contact_welcome'),
@@ -354,6 +367,8 @@ class ContactInfoDialog(QDialog):
 
         self._contact_cards.setSpacing(body.spacing())
         body.addLayout(self._contact_cards)
+        self._license_bar = self._build_license_bar()
+        body.addWidget(self._license_bar)
         body.addStretch()
 
         contact_card, contact = community_card()
@@ -422,10 +437,76 @@ class ContactInfoDialog(QDialog):
         self._discord_status.show()
         self._contact_request += 1
         request = self._contact_request
+        self._refresh_license_bar()
         query = urlencode({'lang': trans.current_lang})
         self._requests.get(f'{self._CONTACT_INFO_URL}?{query}', 'application/json',
                            self._MAX_CONTACT_INFO_BYTES,
                            lambda status, data: self._contact_finished(request, status, data))
+
+    def _build_license_bar(self):
+        bar = QWidget(self)
+        bar.setObjectName('aboutLicenseBar')
+        row = QHBoxLayout(bar)
+        row.setContentsMargins(0, 4, 0, 0)
+        row.setSpacing(8)
+
+        self._license_label = QLabel(bar)
+        self._license_label.setObjectName('aboutLicenseLabel')
+        self._license_label.setTextFormat(Qt.TextFormat.PlainText)
+        self._license_label.setWordWrap(True)
+        policy = self._license_label.sizePolicy()
+        policy.setHorizontalPolicy(QSizePolicy.Policy.Ignored)
+        self._license_label.setSizePolicy(policy)
+        row.addWidget(self._license_label, 1)
+
+        self._license_button = QPushButton('License', bar)
+        self._license_button.setObjectName('aboutLicenseButton')
+        self._license_button.setAutoDefault(False)
+        self._license_button.clicked.connect(self._show_license_dialog)
+        row.addWidget(self._license_button)
+
+        self._eula_button = QPushButton('EULA', bar)
+        self._eula_button.setObjectName('aboutEulaButton')
+        self._eula_button.setAutoDefault(False)
+        self._eula_button.clicked.connect(self._show_eula_dialog)
+        row.addWidget(self._eula_button)
+
+        self._apply_license_info()
+        return bar
+
+    def _refresh_license_bar(self):
+        self._license_info = get_license_summary(
+            search_dirs=self._license_search_dirs,
+        )
+        self._apply_license_info()
+
+    def _apply_license_info(self):
+        if self._license_info.has_eula:
+            self._license_label.setText(
+                f'License: {self._license_info.oss_license_name} · Official Release EULA'
+            )
+            self._eula_button.setVisible(True)
+        else:
+            self._license_label.setText(f'License: {self._license_info.oss_license_name}')
+            self._eula_button.setVisible(False)
+
+    def _show_license_dialog(self):
+        dialog = LicenseTextDialog(
+            self._license_info.oss_license_name,
+            format_oss_license_document(self._license_info),
+            self,
+        )
+        dialog.exec()
+
+    def _show_eula_dialog(self):
+        if not self._license_info.has_eula:
+            return
+        dialog = LicenseTextDialog(
+            'OpenFocus EULA',
+            self._license_info.eula_text or '',
+            self,
+        )
+        dialog.exec()
 
     def _contact_finished(self, request, status, data):
         from ._community_layout import community_label, community_link
@@ -536,3 +617,141 @@ class ContactInfoDialog(QDialog):
             self._contact_cards.addWidget(card, row, column)
         for column in range(len(self._cards)):
             self._contact_cards.setColumnStretch(column, int(column < columns))
+
+
+class LicenseTextDialog(QDialog):
+    """Scrollable plain-text viewer for license, notice, or optional EULA text."""
+
+    def __init__(self, title: str, text: str, parent=None):
+        super().__init__(parent)
+        self.setObjectName('licenseDocumentDialog')
+        self.setWindowTitle(title)
+        self.resize(640, 480)
+
+        layout = QVBoxLayout(self)
+        self.text_edit = QTextEdit(self)
+        self.text_edit.setObjectName('licenseDocumentText')
+        self.text_edit.setReadOnly(True)
+        self.text_edit.setPlainText(text)
+        fixed_font = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
+        self.text_edit.setFont(fixed_font)
+        layout.addWidget(self.text_edit)
+
+        footer = QHBoxLayout()
+        footer.addStretch()
+        close_btn = QPushButton(trans.t('btn_close'), self)
+        close_btn.setObjectName('licenseDocumentCloseButton')
+        close_btn.setAutoDefault(False)
+        close_btn.clicked.connect(self.accept)
+        footer.addWidget(close_btn)
+        layout.addLayout(footer)
+
+
+class AboutDialog(QDialog):
+    """About OpenFocus dialog displaying Apache 2.0 license and optional EULA."""
+
+    def __init__(self, parent=None, *, license_search_dirs=None):
+        from constants import app_display_version
+
+        super().__init__(parent)
+        self.setObjectName('aboutDialog')
+        self.setWindowTitle('About OpenFocus')
+        self.resize(520, 320)
+
+        self._license_search_dirs = license_search_dirs
+        self._license_info = get_license_summary(
+            search_dirs=license_search_dirs,
+        )
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+
+        self.title_label = QLabel(f'OpenFocus v{app_display_version()}', self)
+        self.title_label.setObjectName('aboutTitleLabel')
+        title_font = QFont(self.title_label.font())
+        title_font.setBold(True)
+        title_font.setPointSize(title_font.pointSize() + 3)
+        self.title_label.setFont(title_font)
+        layout.addWidget(self.title_label)
+
+        notice_summary = (
+            self._license_info.notice_text.strip()
+            if self._license_info.notice_text
+            else 'Copyright 2025-2026 Xinzhe Xie / OpenFocus'
+        )
+        self.notice_label = QLabel(notice_summary, self)
+        self.notice_label.setObjectName('aboutNoticeLabel')
+        self.notice_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.notice_label.setWordWrap(True)
+        layout.addWidget(self.notice_label)
+
+        self.license_label = QLabel(
+            f'License: {self._license_info.oss_license_name}',
+            self,
+        )
+        self.license_label.setObjectName('aboutLicenseLabel')
+        self.license_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.license_label.setWordWrap(True)
+        layout.addWidget(self.license_label)
+
+        self.eula_section = QFrame(self)
+        self.eula_section.setObjectName('aboutEulaSection')
+        eula_layout = QVBoxLayout(self.eula_section)
+        eula_layout.setContentsMargins(0, 4, 0, 0)
+        eula_layout.setSpacing(4)
+        self.eula_label = QLabel(
+            'Official Release End-User License Agreement (EULA) applies to this build.',
+            self.eula_section,
+        )
+        self.eula_label.setObjectName('aboutEulaLabel')
+        self.eula_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.eula_label.setWordWrap(True)
+        eula_layout.addWidget(self.eula_label)
+        self.eula_section.setVisible(self._license_info.has_eula)
+        layout.addWidget(self.eula_section)
+
+        layout.addStretch()
+
+        buttons = QHBoxLayout()
+        self.license_button = QPushButton(OSS_LICENSE_NAME, self)
+        self.license_button.setObjectName('aboutLicenseButton')
+        self.license_button.setAutoDefault(False)
+        self.license_button.clicked.connect(self._show_license_dialog)
+        buttons.addWidget(self.license_button)
+
+        self.eula_button = QPushButton('View EULA', self)
+        self.eula_button.setObjectName('aboutEulaButton')
+        self.eula_button.setAutoDefault(False)
+        self.eula_button.clicked.connect(self._show_eula_dialog)
+        self.eula_button.setVisible(self._license_info.has_eula)
+        buttons.addWidget(self.eula_button)
+
+        buttons.addStretch()
+        close_btn = QPushButton(trans.t('btn_close'), self)
+        close_btn.setObjectName('aboutCloseButton')
+        close_btn.setAutoDefault(False)
+        close_btn.clicked.connect(self.accept)
+        buttons.addWidget(close_btn)
+        layout.addLayout(buttons)
+
+    @property
+    def license_info(self):
+        return self._license_info
+
+    def _show_license_dialog(self):
+        dialog = LicenseTextDialog(
+            self._license_info.oss_license_name,
+            format_oss_license_document(self._license_info),
+            self,
+        )
+        dialog.exec()
+
+    def _show_eula_dialog(self):
+        if not self._license_info.has_eula:
+            return
+        dialog = LicenseTextDialog(
+            'OpenFocus EULA',
+            self._license_info.eula_text or '',
+            self,
+        )
+        dialog.exec()
