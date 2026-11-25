@@ -191,13 +191,19 @@ def test_dropping_the_same_folder_twice_keeps_one_row(qapp, tmp_path):
 def test_grouped_folder_selection_keeps_bounded_previews(qapp, tmp_path, monkeypatch, enable_first):
     from dialogs.batch import BatchProcessingDialog
     import core.image_loader as loader
+    import core.source_frames as source_frames
 
     folders = _make_stacks(tmp_path, count=1, frames=4)
     decoded = []
-    original = loader.decode_image
+    original_scan = source_frames.scan_source
+    original_decode = loader.decode_image
+    def scan(path, *args, **kwargs):
+        decoded.append(path)
+        return original_scan(path, *args, **kwargs)
     def decode(path):
         decoded.append(path)
-        return original(path)
+        return original_decode(path)
+    monkeypatch.setattr(source_frames, 'scan_source', scan)
     monkeypatch.setattr(loader, 'decode_image', decode)
     dialog = BatchProcessingDialog(None)
     try:

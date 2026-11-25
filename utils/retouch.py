@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 import dataclasses
+from functools import lru_cache
 from math import isqrt, prod
 import threading
 from typing import Optional, Tuple
@@ -192,22 +193,32 @@ def brush_mask(diameter: int, hardness: float) -> np.ndarray:
     `hardness` is the fraction of the radius that stays fully opaque; the
     remainder falls off with a raised cosine.  100 % is a hard-edged disc
     and diameter 1 is a single opaque pixel.
+
+    Returns a writable mask independent of the masks reused while stamping.
     """
     d = max(1, int(diameter))
     if d == 1:
         return np.ones((1, 1), np.float32)
+    h = float(np.clip(hardness, 0.0, 1.0))
     radius = d / 2.0
     coords = np.arange(d, dtype=np.float32) - (d - 1) / 2.0
     yy, xx = np.meshgrid(coords, coords, indexing="ij")
     dist = np.sqrt(xx * xx + yy * yy) / radius
-    h = float(np.clip(hardness, 0.0, 1.0))
     if h >= 1.0:
         alpha = (dist <= 1.0).astype(np.float32)
     else:
         t = np.clip((dist - h) / (1.0 - h), 0.0, 1.0)
         alpha = 0.5 * (1.0 + np.cos(np.pi * t))
         alpha[dist > 1.0] = 0.0
-    return alpha.astype(np.float32)
+        alpha = alpha.astype(np.float32)
+    return alpha
+
+
+@lru_cache(maxsize=4)
+def _cached_brush_mask(diameter: int, hardness: float) -> np.ndarray:
+    alpha = brush_mask(diameter, hardness)
+    alpha.setflags(write=False)
+    return alpha
 
 
 class StrokeCoverage:
@@ -318,7 +329,8 @@ def apply_dab(
     if tx0 >= tx1 or ty0 >= ty1:
         return None
 
-    mask = brush_mask(d, hardness)[ty0 - y0:ty1 - y0, tx0 - x0:tx1 - x0]
+    h = float(np.clip(hardness, 0.0, 1.0))
+    mask = _cached_brush_mask(d, h)[ty0 - y0:ty1 - y0, tx0 - x0:tx1 - x0]
     alpha = mask * float(np.clip(opacity, 0.0, 1.0))
     if source_valid is not None:
         valid = source_valid[nsy0:nsy1, nsx0:nsx1]
@@ -570,6 +582,16 @@ class TileHistory:
         tx, ty = key
         return (slice(ty * TILE, ty * TILE + min(TILE, self.target.shape[0] - ty * TILE)),
                 slice(tx * TILE, tx * TILE + min(TILE, self.target.shape[1] - tx * TILE)))
+
+    def entry_rect(self, entry) -> Optional[Tuple[int, int, int, int]]:
+        """Pixel bounds (x0, y0, x1, y1) covered by the tiles of one entry."""
+        rect = None
+        height, width = self.target.shape[:2]
+        for tx, ty in entry:
+            tile = (tx * TILE, ty * TILE, min(width, (tx + 1) * TILE),
+                    min(height, (ty + 1) * TILE))
+            rect = _union_rect(rect, tile)
+        return rect
 
     def _tile_copy(self, image, key):
         from core.frame_storage import store_frame
@@ -1231,13 +1253,14 @@ class RetouchDocument:
         )
 
     # -------------------------------------------------------- history ops
-    def _swap_history(self, undo):
+    def _swap_history(self, undo, *, return_rect):
         import copy
         if self._stroke is not None:
             self.end_stroke()
         plan = self.history._prepare_swap(self.working, undo)
         if plan is None:
             return False
+        rect = self.history.entry_rect(plan[0]) if return_rect else None
         candidate = copy.copy(self)
         candidate.history = copy.copy(self.history)
         candidate.history._undo, candidate.history._redo = plan[2], plan[3]
@@ -1256,13 +1279,15 @@ class RetouchDocument:
         self._background_fills = candidate._background_fills
         self._background_analyses = candidate._background_analyses
         self.history._reserved_bytes = candidate.history._reserved_bytes
-        return True
+        return rect or True
 
-    def undo(self) -> bool:
-        return self._swap_history(True)
+    def undo(self, *, return_rect=False) -> bool | Tuple[int, int, int, int]:
+        """Undo one step, optionally returning the changed pixel bounds."""
+        return self._swap_history(True, return_rect=return_rect)
 
-    def redo(self) -> bool:
-        return self._swap_history(False)
+    def redo(self, *, return_rect=False) -> bool | Tuple[int, int, int, int]:
+        """Redo one step, optionally returning the changed pixel bounds."""
+        return self._swap_history(False, return_rect=return_rect)
 
     def restore_all(self) -> bool:
         if self._stroke is not None:

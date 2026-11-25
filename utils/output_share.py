@@ -102,6 +102,20 @@ def set_clipboard_payload(mime: QMimeData, clipboard=None) -> bool:
         return False
 
 
+def show_status_path_message(window, message: str, path: str, timeout: int = 8000) -> None:
+    """Show a transient status message with an inline Show in Folder button."""
+    status_bar = getattr(window, 'statusBar', None)
+    bar = status_bar() if callable(status_bar) else None
+    if bar is None:
+        return
+    clean = str(message).replace('\n', ' ')
+    show_with_path = getattr(bar, 'show_path_message', None)
+    if callable(show_with_path) and path:
+        show_with_path(clean, path, timeout)
+    else:
+        bar.showMessage(clean, timeout)
+
+
 def notify_saved_path(window, path):
     """Copy a successfully saved image path and report the actual outcome."""
     if set_clipboard_payload(file_urls_mime_data([path])):
@@ -109,4 +123,4 @@ def notify_saved_path(window, path):
     else:
         message = (trans.t('msg_image_saved_info').format(path=path).replace('\n', ' ')
                    + ' — ' + trans.t('msg_share_clipboard_failed'))
-    window.statusBar().showMessage(message.replace('\n', ' '), 8000)
+    show_status_path_message(window, message, path, 8000)

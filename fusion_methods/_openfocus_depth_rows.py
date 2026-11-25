@@ -399,10 +399,10 @@ def detail_rows(gray, output, row_offset):
 
 
 def smooth_detail_rows(detail, output, start, stop, columns=None):
+    # The native kernel keeps its own column sums; ``columns`` is Numba scratch.
     from core._native import load_native
     native = load_native()
     if (native is not None and hasattr(native, 'of_smooth_detail_rows')
-            and columns is None
             and detail.dtype in (np.uint16, np.int32)
             and output.dtype in (np.uint16, np.int32)
             and detail.ndim == 2 and output.ndim == 2

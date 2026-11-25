@@ -1163,7 +1163,7 @@ class ProcessedFrame:
                     observer = _resolution_observer
                     if observer is not None:
                         observer(self.source, source)
-                    image = self.processor._call_mapped_jpeg(source, should_cancel=cancelled)
+                    image = self.processor._call_mapped_jpeg(self.source, source, should_cancel=cancelled)
                     del source
                 else:
                     snapshot = None
@@ -1201,7 +1201,7 @@ class ProcessedFrame:
                 require_memory(self.scratch_bytes)
             except ResourceLimitError:
                 if _is_mappable_jpeg_warp(self):
-                    return self.processor._call_mapped_jpeg(image, should_cancel=cancelled)
+                    return self.processor._call_mapped_jpeg(self.source, image, should_cancel=cancelled)
                 if not _can_map_exposure(self):
                     raise
                 mapped_exposure = True
@@ -1213,21 +1213,27 @@ class ProcessedFrame:
             with frame_region(image) as borrowed:
                 matched = self.processor._apply(borrowed, cancelled, mapped=True)
                 return image if matched is borrowed else matched
-        if is_direct_rgb_tiff(self.source):
-            from core.registration import PerspectiveWarp, _ORIGINAL_PERSPECTIVE_CALL
-            from core import openfocus_alignment as _oa
-            if (isinstance(self.processor, PerspectiveWarp)
-                    and PerspectiveWarp.__call__ is _ORIGINAL_PERSPECTIVE_CALL):
-                return self.processor.call_with_source(self.source, image, should_cancel=cancelled)
-            if (isinstance(self.processor, partial)
-                    and self.processor.func is _oa.apply_alignment
-                    and _oa.apply_alignment is _oa._ORIGINAL_APPLY_ALIGNMENT):
-                kw = self.processor.keywords
-                proc_cancel = kw.get('should_cancel')
-                merged = (cancelled if proc_cancel is None
-                          else (lambda: bool(cancelled() or proc_cancel())))
+        from core.registration import PerspectiveWarp, _ORIGINAL_PERSPECTIVE_CALL, _merge_cancel_callbacks
+        from core import openfocus_alignment as _oa
+        direct_tiff = is_direct_rgb_tiff(self.source)
+        if (isinstance(self.processor, PerspectiveWarp)
+                and PerspectiveWarp.__call__ is _ORIGINAL_PERSPECTIVE_CALL
+                and (direct_tiff or getattr(self.processor.source, 'digest_kind', None) == 'file')):
+            return self.processor.call_with_source(self.source, image, should_cancel=cancelled)
+        if isinstance(self.processor, partial):
+            kw = self.processor.keywords
+            transform = kw.get('transform')
+            if (self.processor.func is _oa._ORIGINAL_APPLY_ALIGNMENT
+                    and isinstance(transform, _oa.AlignmentTransform)
+                    and (direct_tiff or transform.source.digest_kind == 'file')):
+                merged = _merge_cancel_callbacks(cancelled, kw.get('should_cancel'))
                 return _oa._apply_alignment_for_source(
-                    self.source, image, kw['transform'], should_cancel=merged)
+                    self.source, image, transform, should_cancel=merged)
+            if (self.processor.func is _oa._ORIGINAL_APPLY_TRANSLATION
+                    and isinstance(transform, _oa.TranslationTransform)
+                    and transform.source.digest_kind == 'file'):
+                merged = _merge_cancel_callbacks(cancelled, kw.get('should_cancel'))
+                return _oa.apply_translation(image, transform, should_cancel=merged, source=self.source)
         return self.processor(image)
 
     def __array__(self, dtype=None, copy=None):

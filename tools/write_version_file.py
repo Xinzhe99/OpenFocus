@@ -39,7 +39,7 @@ def render(version: str) -> str:
         StringStruct('FileDescription', 'OpenFocus'),
         StringStruct('FileVersion', '{version}'),
         StringStruct('InternalName', 'OpenFocus'),
-        StringStruct('LegalCopyright', 'MIT License'),
+        StringStruct('LegalCopyright', 'Copyright 2025-2026 Xinzhe Xie and OpenFocus Contributors'),
         StringStruct('OriginalFilename', 'OpenFocus.exe'),
         StringStruct('ProductName', 'OpenFocus'),
         StringStruct('ProductVersion', '{version}')

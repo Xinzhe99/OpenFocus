@@ -38,6 +38,12 @@ def _show_support_dialog(window):
     show_community_dialog(window, SupportUsDialog)
 
 
+def _show_about_dialog(window):
+    from dialogs._community_layout import show_community_dialog
+    from dialogs.about import AboutDialog
+    show_community_dialog(window, AboutDialog)
+
+
 def _open_github_manual() -> None:
     # Community language packs may have no published manual.
     language = trans.current_lang if trans.current_lang in trans.PACK_ORDER else 'en'
@@ -609,6 +615,12 @@ def setup_menus(window: QMainWindow) -> None:
     update_action.triggered.connect(window.check_for_updates)
     help_menu.addAction(update_action)
     window.ui_objs['menu_check_updates'] = update_action
+
+    about_action = QAction(trans.t('menu_about'), window)
+    about_action.setProperty('trans_key', 'menu_about')
+    about_action.triggered.connect(lambda: _show_about_dialog(window))
+    help_menu.addAction(about_action)
+    window.ui_objs['menu_about'] = about_action
 
     # Only visible once a build is downloaded and verified: "update now"
     # applies it instantly and restarts into the restored session.

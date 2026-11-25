@@ -761,7 +761,9 @@ def test_aligned_drag_stages_a_watermarked_copy(tmp_path, qapp):
         def __init__(self):
             self.calls = []
 
-        def save_aligned_stack_as(self, path, label, *, destination=None, record=None):
+        def save_aligned_stack_as(self, path, label, *, destination=None, record=None,
+                                  progress=None, show_status=True):
+            assert not show_status
             self.calls.append((path, destination, record))
             out = os.path.join(destination, "stack_aligned")
             os.makedirs(out)
@@ -781,7 +783,7 @@ def test_aligned_drag_stages_a_watermarked_copy(tmp_path, qapp):
     record.export_path = str(source_dir)
     record.watermark_config = wm.normalize_config({"text": "© Drag"}).to_dict()
     record.watermark_initialized = True
-    folder = widget._aligned_drag_folder(item, record)
+    folder = widget._aligned_drag_folder(item.data(ALIGNED_DIR_ROLE), record)
     assert folder and os.path.realpath(folder) != os.path.realpath(str(source_dir))
     assert window.export_manager.calls and window.export_manager.calls[0][2] is record
     assert widget._temp_dirs
@@ -795,7 +797,7 @@ def test_aligned_drag_stages_a_watermarked_copy(tmp_path, qapp):
     item2 = QListWidgetItem("baked")
     item2.setData(ALIGNED_DIR_ROLE, str(source_dir))
     before = len(window.export_manager.calls)
-    assert widget._aligned_drag_folder(item2, baked) == str(source_dir)
+    assert widget._aligned_drag_folder(item2.data(ALIGNED_DIR_ROLE), baked) == str(source_dir)
     assert len(window.export_manager.calls) == before
 
 

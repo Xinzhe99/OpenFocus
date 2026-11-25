@@ -1,8 +1,8 @@
 from dataclasses import dataclass
 
 from PyQt6 import sip
-from PyQt6.QtCore import QEvent, Qt, QSize, pyqtSignal
-from PyQt6.QtGui import QKeySequence, QShortcut
+from PyQt6.QtCore import QEvent, QTimer, Qt, QSize, pyqtSignal
+from PyQt6.QtGui import QKeySequence, QPainter, QShortcut
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
     QSplitter,
     QStyle,
     QStyleOptionButton,
+    QStylePainter,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -140,8 +141,9 @@ class ElidingButton(QPushButton):
     """
 
     def __init__(self, text: str = "", parent=None):
-        super().__init__(text, parent)
-        self._full_text = text
+        super().__init__("", parent)
+        self._full_text = ""
+        self._elided_text = ""
         # An explicitly assigned tooltip survives caption and size changes.
         self._explicit_tip = ""
         self.setSizePolicy(QSizePolicy.Policy.Preferred,
@@ -155,19 +157,34 @@ class ElidingButton(QPushButton):
         self.setText(text)
 
     def setText(self, text: str) -> None:  # noqa: N802 (Qt casing)
-        self._full_text = text or ""
+        text = text or ""
+        if text == self._full_text:
+            return
+        self._full_text = text
+        self.setAccessibleName(self._full_text)
         self._refresh_display()
         self.updateGeometry()
+        self.update()
+
+    def text(self) -> str:
+        return self._elided_text
 
     def setToolTip(self, text: str) -> None:  # noqa: N802 (Qt casing)
         self._explicit_tip = text or ""
-        self._refresh_display()
+        self._update_tooltip()
+
+    def _update_tooltip(self) -> None:
+        tip = self._explicit_tip if self._explicit_tip != self._full_text else ""
+        target = tip or (self._full_text if self._elided_text != self._full_text else "")
+        if self.toolTip() != target:
+            super().setToolTip(target)
 
     def _refresh_display(self) -> None:
         displayed = _elide_to_width(self, self._full_text)
-        super().setText(displayed)
-        tip = self._explicit_tip if self._explicit_tip != self._full_text else ""
-        super().setToolTip(tip or (self._full_text if displayed != self._full_text else ""))
+        if displayed != self._elided_text:
+            self._elided_text = displayed
+            self.update()
+        self._update_tooltip()
 
     def full_text(self) -> str:
         return self._full_text
@@ -186,6 +203,13 @@ class ElidingButton(QPushButton):
         hint.setWidth(0)
         return hint
 
+    def paintEvent(self, _event):  # noqa: N802 (Qt casing)
+        painter = QStylePainter(self)
+        option = QStyleOptionButton()
+        self.initStyleOption(option)
+        option.text = self._elided_text
+        painter.drawControl(QStyle.ControlElement.CE_PushButton, option)
+
     def resizeEvent(self, event):  # noqa: N802 (Qt casing)
         super().resizeEvent(event)
         self._refresh_display()
@@ -195,6 +219,11 @@ class ElidingButton(QPushButton):
         # setText ran against a 100 px default width. Re-elide once laid out.
         super().showEvent(event)
         self._refresh_display()
+
+    def changeEvent(self, event):  # noqa: N802 (Qt casing)
+        super().changeEvent(event)
+        if event.type() in (QEvent.Type.FontChange, QEvent.Type.StyleChange):
+            self._refresh_display()
 
 
 def _elide_to_width(widget, text: str) -> str:
@@ -297,6 +326,7 @@ class ElidingLabel(QLabel):
         self._elide_mode = elide_mode
         self._auto_tooltip = auto_tooltip
         self._full_text = ""
+        self._elided_text = ""
         self.setTextFormat(Qt.TextFormat.PlainText)
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
         self.setMinimumWidth(0)
@@ -304,17 +334,40 @@ class ElidingLabel(QLabel):
 
     def minimumSizeHint(self):
         hint = super().minimumSizeHint()
-        return QSize(0, hint.height())
+        return QSize(0, max(hint.height(), self.fontMetrics().height() + 2 * self.margin()))
 
     def sizeHint(self):
         hint = super().sizeHint()
         text_w = self.fontMetrics().horizontalAdvance(self._full_text) + 2 * self.margin() + 2
-        return QSize(text_w, hint.height())
+        return QSize(text_w, max(hint.height(), self.fontMetrics().height() + 2 * self.margin()))
+
+    def text(self):
+        return self._elided_text
+
+    def full_text(self):
+        return self._full_text
 
     def setText(self, text):
-        self._full_text = text or ""
-        self.updateGeometry()
+        text = text or ""
+        if text == self._full_text:
+            return
+        self._full_text = text
+        self.setAccessibleName(self._full_text)
         self._refit()
+        self.updateGeometry()
+        self.update()
+
+    def paintEvent(self, _event):
+        painter = QPainter(self)
+        self.drawFrame(painter)
+        rect = self.contentsRect()
+        margin = self.margin()
+        if margin:
+            rect = rect.adjusted(margin, margin, -margin, -margin)
+        self.style().drawItemText(
+            painter, rect, int(self.alignment()), self.palette(),
+            self.isEnabled(), self._elided_text, self.foregroundRole(),
+        )
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -322,20 +375,22 @@ class ElidingLabel(QLabel):
 
     def changeEvent(self, event):
         super().changeEvent(event)
-        if event.type() == QEvent.Type.FontChange:
+        if event.type() in (QEvent.Type.FontChange, QEvent.Type.StyleChange):
             self._refit()
 
     def _refit(self):
         available = self.contentsRect().width() - 2 * self.margin()
         if available <= 0:
-            super().setText(self._full_text)
-            if self._auto_tooltip:
-                self.setToolTip("")
-            return
-        elided = self.fontMetrics().elidedText(self._full_text, self._elide_mode, available)
-        super().setText(elided)
-        if self._auto_tooltip:
-            self.setToolTip(self._full_text if elided != self._full_text else "")
+            elided = self._full_text
+            tip = ""
+        else:
+            elided = self.fontMetrics().elidedText(self._full_text, self._elide_mode, available)
+            tip = self._full_text if elided != self._full_text else ""
+        if elided != self._elided_text:
+            self._elided_text = elided
+            self.update()
+        if self._auto_tooltip and self.toolTip() != tip:
+            self.setToolTip(tip)
 
 
 class _DeviceStatusLabel(ElidingLabel):
@@ -422,6 +477,18 @@ class RightPanelComponents:
     lbl_status_resolution: QLabel
     lbl_status_gpu: QLabel
     lbl_status_memory: QLabel
+
+    def schedule_fit_configuration(self) -> None:
+        if sip.isdeleted(self.widget):
+            return
+        timer = getattr(self, "_fit_config_timer", None)
+        if timer is None:
+            timer = QTimer(self.widget)
+            timer.setSingleShot(True)
+            timer.timeout.connect(self.fit_configuration)
+            self._fit_config_timer = timer
+        if not timer.isActive():
+            timer.start(0)
 
     def fit_configuration(self, *, restored: bool | None = None) -> None:
         if not self.widget.isVisible():
@@ -597,6 +664,7 @@ def create_right_panel() -> RightPanelComponents:
 
     file_list = _SourceListWidget()
     file_list.setIconSize(QSize(40, 40))
+    file_list.setUniformItemSizes(True)
     file_list.setMinimumHeight(file_list.iconSize().height() + 8)
     file_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
     file_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -709,7 +777,7 @@ def create_right_panel() -> RightPanelComponents:
         lbl_status_gpu=lbl_status_gpu,
         lbl_status_memory=lbl_status_memory,
     )
-    config_widget.layoutChanged.connect(components.fit_configuration)
+    config_widget.layoutChanged.connect(components.schedule_fit_configuration)
     return components
 
 

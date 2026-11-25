@@ -111,11 +111,18 @@ class RegistrationHelpDialog(HelpDialog):
     """Registration choices, including composite registry methods."""
 
     def __init__(self, parent=None):
+        from core.experimental import alignment_is_experimental
+
         intro = _FirstParagraph()
         intro.feed(trans.t('help_registration_body'))
-        methods = [(trans.t(spec.label_key),
-                    trans.t(spec.hint_key) if spec.hint_key else '')
-                   for spec in registration_algorithms()]
+        methods = [
+            (
+                f"{trans.t(spec.label_key)} ({trans.t('experimental_label')})"
+                if alignment_is_experimental(spec.id) else trans.t(spec.label_key),
+                trans.t(spec.hint_key) if spec.hint_key else '',
+            )
+            for spec in registration_algorithms()
+        ]
         title = trans.t('help_registration_title')
         super().__init__(title, _method_help(title, [(None, methods)], parent,
                                              ''.join(intro.parts)), parent)

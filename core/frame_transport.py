@@ -2,12 +2,108 @@
 from dataclasses import fields, is_dataclass
 from functools import partial
 from importlib import import_module
+from multiprocessing.shared_memory import SharedMemory
+import os
+import sys
 from types import FunctionType
 
 import numpy as np
 
 from core import frame_storage as storage
 from core.source_frames import PreviewPixels
+
+
+# Use shared memory for larger arrays, with a cap across one transfer and
+# room for the receiver's copy.
+_SHM_MIN_BYTES = 256 * 1024
+_SHM_MAX_BYTES = 512 * 1024 * 1024
+
+
+def _try_shm_encode(array: np.ndarray, *, existing_bytes: int = 0, on_shared_memory=None):
+    """Copy an unmapped array into a POSIX/Windows SharedMemory block when RAM permits.
+
+    Enforces cumulative SharedMemory bounds across all buffers held by one encoder
+    so multi-array transfers spill cleanly to disk instead of exhausting RAM.
+    Returns ``(SharedMemory, metadata)`` on success, or ``None`` to fall back to
+    disk-backed ``store_frame(..., prefer_ram=False)``.
+    """
+    nbytes = int(array.nbytes)
+    total_bytes = int(existing_bytes) + nbytes
+    if nbytes < _SHM_MIN_BYTES or total_bytes > _SHM_MAX_BYTES or array.dtype.hasobject:
+        return None
+    try:
+        from core import resource_policy as policy
+        snapshot = policy.probe_memory()
+        if not snapshot.ram_known:
+            return None
+        ceiling = policy.ram_ceiling(snapshot)
+        if ceiling < total_bytes * 2:
+            return None
+    except Exception:
+        return None
+    shm = None
+    try:
+        shm = SharedMemory(create=True, size=nbytes)
+        if on_shared_memory is not None and os.name != 'nt':
+            on_shared_memory(shm.name)
+        if sys.platform.startswith('linux'):
+            # ftruncate alone leaves /dev/shm pages unallocated. Reserve them
+            # before touching the mapping so a full tmpfs falls back to disk.
+            os.posix_fallocate(shm._fd, 0, nbytes)
+        dst = np.ndarray(array.shape, dtype=array.dtype, buffer=shm.buf)
+        try:
+            np.copyto(dst, array)
+        finally:
+            del dst
+        return shm, (shm.name, array.shape, array.dtype)
+    except Exception:
+        if shm is not None:
+            try:
+                shm.close()
+            except Exception:
+                pass
+            try:
+                shm.unlink()
+            except Exception:
+                pass
+        return None
+
+
+def discard_shared_memory(name):
+    """Remove a POSIX result segment if its child exited before releasing it."""
+    try:
+        shm = SharedMemory(name=name)
+    except FileNotFoundError:
+        return
+    try:
+        shm.unlink()
+    finally:
+        shm.close()
+
+
+def _shm_decode(data) -> np.ndarray:
+    """Attach to a SharedMemory segment, copy into an owned ndarray, and release immediately."""
+    name, shape, dtype = data
+    shm = SharedMemory(name=name)
+    try:
+        if os.name != 'nt':
+            # Once attached, this transfer has no further readers.
+            try:
+                shm.unlink()
+            except FileNotFoundError:
+                pass
+        view = np.ndarray(shape, dtype=dtype, buffer=shm.buf)
+        try:
+            result = view.copy()
+            result.flags.writeable = False
+        finally:
+            del view
+        return result
+    finally:
+        try:
+            shm.close()
+        except Exception:
+            pass
 
 
 _SOURCE_REQUEST_KIND = 'render_source_request'
@@ -42,13 +138,38 @@ def _reference(value):
 
 
 class FrameEncoder:
-    """Keep borrowed/created file owners alive until a transfer is acknowledged."""
+    """Keep transfer buffers alive until the receiver has opened them."""
 
-    def __init__(self, should_cancel=None):
+    def __init__(self, should_cancel=None, *, allow_shared_memory=True, on_shared_memory=None):
         self.should_cancel = should_cancel
+        self._allow_shared_memory = allow_shared_memory
+        self._on_shared_memory = on_shared_memory
         self.paths = set()
         self._memo = {}
         self._keep = []
+        self._shm_handles = []
+        self._shm_bytes = 0
+
+    def close(self, *, unlink=False):
+        """Release any SharedMemory handles created by this encoder."""
+        handles = self._shm_handles
+        self._shm_handles = []
+        self._shm_bytes = 0
+        for shm in handles:
+            try:
+                shm.close()
+            except Exception:
+                pass
+            if unlink and os.name != 'nt':
+                try:
+                    shm.unlink()
+                except FileNotFoundError:
+                    pass
+                except Exception:
+                    pass
+
+    def __del__(self):
+        self.close(unlink=True)
 
     @property
     def owned_paths(self):
@@ -79,6 +200,18 @@ class FrameEncoder:
         if isinstance(value, np.ndarray):
             description = storage.describe_frame(value)
             if description is None:
+                shm_encoded = None
+                if self._allow_shared_memory:
+                    shm_encoded = _try_shm_encode(
+                        value, existing_bytes=self._shm_bytes,
+                        on_shared_memory=self._on_shared_memory,
+                    )
+                if shm_encoded is not None:
+                    shm, shm_data = shm_encoded
+                    self._shm_handles.append(shm)
+                    self._shm_bytes += int(value.nbytes)
+                    kind, data = 'shm', shm_data
+                    return ('value', index, kind, data)
                 mapped = storage.store_frame(value, prefer_ram=False)
                 self._keep.append(mapped)
                 description = storage.describe_frame(mapped)
@@ -151,6 +284,11 @@ class FrameDecoder:
         if kind == 'frame':
             description = dict(data, cleanup_directory=self._directory(data['path']))
             result = storage.open_frame(description, owned=self._owns(data['path']))
+        elif kind == 'shm':
+            if self.should_cancel is not None and self.should_cancel():
+                from core.registration import RegistrationCancelled
+                raise RegistrationCancelled()
+            result = _shm_decode(data)
         elif kind == 'preview':
             path, shape, dtype = data
             result = PreviewPixels.__new__(PreviewPixels)

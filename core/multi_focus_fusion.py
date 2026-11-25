@@ -439,7 +439,8 @@ class MultiFocusFusion:
 
     def _base_frame_image(self, input_source,
                           which: Optional[str] = None,
-                          exposure_gains=None, deferred_exposure=False) -> Optional[np.ndarray]:
+                          exposure_gains=None, deferred_exposure=False, *,
+                          should_cancel=None) -> Optional[np.ndarray]:
         """取基底参考帧（末帧/首帧），统一到 float32 0-255 域。"""
         which = which if which in ("last", "first") else self.base_frame
         frame = None
@@ -474,7 +475,7 @@ class MultiFocusFusion:
         if frame is None:
             return None
         from core.source_frames import resolve_frame
-        frame = resolve_frame(frame)
+        frame = resolve_frame(frame, should_cancel=should_cancel)
         if (deferred_exposure and gain is not None and frame.dtype == np.uint8
                 and not any(item.dtype == np.uint16 for item in input_source)):
             frame = apply_exposure_gain(frame, gain)
@@ -563,7 +564,7 @@ class MultiFocusFusion:
 
 
     def _apply_base_correction(self, fused, input_source, exposure_gains=None,
-                               deferred_exposure=False):
+                               deferred_exposure=False, *, should_cancel=None, thread_count=None):
         """out += LP(I_base) − LP(out)：细节层不动，基底低频对齐参考帧。
 
         这是用户显式选择 base_frame='last'/'first' 时的可选后处理，
@@ -572,10 +573,12 @@ class MultiFocusFusion:
         """
         if fused is None or self.base_frame == "none":
             return fused
+        from core.registration import _check_cancel
         from core.resource_policy import require_memory
         require_memory(fused.size * 4 * 6, user_limit=memory_budget_bytes())
         which = self.base_frame
-        base = self._base_frame_image(input_source, which, exposure_gains, deferred_exposure)
+        base = self._base_frame_image(input_source, which, exposure_gains, deferred_exposure,
+                                      should_cancel=should_cancel)
         if base is None:
             return fused
         import cv2
@@ -592,15 +595,24 @@ class MultiFocusFusion:
         if base.ndim == 3 and base.shape[2] == 1:
             base = base[:, :, 0]
         out = fused if fused.dtype == np.float32 else fused.astype(np.float32)
-        sigma = self.BASE_CORRECTION_SIGMA
-        low_out = cv2.GaussianBlur(out, (0, 0), sigma)
-        low_base = cv2.GaussianBlur(base, (0, 0), sigma)
+        sigma = float(self.BASE_CORRECTION_SIGMA)
+        _check_cancel(should_cancel)
+        from utils.memory import scoped_opencv_threads
+
+        with scoped_opencv_threads(thread_count or None):
+            low_out = cv2.GaussianBlur(out, (0, 0), sigma)
+            _check_cancel(should_cancel)
+            low_base = cv2.GaussianBlur(base, (0, 0), sigma)
+        _check_cancel(should_cancel)
         if low_base.ndim == 2 and low_out.ndim == 3:
             low_base = low_base[:, :, None]
         elif low_base.ndim == 3 and low_out.ndim == 2:
             low_base = low_base[:, :, 0]
-        corrected = out + (low_base - low_out).reshape(out.shape)
-        return np.clip(corrected, 0, 255).astype(fused.dtype)
+        np.subtract(low_base, low_out, out=low_out)
+        corrected = low_out.reshape(out.shape)
+        np.add(out, corrected, out=corrected)
+        np.clip(corrected, 0, 255, out=corrected)
+        return corrected.astype(fused.dtype, copy=False)
 
     def _validate_dct_environment(self) -> None:
         """验证DCT融合依赖"""
@@ -1251,7 +1263,8 @@ class MultiFocusFusion:
         check_cancel()
         with _profile().stage('base_correction'):
             result = self._apply_base_correction(result, input_source, exposure_gains_,
-                                                 deferred_exposure)
+                                                 deferred_exposure, should_cancel=should_cancel,
+                                                 thread_count=kwargs.get('thread_count'))
         check_cancel()
         if streaming_sources:
             from core.source_frames import validate_frame_source

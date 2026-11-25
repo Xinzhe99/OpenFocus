@@ -884,7 +884,8 @@ def _fuse_stack_admitted_body(images, args):
         raise RuntimeError("Fusion returned no result")
     if getattr(args, "sharpen_output", False):
         from utils.output_sharpen import sharpen_output
-        fused = sharpen_output(fused, should_cancel, strength=sharpen_strength)
+        fused = sharpen_output(fused, should_cancel, strength=sharpen_strength,
+                               thread_count=args.threads)
     fused = quantize_fuse_output(fused, is_16bit)
     from core.transparency import restore_transparent_canvas
     fused = restore_transparent_canvas(fused, transparent)
@@ -972,7 +973,8 @@ def _fuse_grouped(paths, args):
         from utils.output_sharpen import sharpen_output
         frames, is_16bit = normalize_fuse_input([result])
         result = quantize_fuse_output(sharpen_output(
-            frames[0], getattr(args, '_should_cancel', None), strength=sharpen_strength), is_16bit)
+            frames[0], getattr(args, '_should_cancel', None), strength=sharpen_strength,
+            thread_count=args.threads), is_16bit)
     return result
 
 
