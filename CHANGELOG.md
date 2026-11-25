@@ -189,6 +189,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   arena memory after each StackMFF inference.
 - Avoid repeated CPU topology queries while admitting each file in Batch Image
   Converter. Continue checking current memory and destination disk space.
+- Fit Wipe controls in narrow result panels and keep status text available on
+  hover. Refine dialog layouts, keyboard actions, and translated captions.
 - Reuse OpenFocus A response rows and limit GPU output readback size. Skip
   inactive OpenFocus B merge tiles and reuse OpenFocus C pyramid buffers.
 - Reduce the OpenFocus C OpenCL working set by processing the finest layer

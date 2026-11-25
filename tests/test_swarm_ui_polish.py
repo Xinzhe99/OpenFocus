@@ -60,6 +60,7 @@ def test_panel_headers_info_labels_and_wipe_bar_geometry(qapp):
         src.widget.resize(480, 360)
         src.widget.show()
 
+        res.view_stack.setCurrentWidget(res.wipe_widget.parentWidget())
         res.wipe_bar.show()
         res.widget.resize(480, 360)
         res.widget.show()
@@ -69,6 +70,20 @@ def test_panel_headers_info_labels_and_wipe_bar_geometry(qapp):
         assert res.chk_wipe_follow_left.y() < res.chk_wipe_follow_right.y()
         assert res.chk_wipe_follow_left.width() >= res.chk_wipe_follow_left.sizeHint().width()
         assert res.chk_wipe_follow_right.width() >= res.chk_wipe_follow_right.sizeHint().width()
+
+        qapp.setStyleSheet(get_theme_style("light", font_size=19))
+        follow = res.chk_wipe_follow_right
+        follow.setText("Neuestes Ergebnis automatisch auswählen")
+        badge = res.lbl_wipe_right_index
+        full_title = "Ausrichtungsergebnis aus gespeichertem Stapel"
+        badge.setText(full_title)
+        res.widget.resize(245, 360)
+        qapp.processEvents()
+        assert res.widget.width() == 245
+        assert res.slider_wipe_right.width() >= 60
+        assert follow.width() < follow.sizeHint().width()
+        assert follow.toolTip() == follow.text()
+        assert badge.text().endswith("…") and badge.toolTip() == full_title
     finally:
         src.widget.close()
         res.widget.close()
@@ -103,13 +118,10 @@ def test_wipe_labels_retranslate_on_language_change(qapp):
 
 
 def test_right_panel_status_labels_elide_with_tooltip(qapp):
-    from ui.right_panel import _ElidingStatusLabel, create_right_panel
+    from ui.right_panel import create_right_panel
 
     comp = create_right_panel()
     try:
-        for lbl in (comp.lbl_status_loaded, comp.lbl_status_resolution, comp.lbl_status_memory):
-            assert isinstance(lbl, _ElidingStatusLabel)
-
         long_text = "RAM used: 12.4 / 16.0 GB (very long memory string)"
         comp.widget.resize(280, 500)
         comp.widget.show()

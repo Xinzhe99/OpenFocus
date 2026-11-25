@@ -291,7 +291,7 @@ class _SourceListWidget(QListWidget):
         self.order_changed.emit()
 
 
-class _ElidingStatusLabel(QLabel):
+class ElidingLabel(QLabel):
     def __init__(self, text, *, elide_mode=Qt.TextElideMode.ElideRight, auto_tooltip=True):
         super().__init__()
         self._elide_mode = elide_mode
@@ -338,7 +338,7 @@ class _ElidingStatusLabel(QLabel):
             self.setToolTip(self._full_text if elided != self._full_text else "")
 
 
-class _DeviceStatusLabel(_ElidingStatusLabel):
+class _DeviceStatusLabel(ElidingLabel):
     def __init__(self, text):
         # Keep the distinguishing model suffix visible at narrow widths.
         super().__init__(text, elide_mode=Qt.TextElideMode.ElideLeft, auto_tooltip=False)
@@ -651,10 +651,10 @@ def create_right_panel() -> RightPanelComponents:
     status_layout.setHorizontalSpacing(18)
     status_layout.setVerticalSpacing(6)
 
-    lbl_status_loaded = _ElidingStatusLabel(trans.t('status_loaded').format(0))
+    lbl_status_loaded = ElidingLabel(trans.t('status_loaded').format(0))
     lbl_status_gpu = _DeviceStatusLabel(trans.t('status_gpu').format('-'))
-    lbl_status_resolution = _ElidingStatusLabel(trans.t('status_res').format('-'))
-    lbl_status_memory = _ElidingStatusLabel(trans.t('status_ram').format('-'))
+    lbl_status_resolution = ElidingLabel(trans.t('status_res').format('-'))
+    lbl_status_memory = ElidingLabel(trans.t('status_ram').format('-'))
 
     # Keep two rows to leave room for the lists. Give the device label the
     # wider column and keep the full report in its tooltip.

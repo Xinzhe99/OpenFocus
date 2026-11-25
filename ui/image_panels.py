@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from PyQt6.QtCore import QRect, QTimer, Qt
+from PyQt6.QtCore import QRect, QSize, QTimer, Qt
 from PyQt6.QtGui import QImage, QPainter
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -11,6 +11,9 @@ from PyQt6.QtWidgets import (
     QSlider,
     QStackedWidget,
     QVBoxLayout,
+    QStyle,
+    QStyleOptionButton,
+    QStylePainter,
     QWidget,
     QPushButton,
 )
@@ -19,6 +22,7 @@ from widgets.magnifier_label import MagnifierLabel
 from widgets.sharpness_curve import SharpnessCurveWidget
 from widgets.wipe_compare import WipeCompareWidget
 from locales import trans
+from ui.right_panel import ElidingLabel
 from utils.design_tokens import RADIUS, SPACE, WEIGHT, palette
 
 
@@ -210,6 +214,33 @@ class _ResultZoomBar(QWidget):
         self._update_controls()
 
 
+class _WipeFollowCheckBox(QCheckBox):
+    def __init__(self, text):
+        super().__init__()
+        self.setText(text)
+
+    def setText(self, text):
+        super().setText(text)
+        self.setToolTip(text)
+
+    def minimumSizeHint(self):
+        option = QStyleOptionButton()
+        self.initStyleOption(option)
+        option.text = ""
+        return self.style().sizeFromContents(
+            QStyle.ContentsType.CT_CheckBox, option, QSize(0, self.fontMetrics().height()), self)
+
+    def paintEvent(self, event):
+        option = QStyleOptionButton()
+        self.initStyleOption(option)
+        contents = self.style().subElementRect(QStyle.SubElement.SE_CheckBoxContents, option, self)
+        option.text = self.fontMetrics().elidedText(
+            option.text, Qt.TextElideMode.ElideRight, max(0, contents.width()),
+            Qt.TextFlag.TextShowMnemonic.value)
+        with QStylePainter(self) as painter:
+            painter.drawControl(QStyle.ControlElement.CE_CheckBox, option)
+
+
 class _WipeBar(QWidget):
     """Two-row A/B wipe controls whose signal lifetime follows the widget."""
 
@@ -320,7 +351,7 @@ def create_result_panel() -> ResultPanel:
     container.setObjectName("panelRoot")
     title_bar = QWidget()
     title_bar.setObjectName("panelTitleBar")
-    title_bar.setFixedHeight(26)
+    title_bar.setMinimumHeight(26)
     title_layout = QHBoxLayout(title_bar)
     title_layout.setContentsMargins(SPACE['md'], 0, 6, 0)
     title_layout.setSpacing(6)
@@ -379,15 +410,15 @@ def create_result_panel() -> ResultPanel:
         """One wipe side: follow checkbox + frame slider + index label."""
         side_label = QLabel(label_text)
         side_label.setObjectName("mutedLabel")
-        follow_chk = QCheckBox(follow_text)
+        follow_chk = _WipeFollowCheckBox(follow_text)
         follow_chk.setChecked(True)
         frame_slider = QSlider(Qt.Orientation.Horizontal)
         frame_slider.setRange(0, 0)
         frame_slider.setEnabled(False)
         frame_slider.setMinimumWidth(60)
-        index_label = QLabel("-")
+        index_label = ElidingLabel("-")
         index_label.setObjectName("mutedLabel")
-        index_label.setMinimumWidth(52)
+        index_label.setMinimumWidth(36)
         index_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         return follow_chk, frame_slider, index_label, side_label
 
