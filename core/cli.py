@@ -186,6 +186,23 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Draw a scale bar on the output (calibration auto-detected from TIFF/DNG microscopy metadata, or --scale-um)")
     parser.add_argument("--scale-um", type=float, default=None,
                         help="Pixel size in um/px, overriding metadata (implies --scale-bar)")
+    parser.add_argument("--watermark", default=None, metavar="TEXT",
+                        help="Burn a visible tiled text watermark onto the exported image (except native DNG)")
+    parser.add_argument("--watermark-opacity", type=float, default=None,
+                        help="Watermark opacity from 0.05 to 0.90 (default: 0.28; requires --watermark)")
+    parser.add_argument("--watermark-size", type=float, default=None,
+                        help="Watermark size as %% of short image side, 1.0 to 12.0 (default: 3.5; requires --watermark)")
+    parser.add_argument("--watermark-color", choices=["white", "black"], default=None,
+                        help="Watermark text color (default: white; requires --watermark)")
+    parser.add_argument("--watermark-angle", type=float, default=None,
+                        help="Watermark angle in degrees, -60 to 60 (default: -25; requires --watermark)")
+    parser.add_argument("--watermark-density", choices=["sparse", "standard", "dense"], default=None,
+                        help="Watermark tiling density (default: standard; requires --watermark)")
+    parser.add_argument("--watermark-copyright", nargs="?", const="prefix", default=None,
+                        choices=["prefix", "suffix"],
+                        help="Prepend or append copyright symbol to the watermark (default when flag present: prefix; requires --watermark)")
+    parser.add_argument("--watermark-font", default=None, metavar="FAMILY",
+                        help="Watermark font family (requires --watermark)")
     parser.add_argument("--depth-map", "-D", dest="depth_map", nargs="?", const=True, default=None,
                         help="Also save a colorized focus-position (pseudo-depth) map for a supported method "
                              "(optional value: output path; default <output>_depth.png; batch requires default path)")
@@ -281,7 +298,7 @@ def _validate_execution_args(args):
             raise ValueError(f"{name} must be boolean")
     validate_sharpen_strength(getattr(args, 'sharpen_strength', DEFAULT_SHARPEN_STRENGTH))
     actions = {action.dest: action for action in build_parser()._actions}
-    for name in ('method', 'align', 'base_frame', 'sort', 'ai_mode',
+    for name in ('method', 'align', 'base_frame', 'sort', 'frame_order', 'ai_mode',
                  'resource_preference', 'auto_background', 'background_mode'):
         value = getattr(args, name)
         if value is None and name in ('ai_mode', 'auto_background'):
@@ -306,10 +323,16 @@ def _validate_execution_args(args):
     if args.native_raw and (args.suggest_duplicates or args.group_size or
                             args.defect_mask_path or args.sensor_denoise or args.depth_map):
         raise ValueError('native_raw cannot be combined with grouped fusion, references or depth maps')
-    if args.native_raw and (args.scale_bar or args.scale_um is not None) and (
-            (args.output_dir and (args.native_batch_format or 'dng') == 'dng') or
-            (args.output and os.path.splitext(args.output)[1].lower() == '.dng')):
-        raise ValueError('scale bars are not supported in native DNG output')
+    watermark_cfg = _resolve_watermark_cfg(args)
+    if args.native_raw:
+        if args.output_dir is not None:
+            native_dng = (args.native_batch_format or 'dng') == 'dng'
+        else:
+            native_dng = args.output and os.path.splitext(args.output)[1].lower() == '.dng'
+        if native_dng and (args.scale_bar or args.scale_um is not None):
+            raise ValueError('scale bars are not supported in native DNG output')
+        if native_dng and watermark_cfg is not None:
+            raise ValueError('watermarks are not supported in native DNG output')
     extras = args.background_mode != 'clean' or args.keep_soft_parts or args.save_stacked or args.missing_data_map
     if extras and not args.auto_background:
         raise ValueError('background options require auto_background')
@@ -589,12 +612,14 @@ def _load_native_stack(paths, args):
     return images, metadata
 
 
-def _save_native(path, fused, metadata, scale_cfg=None):
+def _save_native(path, fused, metadata, scale_cfg=None, watermark_cfg=None, should_cancel=None):
     from utils.linear_dng import develop_linear, write_linear_dng
 
     if os.path.splitext(path)[1].lower() == ".dng":
         if scale_cfg:
             raise ValueError("Scale bars are not supported in native DNG output")
+        if watermark_cfg:
+            raise ValueError("Watermarks are not supported in native DNG output")
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
         write_linear_dng(path, fused, metadata)
     else:
@@ -603,7 +628,8 @@ def _save_native(path, fused, metadata, scale_cfg=None):
                   "transforms and baseline exposure are not applied", file=sys.stderr)
         from utils.image_utils import srgb_icc_profile
         _save(path, develop_linear(fused, metadata), scale_cfg,
-              icc_profile=srgb_icc_profile())
+              icc_profile=srgb_icc_profile(), watermark_cfg=watermark_cfg,
+              should_cancel=should_cancel)
 
 
 def _suggest_duplicates(args):
@@ -1267,12 +1293,14 @@ def _auto_background(args, fused):
     return result
 
 
-def _save_background_extras(args, fused_out, stacked, result, scale_cfg, icc_profile) -> List[str]:
+def _save_background_extras(args, fused_out, stacked, result, scale_cfg, icc_profile,
+                            watermark_cfg=None, should_cancel=None) -> List[str]:
     """Write --save-stacked / --missing-data-map files; returns their paths."""
     written = []
     if getattr(args, "save_stacked", None):
         path = _extra_out_path(args.save_stacked, fused_out, "_stacked")
-        _save(path, stacked, scale_cfg, icc_profile)
+        _save(path, stacked, scale_cfg, icc_profile,
+              watermark_cfg=watermark_cfg, should_cancel=should_cancel)
         _say(f"Saved stacked result: {path}")
         written.append(path)
     if getattr(args, "missing_data_map", None):
@@ -1318,8 +1346,37 @@ def _resolve_scale_cfg(args, paths):
     return {"px_um": px_um, "position": "bottom-right", "color": "auto"}
 
 
-def _save(path: str, fused, scale_cfg=None, icc_profile=b"") -> None:
+def _resolve_watermark_cfg(args):
+    """Build and validate a WatermarkConfig from CLI flags or batch overrides."""
+    text = getattr(args, "watermark", None)
+    payload = {}
+    for field, option in (
+            ("opacity", "opacity"), ("size_percent", "size"), ("color", "color"),
+            ("angle", "angle"), ("density", "density"), ("font_family", "font"),
+            ("copyright_position", "copyright")):
+        value = getattr(args, f"watermark_{option}", None)
+        if value is not None:
+            if field in ("opacity", "size_percent", "angle") and type(value) not in (int, float):
+                raise ValueError(f"--watermark-{option} requires a number")
+            payload[field] = value
+    if text is None:
+        if payload:
+            raise ValueError("watermark styling options require --watermark TEXT")
+        return None
+    from utils import watermark
+    payload["text"] = text
+    if "copyright_position" in payload:
+        payload["copyright_enabled"] = True
+    return watermark.normalize_config(payload)
+
+
+def _save(path: str, fused, scale_cfg=None, icc_profile=b"",
+          watermark_cfg=None, should_cancel=None) -> None:
     from utils.image_utils import imwrite_auto
+    from core.registration import RegistrationCancelled
+
+    if should_cancel is not None and should_cancel():
+        raise KeyboardInterrupt
     if fused.ndim == 3 and fused.shape[2] == 4:
         if os.path.splitext(path)[1].lower() != '.png':
             raise ValueError("Transparent output requires a PNG file")
@@ -1330,8 +1387,17 @@ def _save(path: str, fused, scale_cfg=None, icc_profile=b"") -> None:
     if scale_cfg:
         from utils import scalebar
         fused = scalebar.burn(fused, scale_cfg)
-    if not imwrite_auto(path, fused, icc_profile=icc_profile):
-        raise RuntimeError(f"Failed to write output: {path}")
+    if watermark_cfg is not None:
+        from utils import watermark
+        try:
+            fused = watermark.burn(fused, watermark_cfg, should_cancel=should_cancel)
+        except watermark.WatermarkCancelled as exc:
+            raise KeyboardInterrupt from exc
+    try:
+        if not imwrite_auto(path, fused, icc_profile=icc_profile, should_cancel=should_cancel):
+            raise RuntimeError(f"Failed to write output: {path}")
+    except RegistrationCancelled as exc:
+        raise KeyboardInterrupt from exc
 
 
 def _run_batch(args, _emit_json=None, _allow_summary=None) -> int:
@@ -1499,8 +1565,11 @@ def _run_batch(args, _emit_json=None, _allow_summary=None) -> int:
                 fused = _fuse_stack(images, folder_args)
                 images = None
             background = stacked = None
+            watermark_cfg = _resolve_watermark_cfg(folder_args)
+            folder_cancel = getattr(folder_args, "_should_cancel", None)
             if args.native_raw:
-                _save_native(out_path, fused, metadata, _resolve_scale_cfg(folder_args, paths))
+                _save_native(out_path, fused, metadata, _resolve_scale_cfg(folder_args, paths),
+                             watermark_cfg=watermark_cfg, should_cancel=folder_cancel)
             else:
                 from core.image_loader import common_icc_profile
                 scale_cfg = _resolve_scale_cfg(folder_args, paths)
@@ -1509,11 +1578,13 @@ def _run_batch(args, _emit_json=None, _allow_summary=None) -> int:
                     stacked = fused
                     background = _auto_background(folder_args, fused)
                     fused = background.image
-                _save(out_path, fused, scale_cfg, icc_profile)
+                _save(out_path, fused, scale_cfg, icc_profile,
+                      watermark_cfg=watermark_cfg, should_cancel=folder_cancel)
             _say(f"Saved: {out_path}")
             if background is not None:
                 _save_background_extras(folder_args, out_path, stacked, background,
-                                        scale_cfg, icc_profile)
+                                        scale_cfg, icc_profile, watermark_cfg=watermark_cfg,
+                                        should_cancel=folder_cancel)
                 background = stacked = None
             if folder_args.depth_map:
                 _save_depth(folder_args, out_path)
@@ -1904,11 +1975,6 @@ def _run_cli_parsed(args) -> int:
                 args.defect_mask_path or args.sensor_denoise or args.depth_map):
             print("error: --native-raw cannot be combined with duplicate review, grouped fusion, sensor cleanup or depth maps", file=sys.stderr)
             return EXIT_USAGE
-        if (args.scale_bar or args.scale_um is not None) and (
-                (args.output_dir and (args.native_batch_format or "dng") == "dng") or
-                (args.output and os.path.splitext(args.output)[1].lower() == ".dng")):
-            print("error: scale bars are not supported in native DNG output", file=sys.stderr)
-            return EXIT_USAGE
     if args.profile_performance is not None:
         if args.suggest_duplicates or args.output_dir or args.group_size or args.dry_run:
             print("error: --profile-performance requires a single, non-grouped fusion run", file=sys.stderr)
@@ -2053,11 +2119,13 @@ def _run_cli_parsed(args) -> int:
                 raise ValueError(f"Overrides for {folder} must be an object")
             unknown = set(override) - {
                 "method", "align", "kernel",
-                "ai_mode", "base_frame", "sort", "exposure_match", "sharpen_output", "sharpen_strength",
-                "cpu", "threads",
-                "batch_size", "downscale", "tile_size", "align_shift_limit",
+                "ai_mode", "base_frame", "sort", "frame_order", "exposure_match",
+                "sharpen_output", "sharpen_strength", "cpu", "threads",
+                "batch_size", "downscale", "tile_size", "tile_overlap", "align_shift_limit",
                 "resource_preference", "fusion_parameters", "registration_parameters",
-                "auto_background", "background_mode", "keep_soft_parts"}
+                "auto_background", "background_mode", "keep_soft_parts",
+                "watermark", "watermark_opacity", "watermark_size", "watermark_color",
+                "watermark_angle", "watermark_density", "watermark_copyright", "watermark_font"}
             if unknown:
                 raise ValueError(f"Unknown override keys for {folder}: {sorted(unknown)}")
             try:
@@ -2295,6 +2363,7 @@ def _run_cli_parsed(args) -> int:
             if args.alignment_report and not entries:
                 raise RuntimeError("The selected alignment method did not provide diagnostics")
             scale_cfg = _resolve_scale_cfg(args, paths)
+            watermark_cfg = _resolve_watermark_cfg(args)
             source_icc_profile = b""
             if not args.native_raw:
                 from core.image_loader import common_icc_profile
@@ -2309,17 +2378,22 @@ def _run_cli_parsed(args) -> int:
                 background = _auto_background(args, fused)
                 fused = background.image
 
+        single_cancel = getattr(args, "_should_cancel", None)
         with performance_profile.current().stage('save'):
             if args.native_raw:
-                _save_native(args.output, fused, native_metadata, scale_cfg)
+                _save_native(args.output, fused, native_metadata, scale_cfg,
+                             watermark_cfg=watermark_cfg, should_cancel=single_cancel)
             else:
-                _save(args.output, fused, scale_cfg, source_icc_profile)
+                _save(args.output, fused, scale_cfg, source_icc_profile,
+                      watermark_cfg=watermark_cfg, should_cancel=single_cancel)
         _say(f"Saved: {args.output}")
         _progress(event="save", output=args.output)
         outputs = [args.output]
         if background is not None:
             outputs += _save_background_extras(args, args.output, stacked, background,
-                                               scale_cfg, source_icc_profile)
+                                               scale_cfg, source_icc_profile,
+                                               watermark_cfg=watermark_cfg,
+                                               should_cancel=single_cancel)
             stacked = None
         if args.depth_map:
             _save_depth(args, args.output)
@@ -2410,10 +2484,16 @@ def describe_payload() -> dict:
             "review": ["--suggest-duplicates"],
             "grouped": ["--group-size", "--group-overlap"],
             "cleanup": ["--defect-mask-path", "--sensor-denoise"],
-            "export": ["--scale-bar", "--scale-um", "--depth-map", "--depth-colormap"],
+            "export": ["--scale-bar", "--scale-um", "--depth-map", "--depth-colormap",
+                       "--sharpen-output", "--sharpen-strength", "--native-raw",
+                       "--native-batch-format", "--watermark", "--watermark-opacity",
+                       "--watermark-size", "--watermark-color", "--watermark-angle",
+                       "--watermark-density", "--watermark-copyright", "--watermark-font"],
             "background": ["--auto-background", "--background-mode", "--keep-soft-parts",
                            "--save-stacked", "--missing-data-map"],
-            "order": ["--sort"],
+            "order": ["--sort", "--frame-order"],
+            "parameters": ["--kernel", "--ai-mode", "--align-shift-limit",
+                           "--param", "--align-param"],
             "subcommands": sorted(SUBCOMMANDS),
             "options": sorted(option for action in build_parser()._actions
                               if action.help != argparse.SUPPRESS
@@ -2455,7 +2535,7 @@ def _run_gui(argv: List[str]) -> int:
             print(f"error: unknown gui option: {token}", file=sys.stderr)
             return EXIT_USAGE
         else:
-            paths.append(token)
+            paths.append(os.path.abspath(os.path.expanduser(token)))
             index += 1
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if control or socket_name:
@@ -2478,6 +2558,7 @@ def _run_gui(argv: List[str]) -> int:
         return EXIT_OK
     if getattr(sys, "frozen", False):
         command = [sys.executable, *paths]
+        spawn_cwd = os.path.dirname(os.path.abspath(sys.executable))
     else:
         entry = os.path.join(root, "main.py")
         if not os.path.isfile(entry):
@@ -2486,12 +2567,13 @@ def _run_gui(argv: List[str]) -> int:
                   file=sys.stderr)
             return EXIT_ERROR
         command = [sys.executable, entry, *paths]
-    process = _spawn_detached(command, root)
+        spawn_cwd = root
+    process = _spawn_detached(command, spawn_cwd)
     print(json.dumps({"launched": True, "pid": process.pid}, ensure_ascii=False))
     return EXIT_OK
 
 
-_CTL_BOOL = {"append", "preview", "include", "cancel", "submit",
+_CTL_BOOL = {"append", "linear_raw", "preview", "include", "cancel", "submit",
              "async", "force", "confirm"}
 _CTL_INT = {"index", "depth", "steps", "x", "y", "to_x", "to_y", "delta",
             "roi_base_index"}

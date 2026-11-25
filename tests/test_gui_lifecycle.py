@@ -266,3 +266,46 @@ def test_close_does_not_wait_for_another_windows_account_job(qapp, tmp_path, mon
         qapp.processEvents()
         _destroy_main_window(qapp, window)
         owner.deleteLater()
+
+
+def test_close_waits_for_control_converter_thumbnail(qapp, tmp_path, monkeypatch):
+    from threading import Event
+    from PIL import Image
+    from core.control.server import ControlServer
+    from dialogs import batch_converter
+    from tests.test_control_channel import _destroy_main_window, _new_main_window, wait_until
+
+    started, release = Event(), Event()
+    decode_thumbnail = batch_converter.thumbnail_rgb
+
+    def blocked_thumbnail(path):
+        started.set()
+        assert release.wait(5)
+        return decode_thumbnail(path)
+
+    monkeypatch.setattr(batch_converter, 'thumbnail_rgb', blocked_thumbnail)
+    source = tmp_path / 'source.png'
+    Image.new('RGB', (32, 24), 'red').save(source)
+    window = _new_main_window(qapp, tmp_path, monkeypatch)
+    assert wait_until(lambda: window._account_load_job is None)
+    server = ControlServer(window, socket_name=f'openfocus-convert-close-{id(window)}')
+    worker = None
+    try:
+        assert server._cmd_dialog_open({'name': 'converter'})['opened']
+        dialog = window.findChild(batch_converter.BatchConverterDialog)
+        dialog._append([source])
+        worker = dialog.thumbnail_worker
+        assert started.wait(5)
+
+        window._force_quit = True
+        assert not window.close()
+        assert window.isVisible() and worker.isInterruptionRequested()
+        release.set()
+        assert wait_until(lambda: not window.isVisible())
+    finally:
+        release.set()
+        if worker is not None and window.isVisible():
+            worker.stop()
+            assert worker.wait(5000)
+        server.close()
+        _destroy_main_window(qapp, window)

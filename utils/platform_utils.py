@@ -35,6 +35,34 @@ def get_os_type() -> str:
         return 'unknown'
 
 
+_UI_FONT_FAMILIES = {
+    'macos': ('SF Pro', 'Helvetica Neue', 'Arial'),
+    'windows': ('Segoe UI', 'Microsoft YaHei', 'Arial'),
+    'linux': ('Ubuntu', 'DejaVu Sans', 'Arial'),
+}
+
+_MONOSPACE_FONT_FAMILIES = {
+    'macos': ('SF Mono', 'Monaco', 'Menlo', 'Consolas'),
+    'windows': ('Consolas', 'Courier New'),
+    'linux': ('Ubuntu Mono', 'DejaVu Sans Mono', 'Consolas'),
+}
+
+
+def _format_css_font_stack(families: tuple[str, ...], generic: str) -> str:
+    quoted = [f'"{family}"' if family not in ('Arial', 'Consolas') else family for family in families]
+    return ', '.join((*quoted, generic))
+
+
+def get_ui_font_families() -> tuple[str, ...]:
+    """Return ordered QFont-compatible UI font families for the active OS."""
+    return _UI_FONT_FAMILIES.get(get_os_type(), _UI_FONT_FAMILIES['linux'])
+
+
+def get_monospace_font_families() -> tuple[str, ...]:
+    """Return ordered QFont-compatible monospace font families for the active OS."""
+    return _MONOSPACE_FONT_FAMILIES.get(get_os_type(), _MONOSPACE_FONT_FAMILIES['linux'])
+
+
 def get_ui_font_family() -> str:
     """
     获取适合当前操作系统的 UI 字体族
@@ -42,17 +70,7 @@ def get_ui_font_family() -> str:
     Returns:
         字体族名字符串
     """
-    os_type = get_os_type()
-    
-    if os_type == 'macos':
-        # macOS 系统字体
-        return '"SF Pro", "Helvetica Neue", Arial, sans-serif'
-    elif os_type == 'windows':
-        # Windows 系统字体
-        return '"Segoe UI", "Microsoft YaHei", Arial, sans-serif'
-    else:
-        # Linux 系统字体
-        return '"Ubuntu", "DejaVu Sans", Arial, sans-serif'
+    return _format_css_font_stack(get_ui_font_families(), 'sans-serif')
 
 
 def get_monospace_font_family() -> str:
@@ -62,17 +80,7 @@ def get_monospace_font_family() -> str:
     Returns:
         字体族名字符串
     """
-    os_type = get_os_type()
-    
-    if os_type == 'macos':
-        # macOS 等宽字体
-        return '"SF Mono", "Monaco", "Menlo", Consolas, monospace'
-    elif os_type == 'windows':
-        # Windows 等宽字体
-        return 'Consolas, "Courier New", monospace'
-    else:
-        # Linux 等宽字体
-        return '"Ubuntu Mono", "DejaVu Sans Mono", Consolas, monospace'
+    return _format_css_font_stack(get_monospace_font_families(), 'monospace')
 
 
 def get_default_font() -> str:
@@ -109,19 +117,26 @@ def is_linux() -> bool:
 
 def configure_native_worker_stack(worker) -> None:
     """Provide macOS workers enough stack for native numerical libraries."""
-    if sys.platform == 'darwin':
+    if is_macos():
         worker.setStackSize(max(worker.stackSize(), NATIVE_WORKER_STACK_BYTES))
 
 
 # 导出常用函数
 __all__ = [
     'get_os_type',
+    'get_ui_font_families',
+    'get_monospace_font_families',
     'get_ui_font_family',
     'get_monospace_font_family',
     'get_default_font',
     'is_windows',
     'is_macos',
     'is_linux',
+    'configure_native_worker_stack',
+    'cached_compute_gpu',
+    'has_compute_gpu',
+    'cpu_limits',
+    'physical_core_count',
 ]
 
 
@@ -220,8 +235,89 @@ def _windows_core_records(raw, affinity_mask=0, affinity_group=0):
     return cores
 
 
+def _parse_cpu_list(text: str) -> tuple[int, ...]:
+    """Parse Linux sysfs cpulist syntax (e.g. '0-3,6,8-9') into CPU IDs."""
+    # Binary sysfs topology attributes can include the kernel's trailing NUL.
+    text = text.removesuffix("\0").strip()
+    if not text:
+        return ()
+    cpus = set()
+    for part in text.split(","):
+        bounds = part.strip().split("-", 1)
+        if any(not (bound.isascii() and bound.isdecimal()) for bound in bounds):
+            raise ValueError(f"Invalid CPU list entry: {part!r}")
+        start, end = int(bounds[0]), int(bounds[-1])
+        if end < start:
+            raise ValueError(f"Invalid CPU range: {part!r}")
+        cpus.update(range(start, end + 1))
+    return tuple(sorted(cpus))
+
+
+def _linux_sysfs_physical_cores(affinity=None, sys_cpu_root: str = "/sys/devices/system/cpu") -> int:
+    """Count usable physical cores from Linux sysfs when /proc lacks IDs."""
+    if affinity is None:
+        try:
+            with open(os.path.join(sys_cpu_root, "online"), encoding="ascii") as fh:
+                cpus = set(_parse_cpu_list(fh.read()))
+        except OSError:
+            try:
+                entries = os.listdir(sys_cpu_root)
+            except OSError:
+                return 0
+            cpus = {int(name[3:]) for name in entries
+                    if name.startswith("cpu") and name[3:].isascii() and name[3:].isdecimal()}
+        except ValueError:
+            return 0
+    else:
+        cpus = set(affinity)
+
+    remaining = cpus.copy()
+    cores = 0
+    for cpu_id in cpus:
+        if cpu_id not in remaining:
+            continue
+        topo = os.path.join(sys_cpu_root, f"cpu{cpu_id}", "topology")
+        for sibling_file in ("core_cpus_list", "thread_siblings_list"):
+            try:
+                with open(os.path.join(topo, sibling_file), encoding="ascii") as fh:
+                    siblings = cpus.intersection(_parse_cpu_list(fh.read()))
+            except (OSError, ValueError):
+                continue
+            if cpu_id not in siblings:
+                continue
+            if not siblings <= remaining:
+                return 0
+            remaining.difference_update(siblings)
+            cores += 1
+            break
+
+    # A sibling list represents the whole core, even if a sibling's own
+    # topology files are unreadable. Use IDs only for CPUs still uncovered.
+    id_groups = set()
+    for cpu_id in remaining:
+        topo = os.path.join(sys_cpu_root, f"cpu{cpu_id}", "topology")
+        try:
+            with open(os.path.join(topo, "physical_package_id"), encoding="ascii") as fh:
+                package = int(fh.read())
+            with open(os.path.join(topo, "core_id"), encoding="ascii") as fh:
+                core = int(fh.read())
+            if package < 0 or core < 0:
+                return 0
+            domain = []
+            for attribute in ("die_id", "cluster_id"):
+                try:
+                    with open(os.path.join(topo, attribute), encoding="ascii") as fh:
+                        domain.append(int(fh.read()))
+                except FileNotFoundError:
+                    domain.append(-1)
+        except (OSError, ValueError):
+            return 0
+        id_groups.add((package, *domain, core))
+    return cores + len(id_groups)
+
+
 def _linux_physical_cores() -> int:
-    """Count physical/core pairs only for processors in this process's affinity."""
+    """Count physical cores available to the calling thread's affinity."""
     try:
         affinity = set(os.sched_getaffinity(0))
     except (AttributeError, OSError):
@@ -237,12 +333,17 @@ def _linux_physical_cores() -> int:
             processor = int(fields.get("processor", "-1"))
             if affinity is not None and processor not in affinity:
                 continue
-            if "physical id" not in fields or "core id" not in fields:
-                return 0
-            pairs.add((fields["physical id"], fields["core id"]))
-        return len(pairs)
-    except (OSError, ValueError):
-        return 0
+            package = int(fields["physical id"])
+            core = int(fields["core id"])
+            if package < 0 or core < 0:
+                break
+            pairs.add((package, core))
+        else:
+            if pairs:
+                return len(pairs)
+    except (KeyError, OSError, ValueError):
+        pass
+    return _linux_sysfs_physical_cores(affinity)
 
 
 def _macos_physical_cores() -> int:

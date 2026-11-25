@@ -129,7 +129,7 @@ def test_all_other_server_clients_attach_https_context(monkeypatch, tmp_path):
     class FakeReply:
         status = 204
 
-        def read(self):
+        def read(self, size=-1):
             return b'{"ok": true}'
 
         def __enter__(self):
