@@ -2125,12 +2125,17 @@ class _GpuB:
         self.expand = _ExpandDepth(cl, ctx, q, mf, pk, kernels=resample_kernels)
         self._cbuf = {}
 
-    def _source_buffer(self, nbytes, slot=0):
+    def _source_buffer(self, nbytes, slot=0, *, wait_for=None, cancel=None):
         # Ping-pong frames alternate across slots so the next host upload
         # never collides with an in-flight kernel reading the prior slot.
         key = f'src_in_{slot}'
         capacity, buf = self._cbuf.get(key, (0, None))
         if buf is None or nbytes > capacity:
+            if buf is not None and wait_for:
+                # The old allocation still counts against VRAM while a queued
+                # kernel uses it. Admission budgets one source buffer per slot.
+                for event in wait_for:
+                    _wait_event(event, cancel)
             self._cbuf.pop(key, None)
             del buf
             capacity = max(1, nbytes)
@@ -2164,7 +2169,7 @@ class _GpuB:
                    *, uploader=None, wait_for=None, cancel=None):
         is_raw, host_buf, channels, is_u8 = prepared
         if is_raw:
-            ib = self._source_buffer(host_buf.nbytes, slot=slot)
+            ib = self._source_buffer(host_buf.nbytes, slot=slot, wait_for=wait_for, cancel=cancel)
             if uploader is not None:
                 upload = uploader.upload(slot, ib, host_buf, wait_for=wait_for, cancel=cancel)
                 wait_upload = _event_wait_list(upload) if uploader.separate_queue else None

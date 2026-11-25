@@ -91,8 +91,13 @@ def test_burt_laplacian_rows_avx2_vs_scalar(shape):
     h, w = shape
     ch, cw = (h + 1) // 2, (w + 1) // 2
     rng = np.random.default_rng(7200 + h * 19 + w)
-    fine = rng.integers(-100000, 100000, (h, w), dtype=np.int32)
-    coarse = rng.integers(-100000, 100000, (ch, cw), dtype=np.int32)
+    fine = rng.integers(0, 65536, (h, w), dtype=np.int32)
+    coarse = rng.integers(1, 65536, (ch, cw), dtype=np.int32)
+    if w >= 65:
+        # Keep several normal SIMD blocks before a value whose response
+        # wraps when narrowed to int32. Its magnitude is computed first.
+        fine[:, w // 2] = (1 << 28) + 1
+        coarse[-1, -4] = -(1 << 30) + 1
 
     try:
         mod.set_force_scalar(False)
@@ -290,6 +295,36 @@ def test_pinned_uploader_mock_wait_for_and_typeerror_fallback():
     assert copy_calls[-1] == ("compute", False, None)
 
 
+def test_gpu_b_growing_source_slot_waits_for_old_compute():
+    from types import SimpleNamespace
+
+    operations = []
+
+    def allocate(_ctx, _flags, size):
+        operations.append(("allocate", size))
+        return object()
+
+    engine = _openfocus_gpu._GpuB.__new__(_openfocus_gpu._GpuB)
+    engine.cl = SimpleNamespace(Buffer=allocate)
+    engine.ctx = object()
+    engine.mf = SimpleNamespace(READ_ONLY=1)
+    engine.q = object()
+    engine.gpu = SimpleNamespace(used=False)
+    engine._cbuf = {}
+    engine.kernels = dict.fromkeys(("gray_u8", "gray_u16"), lambda *args: None)
+    uploader = SimpleNamespace(separate_queue=True, upload=lambda *args, **kwargs: None)
+    gray = object()
+    previous_compute = SimpleNamespace(wait=lambda: operations.append(("wait", 0)))
+
+    u8 = (True, np.zeros((4, 4), np.uint8), 1, True)
+    u16 = (True, np.zeros((4, 4), np.uint16), 1, False)
+    engine._gray_into(u8, gray, 4, 4, uploader=uploader)
+    engine._gray_into(u8, gray, 4, 4, uploader=uploader, wait_for=[previous_compute])
+    assert operations == [("allocate", 16)]
+    engine._gray_into(u16, gray, 4, 4, uploader=uploader, wait_for=[previous_compute])
+    assert operations == [("allocate", 16), ("wait", 0), ("allocate", 32)]
+
+
 def test_get_transfer_queue_caches_and_invalidates():
     created = []
 
@@ -472,7 +507,7 @@ def test_smooth_detail_rows_uses_native_even_with_columns_scratch(monkeypatch):
     np.testing.assert_array_equal(out, detail)
 
 
-@pytest.mark.parametrize("shape", [(65, 97, 3), (64, 96, 3)])
+@pytest.mark.parametrize("shape", [(65, 97, 3), (64, 96, 3), (259, 97, 3)])
 @pytest.mark.parametrize("dtype", [np.uint8, np.uint16])
 def test_openfocus_b_strip_fused_native_matches_numba_bit_exact(monkeypatch, shape, dtype):
     mod = _native.load_native()
@@ -483,9 +518,11 @@ def test_openfocus_b_strip_fused_native_matches_numba_bit_exact(monkeypatch, sha
     hi = 256 if dtype == np.uint8 else 65536
     frames = [rng.integers(0, hi, shape, dtype=dtype) for _ in range(4)]
 
-    out_native = openfocus_bc.openfocus_b_impl(frames, thread_count=2, depth_smoothing=2.4)
+    out_native = openfocus_bc.openfocus_b_impl(frames, thread_count=2, depth_smoothing=2.4,
+                                               use_gpu=False)
     monkeypatch.setattr(_native, "load_native", lambda: None)
     monkeypatch.setattr(_native, "native_available", lambda: False)
-    out_numba = openfocus_bc.openfocus_b_impl(frames, thread_count=2, depth_smoothing=2.4)
+    out_numba = openfocus_bc.openfocus_b_impl(frames, thread_count=2, depth_smoothing=2.4,
+                                              use_gpu=False)
 
     np.testing.assert_array_equal(out_native, out_numba)

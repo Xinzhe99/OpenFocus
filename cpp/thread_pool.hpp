@@ -5,10 +5,10 @@
 #include <condition_variable>
 #include <cstdint>
 #include <exception>
-#include <functional>
 #include <mutex>
 #include <stdexcept>
 #include <thread>
+#include <type_traits>
 #include <vector>
 
 namespace openfocus {
@@ -38,10 +38,6 @@ class PersistentThreadPool {
 public:
     template <typename Fn>
     void run(int workers, Fn&& worker_loop) {
-        if (workers <= 1 || g_in_pool_worker) {
-            worker_loop();
-            return;
-        }
         std::unique_lock<std::mutex> dispatch_lock(dispatch_mutex_);
         const int helpers = workers - 1;
         ensure_workers_locked(helpers);
@@ -53,11 +49,6 @@ public:
 
         {
             std::lock_guard<std::mutex> lock(state_mutex_);
-            if (stopping_) {
-                dispatch_lock.unlock();
-                worker_loop();
-                return;
-            }
             job_fn_ = trampoline;
             job_ctx_ = const_cast<void*>(static_cast<const void*>(&worker_loop));
             active_helpers_ = helpers;
@@ -66,7 +57,10 @@ public:
         }
         cv_start_.notify_all();
 
+        // The dispatching caller takes bands too and must bypass nested dispatch.
+        g_in_pool_worker = true;
         worker_loop();
+        g_in_pool_worker = false;
 
         if (remaining_helpers_.load(std::memory_order_acquire) != 0) {
             std::unique_lock<std::mutex> lock(state_mutex_);
@@ -106,9 +100,6 @@ public:
 private:
     void ensure_workers_locked(int helpers) {
         std::lock_guard<std::mutex> lock(state_mutex_);
-        if (stopping_) {
-            return;
-        }
         while (static_cast<int>(threads_.size()) < helpers) {
             const int id = static_cast<int>(threads_.size());
             const uint64_t initial_gen = generation_;
@@ -183,7 +174,7 @@ inline void parallel_bands(
     }
     const int64_t step = std::max<int64_t>(1, band);
     const int64_t num_tasks = (total + step - 1) / step;
-    const int workers = clamp_threads(num_threads, num_tasks);
+    const int workers = detail::g_in_pool_worker ? 1 : clamp_threads(num_threads, num_tasks);
 
     auto check_cancel = [cancel_flag]() {
         if (cancel_flag != nullptr && cancel_flag->load(std::memory_order_relaxed)) {
@@ -206,7 +197,7 @@ inline void parallel_bands(
     std::exception_ptr first_error = nullptr;
     std::mutex err_mutex;
 
-    auto worker_loop = [&]() {
+    auto worker_loop = [&]() noexcept {
         try {
             while (!failed.load(std::memory_order_relaxed)) {
                 if (cancel_flag != nullptr && cancel_flag->load(std::memory_order_relaxed)) {

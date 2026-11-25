@@ -3813,6 +3813,7 @@ void burt_laplacian_row_i32_avx2(
     const __m256i v_wy0 = _mm256_set1_epi32(wy0);
     const __m256i v_wy1 = _mm256_set1_epi32(wy1);
     const __m256i v_3 = _mm256_set1_epi32(3);
+    const __m256i v_wide = _mm256_set1_epi32(~((1 << 27) - 1));
 
     int64_t x = 1;
     for (; x + 8 <= width; x += 8) {
@@ -3820,14 +3821,24 @@ void burt_laplacian_row_i32_avx2(
         const __m256i l1 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(r1 + x - 1));
         const __m256i rt0 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(r0 + x));
         const __m256i rt1 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(r1 + x));
+        const int64_t odd = 2 * x - 1;
+        const __m256i g0 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(gray_row + odd));
+        const __m256i g1 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(gray_row + odd + 8));
+        const __m256i inputs = _mm256_or_si256(
+            _mm256_or_si256(_mm256_or_si256(l0, l1), _mm256_or_si256(rt0, rt1)),
+            _mm256_or_si256(g0, g1));
+        // Production codes are nonnegative 16-bit values. For wider native
+        // inputs, take the absolute difference before narrowing to int32.
+        if (!_mm256_testz_si256(inputs, v_wide)) {
+            break;
+        }
         const __m256i v_left = _mm256_add_epi32(_mm256_mullo_epi32(l0, v_wy0), _mm256_mullo_epi32(l1, v_wy1));
         const __m256i v_right = _mm256_add_epi32(_mm256_mullo_epi32(rt0, v_wy0), _mm256_mullo_epi32(rt1, v_wy1));
         const __m256i exp_odd = _mm256_add_epi32(_mm256_mullo_epi32(v_left, v_3), v_right);
         const __m256i exp_evn = _mm256_add_epi32(v_left, _mm256_mullo_epi32(v_right, v_3));
 
-        const int64_t odd = 2 * x - 1;
-        const __m256 p0 = _mm256_loadu_ps(reinterpret_cast<const float*>(gray_row + odd));
-        const __m256 p1 = _mm256_loadu_ps(reinterpret_cast<const float*>(gray_row + odd + 8));
+        const __m256 p0 = _mm256_castsi256_ps(g0);
+        const __m256 p1 = _mm256_castsi256_ps(g1);
         const __m256i g_odd = _mm256_permute4x64_epi64(_mm256_castps_si256(_mm256_shuffle_ps(p0, p1, 0x88)), 0xD8);
         const __m256i g_evn = _mm256_permute4x64_epi64(_mm256_castps_si256(_mm256_shuffle_ps(p0, p1, 0xDD)), 0xD8);
 
