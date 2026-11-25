@@ -220,6 +220,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and prepare the first display preview while remaining headers are scanned.
   Reuse display buffers when panning or zooming and accelerate eligible 8-bit
   PNG exports with the existing color and metadata handling.
+- Coalesce canvas, Wipe, and method comparison updates during interaction.
+  Refresh only affected retouch tiles during undo and redo.
 - Speed up packed OpenFocus A, B, and C fusion, exposure adjustment, tile
   reduction, and alignment with AVX2 on supported CPUs. Preserve scalar pixel
   arithmetic for strided views, wide integer sums, and float rounding.

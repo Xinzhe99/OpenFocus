@@ -4,10 +4,11 @@ Both images share the same zoom/pan transform, so misalignments across the
 divider are directly visible. Wheel zooms around the cursor, dragging pans,
 dragging the divider (or the handle) changes the split position.
 """
+from itertools import chain
 import math
 from typing import Optional
 
-from PyQt6.QtCore import QEvent, QObject, QPointF, QRect, QRectF, Qt
+from PyQt6.QtCore import QEvent, QObject, QPointF, QRect, QRectF, Qt, QTimer
 from PyQt6.QtGui import QColor, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import QApplication, QWidget
 
@@ -29,6 +30,7 @@ class _WipeRegions(QObject):
         self.generation = self.serial = 0
         self.pending = []
         self.tiles = []
+        self._retained_tiles = []
         self.error = ''
 
     def set_source(self, source):
@@ -41,6 +43,7 @@ class _WipeRegions(QObject):
         self.viewport = self.request = None
         self.pending.clear()
         self.tiles.clear()
+        self._retained_tiles.clear()
         self.error = ''
         if self.worker is not None and not self.worker.cancelled:
             self.worker.request_cancel()
@@ -53,7 +56,10 @@ class _WipeRegions(QObject):
         if self.viewport != viewport:
             self.viewport = viewport
             self.request = None
-            self.tiles.clear()
+            if self.tiles:
+                if not self._retained_tiles:
+                    self._retained_tiles = self.tiles
+                self.tiles = []
             self.pending.clear()
             # Each tile keeps native sampling at 100%, even on an oversized
             # monitor. Only one tile per side is outstanding at a time.
@@ -98,6 +104,8 @@ class _WipeRegions(QObject):
             return
         self.tiles.append((pixmap, sampled, request[2]))
         self.request = None
+        if not self.pending:
+            self._retained_tiles.clear()
         self._submit()
         self.parent().update()
 
@@ -110,6 +118,7 @@ class _WipeRegions(QObject):
         self.request = None
         self.pending.clear()
         self.tiles.clear()
+        self._retained_tiles.clear()
         self.worker.request_cancel()
         self.parent().update()
 
@@ -138,16 +147,50 @@ class WipeCompareWidget(QWidget):
         self._last_pos = QPointF(0, 0)
         self._left_regions = _WipeRegions(self)
         self._right_regions = _WipeRegions(self)
+        self._interactive_detail = False
+        self._detail_timer = QTimer(self)
+        self._detail_timer.setSingleShot(True)
+        self._detail_timer.setInterval(90)
+        self._detail_timer.timeout.connect(self._flush_detail_requests)
         self.setMouseTracking(True)
 
-    # --- public API ---
+    def _defer_detail_requests(self) -> None:
+        self._interactive_detail = True
+        self._detail_timer.start()
+
+    def _flush_detail_requests(self) -> None:
+        self._detail_timer.stop()
+        if self._interactive_detail:
+            self._interactive_detail = False
+            self.update()
+
+    def _clamp_pan(self) -> None:
+        regions = (
+            ((self._image_rect(*region), region[3]) for region in self._regions())
+            if self._independent else ((self._target_rect(), self.rect()),)
+        )
+        x_limit = y_limit = math.inf
+        for image, clip in regions:
+            if image.isEmpty() or clip.isEmpty():
+                continue
+            margin_x = min(40.0, image.width(), clip.width())
+            margin_y = min(40.0, image.height(), clip.height())
+            x_limit = min(x_limit, (image.width() + clip.width()) / 2 - margin_x)
+            y_limit = min(y_limit, (image.height() + clip.height()) / 2 - margin_y)
+        self._pan.setX(max(-x_limit, min(self._pan.x(), x_limit)))
+        self._pan.setY(max(-y_limit, min(self._pan.y(), y_limit)))
 
     def set_images(self, left: Optional[QPixmap], right: Optional[QPixmap],
                    left_title: str = "", right_title: str = "", *,
                    left_offset=(0, 0), left_size=None, right_size=None,
                    independent=False, notice="", left_native=None, right_native=None) -> None:
+        self._detail_timer.stop()
+        self._interactive_detail = False
         self._left_regions.set_source(left_native)
         self._right_regions.set_source(right_native)
+        if self._drag_mode:
+            self._drag_mode = ""
+            self.unsetCursor()
         self._left_pixmap = left
         self._right_pixmap = right
         self._left_title = left_title
@@ -157,6 +200,7 @@ class WipeCompareWidget(QWidget):
         self._right_size = right_size
         self._independent = independent
         self._notice = notice
+        self._clamp_pan()
         self.update()
 
     def set_comparison_enabled(self, enabled: bool) -> None:
@@ -165,6 +209,9 @@ class WipeCompareWidget(QWidget):
         if not enabled:
             self._left_regions.release()
         self._drag_mode = ""
+        self.unsetCursor()
+        self._clamp_pan()
+        self._flush_detail_requests()
         self.update()
 
     def set_titles(self, left_title: str, right_title: str) -> None:
@@ -201,11 +248,24 @@ class WipeCompareWidget(QWidget):
         return handled
 
     def hideEvent(self, event):
+        self._detail_timer.stop()
+        self._drag_mode = ""
+        self.unsetCursor()
+        self._interactive_detail = False
         for side in (self._left_regions, self._right_regions):
             side.release()
         super().hideEvent(event)
 
+    def resizeEvent(self, event):  # noqa: N802
+        super().resizeEvent(event)
+        if self._left_pixmap is not None or self._right_pixmap is not None:
+            self._clamp_pan()
+            if self.isVisible() and event.oldSize().isValid() and event.oldSize() != event.size():
+                self._defer_detail_requests()
+
     def reset_view(self) -> None:
+        self._detail_timer.stop()
+        self._interactive_detail = False
         self._zoom = 1.0
         self._pan = QPointF(0, 0)
         self._divider_ratio = 0.5
@@ -267,22 +327,31 @@ class WipeCompareWidget(QWidget):
     def _draw_detail(self, painter, side, pixmap, image_rect, size, clip):
         if side.source is None:
             return
-        visible = image_rect.intersected(QRectF(clip))
+        # Request the full unclipped visible viewport when both halves share one
+        # coordinate space so dragging the divider reuses cached tiles cleanly.
+        request_bounds = QRectF(clip) if self._independent else QRectF(self.rect())
+        visible = image_rect.intersected(request_bounds)
         dpr = self.devicePixelRatioF()
-        if (visible.isEmpty() or not self.isVisible() or
-                (image_rect.width() * dpr <= pixmap.width() + .5 and
-                 image_rect.height() * dpr <= pixmap.height() + .5)):
-            if side.viewport is not None:
+        needs_detail = (
+            not visible.isEmpty()
+            and self.isVisible()
+            and (image_rect.width() * dpr > pixmap.width() + .5
+                 or image_rect.height() * dpr > pixmap.height() + .5)
+        )
+        if not needs_detail:
+            if not self._interactive_detail and side.viewport is not None:
                 side.release()
             return
+        size = size or (pixmap.width(), pixmap.height())
         sx, sy = image_rect.width() / size[0], image_rect.height() / size[1]
-        rect = ((visible.x() - image_rect.x()) / sx, (visible.y() - image_rect.y()) / sy,
-                visible.width() / sx, visible.height() / sy)
-        side.show_region(rect, (math.ceil(visible.width() * dpr), math.ceil(visible.height() * dpr)))
+        if not self._interactive_detail:
+            rect = ((visible.x() - image_rect.x()) / sx, (visible.y() - image_rect.y()) / sy,
+                    visible.width() / sx, visible.height() / sy)
+            side.show_region(rect, (math.ceil(visible.width() * dpr), math.ceil(visible.height() * dpr)))
         def target(region):
             x, y, w, h = region
             return QRectF(image_rect.x() + x * sx, image_rect.y() + y * sy, w * sx, h * sy)
-        for tile, sampled, requested in side.tiles:
+        for tile, sampled, requested in chain(side._retained_tiles, side.tiles):
             painter.save()
             # At native size or above, preserve individual source samples even
             # when the pan offset falls between physical device pixels.
@@ -391,6 +460,8 @@ class WipeCompareWidget(QWidget):
             # Always allow the selected image to reach one physical pixel per sample.
             limit = max(limit, self._zoom * size[0] / (before.width() * self.devicePixelRatioF()))
         new_zoom = max(ZOOM_MIN, min(limit, self._zoom * factor))
+        if new_zoom == self._zoom:
+            return
 
         # Zoom around the mouse cursor: keep the image point under it fixed.
         #
@@ -414,6 +485,9 @@ class WipeCompareWidget(QWidget):
                 self._pan.x() + (mouse.x() - (after.x() + fx * after.width())),
                 self._pan.y() + (mouse.y() - (after.y() + fy * after.height())),
             )
+        else:
+            self._clamp_pan()
+        self._defer_detail_requests()
         self.update()
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
@@ -421,22 +495,20 @@ class WipeCompareWidget(QWidget):
         if event.button() == Qt.MouseButton.LeftButton:
             if self._comparison_enabled and abs(pos.x() - self._divider_x()) <= DIVIDER_HIT_RADIUS:
                 self._drag_mode = "divider"
+                self._last_pos = pos
+                self.setCursor(Qt.CursorShape.SizeHorCursor)
             elif self._left_pixmap is not None or self._right_pixmap is not None:
                 self._drag_mode = "pan"
                 self._last_pos = pos
+                self.setCursor(Qt.CursorShape.ClosedHandCursor)
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
         pos = event.position()
-
-        if self._drag_mode == "divider":
-            self._divider_ratio = max(0.02, min(0.98, pos.x() / max(1.0, self.width())))
-            self.update()
-        elif self._drag_mode == "pan":
-            delta = pos - self._last_pos
-            self._pan = QPointF(self._pan.x() + delta.x(), self._pan.y() + delta.y())
-            self._last_pos = pos
-            self.update()
+        if self._drag_mode:
+            self._drag_to(pos)
+            if self._drag_mode == "pan":
+                self.setCursor(Qt.CursorShape.ClosedHandCursor)
         else:
             near_divider = (self._comparison_enabled
                             and abs(pos.x() - self._divider_x()) <= DIVIDER_HIT_RADIUS)
@@ -445,8 +517,41 @@ class WipeCompareWidget(QWidget):
             )
         super().mouseMoveEvent(event)
 
+    def _drag_to(self, pos: QPointF) -> None:
+        if self._drag_mode == "divider":
+            if pos.x() == self._last_pos.x():
+                return
+            self._last_pos = pos
+            ratio = max(0.02, min(0.98, pos.x() / max(1.0, self.width())))
+            if ratio == self._divider_ratio:
+                return
+            self._divider_ratio = ratio
+            if self._independent:
+                self._clamp_pan()
+                self._defer_detail_requests()
+        else:
+            previous = QPointF(self._pan)
+            self._pan += pos - self._last_pos
+            self._last_pos = pos
+            self._clamp_pan()
+            if self._pan == previous:
+                return
+            self._defer_detail_requests()
+        self.update()
+
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
-        self._drag_mode = ""
+        if self._drag_mode and event.button() == Qt.MouseButton.LeftButton:
+            self._drag_to(event.position())
+            self._drag_mode = ""
+            self._flush_detail_requests()
+        elif self._drag_mode:
+            return super().mouseReleaseEvent(event)
+        pos = event.position()
+        near_divider = (self._comparison_enabled
+                        and abs(pos.x() - self._divider_x()) <= DIVIDER_HIT_RADIUS)
+        self.setCursor(
+            Qt.CursorShape.SizeHorCursor if near_divider else Qt.CursorShape.OpenHandCursor
+        )
         super().mouseReleaseEvent(event)
 
     def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802
