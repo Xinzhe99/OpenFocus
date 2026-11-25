@@ -2,7 +2,9 @@ import math
 import mmap
 import numbers
 import os
+import struct
 import threading
+import zlib
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, wait
 from functools import lru_cache
@@ -534,17 +536,17 @@ def _png_insert_exif(png: bytes, tiff_exif: bytes) -> bytes:
     return png[:ihdr_end] + chunk + png[ihdr_end:]
 
 
-def _png_insert_icc(png: bytes, profile: bytes) -> bytes:
-    """Add a PNG iCCP chunk without changing the encoded pixels."""
-    import struct
-    import zlib
-    ihdr_end = 8 + 8 + 13 + 4
-    if png[12:16] != b"IHDR":
-        raise ValueError("not a PNG produced by cv2")
-    data = b"ICC\x00\x00" + zlib.compress(profile)
-    chunk = (struct.pack(">I", len(data)) + b"iCCP" + data
-             + struct.pack(">I", zlib.crc32(b"iCCP" + data)))
-    return png[:ihdr_end] + chunk + png[ihdr_end:]
+def _write_png_chunk(handle, kind, data):
+    handle.write(struct.pack('>I4s', len(data), kind))
+    handle.write(data)
+    handle.write(struct.pack('>I', zlib.crc32(data, zlib.crc32(kind))))
+
+
+def _write_png_metadata(handle, exif, profile):
+    if exif is not None:
+        _write_png_chunk(handle, b'eXIf', exif.tobytes()[6:])
+    if profile:
+        _write_png_chunk(handle, b'iCCP', b'ICC\0\0' + zlib.compress(profile))
 
 
 def _write_encoded_jpeg(handle, encoded, exif, profile, should_cancel):
@@ -1000,8 +1002,6 @@ def _write_streamed_tiff(path, image, should_cancel=None, exif=None, icc_profile
 
 def _write_streamed_png(handle, image, params, exif, profile, should_cancel):
     """Write PNG scanline bands with zlib; never retain the encoded image."""
-    import struct
-    import zlib
     from core.frame_storage import frame_region
     metadata_bytes = len(profile) + (len(exif.tobytes()) if exif is not None else 0)
     rows = _image_write_rows(image, scratch_factor=5, codec_scratch=512 * 1024,
@@ -1016,20 +1016,12 @@ def _write_streamed_png(handle, image, params, exif, profile, should_cancel):
                            zlib.Z_DEFAULT_STRATEGY if cv2.IMWRITE_PNG_COMPRESSION in options else zlib.Z_RLE)
     compressor = zlib.compressobj(level, zlib.DEFLATED, 15, 8, strategy)
 
-    def chunk(kind, data):
-        handle.write(struct.pack('>I', len(data)))
-        handle.write(kind)
-        handle.write(data)
-        handle.write(struct.pack('>I', zlib.crc32(data, zlib.crc32(kind))))
-
     samples = image.shape[2] if image.ndim == 3 else 1
     handle.write(b'\x89PNG\r\n\x1a\n')
-    chunk(b'IHDR', struct.pack('>IIBBBBB', image.shape[1], image.shape[0],
-                               image.dtype.itemsize * 8, {1: 0, 3: 2, 4: 6}[samples], 0, 0, 0))
-    if exif is not None:
-        chunk(b'eXIf', exif.tobytes()[6:])
-    if profile:
-        chunk(b'iCCP', b'ICC\0\0' + zlib.compress(profile))
+    _write_png_chunk(handle, b'IHDR', struct.pack(
+        '>IIBBBBB', image.shape[1], image.shape[0], image.dtype.itemsize * 8,
+        {1: 0, 3: 2, 4: 6}[samples], 0, 0, 0))
+    _write_png_metadata(handle, exif, profile)
     row_bytes = image.shape[1] * samples * image.dtype.itemsize
     filtered = np.empty((min(rows, image.shape[0]), row_bytes + 1), np.uint8)
     from core._native import load_native
@@ -1055,11 +1047,11 @@ def _write_streamed_png(handle, image, params, exif, profile, should_cancel):
                 target[:, 1:] = strip.view(np.uint8).reshape(len(strip), row_bytes)
             encoded = compressor.compress(memoryview(target).cast('B'))
             if encoded:
-                chunk(b'IDAT', encoded)
+                _write_png_chunk(handle, b'IDAT', encoded)
     encoded = compressor.flush()
     if encoded:
-        chunk(b'IDAT', encoded)
-    chunk(b'IEND', b'')
+        _write_png_chunk(handle, b'IDAT', encoded)
+    _write_png_chunk(handle, b'IEND', b'')
 
 
 def _encode_mapped_jpeg(image, handle, settings):
@@ -1148,6 +1140,74 @@ def _write_streamed_jpeg(handle, image, params, exif, profile, should_cancel):
                                              progressive=progressive, optimize=optimize))
                 finally:
                     mapped.close()
+
+
+def _write_encoded_png(handle, encoded, exif, profile, should_cancel):
+    """Stream one encoded PNG plus optional eXIf/iCCP chunks without full-buffer copies."""
+    pixels = memoryview(encoded).cast('B')
+    ihdr_end = 33
+    if (len(pixels) < ihdr_end or bytes(pixels[:8]) != b'\x89PNG\r\n\x1a\n'
+            or bytes(pixels[12:16]) != b'IHDR'):
+        raise ValueError('Invalid encoded PNG')
+    _check_write_cancelled(should_cancel)
+    handle.write(pixels[:ihdr_end])
+    _write_png_metadata(handle, exif, profile)
+    chunk_bytes = 4 * 1024 * 1024
+    for offset in range(ihdr_end, len(pixels), chunk_bytes):
+        _check_write_cancelled(should_cancel)
+        handle.write(pixels[offset:offset + chunk_bytes])
+
+
+def _try_fast_png_encode(handle, image, params, meta, profile, should_cancel) -> bool:
+    """Encode contiguous uint8 PNG (up to 48 MiB) via libspng when RAM comfortably fits it."""
+    if (image.dtype != np.uint8 or image.nbytes > 48 * 1024 * 1024
+            or not image.flags.c_contiguous
+            or not (image.ndim == 2 or (image.ndim == 3 and image.shape[2] in (3, 4)))):
+        return False
+    level = 3
+    if params:
+        if (len(params) != 2 or params[0] != cv2.IMWRITE_PNG_COMPRESSION
+                or not all(isinstance(value, numbers.Integral) and not isinstance(value, bool)
+                           for value in params)
+                or not 0 <= params[1] <= 9):
+            return False
+        level = int(params[1])
+    try:
+        import imagecodecs
+    except ImportError:
+        return False
+    encoder = getattr(imagecodecs, 'spng_encode', None)
+    if encoder is None:
+        return False
+    from core.frame_storage import frame_region, is_mapped_frame
+    from core.resource_policy import probe_memory, ram_budget
+    # libspng grows its output buffer geometrically. Its capacity and the
+    # imagecodecs bytes result can coexist, along with the codec's filter rows.
+    height, width = image.shape[:2]
+    samples = image.shape[2] if image.ndim == 3 else 1
+    row_bytes = width * samples
+    scanline_bytes = (row_bytes + 1) * height
+    encoded_bound = scanline_bytes + scanline_bytes // 64 + 64 * 1024
+    scratch = 3 * encoded_bound + 3 * row_bytes + 16 * 1024 ** 2
+    if samples > 1:
+        scratch += image.nbytes  # BGR(A) to RGB(A) conversion
+    if is_mapped_frame(image):
+        scratch += image.nbytes  # Pages faulted in by the full-frame lease
+    if ram_budget(probe_memory()) < scratch:
+        return False
+    _check_write_cancelled(should_cancel)
+    try:
+        with frame_region(image) as pixels:
+            if samples == 1:
+                encoded = encoder(pixels, level=level)
+            else:
+                color_code = cv2.COLOR_BGRA2RGBA if samples == 4 else cv2.COLOR_BGR2RGB
+                encoded = encoder(cv2.cvtColor(pixels, color_code), level=level)
+    except Exception:
+        _check_write_cancelled(should_cancel)
+        return False
+    _write_encoded_png(handle, encoded, meta, profile, should_cancel)
+    return True
 
 
 def _try_fast_jpeg_encode(handle, image, params, meta, profile, should_cancel) -> bool:
@@ -1295,7 +1355,9 @@ def imwrite_auto(path: str, image: Optional[np.ndarray] = None, params: Optional
         webp_written = False
         fd, part = tempfile.mkstemp(suffix=ext, dir=os.path.dirname(os.path.abspath(path)))
         with os.fdopen(fd, 'wb') as handle:
-            if bounded and ext == '.png':
+            if ext == '.png' and _try_fast_png_encode(handle, image, params or [], meta, profile, should_cancel):
+                pass
+            elif bounded and ext == '.png':
                 _write_streamed_png(handle, image, params or [], meta, profile, should_cancel)
             elif ext in jpeg_exts and _try_fast_jpeg_encode(handle, image, params or [], meta, profile, should_cancel):
                 pass
@@ -1315,11 +1377,9 @@ def imwrite_auto(path: str, image: Optional[np.ndarray] = None, params: Optional
                 ok, encoded = cv2.imencode(encode_ext, image, params or [])
                 if not ok:
                     return False
-                if meta is not None and ext == '.png':
-                    encoded = _png_insert_exif(bytes(encoded), meta.tobytes()[6:])
-                if profile and ext == '.png':
-                    encoded = _png_insert_icc(bytes(encoded), profile)
-                if ext in jpeg_exts:
+                if ext == '.png':
+                    _write_encoded_png(handle, encoded, meta, profile, should_cancel)
+                elif ext in jpeg_exts:
                     _write_encoded_jpeg(handle, encoded, meta, profile, should_cancel)
                 else:
                     handle.write(encoded)

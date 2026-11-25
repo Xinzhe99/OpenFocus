@@ -4560,6 +4560,9 @@ class OpenFocus(QMainWindow):
         if hasattr(self, 'render_manager'):
             _shutdown_worker(self.render_manager.worker)
             self.render_manager.worker = None
+        render_process = sys.modules.get('core.render_process')
+        if render_process is not None:
+            render_process.shutdown_persistent_worker()
 
         # Stop GIF saver worker if running (no cancel support; wait briefly)
         if hasattr(self, 'export_manager'):
