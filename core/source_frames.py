@@ -2304,6 +2304,26 @@ def _opencv_tiff_preview(page):
     return _small(image)
 
 
+def _opencv_tiff_preview_bytes(page) -> int:
+    """Return the full-page OpenCV decode working-set estimate for a TIFF page."""
+    width, height = page.imagewidth, page.imagelength
+    working = width * height * max(3, page.samplesperpixel) * np.dtype(page.dtype).itemsize * 4
+    if working <= PREVIEW_DECODE_BUDGET:
+        filehandle = getattr(getattr(page, 'parent', None), 'filehandle', None)
+        size = getattr(filehandle, 'size', None)
+        if size is not None:
+            working += int(size) * 2
+    return working
+
+
+def _prefer_eager_opencv_lzw(page) -> bool:
+    """Use OpenCV's bundled LZW decoder eagerly only when the whole page fits the budget."""
+    return (
+        _opencv_tiff_preview_bytes(page) <= PREVIEW_DECODE_BUDGET
+        or not (hasattr(page, 'segments') and hasattr(page, 'is_tiled'))
+    )
+
+
 def _validate_tiff_alpha(page, should_cancel=None):
     """Prove every alpha-bearing page is opaque before accepting its container."""
     if page.samplesperpixel != 4:
@@ -2322,7 +2342,7 @@ def _validate_tiff_alpha(page, should_cancel=None):
         return
     # Missing optional codecs and oversized strips must use the same admitted
     # native decoder as previews. An unavailable preview cannot prove opacity.
-    if int(page.compression) == 5:
+    if int(page.compression) == 5 and _prefer_eager_opencv_lzw(page):
         _check_preview_cancel(should_cancel)
         preview = _opencv_tiff_preview(page)
         _check_preview_cancel(should_cancel)
@@ -2364,8 +2384,8 @@ def _tiff_preview(page, should_cancel=None):
     path = page.parent.filehandle.path
     cmyk = validate_tiff_page(path, page)
     palette = int(page.photometric) == 3
-    if int(getattr(page, 'compression', 1)) == 5 and not (cmyk or palette):
-        # Ordinary LZW pages can use OpenCV's bundled libtiff.
+    if int(getattr(page, 'compression', 1)) == 5 and not (cmyk or palette) and _prefer_eager_opencv_lzw(page):
+        # Ordinary small LZW pages can use OpenCV's bundled libtiff without requiring imagecodecs.
         return _opencv_tiff_preview(page)
     from core.resource_policy import require_memory
     small_bytes = math.ceil(h / step) * math.ceil(w / step) * channels * np.dtype(page.dtype).itemsize

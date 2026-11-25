@@ -160,7 +160,6 @@ from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtGui import QFont, QIcon, QDesktopServices, QDragEnterEvent, QDropEvent, QPixmap
 from core import ImageStackLoader
 from core.app import OpenFocusApplication, _serve_instance_request, process_command_line_args
-from core.workers import ROIAlignmentWorker
 import cv2
 from ui.styles import GLOBAL_DARK_STYLE
 from locales import trans
@@ -3786,7 +3785,7 @@ class OpenFocus(QMainWindow):
                 self.roi_alignment_worker = None
                 self._on_roi_alignment_finished(list(images), 0.0)
                 return
-            self.roi_alignment_worker = ROIAlignmentWorker(
+            self.roi_alignment_worker = _get_roi_alignment_worker()(
                 self._roi_align_snapshot,
                 reg_downscale_width=self.reg_downscale_width,
                 thread_count=self.thread_count,
@@ -5122,3 +5121,17 @@ if __name__ == "__main__":
         window.deleteLater()
         QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     sys.exit(exit_code)
+
+
+def _get_roi_alignment_worker():
+    worker_cls = globals().get('ROIAlignmentWorker')
+    if worker_cls is None:
+        from core.workers import ROIAlignmentWorker as worker_cls
+        globals()['ROIAlignmentWorker'] = worker_cls
+    return worker_cls
+
+
+def __getattr__(name: str):
+    if name == 'ROIAlignmentWorker':
+        return _get_roi_alignment_worker()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
