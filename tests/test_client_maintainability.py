@@ -558,19 +558,16 @@ def test_retouch_dialog_reuses_notice_timer_and_guards_post_close_callbacks(qapp
         dialog.preview_mode = None
         assert not dialog._action_blocked()
 
-        # Shutdown stops _notice_timer and post-close callbacks safely no-op even after doc=None.
-        dialog._shutdown_sharpness()
-        assert not dialog._notice_timer.isActive()
-        dialog.doc = None
+        assert dialog.close()
+        assert not timer_before.isActive()
+        assert dialog.doc is None
         dialog._clear_notice()
         dialog._fit()
         dialog.canvas_resized()
         dialog._elide_title()
         dialog._update_status()
     finally:
-        dialog._allow_close = True
         dialog.close()
-        dialog.deleteLater()
         qapp.processEvents()
 
 
