@@ -16,7 +16,7 @@
 
 const REPO = "Xinzhe99/OpenFocus";
 const RELEASE_API = `https://api.github.com/repos/${REPO}/releases/latest`;
-const CACHE_URL = "https://openfocus.internal/latest-release.json";
+const CACHE_URL = "https://openfocus.internal/latest-release-v2.json";
 const MIRROR_MANIFEST = "openfocus-meta/latest-release.json";
 const PREVIEW_MANIFEST = "openfocus-meta/beta-release.json";
 const DOWNLOAD_PREFIX = "/download/latest/";
@@ -234,6 +234,8 @@ function releasePayload(release) {
       name: asset.name,
       size: Number(asset.size) || 0,
       url: githubAssetUrl(asset.browser_download_url),
+      ...(typeof asset.digest === "string" && /^sha256:[0-9a-fA-F]{64}$/.test(asset.digest)
+        ? { digest: asset.digest } : {}),
     };
   };
   const linuxName = `OpenFocus-${release.tag_name}-${DOWNLOAD_SUFFIXES["linux-desktop"]}`;

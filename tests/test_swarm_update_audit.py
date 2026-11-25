@@ -143,6 +143,23 @@ def test_stage_thread_reports_digest_mismatch_even_if_remove_fails(tmp_path, mon
     worker.deleteLater()
 
 
+def test_stage_worker_leaves_unclean_staging_untouched(tmp_path):
+    package = tmp_path / "update.zip"
+    with zipfile.ZipFile(package, "w") as archive:
+        archive.writestr("old.txt", b"new")
+    root = tmp_path / "stage"
+    root.mkdir()
+    sentinel = root / "old.txt"
+    sentinel.write_bytes(b"existing")
+    worker = um._StageThread(str(package), str(root))
+    outcomes = []
+    worker.done.connect(lambda *args: outcomes.append(args))
+    worker.run()
+    assert outcomes and outcomes[0][0] is False
+    assert sentinel.read_bytes() == b"existing"
+    worker.deleteLater()
+
+
 def test_stage_and_handoff_clears_pending_restore_on_handoff_failure(
     isolated_manager, monkeypatch, tmp_path
 ):
@@ -195,11 +212,11 @@ def test_load_note_cache_ignores_empty_setup_kind_on_linux(qapp, monkeypatch, tm
 
 
 def test_download_to_file_handles_malformed_and_negative_content_length(tmp_path, monkeypatch):
-    for bad_header in ("unknown", "-50", "10, 10"):
+    for bad_header in ("unknown", "-50", "10, 10", "\u00b2", "9" * 5000):
         class _Resp(io.BytesIO):
             headers = {"Content-Length": bad_header}
 
-        dest = tmp_path / f"out-{bad_header.replace(', ', '_')}.bin"
+        dest = tmp_path / "download.bin"
         monkeypatch.setattr(updater.urllib.request, "urlopen", lambda *a, **kw: _Resp(b"ok-bytes"))
         progress = []
         assert updater.download_to_file("https://example.test/x.zip", str(dest), lambda d, t: progress.append((d, t)))
@@ -251,6 +268,8 @@ def test_discard_staging_clears_readonly_files(tmp_path, monkeypatch):
     ro_file = nested / "locked.txt"
     ro_file.write_text("readonly", encoding="utf-8")
     ro_file.chmod(stat.S_IREAD)
+    if os.name != "nt":
+        nested.chmod(0o500)
     monkeypatch.setattr(self_update, "staging_root_for", lambda tag: str(stage))
 
     self_update.discard_staging("v9.9")
@@ -360,8 +379,9 @@ def test_apply_release_patch_cleans_result_on_failure_and_handles_missing_pgrep(
     assert not result_file.exists()
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="runs PowerShell Move-WithRetry check")
-def test_windows_move_with_retry_retries_transient_ioexception_and_cleans_script(tmp_path, monkeypatch):
+@pytest.mark.skipif(sys.platform != "win32", reason="runs the Windows PowerShell update helper")
+@pytest.mark.parametrize("scenario, exit_code", [("retry", 0), ("rollback", 1), ("waiting", 3)])
+def test_windows_update_helper_preserves_install_and_cleans_script(tmp_path, monkeypatch, scenario, exit_code):
     root = tmp_path / "Unicode 路径 'test"
     app = root / "OpenFocus"
     stage = root / "stage"
@@ -374,11 +394,23 @@ def test_windows_move_with_retry_retries_transient_ioexception_and_cleans_script
     (staged_app / "_internal" / "lib.dll").write_bytes(b"new-lib")
     monkeypatch.setattr(self_update.tempfile, "gettempdir", lambda: str(root))
     script_path = self_update.write_apply_script_windows(
-        str(app), str(staged_app), "v999", staging_root=str(stage), wait_pid=0, restart=False,
+        str(app), str(staged_app), "v999", staging_root=str(stage),
+        wait_pid=4321 if scenario == "waiting" else 0, restart=False,
     )
     text = Path(script_path).read_text(encoding="utf-8-sig")
     stub = r'''
 $global:attempts = 0
+function Get-Process {
+    param($Id)
+    $process = [pscustomobject]@{ Id = $Id }
+    $process | Add-Member -MemberType ScriptMethod -Name WaitForExit -Value { return $false }
+    $process
+}
+function Start-Process {
+    param($FilePath, $Verb, $WindowStyle, [switch]$Wait, [switch]$PassThru, $ArgumentList)
+    if ($Verb -ne 'RunAs') { throw 'Unexpected restart' }
+    [pscustomobject]@{ ExitCode = 1 }
+}
 function robocopy {
     Copy-Item -LiteralPath (Join-Path $args[0] 'OpenFocus.exe') -Destination $args[1]
     Copy-Item -LiteralPath (Join-Path $args[0] '_internal') -Destination $args[1] -Recurse
@@ -387,8 +419,11 @@ function robocopy {
 function Move-Item {
     param($LiteralPath, $Destination)
     $global:attempts++
-    if ($global:attempts -eq 1) {
+    if ($env:OF_SWAP_SCENARIO -eq 'retry' -and $global:attempts -eq 1) {
         throw [System.IO.IOException]::new('transient AV lock')
+    }
+    if ($env:OF_SWAP_SCENARIO -eq 'rollback' -and $global:attempts -eq 2) {
+        throw [System.IO.DirectoryNotFoundException]::new('candidate could not be moved')
     }
     Microsoft.PowerShell.Management\Move-Item -LiteralPath $LiteralPath -Destination $Destination
 }
@@ -396,28 +431,65 @@ function Move-Item {
     Path(script_path).write_text(stub + text, encoding="utf-8-sig")
     proc = subprocess.run(
         ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script_path],
+        env={**os.environ, "OF_SWAP_SCENARIO": scenario},
         capture_output=True, text=True, timeout=30,
     )
-    assert proc.returncode == 0, proc.stderr
-    assert (app / "OpenFocus.exe").read_bytes() == b"new-exe"
+    assert proc.returncode == exit_code, proc.stderr
+    expected = b"new" if exit_code == 0 else b"old"
+    assert (app / "OpenFocus.exe").read_bytes() == expected + b"-exe"
+    assert (app / "_internal" / "lib.dll").read_bytes() == expected + b"-lib"
+    assert stage.exists() == (exit_code != 0)
     assert not Path(script_path).exists()
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="validates PowerShell script syntax")
-def test_install_ps1_parses_and_checks_digest():
+@pytest.mark.skipif(sys.platform != "win32", reason="runs the PowerShell installer")
+@pytest.mark.parametrize("payload, include_digest, error", [
+    ("installer", True, None),
+    ("short", True, "installer is incomplete"),
+    ("mismatche", True, "failed SHA-256 verification"),
+    ("installer", False, "missing valid OpenFocus installer integrity metadata"),
+])
+def test_windows_site_installer_checks_payload_before_launch(tmp_path, payload, include_digest, error):
     script = Path(__file__).resolve().parents[1] / "site" / "install.ps1"
-    ps_check = (
-        "$errors = $null; "
-        f"[void][System.Management.Automation.Language.Parser]::ParseFile('{script}', [ref]$null, [ref]$errors); "
-        "if ($errors.Count -gt 0) { $errors | ForEach-Object { Write-Error $_.Message }; exit 1 }"
-    )
+    expected = b"installer"
+    harness = r"""
+function Invoke-RestMethod {
+    param($Uri)
+    [pscustomobject]@{ tag = 'v9.9'; assets = [pscustomobject]@{
+        'windows-setup' = [pscustomobject]@{
+            name = 'OpenFocus-v9.9-setup.exe'; size = [int]$env:OF_EXPECTED_SIZE;
+            digest = $env:OF_INSTALLER_DIGEST
+        }
+    } }
+}
+function Invoke-WebRequest {
+    param($Uri, $OutFile, [switch]$UseBasicParsing)
+    Write-Output 'FETCHED'
+    [IO.File]::WriteAllBytes($OutFile, [Text.Encoding]::ASCII.GetBytes($env:OF_INSTALLER_BYTES))
+}
+function Start-Process {
+    param($FilePath, [switch]$Wait, [switch]$PassThru)
+    if (-not (Test-Path -LiteralPath $FilePath -PathType Leaf)) { throw 'Missing verified installer' }
+    Write-Host 'LAUNCHED'
+    [pscustomobject]@{ ExitCode = 0 }
+}
+& $env:OF_INSTALL_SCRIPT
+"""
     proc = subprocess.run(
-        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_check],
-        capture_output=True, text=True, timeout=30,
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", harness],
+        env={**os.environ, "TEMP": str(tmp_path), "TMP": str(tmp_path), "OPENFOCUS_DRY_RUN": "0",
+             "OF_INSTALL_SCRIPT": str(script), "OF_EXPECTED_SIZE": str(len(expected)),
+             "OF_INSTALLER_BYTES": payload,
+             "OF_INSTALLER_DIGEST": "sha256:" + hashlib.sha256(expected).hexdigest() if include_digest else ""},
+        capture_output=True, timeout=30,
     )
-    assert proc.returncode == 0, proc.stderr
-    text = script.read_text(encoding="utf-8")
-    assert "Get-FileHash" in text and "SHA256" in text
+    assert (b"LAUNCHED" in proc.stdout) == (error is None)
+    assert (b"FETCHED" in proc.stdout) == include_digest
+    if error:
+        assert proc.returncode != 0 and error.encode("ascii") in proc.stderr, proc.stderr
+    else:
+        assert proc.returncode == 0, proc.stderr
+    assert not list(tmp_path.glob("*.exe"))
 
 
 def test_site_worker_rejects_zero_padded_beta_alias_on_versioned_download():

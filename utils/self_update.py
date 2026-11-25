@@ -492,21 +492,34 @@ def discard_staging(tag: str) -> None:
     """Remove an incomplete staging folder (never leave it half-unpacked)."""
     import shutil
 
-    def _clear_readonly(func, path, exc_info):
-        try:
-            mode = stat.S_IWRITE | stat.S_IREAD
-            if os.name != "nt" and os.path.isdir(path):
-                mode = 0o700
-            os.chmod(path, mode)
-            func(path)
-        except OSError:
-            pass
+    def _remove_readonly_file(func, path, exc_info):
+        if func is not os.unlink or not isinstance(exc_info[1], PermissionError):
+            raise exc_info[1]
+        if not stat.S_ISREG(os.lstat(path).st_mode):
+            raise exc_info[1]
+        os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+        func(path)
+
+    def _make_directory_writable(path):
+        mode = os.lstat(path).st_mode
+        if stat.S_ISDIR(mode) and mode & stat.S_IRWXU != stat.S_IRWXU:
+            os.chmod(path, stat.S_IMODE(mode) | stat.S_IRWXU)
 
     try:
         root = staging_root_for(tag)
-        if os.path.exists(root):
-            shutil.rmtree(root, onerror=_clear_readonly)
-    except Exception:
+        if os.name == "nt":
+            shutil.rmtree(root, onerror=_remove_readonly_file)
+            return
+        try:
+            shutil.rmtree(root)
+        except PermissionError:
+            # Unlink permission on POSIX belongs to the enclosing directory.
+            _make_directory_writable(root)
+            for parent, directories, _ in os.walk(root):
+                for directory in directories:
+                    _make_directory_writable(os.path.join(parent, directory))
+            shutil.rmtree(root)
+    except OSError:
         pass
 
 
@@ -641,22 +654,21 @@ try {
             # The helper may have different Windows credentials. Relaunch only
             # from the original user's process, including after safe rollback.
             if ($p.ExitCode -in @(0, 1)) { Restart-App }
-            try { if ($PSCommandPath) { Remove-Item -LiteralPath $PSCommandPath -Force } } catch {}
             exit $p.ExitCode
         } catch { $stage = 'elevation cancelled or failed' }
     }
     Result ("failed`n" + $stage + $(if ($oldMoved) { '; rollback succeeded' } else { '' }))
     if ($stage -eq 'process exit timed out') { exit 3 }
     Restart-App
-    try { if (!$elevated -and $PSCommandPath) { Remove-Item -LiteralPath $PSCommandPath -Force } } catch {}
     exit 1
+} finally {
+    try { if (!$elevated -and $PSCommandPath) { Remove-Item -LiteralPath $PSCommandPath -Force } } catch {}
 }
 if ($keepBackup) { Result ("ok`n" + $backup) } else { Result 'ok' }
 foreach ($path in @($(if (!$keepBackup) { $backup }), $c.root, $c.zip)) {
     if ($path) { try { Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction Stop } catch {} }
 }
 Restart-App
-try { if (!$elevated -and $PSCommandPath) { Remove-Item -LiteralPath $PSCommandPath -Force } } catch {}
 exit 0
 '''
     inner = template.replace('__CONFIG__', config).replace('__ELEVATED__', '$true').replace('__INNER__', '')

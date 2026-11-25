@@ -379,8 +379,9 @@ def download_to_file(url: str, dest_path: str,
     req = urllib.request.Request(url, headers={"User-Agent": "OpenFocus"})
     try:
         with open_url(urllib.request.urlopen, req, timeout=REQUEST_TIMEOUT_S) as resp:
-            raw_len = (resp.headers.get("Content-Length") or "").strip()
-            total = int(raw_len) if raw_len.isdigit() else 0
+            raw_len = (resp.headers.get("Content-Length") or "").strip().lstrip("0")
+            valid_length = len(raw_len) <= 19 and raw_len.isascii() and raw_len.isdecimal()
+            total = int(raw_len) if valid_length else 0
             done = 0
             with open(part_path, "wb") as f:
                 while True:

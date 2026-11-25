@@ -110,6 +110,7 @@ class _StageThread(QThread):
                 from locales import trans
                 self.done.emit(False, trans.t("msg_update_digest_mismatch"))
                 return
+            os.mkdir(self._root)
             if self._delta:
                 from utils.release_delta import stage_delta
                 platform = self._delta.platform
