@@ -597,7 +597,12 @@ class HonorCardDialog(QDialog):
             else period_raw
         )
         rank = int(_get(card, "rank", 1) or 1)
-        points = int(_get(card, "reward_points", 0) or _get(card, "points", 0) or 0)
+        points = int(
+            _get(card, "points_awarded", 0)
+            or _get(card, "reward_points", 0)
+            or _get(card, "points", 0)
+            or 0
+        )
         work_title = str(_get(card, "work_title", "") or "").strip()
 
         root = QVBoxLayout(self)
@@ -1099,7 +1104,9 @@ class WorkDetailDialog(QDialog):
             return
         if self._client is not None and hasattr(self._client, "report_work"):
             try:
-                self._client.report_work(self.work_id, dlg.selected_reason, dlg.detail_text)
+                self._client.report_work(
+                    self.work_id, dlg.selected_reason, detail=dlg.detail_text
+                )
             except Exception as exc:
                 self.status_label.setText(translate_error(_error_code_from_exc(exc)))
                 return
@@ -1118,15 +1125,40 @@ class WorkDetailDialog(QDialog):
 
     def _render_comments(self) -> None:
         self.comments_list.clear()
-        for comment in self._comments:
-            cid = str(_get(comment, "id", ""))
-            author = str(_get(comment, "author_nickname", "") or t_gallery("gallery_author_label"))
+        seen_ids: set[str] = set()
+
+        def _append_comment(comment: Any, *, force_reply: bool = False) -> None:
+            cid = str(_get(comment, "comment_id", "") or _get(comment, "id", ""))
+            if cid and cid in seen_ids:
+                return
+            if cid:
+                seen_ids.add(cid)
+            author = str(
+                _get(comment, "author_nickname", "") or t_gallery("gallery_author_label")
+            )
             content = str(_get(comment, "content", ""))
-            is_reply = bool(_get(comment, "parent_id", None) or _get(comment, "is_reply", False))
+            is_reply = bool(
+                force_reply
+                or _get(comment, "parent_id", None)
+                or _get(comment, "is_reply", False)
+                or _get(comment, "is_author_reply", False)
+            )
             prefix = "    ↳ " if is_reply else ""
-            item = QListWidgetItem(f"{prefix}{author}: {content}")
+            author_tag = (
+                f"[{t_gallery('gallery_comments_author_badge')}] "
+                if bool(_get(comment, "is_author_reply", False))
+                else ""
+            )
+            item = QListWidgetItem(f"{prefix}{author_tag}{author}: {content}")
             item.setData(Qt.ItemDataRole.UserRole, (cid, author))
             self.comments_list.addItem(item)
+
+            nested_replies = _get(comment, "replies", None) or ()
+            for reply in nested_replies:
+                _append_comment(reply, force_reply=True)
+
+        for comment in self._comments:
+            _append_comment(comment)
 
     def _start_reply_from_item(self, item: QListWidgetItem) -> None:
         data = item.data(Qt.ItemDataRole.UserRole)

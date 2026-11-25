@@ -951,23 +951,41 @@ class AccountCenterDialog(QDialog):
         normalized: list[dict[str, Any]] = []
         for notif in notifications:
             if isinstance(notif, Mapping):
-                normalized.append(dict(notif))
+                entry = dict(notif)
+                if not entry.get("id") and entry.get("notification_id"):
+                    entry["id"] = entry["notification_id"]
+                if not entry.get("actor_name") and entry.get("actor_nickname"):
+                    entry["actor_name"] = entry["actor_nickname"]
+                if not entry.get("payload") and isinstance(entry.get("params"), Mapping):
+                    entry["payload"] = dict(entry["params"])
+                normalized.append(entry)
             else:
+                params = _get(notif, "params", None)
+                payload = _get(notif, "payload", None) or _get(notif, "data", None)
+                if not payload and isinstance(params, Mapping):
+                    payload = dict(params)
+                actor_name = (
+                    _get(notif, "actor_nickname", "")
+                    or _get(notif, "actor_name", "")
+                    or _get(notif, "actor", "")
+                )
                 normalized.append({
-                    "id": _get(notif, "id", ""),
+                    "id": _get(notif, "notification_id", "") or _get(notif, "id", ""),
                     "type": _get(notif, "type", "") or _get(notif, "notification_type", ""),
                     "is_read": bool(_get(notif, "is_read", False)),
                     "work_id": _get(notif, "work_id", ""),
-                    "work_title": _get(notif, "work_title", ""),
-                    "actor_name": _get(notif, "actor_name", "") or _get(notif, "actor", ""),
+                    "work_title": _get(notif, "work_title", None),
+                    "actor_name": actor_name,
+                    "actor_nickname": actor_name,
                     "actors": _get(notif, "actors", None),
-                    "actor_count": _get(notif, "actor_count", None) or _get(notif, "count", 1),
-                    "period": _get(notif, "period", ""),
-                    "rank": _get(notif, "rank", 1),
-                    "points": _get(notif, "points", 0),
-                    "reason": _get(notif, "reason", ""),
-                    "detail": _get(notif, "detail", ""),
-                    "payload": _get(notif, "payload", None) or _get(notif, "data", None) or {},
+                    "actor_count": _get(notif, "actor_count", None) or _get(notif, "count", None),
+                    "period": _get(notif, "period", None),
+                    "rank": _get(notif, "rank", None),
+                    "points": _get(notif, "points", None),
+                    "reason": _get(notif, "reason", None),
+                    "detail": _get(notif, "detail", None),
+                    "payload": payload or {},
+                    "params": dict(params) if isinstance(params, Mapping) else {},
                     "thumb_pixmap": _get(notif, "thumb_pixmap", None),
                     "thumb_bytes": _get(notif, "thumb_bytes", None),
                     "created_at": _get(notif, "created_at", ""),

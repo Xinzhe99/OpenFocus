@@ -387,3 +387,71 @@ def test_upload_prompt_and_honor_card_acknowledge_once(qapp):
     honor.close()
     # Acknowledged strictly once even across accept + close
     assert acked == ["card-7d-2026w48"]
+
+
+def test_pr264_model_interop_honor_card_nested_replies_and_report_kwarg(qapp, monkeypatch):
+    from dataclasses import dataclass
+
+    from dialogs.gallery_hub import ReportContentDialog, WorkDetailDialog
+
+    @dataclass
+    class Pr264HonorCard:
+        card_id: str
+        period: str = "1m"
+        rank: int = 1
+        work_title: str = "Crystal"
+        points_awarded: int = 800
+
+    acked: list[str] = []
+    honor = HonorCardDialog(Pr264HonorCard("card-1m-1"), on_acknowledge=acked.append)
+    assert honor.card_id == "card-1m-1"
+    assert honor.reward_label is not None and "800" in honor.reward_label.text()
+    honor.accept()
+    assert acked == ["card-1m-1"]
+
+    @dataclass
+    class Pr264Comment:
+        comment_id: str
+        author_nickname: str
+        content: str
+        parent_id: str | None = None
+        is_author_reply: bool = False
+        replies: tuple = ()
+
+    class StrictKwargReportClient:
+        def __init__(self):
+            self.reports: list[tuple[str, str, str | None]] = []
+
+        def report_work(self, work_id: str, reason: str, *, detail: str | None = None):
+            self.reports.append((work_id, reason, detail))
+
+        def get_comments(self, _work_id: str):
+            reply = Pr264Comment(
+                comment_id="c-reply-1",
+                author_nickname="Creator",
+                content="Thanks!",
+                parent_id="c-top-1",
+                is_author_reply=True,
+            )
+            top = Pr264Comment(
+                comment_id="c-top-1",
+                author_nickname="Viewer",
+                content="Great stack!",
+                replies=(reply,),
+            )
+            return {"items": [top]}
+
+    client = StrictKwargReportClient()
+    detail = WorkDetailDialog({"id": "w-9", "title": "Spider"}, client=client)
+    assert detail.comments_list.count() == 2
+    assert "Great stack!" in detail.comments_list.item(0).text()
+    assert "↳" in detail.comments_list.item(1).text()
+    assert "[Author]" in detail.comments_list.item(1).text()
+    assert "Thanks!" in detail.comments_list.item(1).text()
+
+    monkeypatch.setattr(ReportContentDialog, "exec", lambda self: ReportContentDialog.DialogCode.Accepted)
+    monkeypatch.setattr(ReportContentDialog, "selected_reason", property(lambda self: "spam_advertising"))
+    monkeypatch.setattr(ReportContentDialog, "detail_text", property(lambda self: "promo link"))
+    detail._on_report()
+    assert client.reports == [("w-9", "spam_advertising", "promo link")]
+    detail.close()

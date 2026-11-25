@@ -330,3 +330,37 @@ def test_activity_lists_and_message_box_structured_i18n(qapp):
     finally:
         trans.set_language(prev_lang)
     dlg.close()
+
+
+def test_message_box_interop_with_pr264_gallery_notification_dataclass(qapp):
+    from dataclasses import dataclass, field
+
+    @dataclass
+    class Pr264Notification:
+        notification_id: str
+        type: str = "work_liked"
+        is_read: bool = False
+        created_at: str = "2026-11-26 02:00 UTC"
+        actor_id: str = "u-7"
+        actor_nickname: str = "Linus"
+        work_id: str = "w-77"
+        params: dict[str, Any] = field(default_factory=dict)
+
+    notif = Pr264Notification(
+        notification_id="notif-pr264-1",
+        type="work_liked",
+        actor_nickname="Linus",
+        work_id="w-77",
+        params={"work_title": "Snowflake Macro", "actor_count": 5},
+    )
+    dlg = AccountCenterDialog()
+    dlg.set_notifications([notif])
+    labels = [
+        w for w in dlg._messages_host.findChildren(QLabel)
+        if w.property("controlId") == "account_notif_text_notif-pr264-1"
+    ]
+    assert len(labels) == 1
+    assert "Linus" in labels[0].text()
+    assert "Snowflake Macro" in labels[0].text()
+    assert "4 others" in labels[0].text()
+    dlg.close()

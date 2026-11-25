@@ -115,6 +115,36 @@ def test_canonical_api_keys_have_all_12_translations():
             assert val and val != f"gallery_period_{k}"
 
 
+def test_showcase_danmaku_screensaver_interop_keys_in_all_12_locales():
+    required_keys = (
+        "gallery_badge_ad",
+        "gallery_badge_following",
+        "gallery_close",
+        "gallery_comments_author_badge",
+        "gallery_comments_delete",
+        "gallery_comments_empty",
+        "gallery_danmaku_all_comments",
+        "gallery_danmaku_cancel",
+        "gallery_danmaku_cooldown",
+        "gallery_danmaku_downvote",
+        "gallery_danmaku_placeholder",
+        "gallery_danmaku_report",
+        "gallery_danmaku_reported",
+        "gallery_danmaku_send",
+        "gallery_danmaku_upvote",
+        "gallery_empty_state",
+        "gallery_report_title",
+        "gallery_screensaver_press_esc",
+    )
+    for lang in GALLERY_LANGUAGES:
+        for key in required_keys:
+            assert key in GALLERY_TRANSLATIONS[lang], f"{lang} missing {key}"
+            assert GALLERY_TRANSLATIONS[lang][key].strip()
+        assert "{" not in t_gallery("gallery_danmaku_placeholder", lang=lang)
+        assert "7" in t_gallery("gallery_danmaku_all_comments", lang=lang, count=7)
+        assert "10" in t_gallery("gallery_danmaku_cooldown", lang=lang, seconds=10)
+
+
 @pytest.mark.parametrize("lang", GALLERY_LANGUAGES)
 def test_format_notification_renders_every_type_without_leaked_placeholders(lang):
     for notif_type in NOTIFICATION_TYPE_KEYS:
