@@ -283,6 +283,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   working set and release source mappings after their depth and merge passes.
 - Bound OpenFocus alignment memory for deep stacks by reusing cached source
   pixels during estimation and staging the resolved frames during fusion.
+- Stop retrying resized OpenFocus A, B and C renders requested through the
+  Python API with the low-memory plan. That plan did not count the RAM that
+  resizing needs, so a render rejected for memory could still start.
 - Release the isolated render worker after a memory error so the next render
   starts with fresh native memory and device contexts.
 - Default new watermarks to fusion results. Apply removes unchecked watermark
