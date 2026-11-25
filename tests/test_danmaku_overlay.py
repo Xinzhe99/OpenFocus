@@ -1,0 +1,313 @@
+"""Offscreen Qt tests for widgets.danmaku_overlay."""
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from PyQt6.QtCore import QPoint, QPointF, Qt
+from PyQt6.QtGui import QMouseEvent
+from PyQt6.QtTest import QTest
+
+from widgets.danmaku_overlay import (
+    DANMAKU_COOLDOWN_SEC,
+    DANMAKU_MAX_CHARS,
+    REPORT_REASONS,
+    DanmakuOverlay,
+    DanmakuSettings,
+    is_floating_danmaku_comment,
+)
+
+
+@dataclass
+class _StubComment:
+    id: str
+    work_id: str
+    content: str
+    author_id: str = "u1"
+    author_nickname: str = "Alice"
+    is_reply: bool = False
+    parent_id: str | None = None
+    is_danmaku: bool = True
+    upvotes: int = 2
+    downvotes: int = 0
+    viewer_vote: int = 0
+
+
+class _FakeClock:
+    def __init__(self, start: float = 100.0) -> None:
+        self.now = float(start)
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += float(seconds)
+
+
+def test_danmaku_settings_normalization_and_serialization():
+    raw = DanmakuSettings(
+        enabled=True,
+        position="invalid",
+        font_size=99,
+        opacity=2.5,
+        density="ultra",
+    )
+    norm = raw.normalized()
+    assert norm.position == "top"
+    assert norm.font_size == 32
+    assert norm.opacity == 1.0
+    assert norm.density == "medium"
+
+    rt = DanmakuSettings.from_dict(norm.to_dict())
+    assert rt == norm
+
+
+def test_author_replies_never_float_as_danmaku(qapp):
+    overlay = DanmakuOverlay()
+    overlay.resize(640, 360)
+
+    comments = [
+        _StubComment(id="c1", work_id="w1", content="Crisp antennae detail!", is_reply=False),
+        _StubComment(
+            id="c2",
+            work_id="w1",
+            content="Thank you, shot with 10x objective!",
+            is_reply=True,
+            parent_id="c1",
+            is_danmaku=False,
+        ),
+        {
+            "id": "c3",
+            "work_id": "w1",
+            "content": "Another nested reply without is_reply flag",
+            "parent_id": "c1",
+        },
+        {
+            "id": "c4",
+            "work_id": "w1",
+            "content": "Non-danmaku top comment",
+            "is_reply": False,
+            "is_danmaku": False,
+        },
+        {
+            "id": "c5",
+            "work_id": "w1",
+            "content": "Awesome lighting",
+            "is_reply": False,
+        },
+    ]
+
+    assert is_floating_danmaku_comment(comments[0]) is True
+    assert is_floating_danmaku_comment(comments[1]) is False
+    assert is_floating_danmaku_comment(comments[2]) is False
+    assert is_floating_danmaku_comment(comments[3]) is False
+    assert is_floating_danmaku_comment(comments[4]) is True
+
+    overlay.set_comments(comments, work_id="w1")
+    all_ids = {b.comment_id for b in overlay.active_bullets + overlay.queued_comments}
+    assert all_ids == {"c1", "c5"}
+
+    # add_comment must also strictly ignore replies
+    rejected = overlay.add_comment(
+        _StubComment(id="c6", work_id="w1", content="Author reply", is_reply=True, parent_id="c1")
+    )
+    assert rejected is None
+    assert "c6" not in {b.comment_id for b in overlay.active_bullets + overlay.queued_comments}
+    overlay.deleteLater()
+
+
+def test_hover_pauses_only_hovered_bullet_and_click_opens_popover(qapp):
+    overlay = DanmakuOverlay(settings=DanmakuSettings(density="high"))
+    overlay.resize(720, 400)
+    overlay.show()
+    qapp.processEvents()
+
+    overlay.set_comments(
+        [
+            _StubComment(id="c1", work_id="w1", content="First floating bullet", upvotes=3, downvotes=1),
+            _StubComment(id="c2", work_id="w1", content="Second floating bullet", upvotes=0, downvotes=0),
+        ],
+        work_id="w1",
+    )
+    assert len(overlay.active_bullets) == 2
+    b1, b2 = overlay.active_bullets[0], overlay.active_bullets[1]
+    b1.x, b1.y = 120.0, 40.0
+    b2.x, b2.y = 260.0, 120.0
+
+    # Hover over b1 -> pauses b1 only
+    hover_pos = QPointF(b1.x + 12.0, b1.y + 10.0)
+    move_ev = QMouseEvent(
+        QMouseEvent.Type.MouseMove,
+        hover_pos,
+        hover_pos,
+        Qt.MouseButton.NoButton,
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    overlay.mouseMoveEvent(move_ev)
+    assert b1.hovered is True
+    assert b2.hovered is False
+
+    x1_before, x2_before = b1.x, b2.x
+    overlay.step_animation(0.5)
+    assert b1.x == x1_before
+    assert b2.x < x2_before
+
+    # Click b1 -> opens action popover, pins b1 paused, emits popover_opened
+    opened_events: list[bool] = []
+    closed_events: list[bool] = []
+    votes: list[tuple[str, int]] = []
+    reports: list[tuple[str, str]] = []
+    overlay.popover_opened.connect(lambda: opened_events.append(True))
+    overlay.popover_closed.connect(lambda: closed_events.append(True))
+    overlay.comment_voted.connect(lambda cid, v: votes.append((cid, v)))
+    overlay.comment_reported.connect(lambda cid, r: reports.append((cid, r)))
+
+    press_ev = QMouseEvent(
+        QMouseEvent.Type.MouseButtonPress,
+        hover_pos,
+        hover_pos,
+        Qt.MouseButton.LeftButton,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    overlay.mousePressEvent(press_ev)
+    assert overlay.popover.isVisible() is True
+    assert b1.paused is True
+    assert len(opened_events) == 1
+
+    # Upvote -> updates live count + feedback animation
+    overlay.popover.btn_upvote.click()
+    assert votes[-1] == ("c1", 1)
+    assert b1.upvotes == 4
+    assert b1.viewer_vote == 1
+    assert b1.feedback_text == "+1"
+    assert b1.feedback_alpha == 1.0
+    assert "4" in overlay.popover.btn_upvote.text()
+
+    # Switch to downvote -> decrements upvote, increments downvote
+    overlay.popover.btn_downvote.click()
+    assert votes[-1] == ("c1", -1)
+    assert b1.upvotes == 3
+    assert b1.downvotes == 1 + 1
+    assert b1.viewer_vote == -1
+    assert b1.feedback_text == "-1"
+
+    # Report -> uses canonical English snake_case keys and closes popover
+    overlay.popover.btn_report.click()
+    assert overlay.popover.report_panel.isVisible() is True
+    assert tuple(overlay.popover.reason_buttons.keys()) == REPORT_REASONS
+    overlay.popover.reason_buttons["spam_advertising"].click()
+    assert reports == [("c1", "spam_advertising")]
+    assert overlay.popover.isVisible() is False
+    assert b1.paused is False
+    assert len(closed_events) == 1
+
+    # Paint check offscreen
+    pm = overlay.grab()
+    assert not pm.isNull()
+    overlay.deleteLater()
+
+
+def test_composer_50_char_limit_and_10s_cooldown(qapp):
+    clock = _FakeClock(start=1000.0)
+    overlay = DanmakuOverlay(clock=clock)
+    overlay.resize(640, 360)
+    overlay.show()
+    qapp.processEvents()
+
+    opened: list[bool] = []
+    closed: list[bool] = []
+    submitted: list[str] = []
+    errors: list[str] = []
+    overlay.composer_opened.connect(lambda: opened.append(True))
+    overlay.composer_closed.connect(lambda: closed.append(True))
+    overlay.comment_submitted.connect(submitted.append)
+    overlay.composer.validation_failed.connect(errors.append)
+
+    composer = overlay.composer
+    assert composer.max_chars == DANMAKU_MAX_CHARS == 50
+    assert composer.cooldown_sec == DANMAKU_COOLDOWN_SEC == 10
+    assert composer.input_edit.objectName() == "gallery_danmaku_input"
+    assert composer.input_edit.property("controlId") == "gallery_danmaku_input"
+    assert composer.input_edit.maxLength() == 50
+
+    # Open composer
+    overlay.open_composer()
+    assert composer.isVisible() is True
+    assert len(opened) == 1
+    assert composer.lbl_counter.text() == "0/50"
+    assert composer.btn_send.isEnabled() is False
+
+    # Live counter updates
+    text_50 = "a" * 50
+    composer.input_edit.setText(text_50)
+    assert composer.lbl_counter.text() == "50/50"
+    assert composer.btn_send.isEnabled() is True
+
+    # Programmatic >50 chars is rejected
+    assert composer.submit_text("b" * 51) is False
+    assert errors[-1] == "danmaku_too_long"
+    assert submitted == []
+
+    # Valid send succeeds, closes composer, starts 10s cooldown
+    assert composer.submit() is True
+    assert submitted == [text_50]
+    assert composer.isVisible() is False
+    assert len(closed) == 1
+    assert composer.cooldown_remaining() == 10.0
+
+    # Re-open during cooldown: cooldown display shown, send disabled
+    clock.advance(4.0)
+    overlay.open_composer()
+    assert len(opened) == 2
+    assert composer.lbl_cooldown.isVisible() is True
+    assert "6" in composer.lbl_cooldown.text()
+    composer.input_edit.setText("Too soon")
+    assert composer.btn_send.isEnabled() is False
+    assert composer.submit() is False
+    assert errors[-1] == "danmaku_cooldown"
+    assert len(submitted) == 1
+
+    # Cancel via ESC closes composer and emits composer_closed
+    QTest.keyClick(composer, Qt.Key.Key_Escape)
+    assert composer.isVisible() is False
+    assert len(closed) == 2
+
+    # Advance past 10s cooldown -> send succeeds
+    clock.advance(6.2)
+    overlay.open_composer()
+    assert composer.cooldown_remaining() == 0.0
+    assert composer.lbl_cooldown.isVisible() is False
+    composer.input_edit.setText("Focus stack looks sharp!")
+    assert composer.btn_send.isEnabled() is True
+    composer.btn_send.click()
+    assert submitted[-1] == "Focus stack looks sharp!"
+    assert len(closed) == 3
+
+    overlay.deleteLater()
+
+
+def test_danmaku_positions_and_enabled_toggle(qapp):
+    overlay = DanmakuOverlay(settings=DanmakuSettings(enabled=True, position="top", density="low"))
+    overlay.resize(640, 400)
+    overlay.set_comments(
+        [_StubComment(id="c1", work_id="w1", content="Top lane")],
+        work_id="w1",
+    )
+    assert len(overlay.active_bullets) == 1
+    y_top = overlay.active_bullets[0].y
+
+    overlay.set_settings(DanmakuSettings(enabled=True, position="middle", density="medium"))
+    y_mid = overlay.active_bullets[0].y
+    overlay.set_settings(DanmakuSettings(enabled=True, position="bottom", density="high"))
+    y_bottom = overlay.active_bullets[0].y
+    assert y_top < y_mid < y_bottom
+
+    # Disabling danmaku stops animation step and paints cleanly
+    x_before = overlay.active_bullets[0].x
+    overlay.set_enabled(False)
+    overlay.step_animation(0.5)
+    assert overlay.active_bullets[0].x == x_before
+    pm = overlay.grab()
+    assert not pm.isNull()
+    overlay.deleteLater()
