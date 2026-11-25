@@ -1964,6 +1964,7 @@ class GalleryHubDialog(QDialog):
         self._my_works: list[Any] = []
         self._my_work_checkboxes: dict[str, QCheckBox] = {}
         self._publish_queue: list[PublishQueueItem] = []
+        self._publishing = False
         self._cached_profile: Any = {}
         self._watermark_preview_has_overlay = False
         self._watermark_preview_rendered_text = ""
@@ -2005,9 +2006,19 @@ class GalleryHubDialog(QDialog):
             self.tabs.setCurrentIndex(initial_tab)
 
     def closeEvent(self, event: QEvent) -> None:
+        if self._publishing:
+            event.ignore()
+            return
         self._runner.shutdown()
         self._media_loader.shutdown()
         super().closeEvent(event)
+
+    def done(self, result: int) -> None:
+        if self._publishing:
+            return
+        self._runner.shutdown()
+        self._media_loader.shutdown()
+        super().done(result)
 
     def wait_for_idle(self, timeout: float = 5.0) -> bool:
         return self._runner.wait_for_idle(timeout) and self._media_loader.wait_for_idle(timeout)
@@ -2024,8 +2035,7 @@ class GalleryHubDialog(QDialog):
             cfg_sig.connect(self._on_store_config_changed)
 
     def _on_store_profile_changed(self, profile: Any) -> None:
-        if profile is not None:
-            self._cached_profile = profile
+        self._cached_profile = profile or {}
 
     def _on_store_config_changed(self, cfg: Any) -> None:
         if cfg is not None:
@@ -2105,7 +2115,7 @@ class GalleryHubDialog(QDialog):
         _set_cid(self.sort_combo, "gallery_sort_combo")
         self.sort_combo.addItem(t_gallery("gallery_sort_latest"), "latest")
         self.sort_combo.addItem(t_gallery("gallery_sort_popular"), "popular")
-        self.sort_combo.addItem(t_gallery("gallery_sort_featured"), "featured")
+        self.sort_combo.addItem(t_gallery("gallery_sort_recommended"), "recommended")
         self.sort_combo.currentIndexChanged.connect(self._on_sort_changed)
         top_row.addWidget(self.sort_combo)
         top_row.addStretch()
@@ -2186,7 +2196,7 @@ class GalleryHubDialog(QDialog):
         sort = self._active_sort
 
         def _fetch() -> Any:
-            return self._client.get_feed(tag=tag, sort=sort)
+            return self._client.get_feed(tag=tag, sort=sort, source="square")
 
         def _apply(resp: Any) -> None:
             items = _get(resp, "items", resp) if isinstance(resp, Mapping) else resp
@@ -2211,10 +2221,7 @@ class GalleryHubDialog(QDialog):
         self.load_more_btn.setEnabled(False)
 
         def _fetch() -> Any:
-            try:
-                return self._client.get_feed(cursor=cursor, tag=tag, sort=sort)
-            except TypeError:
-                return self._client.get_feed(tag=tag, sort=sort)
+            return self._client.get_feed(cursor=cursor, tag=tag, sort=sort, source="square")
 
         def _apply(resp: Any) -> None:
             items = _get(resp, "items", resp) if isinstance(resp, Mapping) else resp
@@ -2719,6 +2726,8 @@ class GalleryHubDialog(QDialog):
         switch_to_tab: bool = True,
     ) -> None:
         """Pre-populate Tab 3 for right-click 'Upload to Gallery' with a fused image."""
+        if self._publishing:
+            return
         self.clear_publish_queue()
         self.add_publish_files(
             [image_or_path],
@@ -2741,6 +2750,8 @@ class GalleryHubDialog(QDialog):
         openfocus_badge: bool = False,
     ) -> int:
         """Append images to the publish queue, strictly capping total items at 10."""
+        if self._publishing:
+            return 0
         remaining = max(0, MAX_BATCH_UPLOAD - len(self._publish_queue))
         source_list = list(sources)
         capped = len(source_list) > remaining
@@ -2779,6 +2790,8 @@ class GalleryHubDialog(QDialog):
         return len(accepted)
 
     def clear_publish_queue(self) -> None:
+        if self._publishing:
+            return
         self._publish_queue.clear()
         self.batch_warning_label.setVisible(False)
         self.publish_feedback_label.setText("")
@@ -2890,8 +2903,10 @@ class GalleryHubDialog(QDialog):
         self.watermark_preview_label.setPixmap(rendered)
 
     def _update_publish_button_state(self) -> None:
-        can_publish = bool(self._publish_queue) and self.agreement_check.isChecked()
-        self.publish_btn.setEnabled(can_publish)
+        has_pending = any(item.stage != "done" for item in self._publish_queue)
+        self.publish_btn.setEnabled(not self._publishing and has_pending and self.agreement_check.isChecked())
+        self.add_files_btn.setEnabled(not self._publishing)
+        self.clear_files_btn.setEnabled(not self._publishing and bool(self._publish_queue))
 
     def open_agreement_dialog(self) -> GalleryAgreementDialog:
         dlg = GalleryAgreementDialog(self, theme=self._theme)
@@ -2913,6 +2928,8 @@ class GalleryHubDialog(QDialog):
         progress back to the GUI thread. Pass ``wait=True`` only in unit tests
         that want to await completion synchronously.
         """
+        if self._publishing:
+            return list(self._publish_queue)
         if not self.agreement_check.isChecked():
             self.publish_feedback_label.setText(
                 t_gallery("gallery_publish_agreement_required")
@@ -2923,7 +2940,7 @@ class GalleryHubDialog(QDialog):
 
         cfg = self._get_config()
         profile = self._get_profile()
-        terms_version = str(_get(cfg, "gallery_terms_version", "2026-11") or "2026-11")
+        terms_version = str(_get(cfg, "gallery_terms_version", "") or "")
         accepted_terms = str(_get(profile, "gallery_terms_accepted_version", "") or "")
         attribution = self.watermark_text_edit.text().strip()
         watermark_enabled = self.watermark_enabled_check.isChecked()
@@ -2944,25 +2961,24 @@ class GalleryHubDialog(QDialog):
         if not jobs:
             return list(self._publish_queue)
 
-        self.publish_btn.setEnabled(False)
+        self._publishing = True
+        self._update_publish_button_state()
 
         def _worker(emit_progress: Callable[[Any], None]) -> list[tuple[int, Any]]:
             published_results: list[tuple[int, Any]] = []
-            terms_synced = (not terms_version) or (accepted_terms == terms_version)
+            batch_terms = terms_version
+            terms_synced = False
 
-            def _ensure_terms_accepted() -> None:
-                nonlocal terms_synced
-                if terms_synced or self._client is None:
-                    return
-                if hasattr(self._client, "update_profile"):
-                    try:
-                        self._client.update_profile(
-                            accept_gallery_terms_version=terms_version
-                        )
-                        terms_synced = True
-                    except TypeError:
-                        # Older mock update_profile without accept_gallery_terms_version
-                        terms_synced = True
+            def _ensure_terms_accepted() -> str:
+                nonlocal batch_terms, terms_synced
+                if not batch_terms:
+                    config = self._client.get_config()
+                    batch_terms = str(_get(config, "gallery_terms_version", "") or "")
+                if batch_terms and not terms_synced:
+                    if accepted_terms != batch_terms:
+                        self._client.update_profile(accept_gallery_terms_version=batch_terms)
+                    terms_synced = True
+                return batch_terms
 
             for idx, item, item_title, item_exif, item_badge in jobs:
                 result = self._run_single_upload_worker(
@@ -2974,7 +2990,6 @@ class GalleryHubDialog(QDialog):
                     watermark_enabled=watermark_enabled,
                     allow_download=allow_download,
                     openfocus_badge=item_badge,
-                    terms_version=terms_version,
                     ensure_terms=_ensure_terms_accepted,
                     emit_progress=emit_progress,
                 )
@@ -3005,16 +3020,19 @@ class GalleryHubDialog(QDialog):
             self._refresh_publish_queue_ui()
 
         def _on_finally() -> None:
+            self._publishing = False
             self._update_publish_button_state()
             self._refresh_publish_queue_ui()
 
-        self._runner.submit(
+        request = self._runner.submit(
             _worker,
             key="publish_batch",
             on_progress=_on_progress,
             on_success=_on_success,
             on_finally=_on_finally,
         )
+        if request < 0:
+            _on_finally()
         if wait:
             self._runner.wait_for_idle()
         return list(self._publish_queue)
@@ -3030,8 +3048,7 @@ class GalleryHubDialog(QDialog):
         watermark_enabled: bool,
         allow_download: bool,
         openfocus_badge: bool,
-        terms_version: str,
-        ensure_terms: Callable[[], None],
+        ensure_terms: Callable[[], str],
         emit_progress: Callable[[Any], None],
     ) -> Any:
         """Execute one queued image upload off-thread with strict per-row isolation."""
@@ -3063,7 +3080,7 @@ class GalleryHubDialog(QDialog):
                 )
                 return None
             _emit("confirming", t_gallery("gallery_publish_status_confirming"), None)
-            return self._do_confirm_step(client, upload_id, idem_key, _emit)
+            return self._do_confirm_step(client, upload_id, idem_key, _emit, previous_outcome_unknown=True)
 
         # Stage 0: Per-row isolated media preparation (off GUI thread)
         _emit("inspecting", t_gallery("gallery_publish_status_inspecting"), False)
@@ -3084,6 +3101,16 @@ class GalleryHubDialog(QDialog):
             _emit("failed", t_gallery("gallery_publish_zero_deducted", reason=reason), False)
             return None
 
+        try:
+            terms_version = ensure_terms()
+        except Exception as exc:
+            self._emit_pre_confirm_failure(exc, _emit)
+            return None
+        if not terms_version:
+            reason = translate_error("gallery_terms_required")
+            _emit("failed", t_gallery("gallery_publish_zero_deducted", reason=reason), False)
+            return None
+
         merged_exif = dict(media_meta.get("exif") or {})
         merged_exif.update(exif)
         public_exif = _filter_public_exif(merged_exif)
@@ -3099,15 +3126,6 @@ class GalleryHubDialog(QDialog):
             "watermark_enabled": watermark_enabled,
             "terms_version": terms_version,
         }
-
-        # Ensure Gallery User Agreement consent is persisted before inspect
-        try:
-            ensure_terms()
-        except Exception as exc:
-            reason = translate_error(_error_code_from_exc(exc))
-            _emit("failed", t_gallery("gallery_publish_zero_deducted", reason=reason), False)
-            return None
-
         # Prefer explicit 3-stage API (PR #264 GalleryClient) so confirm retry reuses upload_id
         has_3stage = (
             hasattr(client, "inspect_upload")
@@ -3118,18 +3136,8 @@ class GalleryHubDialog(QDialog):
             try:
                 inspect_resp = client.inspect_upload(thumb_webp, meta)
             except Exception as exc:
-                if _error_code_from_exc(exc) == "gallery_terms_required" and hasattr(
-                    client, "update_profile"
-                ):
-                    try:
-                        client.update_profile(accept_gallery_terms_version=terms_version)
-                        inspect_resp = client.inspect_upload(thumb_webp, meta)
-                    except Exception as retry_exc:
-                        self._emit_pre_confirm_failure(retry_exc, _emit)
-                        return None
-                else:
-                    self._emit_pre_confirm_failure(exc, _emit)
-                    return None
+                self._emit_pre_confirm_failure(exc, _emit)
+                return None
 
             upload_id = str(_get(inspect_resp, "upload_id", "") or "")
             full_url, full_headers, thumb_url, thumb_headers = _extract_upload_urls(inspect_resp)
@@ -3163,21 +3171,9 @@ class GalleryHubDialog(QDialog):
             _emit(stage, t_gallery(f"gallery_publish_status_{stage}"), None if stage == "confirming" else False)
 
         try:
-            try:
-                result = client.upload_work_atomic(
-                    thumb_webp,
-                    full_webp,
-                    meta,
-                    on_stage=_on_stage,
-                    idempotency_key=idem_key,
-                )
-            except TypeError:
-                result = client.upload_work_atomic(
-                    thumb_webp,
-                    full_webp,
-                    meta,
-                    on_stage=_on_stage,
-                )
+            result = client.upload_work_atomic(
+                thumb_webp, full_webp, meta, on_stage=_on_stage, idempotency_key=idem_key,
+            )
             _emit("done", t_gallery("gallery_publish_status_done"), True, _work_id(result))
             return result
         except Exception as exc:
@@ -3202,13 +3198,16 @@ class GalleryHubDialog(QDialog):
         upload_id: str,
         idem_key: str,
         emit_fn: Callable[..., None],
+        *,
+        previous_outcome_unknown: bool = False,
     ) -> Any:
         try:
             result = client.confirm_upload(upload_id, idempotency_key=idem_key)
-            emit_fn("done", t_gallery("gallery_publish_status_done"), True, _work_id(result))
+            work_id = _work_id(_get(result, "work", result))
+            emit_fn("done", t_gallery("gallery_publish_status_done"), True, work_id)
             return result
         except Exception as exc:
-            if _is_ambiguous_confirm_error(exc):
+            if previous_outcome_unknown or _is_ambiguous_confirm_error(exc):
                 reason = translate_error(_error_code_from_exc(exc))
                 emit_fn(
                     "confirm_unknown",

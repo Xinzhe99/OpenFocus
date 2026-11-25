@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import io
 import os
 from pathlib import Path
+from threading import Event
 import time
 from typing import Any
 
@@ -94,10 +95,10 @@ class FakeGalleryClient:
         self.user_works_response: Any = None
         self.pages: dict[str | None, dict[str, Any]] | None = None
 
-    def get_feed(self, *, cursor=None, tag=None, sort="latest"):
+    def get_feed(self, *, cursor=None, tag=None, sort="latest", source=None):
         if self.feed_delay_sec > 0:
             time.sleep(self.feed_delay_sec)
-        self.feed_calls.append({"cursor": cursor, "tag": tag, "sort": sort})
+        self.feed_calls.append({"cursor": cursor, "tag": tag, "sort": sort, "source": source})
         if self.pages is not None:
             return self.pages.get(cursor, {"items": [], "next_cursor": None})
         return {
@@ -254,6 +255,11 @@ def test_gallery_hub_four_tabs_control_ids_and_silent_refresh(qapp):
     dlg.select_tag_filter("insects")
     assert dlg.wait_for_idle()
     assert client.feed_calls[-1]["tag"] == "insects"
+    dlg.sort_combo.setCurrentIndex(dlg.sort_combo.findData("recommended"))
+    assert dlg.wait_for_idle()
+    assert client.feed_calls[-1] == {
+        "cursor": None, "tag": "insects", "sort": "recommended", "source": "square",
+    }
 
     dlg.tabs.setCurrentIndex(1)
     assert dlg.wait_for_idle()
@@ -423,6 +429,7 @@ def test_agreement_default_checked_and_atomic_zero_deduction_errors(qapp, tmp_pa
 
 def test_terms_consent_and_safe_confirm_retry_zero_double_charge(qapp, tmp_path):
     """Accept terms before inspect, and retry lost confirm with SAME upload_id + Idempotency-Key."""
+    terms_version = "2026-11-26"
 
     class ThreeStageClient:
         def __init__(self):
@@ -430,7 +437,9 @@ def test_terms_consent_and_safe_confirm_retry_zero_double_charge(qapp, tmp_path)
             self.inspect_calls = 0
             self.put_calls = 0
             self.confirm_calls: list[tuple[str, str | None]] = []
-            self.fail_first_confirm = True
+
+        def get_config(self):
+            return {"gallery_terms_version": terms_version}
 
         def update_profile(self, *, accept_gallery_terms_version=None, **_kwargs):
             if accept_gallery_terms_version is not None:
@@ -439,7 +448,8 @@ def test_terms_consent_and_safe_confirm_retry_zero_double_charge(qapp, tmp_path)
 
         def inspect_upload(self, thumb_webp, meta):
             self.inspect_calls += 1
-            assert self.terms_accepted == ["2026-11"]
+            assert self.terms_accepted == [terms_version]
+            assert meta["terms_version"] == terms_version
             return {
                 "upload_id": "upl-safe-42",
                 "upload_urls": {
@@ -453,21 +463,23 @@ def test_terms_consent_and_safe_confirm_retry_zero_double_charge(qapp, tmp_path)
 
         def confirm_upload(self, upload_id: str, *, idempotency_key=None):
             self.confirm_calls.append((upload_id, idempotency_key))
-            if self.fail_first_confirm:
-                self.fail_first_confirm = False
+            if len(self.confirm_calls) == 1:
                 raise FakeGalleryError(
                     "timeout", points_deducted=None, stage="confirm", transient=True
                 )
-            return {"id": "work-confirmed-42"}
+            if len(self.confirm_calls) == 2:
+                raise FakeGalleryError("unauthorized", stage="confirm")
+            return {"work": {"id": "work-confirmed-42"}, "points_balance": 400}
 
     store = FakeStateStore(accepted_terms="")
+    store.config["gallery_terms_version"] = ""
     client = ThreeStageClient()
     dlg = GalleryHubDialog(client=client, state_store=store, initial_tab=2)
     dlg.add_publish_files([_write_test_png(tmp_path / "safe.png")])
 
     # Attempt 1: terms accepted -> inspect -> 2 R2 PUTs -> confirm times out
     items = dlg.publish_all(wait=True)
-    assert client.terms_accepted == ["2026-11"]
+    assert client.terms_accepted == [terms_version]
     assert client.inspect_calls == 1
     assert client.put_calls == 2
     assert len(client.confirm_calls) == 1
@@ -480,15 +492,51 @@ def test_terms_consent_and_safe_confirm_retry_zero_double_charge(qapp, tmp_path)
 
     # Attempt 2 (Retry Confirm): MUST NOT re-run inspect or PUT; reuses exact upload_id + Idempotency-Key!
     items = dlg.publish_all(wait=True)
+    assert items[0].stage == "confirm_unknown"
+    assert items[0].points_deducted is None
+    items = dlg.publish_all(wait=True)
     assert client.inspect_calls == 1
     assert client.put_calls == 2
-    assert len(client.confirm_calls) == 2
-    assert client.confirm_calls[0] == ("upl-safe-42", first_idem)
-    assert client.confirm_calls[1] == ("upl-safe-42", first_idem)
+    assert client.confirm_calls == [("upl-safe-42", first_idem)] * 3
     assert items[0].stage == "done"
     assert items[0].points_deducted is True
     assert items[0].work_id == "work-confirmed-42"
     dlg.close()
+
+
+def test_publish_owns_the_queue_until_background_upload_finishes(qapp, tmp_path):
+    entered = Event()
+    release = Event()
+
+    class SlowClient(FakeGalleryClient):
+        def upload_work_atomic(self, *args, **kwargs):
+            entered.set()
+            assert release.wait(8)
+            return super().upload_work_atomic(*args, **kwargs)
+
+    client = SlowClient()
+    dialog = GalleryHubDialog(client=client, state_store=FakeStateStore(), initial_tab=2)
+    dialog.add_publish_files([_write_test_png(tmp_path / "stack.png")])
+    dialog.show()
+    dialog.publish_btn.click()
+    try:
+        assert entered.wait(5)
+        dialog.agreement_check.setChecked(False)
+        dialog.agreement_check.setChecked(True)
+        assert not dialog.publish_btn.isEnabled()
+        assert not dialog.clear_files_btn.isEnabled()
+        dialog.publish_all()
+        dialog.clear_publish_queue()
+        assert len(dialog.publish_queue) == 1
+        assert not dialog.close()
+        assert dialog.isVisible()
+    finally:
+        release.set()
+        assert dialog.wait_for_idle()
+        dialog.close()
+
+    assert len(client.upload_calls) == 1
+    assert dialog.publish_queue[0].stage == "done"
 
 
 def test_per_row_publish_isolation_and_per_image_exif_preservation(qapp, tmp_path):

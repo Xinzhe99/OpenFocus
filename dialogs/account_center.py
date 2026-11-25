@@ -268,8 +268,10 @@ class AccountCenterDialog(QDialog):
             err_sig.connect(self._on_store_sync_error)
 
     def _on_store_profile_changed(self, profile: Any) -> None:
-        if profile is not None:
-            self.apply_profile(profile)
+        self.apply_profile(profile)
+        if profile is None:
+            self._manual_refresh_pending = False
+            return
         if self._manual_refresh_pending:
             self._manual_refresh_pending = False
             self.points_status.setText(t_gallery("account_center_refreshed"))
@@ -754,9 +756,11 @@ class AccountCenterDialog(QDialog):
             "points_balance": points,
         }
 
-        if email:
+        user_id = self._profile["user_id"]
+        identity = email or (nickname or user_id if user_id else "")
+        if identity:
             self.email_label.setText(
-                t_gallery("account_center_signed_in_as", email=email)
+                t_gallery("account_center_signed_in_as", email=identity)
             )
         else:
             self.email_label.setText(t_gallery("account_center_not_signed_in"))
@@ -1146,6 +1150,7 @@ class AccountCenterDialog(QDialog):
         for notif in notifications:
             if isinstance(notif, Mapping):
                 entry = dict(notif)
+                entry.setdefault("is_read", bool(entry.get("read_at")))
                 if not entry.get("id") and entry.get("notification_id"):
                     entry["id"] = entry["notification_id"]
                 if not entry.get("actor_name") and entry.get("actor_nickname"):
