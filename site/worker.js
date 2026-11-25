@@ -441,7 +441,7 @@ function validDeltas(data) {
     const full = data.assets[DELTA_FULL_KINDS.get(platform)];
     if (!full || !name || name !== deltaName(data.tag, from, platform) ||
         !Number.isSafeInteger(size) || size <= 0 || size >= full.size ||
-        size >= 2147483648 || typeof digest !== "string" || !/^sha256:[0-9a-f]{64}$/.test(digest)) continue;
+        size >= 2147483648 || typeof digest !== "string" || !/^sha256:[0-9a-fA-F]{64}$/.test(digest)) continue;
     if (deltas.has(name)) duplicates.add(name);
     deltas.set(name, { name, size, digest, from, platform });
   }
@@ -879,10 +879,10 @@ async function handleVersionedDownload(request, env, ctx) {
     return response || textResponse("The delta mirror is not ready; retry the download.", 503, { "Retry-After": "60" }, method);
   }
   const alias = /^(v[0-9]+(?:\.[0-9]+)*)\.999999999\.([1-9][0-9]*)$/.exec(tag);
-  const objectTag = alias && !alias[1].split(".").includes("999999999")
+  const objectTag = alias && !alias[1].split(".").some((part) => /^0*999999999$/.test(part))
     ? `${alias[1]}-beta.${alias[2]}` : tag;
   if (parts.length !== 2 || !/^v[0-9]+(?:\.[0-9]+)*(?:-beta\.[1-9][0-9]*)?$/.test(tag) ||
-      (tag.split("-beta.")[0].split(".").includes("999999999") && !alias) ||
+      (tag.split("-beta.")[0].split(".").some((part) => /^0*999999999$/.test(part)) && !alias) ||
       (alias && objectTag === tag) || !DOWNLOAD_KINDS.has(kind)) {
     return textResponse("Unknown release download", 404, {}, method);
   }

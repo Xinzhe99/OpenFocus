@@ -114,7 +114,10 @@ class UpdateBanner(QWidget):
         build is already downloaded, so the primary action restarts instead
         of starting a download.
         """
-        self._tag = tag or ""
+        if not tag:
+            self.hide_banner()
+            return
+        self._tag = tag
         self._current_version = current_version
         self.set_ready(ready)
         self.show()

@@ -30,6 +30,18 @@ if ($dryRun) {
 
 $out = Join-Path $env:TEMP "OpenFocus-$($release.tag -replace '[^A-Za-z0-9._-]', '_')-setup.exe"
 Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing
+if ($asset.size -and (Get-Item -LiteralPath $out).Length -ne [int64]$asset.size) {
+    Remove-Item -LiteralPath $out -Force -ErrorAction SilentlyContinue
+    throw "The downloaded OpenFocus installer is incomplete."
+}
+if ($asset.digest -match '^sha256:([0-9a-fA-F]{64})$') {
+    $expectedHash = $matches[1].ToLowerInvariant()
+    $actualHash = (Get-FileHash -LiteralPath $out -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actualHash -ne $expectedHash) {
+        Remove-Item -LiteralPath $out -Force -ErrorAction SilentlyContinue
+        throw "The downloaded OpenFocus installer failed SHA-256 verification."
+    }
+}
 Write-Host "Starting the installer..."
 $process = Start-Process -FilePath $out -Wait -PassThru
 if ($process.ExitCode -ne 0) {

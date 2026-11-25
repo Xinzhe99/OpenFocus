@@ -101,7 +101,7 @@ def mac_app_bundle() -> Optional[str]:
 
 def linux_app_bundle() -> Optional[str]:
     """Path of the running official Linux onedir bundle, if present."""
-    if sys.platform != "linux" or not is_frozen():
+    if sys.platform != "linux" or not is_frozen() or os.environ.get("APPIMAGE"):
         return None
     from utils.release_delta import platform_key
     if platform_key() != "linux-x86_64":
@@ -276,9 +276,15 @@ def extract_zip(zip_path: str, dest_root: str,
         entries = archive.infolist()
         for i, entry in enumerate(entries):
             check_cancel()
-            target = os.path.join(root, entry.filename)
+            name = entry.filename
+            if (not name or "\\" in name or name.startswith("/")
+                    or (len(name) > 1 and name[1] == ":")):
+                raise ValueError("Archive entry escapes the staging directory")
+            target = os.path.join(root, name)
             if os.path.commonpath((root, os.path.realpath(target))) != root:
                 raise ValueError("Archive entry escapes the staging directory")
+            if os.path.realpath(target) == root:
+                continue
             mode = entry.external_attr >> 16
             if entry.is_dir():
                 os.makedirs(target, exist_ok=True)
@@ -305,9 +311,15 @@ def extract_zip(zip_path: str, dest_root: str,
                 if os.path.isabs(link) or os.path.commonpath((root, resolved)) != root:
                     raise ValueError("Archive symlink escapes the staging directory")
                 os.makedirs(os.path.dirname(target), exist_ok=True)
+                if os.path.lexists(target) and not os.path.isdir(target):
+                    os.unlink(target)
                 os.symlink(link, target)
             else:
                 os.makedirs(os.path.dirname(target), exist_ok=True)
+                if os.path.islink(target):
+                    os.unlink(target)
+                elif os.path.isfile(target) and not os.access(target, os.W_OK):
+                    os.chmod(target, stat.S_IWRITE | stat.S_IREAD)
                 with archive.open(entry) as source, open(target, "wb") as dest:
                     while True:
                         check_cancel()
@@ -479,8 +491,21 @@ def mark_staging_complete(tag: str) -> bool:
 def discard_staging(tag: str) -> None:
     """Remove an incomplete staging folder (never leave it half-unpacked)."""
     import shutil
+
+    def _clear_readonly(func, path, exc_info):
+        try:
+            mode = stat.S_IWRITE | stat.S_IREAD
+            if os.name != "nt" and os.path.isdir(path):
+                mode = 0o700
+            os.chmod(path, mode)
+            func(path)
+        except OSError:
+            pass
+
     try:
-        shutil.rmtree(staging_root_for(tag), ignore_errors=True)
+        root = staging_root_for(tag)
+        if os.path.exists(root):
+            shutil.rmtree(root, onerror=_clear_readonly)
     except Exception:
         pass
 
@@ -538,6 +563,22 @@ function Restart-App {
     $env:PYINSTALLER_RESET_ENVIRONMENT = '1'
     try { Start-Process -FilePath (Join-Path $c.app 'OpenFocus.exe') -ArgumentList '--restore-session' } catch {}
 }
+function Move-WithRetry([string]$Source, [string]$Destination) {
+    for ($attempt = 0; $attempt -lt 10; $attempt++) {
+        try {
+            Move-Item -LiteralPath $Source -Destination $Destination
+            return
+        } catch {
+            if ($attempt -lt 9 -and $_.Exception -is [System.IO.IOException] -and
+                -not ($_.Exception -is [System.IO.FileNotFoundException]) -and
+                -not ($_.Exception -is [System.IO.DirectoryNotFoundException])) {
+                Start-Sleep -Milliseconds 250
+                continue
+            }
+            throw
+        }
+    }
+}
 try {
     $stage = 'process exit timed out'
     if ($c.pid -gt 0) {
@@ -570,22 +611,22 @@ try {
         !($_.PSIsContainer -and $_.Name -match '^_openfocus_runtime_v[0-9.]+(?:-beta\.[0-9]+)?$') -and
         !(Test-Path -LiteralPath (Join-Path $candidate $_.Name))
     }).Count -gt 0
-    Move-Item -LiteralPath $c.app -Destination $backup
+    Move-WithRetry $c.app $backup
     $oldMoved = $true
-    Move-Item -LiteralPath $candidate -Destination $c.app
+    Move-WithRetry $candidate $c.app
     $newMoved = $true
     foreach ($name in $preserve) {
-        Move-Item -LiteralPath (Join-Path $backup $name) -Destination (Join-Path $c.app $name)
+        Move-WithRetry (Join-Path $backup $name) (Join-Path $c.app $name)
         $moved += $name
     }
 } catch {
     $rollbackOK = $true
     try {
         foreach ($name in $moved) {
-            Move-Item -LiteralPath (Join-Path $c.app $name) -Destination (Join-Path $backup $name)
+            Move-WithRetry (Join-Path $c.app $name) (Join-Path $backup $name)
         }
-        if ($newMoved) { Move-Item -LiteralPath $c.app -Destination $candidate }
-        if ($oldMoved) { Move-Item -LiteralPath $backup -Destination $c.app }
+        if ($newMoved) { Move-WithRetry $c.app $candidate }
+        if ($oldMoved) { Move-WithRetry $backup $c.app }
     } catch { $rollbackOK = $false }
     if (!$rollbackOK) {
         Result ("failed`nrollback failed; backup: " + $backup)
@@ -600,12 +641,14 @@ try {
             # The helper may have different Windows credentials. Relaunch only
             # from the original user's process, including after safe rollback.
             if ($p.ExitCode -in @(0, 1)) { Restart-App }
+            try { if ($PSCommandPath) { Remove-Item -LiteralPath $PSCommandPath -Force } } catch {}
             exit $p.ExitCode
         } catch { $stage = 'elevation cancelled or failed' }
     }
     Result ("failed`n" + $stage + $(if ($oldMoved) { '; rollback succeeded' } else { '' }))
     if ($stage -eq 'process exit timed out') { exit 3 }
     Restart-App
+    try { if (!$elevated -and $PSCommandPath) { Remove-Item -LiteralPath $PSCommandPath -Force } } catch {}
     exit 1
 }
 if ($keepBackup) { Result ("ok`n" + $backup) } else { Result 'ok' }
@@ -613,6 +656,7 @@ foreach ($path in @($(if (!$keepBackup) { $backup }), $c.root, $c.zip)) {
     if ($path) { try { Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction Stop } catch {} }
 }
 Restart-App
+try { if (!$elevated -and $PSCommandPath) { Remove-Item -LiteralPath $PSCommandPath -Force } } catch {}
 exit 0
 '''
     inner = template.replace('__CONFIG__', config).replace('__ELEVATED__', '$true').replace('__INNER__', '')
@@ -711,6 +755,7 @@ if [ "$macos" = 1 ]; then
 else
     cp -a -- "$staged" "$candidate" && [ -x "$candidate/OpenFocus" ] &&
         [ -d "$candidate/_internal" ] || fail 'candidate copy failed'
+    chmod u+rwx -- "$candidate" || fail 'candidate copy failed'
     rm -rf -- "$candidate/OpenFocus.portable" "$candidate/OpenFocusData" || fail 'candidate copy failed'
 fi
 [ -d "$app" ] && [ ! -L "$app" ] && mv -- "$app" "$backup" || fail 'switch failed'

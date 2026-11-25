@@ -69,7 +69,7 @@ def select_delta_asset(deltas, *, target_tag: str, current_version: str,
     platform = platform_key()
     if not platform or not isinstance(current_version, str) or not isinstance(target_tag, str):
         return None
-    base_tag = "v" + current_version.removeprefix("v")
+    base_tag = "v" + current_version.strip().lstrip("vV")
     if (not isinstance(deltas, list) or max(len(base_tag), len(target_tag)) > 32
             or not _OFFICIAL_TAG.fullmatch(base_tag) or not _OFFICIAL_TAG.fullmatch(target_tag)
             or not is_newer(target_tag, base_tag) or type(full_size) is not int or full_size <= 0
@@ -236,13 +236,22 @@ def _md_to_plain(md: str) -> str:
     return text if text else (md or "").strip()
 
 
+_MAX_API_BYTES = 4 * 1024 * 1024
+
+
 def _api_get(url: str, timeout: int = REQUEST_TIMEOUT_S) -> Optional[dict]:
     req = urllib.request.Request(
         url,
         headers={"Accept": "application/json", "User-Agent": "OpenFocus"},
     )
     with open_url(urllib.request.urlopen, req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+        raw = resp.read(_MAX_API_BYTES + 1)
+        if len(raw) > _MAX_API_BYTES:
+            raise ValueError("Invalid update metadata")
+        data = json.loads(raw.decode("utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("Invalid update metadata")
+        return data
 
 
 def _note_version(tag: str) -> tuple:
@@ -370,7 +379,8 @@ def download_to_file(url: str, dest_path: str,
     req = urllib.request.Request(url, headers={"User-Agent": "OpenFocus"})
     try:
         with open_url(urllib.request.urlopen, req, timeout=REQUEST_TIMEOUT_S) as resp:
-            total = int(resp.headers.get("Content-Length", 0) or 0)
+            raw_len = (resp.headers.get("Content-Length") or "").strip()
+            total = int(raw_len) if raw_len.isdigit() else 0
             done = 0
             with open(part_path, "wb") as f:
                 while True:
@@ -489,7 +499,7 @@ def check_async(current_version: str, on_result: Callable[..., None], quiet: boo
                 notes = release_note_entries(current_version, tag, releases)
                 args = ("update", tag, url, zip_url, setup_url, zip_digest, notes)
                 if with_offer:
-                    offer = UpdateOffer(tag, zip_url, zip_digest, portable_zip["size"],
+                    offer = UpdateOffer(tag, zip_url, zip_digest, portable_zip.get("size", 0),
                                         portable_zip.get("delta")) if portable_zip else None
                     on_result(*args, offer)
                 else:
