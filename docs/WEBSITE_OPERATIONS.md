@@ -124,13 +124,16 @@ the static binding. Every page and asset request counts as a Worker invocation.
 ### Website traffic totals
 
 An account-specific Worker config can bind `SITE_ANALYTICS` to a D1 database
-with `site/migrations/0002_website_traffic.sql` applied. Keep this binding on
-subsequent deployments. For the apex domain, it keeps daily Beijing-time
-totals for successful English and Chinese homepage requests and desktop
-download starts through `/download/latest/*`. Locale redirects,
+with the website traffic migrations in `site/migrations` applied. Keep this
+binding on subsequent deployments. For the apex domain, it keeps daily
+Beijing-time totals for successful English and Chinese homepage requests and
+desktop download starts through `/download/latest/*`. Locale redirects,
 prefetch requests and HEAD probes are excluded. The download counter includes
 successful full or byte-zero responses and redirects to GitHub. The counts
-contain dates and totals. Publish the homepage privacy text with this change.
+contain dates and totals, with downloads grouped by the package platform
+(Windows, macOS or Linux). Apply `0003_website_download_platforms.sql` before
+deploying the platform counters. The older total-only rows keep their counts
+with platform values unset. Publish the homepage privacy text with the update.
 The separate `ANALYTICS` binding below enables desktop usage reports and
 detailed download statistics.
 
