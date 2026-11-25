@@ -28,12 +28,15 @@ _RENDER_STAGE_KEYS = {
 
 
 def __getattr__(name):
-    """Lazily expose RenderProcessWorker so cold GUI startup skips worker setup."""
+    """Keep render dependencies importable without loading them at GUI startup."""
     if name == 'RenderProcessWorker':
-        from core.render_process import RenderProcessWorker
-        globals()[name] = RenderProcessWorker
-        return RenderProcessWorker
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+        from core.render_process import RenderProcessWorker as dependency
+    elif name == 'ROIRenderOptionsDialog':
+        from dialogs import ROIRenderOptionsDialog as dependency
+    else:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    globals()[name] = dependency
+    return dependency
 
 
 def _base_frame(method, enabled):
@@ -1220,8 +1223,10 @@ class RenderManager:
                     self._abort_compare_run()
                     return
                 else:
-                    from dialogs import ROIRenderOptionsDialog
-                    dialog = ROIRenderOptionsDialog(
+                    dialog_cls = globals().get('ROIRenderOptionsDialog')
+                    if dialog_cls is None:
+                        dialog_cls = __getattr__('ROIRenderOptionsDialog')
+                    dialog = dialog_cls(
                         len(window.roi_aligned_images), window,
                         frame_names=names, roi_size=roi_size,
                         output_size=output_size, frames=window.roi_aligned_images,

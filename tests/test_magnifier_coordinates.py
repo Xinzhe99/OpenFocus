@@ -143,6 +143,75 @@ def test_wheel_requests_native_detail_for_final_anchored_view(view, qapp, dpr):
     assert view.set_source_region(preview, request[2], source_key=key, request=request)
 
 
+@pytest.mark.parametrize('finish, cursor', [
+    ('idle', Qt.CursorShape.ClosedHandCursor),
+    ('mouse', Qt.CursorShape.OpenHandCursor),
+    ('space', Qt.CursorShape.ArrowCursor),
+])
+def test_pan_defers_view_regions_until_refinement(view, finish, cursor):
+    preview = QPixmap(100, 75)
+    preview.fill(QColor('magenta'))
+    view.set_display_pixmap(preview, source_size=(4000, 3000), source_key='frame')
+    view.zoom_view(True)
+    requests = []
+    view.sourceRegionRequested.connect(lambda key, request: requests.append((key, request)))
+
+    start = QPointF(200, 150)
+    end = QPointF(240, 180)
+    view.set_space_pressed(True)
+    mouse(view, QMouseEvent.Type.MouseButtonPress, start, Qt.MouseButton.LeftButton)
+    mouse(view, QMouseEvent.Type.MouseMove, end)
+    assert view.cursor().shape() == Qt.CursorShape.ClosedHandCursor
+    assert view._interactive_transform
+    view.grab()
+    assert not requests
+
+    if finish == 'idle':
+        view._refine_timer.timeout.emit()
+    elif finish == 'mouse':
+        mouse(view, QMouseEvent.Type.MouseButtonRelease, end, Qt.MouseButton.LeftButton)
+    else:
+        view.set_space_pressed(False)
+    assert not view._interactive_transform
+    assert not view._refine_timer.isActive()
+    assert view.cursor().shape() == cursor
+    view.grab()
+    [(key, request)] = requests
+    assert key == 'frame' and request[0] == 'view'
+    _, x, y = view._get_layout_params()
+    visible_origin = view._map_to_base(QPointF(max(0, x), max(0, y)))
+    assert request[2][:2] == pytest.approx((visible_origin.x(), visible_origin.y()))
+
+
+def test_reset_view_finishes_wheel_refinement(view):
+    view.set_display_pixmap(coordinate_grid())
+    wheel(view, QPointF(200, 150))
+    assert view._interactive_transform
+
+    view.reset_view()
+
+    assert not view._interactive_transform
+    assert not view._refine_timer.isActive()
+    assert view._zoom_factor == 1.0
+    assert view._pan_offset == QPointF()
+
+
+def test_leaving_roi_mode_clears_delete_hover_and_cursor(view):
+    view.set_display_pixmap(coordinate_grid())
+    view.roi_mode = True
+    view.set_roi_rect(QRectF(80, 60, 80, 80))
+    roi = view._roi_in_widget(view.get_roi_rect())
+    delete_center = view._get_handle_rects(roi)['del'].center()
+    mouse(view, QMouseEvent.Type.MouseMove, delete_center)
+    assert view._hovering_handle == 'del'
+    assert view.cursor().shape() == Qt.CursorShape.PointingHandCursor
+
+    view.roi_mode = False
+
+    assert view._hovering_handle is None
+    assert view.cursor().shape() == Qt.CursorShape.ArrowCursor
+
+
 def test_move_and_wheel_keep_cursor_as_loupe_centre(view, qapp):
     view.set_display_pixmap(coordinate_grid())
     start = QPointF(190, 140)

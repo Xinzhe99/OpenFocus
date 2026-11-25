@@ -1,4 +1,3 @@
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 import os
 import sys
@@ -53,7 +52,12 @@ def test_render_manager_defers_render_process_and_roi_dialog_imports():
     assert res.returncode == 0, res.stderr
 
 
-def test_prewarm_persistent_worker_reuses_child_and_respects_guards(monkeypatch):
+def test_prewarm_persistent_worker_reuses_child_and_respects_guards(monkeypatch, tmp_path, isolated_process_env):
+    from core import frame_storage
+
+    scratch_dir = tmp_path / 'warm-render'
+    scratch_dir.mkdir()
+    monkeypatch.setattr(frame_storage, '_storage_directory', str(scratch_dir))
     render_process.shutdown_persistent_worker()
     try:
         # Tight memory skips pre-warming safely.
@@ -71,6 +75,7 @@ def test_prewarm_persistent_worker_reuses_child_and_respects_guards(monkeypatch)
         assert render_process.prewarm_persistent_worker(min_ram_bytes=64 * 1024**2, block=True) is True
         handle = render_process._PERSISTENT_HANDLE
         assert handle is not None
+        assert handle.directory == str(scratch_dir)
         assert handle.process.is_alive()
 
         # Calling prewarm again when already warm is a fast no-op.
@@ -96,7 +101,6 @@ def test_magnifier_label_reuses_ping_pong_backing_buffers_and_refines(qapp):
     lbl._update_scaled_pixmap()
 
     slots_seen = []
-    initial_ids = None
     lbl._is_panning = True
     for step in range(8):
         lbl._pan_offset = QPointF(step * 5.0, step * 2.0)
@@ -106,14 +110,14 @@ def test_magnifier_label_reuses_ping_pong_backing_buffers_and_refines(qapp):
         slots_seen.append(lbl._backing_index)
     assert set(slots_seen) == {0, 1}
     assert all(slots_seen[i] != slots_seen[i + 1] for i in range(len(slots_seen) - 1))
-    initial_ids = (id(lbl._backing_pixmaps[0]), id(lbl._backing_pixmaps[1]))
+    backing_storage = tuple(pixmap.cacheKey() >> 32 for pixmap in lbl._backing_pixmaps)
 
-    # More pans keep reusing the exact same two QPixmap backing objects (no reallocations).
+    # Painting changes the revision while the two allocations stay stable.
     for step in range(8, 20):
         lbl._pan_offset = QPointF(step * 5.0, step * 2.0)
         lbl._begin_interactive_transform()
         lbl._update_scaled_pixmap()
-        assert (id(lbl._backing_pixmaps[0]), id(lbl._backing_pixmaps[1])) == initial_ids
+        assert tuple(pixmap.cacheKey() >> 32 for pixmap in lbl._backing_pixmaps) == backing_storage
 
     # Waiting past the refine timer restores smooth transform automatically.
     lbl._is_panning = False
@@ -158,6 +162,7 @@ def test_fast_png_encode_roundtrip_with_exif_and_icc(monkeypatch, tmp_path, dtyp
 def test_load_from_filepaths_overlaps_first_preview_with_remaining_scans(monkeypatch, tmp_path):
     monkeypatch.setattr(resource_policy, "probe_memory", _ample_ram)
     monkeypatch.setattr(resource_policy, "probe_resources", _ample_ram)
+    monkeypatch.setattr(resource_policy, "cpu_capacity", lambda *_: 4)
 
     paths = []
     for i in range(4):
@@ -173,7 +178,7 @@ def test_load_from_filepaths_overlaps_first_preview_with_remaining_scans(monkeyp
     def tracked_scan(path, *args, **kwargs):
         if os.path.basename(path) != "f_0.jpg":
             other_scanning.set()
-            in_preview.wait(timeout=1.5)
+            assert in_preview.wait(timeout=3)
         return real_scan(path, *args, **kwargs)
 
     def tracked_preview(frame, should_cancel=None):
@@ -189,3 +194,45 @@ def test_load_from_filepaths_overlaps_first_preview_with_remaining_scans(monkeyp
     assert ok, msg
     assert len(frames) == 4
     assert in_preview.is_set() and other_scanning.is_set()
+
+
+def test_load_rejection_cancels_running_first_preview(monkeypatch, tmp_path):
+    from core.image_loader import UnsupportedTransparency
+
+    monkeypatch.setattr(resource_policy, "probe_resources", _ample_ram)
+    monkeypatch.setattr(resource_policy, "cpu_capacity", lambda *_: 2)
+    first = tmp_path / "first.jpg"
+    rejected = tmp_path / "rejected.png"
+    assert cv2.imwrite(str(first), np.zeros((64, 64, 3), dtype=np.uint8))
+    assert cv2.imwrite(str(rejected), np.zeros((64, 64, 3), dtype=np.uint8))
+
+    preview_started = threading.Event()
+    preview_cancelled = threading.Event()
+    scan_source = source_frames.scan_source
+
+    def inspect(path, *args, **kwargs):
+        if os.path.basename(path) == rejected.name:
+            assert preview_started.wait(4)
+            raise UnsupportedTransparency(str(path))
+        return scan_source(path, *args, **kwargs)
+
+    def preview(frame, should_cancel=None):
+        preview_started.set()
+        deadline = time.monotonic() + 4
+        while time.monotonic() < deadline:
+            if should_cancel():
+                preview_cancelled.set()
+                raise InterruptedError("Preview cancelled")
+            time.sleep(0.01)
+        pytest.fail("The first preview did not receive the load cancellation")
+
+    monkeypatch.setattr(source_frames, "scan_source", inspect)
+    monkeypatch.setattr(source_frames, "ensure_display_preview", preview)
+    loader = ImageStackLoader()
+
+    ok, message, frames, names = loader.load_from_filepaths(
+        [str(first), str(rejected)], thread_count=2)
+
+    assert not ok and str(rejected) in message
+    assert not frames and not names
+    assert preview_cancelled.is_set()

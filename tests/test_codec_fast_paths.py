@@ -280,6 +280,28 @@ def test_fast_jpeg_and_streamed_png_roundtrip(tmp_path, monkeypatch):
     assert decode_image(str(p_tight)).shape == bgr8.shape
 
 
+def test_png_skips_fast_encode_when_only_streamed_working_set_fits(tmp_path, monkeypatch):
+    imagecodecs = pytest.importorskip('imagecodecs')
+    pixels = np.random.default_rng(506).integers(0, 256, (1024, 1024, 3), np.uint8)
+    snapshot = resource_policy.ResourceSnapshot(
+        available_ram=512 * 1024 ** 2, total_ram=4 * 1024 ** 3,
+    )
+    monkeypatch.setattr(resource_policy, 'probe_memory', lambda: snapshot)
+    monkeypatch.setattr(resource_policy, 'probe_resources', lambda kind='CPU': snapshot)
+    # This fits the previous estimate, which counted only the RGB conversion
+    # and one output buffer beyond the fixed scratch allowance.
+    monkeypatch.setattr(resource_policy, 'ram_budget', lambda snapshot: 24 * 1024 ** 2)
+
+    def unexpected_full_encode(*args, **kwargs):
+        pytest.fail('PNG encode exceeded the in-memory budget')
+
+    monkeypatch.setattr(imagecodecs, 'spng_encode', unexpected_full_encode, raising=False)
+    path = tmp_path / 'tight.png'
+    assert imwrite_auto(path, pixels, get_imwrite_params('.png'), exif=b'',
+                        should_cancel=lambda: False)
+    np.testing.assert_array_equal(decode_image(str(path)), pixels)
+
+
 def test_source_cache_retains_two_frames_with_midrange_budget():
     GiB = 1024 ** 3
     MiB = 1024 ** 2

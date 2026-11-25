@@ -65,6 +65,11 @@ class SourceManager(QObject):
         self._review_notice_timer.setSingleShot(True)
         self._review_notice_timer.setInterval(5000)
         self._review_notice_timer.timeout.connect(self._expire_review_notice)
+        self._render_prewarm_timer = QTimer(self)
+        self._render_prewarm_timer.setSingleShot(True)
+        self._render_prewarm_timer.setInterval(400)
+        self._render_prewarm_timer.timeout.connect(self._start_render_prewarm)
+        self._render_prewarm_stack = None
         self._stack_baseline = None
         window.linear_dng_metadata = None
         self._review_error = ""
@@ -694,12 +699,23 @@ class SourceManager(QObject):
         self._show_load_status()
         worker.start()
 
-    def _schedule_render_prewarm(self) -> None:
+    def _start_render_prewarm(self) -> None:
+        from PyQt6 import sip
+
+        window = self.window
+        stack = self._render_prewarm_stack
+        self._render_prewarm_stack = None
+        if (isinstance(window, QObject) and sip.isdeleted(window)) or getattr(window, "_shutting_down", False):
+            return
         if (os.environ.get("QT_QPA_PLATFORM") == "offscreen"
                 or os.environ.get("OPENFOCUS_DISABLE_PERSISTENT_RENDER_WORKER")):
             return
-        render = getattr(self.window, "render_manager", None)
-        if render is not None and getattr(render, "_closing", False):
+        render = getattr(window, "render_manager", None)
+        if (render is None or getattr(render, "_closing", False) or self._reset_busy()
+                or getattr(render, "_pending_storage", None) is not None):
+            return
+        if stack != (getattr(self, "_load_generation", 0), id(window.raw_images),
+                     getattr(window, "source_revision", 0)):
             return
         from core.render_process import prewarm_persistent_worker
         prewarm_persistent_worker()
@@ -715,8 +731,9 @@ class SourceManager(QObject):
             if (getattr(worker, "_load_applied", False)
                     and os.environ.get("QT_QPA_PLATFORM") != "offscreen"
                     and not os.environ.get("OPENFOCUS_DISABLE_PERSISTENT_RENDER_WORKER")):
-                from PyQt6.QtCore import QTimer
-                QTimer.singleShot(400, self._schedule_render_prewarm)
+                self._render_prewarm_stack = (getattr(self, "_load_generation", 0),
+                                              id(worker._load_stack), worker._load_revision)
+                self._render_prewarm_timer.start()
         worker.deleteLater()
 
     def _start_queued_render(self, worker) -> None:

@@ -1656,9 +1656,11 @@ class ImageStackLoader:
                             paths.extend([path] * len(frames))
                             names.extend(f'{stem}_page_{index + 1:03d}.tif' if len(frames) > 1
                                          else os.path.basename(path) for index, frame in enumerate(frames))
-                            if first_preview_future is None and workers >= 2 and len(sources) >= 2:
+                            # RAW display can fall back to unpacking the full sensor.
+                            if (first_preview_future is None and workers >= 2 and done < len(sources)
+                                    and not getattr(images[0], 'raw_sensor_shape', ())):
                                 first_preview_future = pool.submit(
-                                    ensure_display_preview, images[0], should_cancel=self.should_cancel,
+                                    ensure_display_preview, images[0], should_cancel=scan_cancelled,
                                 )
                         if self.progress_callback is not None:
                             self.progress_callback(done, len(sources))
@@ -1678,7 +1680,7 @@ class ImageStackLoader:
                     stop_scans.set()
                     for future in window:
                         future.cancel()
-                    if first_preview_future is not None and self.should_cancel():
+                    if first_preview_future is not None:
                         first_preview_future.cancel()
         if not images:
             return False, 'Could not load any image files', [], []

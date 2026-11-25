@@ -203,6 +203,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   normalization and OpenCV's reduction for normalized grayscale. Check for
   cancellation between exposure strips. Encode compressed TIFF strips in a
   bounded queue and preserve their output order.
+- Prewarm the first render process after loading a stack when memory permits,
+  and prepare the first display preview while remaining headers are scanned.
+  Reuse display buffers when panning or zooming and accelerate eligible 8-bit
+  PNG exports with the existing color and metadata handling.
 - Speed up packed OpenFocus A, B, and C fusion, exposure adjustment, tile
   reduction, and alignment with AVX2 on supported CPUs. Preserve scalar pixel
   arithmetic for strided views, wide integer sums, and float rounding.

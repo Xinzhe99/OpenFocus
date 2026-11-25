@@ -197,6 +197,35 @@ def test_deferred_render_does_not_outlive_its_loaded_stack(qapp, monkeypatch, ch
     assert render._render_after_load is None
 
 
+@pytest.mark.parametrize('change', [None, 'replace', 'new_load', 'render', 'close'])
+def test_post_load_prewarm_requires_current_idle_stack(qapp, monkeypatch, change):
+    from core import render_process
+
+    window, render, source = _setup(qapp, frames=3)
+    monkeypatch.delenv('QT_QPA_PLATFORM', raising=False)
+    monkeypatch.delenv('OPENFOCUS_DISABLE_PERSISTENT_RENDER_WORKER', raising=False)
+    calls = []
+    monkeypatch.setattr(render_process, 'prewarm_persistent_worker', lambda: calls.append(True))
+    worker = source._load_worker
+    worker._load_applied = True
+    worker._load_stack = window.raw_images
+    worker._load_revision = window.source_revision
+    source._finish_load_worker(worker)
+    timer = source._render_prewarm_timer
+    assert timer.isActive()
+    if change == 'replace':
+        window.raw_images = list(window.raw_images)
+    elif change == 'new_load':
+        source._load_worker = _Worker()
+    elif change == 'render':
+        render.worker = object()
+    elif change == 'close':
+        window._shutting_down = True
+    timer.stop()
+    timer.timeout.emit()
+    assert calls == ([True] if change is None else [])
+
+
 def test_control_poll_does_not_cancel_a_deferred_render(qapp, monkeypatch):
     from PyQt6.QtCore import QTimer
     _window, render, source = _setup(qapp, frames=3)
