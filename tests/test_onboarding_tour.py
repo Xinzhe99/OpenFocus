@@ -1,7 +1,4 @@
 """Tests for upgraded WelcomeDialog and interactive spotlight OnboardingTour."""
-import os
-import sys
-from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -9,27 +6,40 @@ import pytest
 
 pytest.importorskip("PyQt6")
 
-from PyQt6.QtCore import QEvent, QPoint, Qt
-from PyQt6.QtGui import QKeyEvent
-from PyQt6.QtWidgets import QDialog, QListWidgetItem, QPushButton
+from PyQt6.QtCore import QPoint, Qt
+from PyQt6.QtTest import QTest
+from PyQt6.QtWidgets import QDialog
+
+from tests.test_control_channel import _destroy_main_window, _new_main_window, wait_until
 
 
-def _isolated_window(qapp, tmp_path, monkeypatch):
-    monkeypatch.setenv("OPENFOCUS_DATA_DIR", str(tmp_path / "profile"))
-    from utils import usage_analytics
-    from utils.settings_store import get_settings
+@pytest.fixture
+def tour_window(qapp, tmp_path, monkeypatch):
+    from locales import trans
+    from ui import styles
 
-    monkeypatch.setattr(usage_analytics, "_send", lambda *_a, **_k: True)
-    settings = get_settings()
-    settings.setValue("ui/first_run_done", "1")
-    import main as main_mod
-    monkeypatch.setattr(main_mod.OpenFocus, "_start_account_load", lambda self: None)
-
-    win = main_mod.OpenFocus()
+    original_theme = styles.CURRENT_THEME
+    original_language = trans.current_lang
+    original_font = qapp.font()
+    original_palette = qapp.palette()
+    original_stylesheet = qapp.styleSheet()
+    win = _new_main_window(qapp, tmp_path, monkeypatch)
     win.resize(1280, 720)
-    win.show()
     qapp.processEvents()
-    return win
+    try:
+        yield win
+    finally:
+        win._force_quit = True
+        win.close()
+        assert wait_until(lambda: not win.isVisible())
+        _destroy_main_window(qapp, win)
+        styles.set_current_theme(original_theme)
+        qapp.setFont(original_font)
+        qapp.setPalette(original_palette)
+        qapp.setStyleSheet(original_stylesheet)
+        if trans.current_lang != original_language:
+            trans.set_language(original_language)
+        qapp.processEvents()
 
 
 def test_welcome_dialog_shows_step_cards_preserves_settings_and_starts_tour(qapp, tmp_path, monkeypatch):
@@ -89,143 +99,130 @@ def test_help_menu_exposes_guided_tour_action_and_translation(qapp, monkeypatch)
         qapp.processEvents()
 
 
-def test_onboarding_tour_spotlight_mask_navigation_and_bounds(qapp, tmp_path, monkeypatch):
-    win = _isolated_window(qapp, tmp_path, monkeypatch)
-    try:
-        frames = [np.full((48, 64, 3), 80 + i * 30, dtype=np.uint8) for i in range(3)]
-        win.source_images = frames
-        win.raw_images = frames
-        win.stack_filenames = ["a.png", "b.png", "c.png"]
-        win.stack_slider.setRange(0, 2)
-        win.source_control_bar.show()
-        win.btn_render.setEnabled(True)
-        qapp.processEvents()
-
-        win.start_guided_tour(load_demo_if_empty=False)
-        qapp.processEvents()
-        tour = win._onboarding_tour
-        assert tour.is_active
-        assert tour.current_index == 0
-
-        for idx in range(len(tour.steps)):
-            assert tour.card.isVisible()
-            assert f"{idx + 1} / {len(tour.steps)}" in tour.card.lbl_badge.text()
-            assert win.rect().contains(tour.card.geometry()), f"step {idx} card outside window bounds"
-            if tour.steps[idx].key == "render":
-                assert tour.backdrop.isVisible()
-                center_in_win = win.btn_render.mapTo(win, win.btn_render.rect().center())
-                # Click-through hole must not mask the target control's center.
-                assert not tour.backdrop.mask().contains(center_in_win)
-                assert tour.backdrop.mask().contains(QPoint(10, 40))
-            if idx + 1 < len(tour.steps):
-                tour.next_step()
-                qapp.processEvents()
-
-        assert tour.current_index == len(tour.steps) - 1
-        assert tour.backdrop.mask().isEmpty()
-        tour.prev_step()
-        qapp.processEvents()
-        assert tour.current_index == len(tour.steps) - 2
-
-        esc = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier)
-        tour.eventFilter(win, esc)
-        qapp.processEvents()
-        assert not tour.is_active
-        assert tour.card is None
-    finally:
-        win._force_quit = True
-        win.close()
-        win.deleteLater()
-        qapp.processEvents()
+def _click_control(win, control):
+    point = control.mapTo(win, control.rect().center())
+    hit = win.childAt(point)
+    assert hit is not None and (hit is control or control.isAncestorOf(hit)), control.objectName()
+    QTest.mouseClick(win.windowHandle(), Qt.MouseButton.LeftButton, pos=point)
 
 
-def test_onboarding_tour_interactive_triggers_and_theme_switch(qapp, tmp_path, monkeypatch):
-    win = _isolated_window(qapp, tmp_path, monkeypatch)
-    try:
-        frames = [np.full((48, 64, 3), 100, dtype=np.uint8) for _ in range(3)]
-        win.source_images = frames
-        win.raw_images = frames
-        win.stack_filenames = ["a.png", "b.png", "c.png"]
-        win.stack_slider.setRange(0, 2)
-        win.source_control_bar.show()
-        win.btn_render.setEnabled(True)
-        qapp.processEvents()
+def test_onboarding_tour_spotlight_mask_navigation_and_bounds(qapp, tour_window):
+    from locales import trans
 
-        win.start_guided_tour(load_demo_if_empty=False)
-        qapp.processEvents()
-        tour = win._onboarding_tour
+    win = tour_window
+    win.start_guided_tour(load_demo_if_empty=False)
+    tour = win._onboarding_tour
+    for idx in range(len(tour.steps)):
+        assert tour.current_index == idx
+        assert tour.card.isVisible()
+        assert f"{idx + 1} / {len(tour.steps)}" in tour.card.lbl_badge.text()
+        assert win.rect().contains(tour.card.geometry())
+        if tour.steps[idx].key == "render":
+            assert tour.backdrop.isVisible()
+            center = win.btn_render.mapTo(win, win.btn_render.rect().center())
+            assert win.childAt(center) is win.btn_render
+            assert win.childAt(QPoint(10, 40)) is tour.backdrop
+        if idx + 1 < len(tour.steps):
+            _click_control(win, tour.card.btn_next)
 
-        # Step 1: moving slider marks completion
-        win.stack_slider.setValue(2)
-        qapp.processEvents()
-        assert "source_browse" in tour._completed_keys
+    assert tour.backdrop.mask().isEmpty()
+    _click_control(win, tour.card.btn_prev)
+    assert tour.current_index == len(tour.steps) - 2
+    trans.set_language("ja")
+    qapp.processEvents()
+    assert tour.card.lbl_title.text() == trans.t("tour_step5_title")
 
-        # Step 2: switching fusion method marks completion
-        tour.next_step()
-        qapp.processEvents()
-        if win.combo_fusion.count() > 1:
-            new_idx = 1 if win.combo_fusion.currentIndex() == 0 else 0
-            win.combo_fusion.setCurrentIndex(new_idx)
-            qapp.processEvents()
-            assert "algorithms" in tour._completed_keys
+    win.combo_fusion.setFocus()
+    QTest.keyClick(win.combo_fusion, Qt.Key.Key_Escape)
+    assert not tour.is_active
+    assert tour.card is None
 
-        # Step 3: producing an output marks render complete and auto-advances
-        tour.next_step()
+
+def test_onboarding_tour_interactive_triggers_and_theme_switch(qapp, tour_window, tmp_path, monkeypatch):
+    from core import frame_storage
+    from utils.image_utils import imwrite_auto
+
+    win = tour_window
+    win.thread_count = 1
+    win.set_alignment_method("none")
+    win.chk_quick_preview.setChecked(False)
+    monkeypatch.setattr(frame_storage, "automatic_preflight_may_block", lambda: False)
+
+    stack = tmp_path / "stack"
+    stack.mkdir()
+    rng = np.random.default_rng(257)
+    for idx in range(3):
+        assert imwrite_auto(str(stack / f"frame-{idx}.png"),
+                            rng.integers(0, 256, (96, 128, 3), dtype=np.uint8))
+    win.source_manager._start_load_worker(folder=str(stack))
+    assert wait_until(lambda: len(win.raw_images) == 3 and win.source_manager._load_worker is None,
+                      timeout=15)
+
+    win.start_guided_tour(load_demo_if_empty=False)
+    tour = win._onboarding_tour
+    _click_control(win, win.stack_slider)
+    assert win.stack_slider.value() > 0
+    assert "source_browse" in tour._completed_keys
+
+    _click_control(win, tour.card.btn_next)
+    win.set_fusion_method("openfocus_a")
+    assert "algorithms" in tour._completed_keys
+
+    _click_control(win, tour.card.btn_next)
+    with monkeypatch.context() as scope:
+        scope.setattr(win.render_manager, "start_render", lambda: "cancelled")
+        _click_control(win, win.btn_render)
         qapp.processEvents()
+        assert tour.backdrop.isVisible()
         assert tour.steps[tour.current_index].key == "render"
-        win.fusion_result = frames[0]
-        win.fusion_results = [frames[0]]
-        win.output_manager.update_output_list_for_fusion("OpenFocus_Result")
-        qapp.processEvents()
-        assert "render" in tour._completed_keys
-        for _ in range(25):
-            qapp.processEvents()
-            if tour.steps[tour.current_index].key == "compare":
-                break
-            import time
-            time.sleep(0.025)
-        assert tour.steps[tour.current_index].key == "compare"
 
-        # Step 4: toggling compare marks completion & theme switches work cleanly
-        win.btn_wipe.setEnabled(True)
-        win.btn_wipe.setChecked(True)
-        qapp.processEvents()
-        assert "compare" in tour._completed_keys
+    assert tour.card.btn_action.isVisible()
+    _click_control(win, win.btn_render)
+    assert wait_until(lambda: tour.steps[tour.current_index].key == "compare", timeout=35)
+    assert win.render_manager.last_state == "done" and win.output_list.count() == 1
 
-        win.apply_theme("light")
-        win.apply_theme("gray")
-        qapp.processEvents()
-        assert tour.is_active
-    finally:
-        win._force_quit = True
-        win.close()
-        win.deleteLater()
-        qapp.processEvents()
+    _click_control(win, win.btn_wipe)
+    assert win.wipe_active and "compare" in tour._completed_keys
+    wipe = win.wipe_widget
+    center = wipe.mapTo(win, QPoint(round(wipe._divider_x()), wipe.height() // 2))
+    edge = center + QPoint(40, 0)
+    assert win.childAt(center) is wipe
+    QTest.mousePress(win.windowHandle(), Qt.MouseButton.LeftButton, pos=center)
+    QTest.mouseMove(win.windowHandle(), edge)
+    QTest.mouseRelease(win.windowHandle(), Qt.MouseButton.LeftButton, pos=edge)
+    assert abs(wipe._divider_x() - wipe.mapFrom(win, edge).x()) <= 2
+
+    win.apply_theme("light")
+    win.apply_theme("gray")
+    qapp.processEvents()
+    _click_control(win, tour.card.btn_next)
+    _click_control(win, tour.card.btn_next)
+    _click_control(win, tour.card.btn_next)
+    assert not tour.is_active
 
 
-def test_start_guided_tour_loads_demo_when_empty(qapp, tmp_path, monkeypatch):
-    win = _isolated_window(qapp, tmp_path, monkeypatch)
-    try:
-        win.raw_images = []
-        called = []
+@pytest.mark.parametrize("load_in_progress", [False, True])
+def test_tour_starts_even_if_demo_cannot_load(tour_window, monkeypatch, load_in_progress):
+    win = tour_window
+    called = []
 
-        def fake_load_demo(*, on_loaded=None):
-            called.append(bool(on_loaded))
-            if on_loaded:
-                on_loaded()
+    def failed_load(*, on_loaded=None):
+        called.append(True)
 
-        monkeypatch.setattr(win, "load_demo_stack", fake_load_demo)
+    monkeypatch.setattr(win, "load_demo_stack", failed_load)
+    with monkeypatch.context() as scope:
+        if load_in_progress:
+            scope.setattr(win.source_manager, "_load_worker", object())
         win.start_guided_tour(load_demo_if_empty=True)
-        for _ in range(12):
-            qapp.processEvents()
-            if getattr(win, "_onboarding_tour", None) and win._onboarding_tour.is_active:
-                break
-            import time
-            time.sleep(0.02)
-        assert called == [True]
         assert win._onboarding_tour.is_active
-    finally:
-        win._force_quit = True
-        win.close()
-        win.deleteLater()
-        qapp.processEvents()
+
+    assert called == ([] if load_in_progress else [True])
+
+
+def test_declining_close_keeps_the_guide_visible(tour_window, monkeypatch):
+    win = tour_window
+    win.start_guided_tour(load_demo_if_empty=False)
+    monkeypatch.setattr(win.output_manager, "confirm_unexported_on_exit", lambda: False)
+
+    assert not win.close()
+    assert win.isVisible() and win._onboarding_tour.card.isVisible()

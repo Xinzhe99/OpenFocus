@@ -866,7 +866,7 @@ PACK = {
     "tour_btn_load_demo": "Demo laden",
     "tour_rendering_wait": "Bezig met renderen… Gaat automatisch verder.",
     "tour_step1_title": "Focusstapel bekijken",
-    "tour_step1_body": "Sleep de gemarkeerde schuifregelaar of scroll over de linkervoorvertoning om de scherpte per beeld te bekijken. Houd Spatie ingedrukt om te pannen.",
+    "tour_step1_body": "Sleep de gemarkeerde schuifregelaar om door de bronbeelden te bladeren. Bekijk in het voorbeeld hoe het scherpe gebied per beeld verschuift.",
     "tour_step1_hint": "Sleep de frameschuifregelaar linksonder.",
     "tour_step1_done": "✓ Beeld bekeken — ga verder wanneer u klaar bent.",
     "tour_step2_title": "Uitlijning & fusie kiezen",

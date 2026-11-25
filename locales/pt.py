@@ -866,7 +866,7 @@ PACK = {
     "tour_btn_load_demo": "Carregar demonstração",
     "tour_rendering_wait": "Renderizando… Avançará automaticamente ao concluir.",
     "tour_step1_title": "Navegar pela pilha de fotos",
-    "tour_step1_body": "Arraste o controle deslizante destacado ou gire a roda do mouse na prévia esquerda para ver o foco mudar. Segure Espaço para mover.",
+    "tour_step1_body": "Arraste o controle deslizante destacado para percorrer as imagens de origem. Observe na prévia como a área nítida muda de uma imagem para outra.",
     "tour_step1_hint": "Experimente arrastar o controle deslizante de quadros.",
     "tour_step1_done": "✓ Quadro inspecionado — continue quando quiser.",
     "tour_step2_title": "Escolher alinhamento e fusão",

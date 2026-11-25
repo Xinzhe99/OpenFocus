@@ -866,7 +866,7 @@ PACK = {
     "tour_btn_load_demo": "Demostack laden",
     "tour_rendering_wait": "Rendering läuft… Geht nach Abschluss automatisch weiter.",
     "tour_step1_title": "Quellstack durchblättern",
-    "tour_step1_body": "Ziehen Sie den markierten Regler oder scrollen Sie in der Vorschau, um die Schärfeebenen zu prüfen. Halten Sie Leertaste zum Verschieben oder wählen Sie einen ROI.",
+    "tour_step1_body": "Ziehen Sie den markierten Regler, um die Quellbilder durchzugehen. In der Vorschau sehen Sie, wie sich der scharfe Bereich von Bild zu Bild verlagert.",
     "tour_step1_hint": "Ziehen Sie unten den Bild-Schieberegler.",
     "tour_step1_done": "✓ Einzelbild geprüft — weiter wenn bereit.",
     "tour_step2_title": "Ausrichtung & Fusion wählen",

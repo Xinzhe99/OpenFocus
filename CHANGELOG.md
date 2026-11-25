@@ -6,6 +6,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Add an interactive desktop tour from the welcome dialog and Help menu.
+  Follow the highlighted controls to browse source frames, choose methods,
+  render, and compare the result.
 - Download smaller desktop updates for matching installations on Windows,
   Apple Silicon macOS, and Linux x86-64. Publish a patch helper for the
   official 2.0.0 desktop builds when the patch is smaller than the full package.

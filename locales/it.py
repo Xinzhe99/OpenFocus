@@ -866,7 +866,7 @@ PACK = {
     "tour_btn_load_demo": "Carica demo",
     "tour_rendering_wait": "Rendering in corso… Avanzamento automatico al termine.",
     "tour_step1_title": "Esplora la pila sorgente",
-    "tour_step1_body": "Trascina lo slider evidenziato o usa la rotellina sull’anteprima sinistra per vedere i diversi piani di fuoco. Tieni premuto Spazio per spostare l’immagine.",
+    "tour_step1_body": "Trascina il cursore evidenziato per sfogliare le immagini sorgente. Nell’anteprima, osserva come cambia la zona nitida da un’immagine all’altra.",
     "tour_step1_hint": "Prova a spostare lo slider dei fotogrammi in basso.",
     "tour_step1_done": "✓ Fotogramma esaminato — prosegui quando vuoi.",
     "tour_step2_title": "Scegli allineamento e fusione",

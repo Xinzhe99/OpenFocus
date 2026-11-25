@@ -8,6 +8,11 @@ from PyQt6 import sip
 from PyQt6.QtCore import QEvent, QObject, QPoint, QRect, QRectF, Qt, QTimer
 from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPen, QRegion
 from PyQt6.QtWidgets import (
+    QAbstractButton,
+    QAbstractItemView,
+    QAbstractSlider,
+    QAbstractSpinBox,
+    QApplication,
     QComboBox,
     QFrame,
     QHBoxLayout,
@@ -15,8 +20,6 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QPlainTextEdit,
     QPushButton,
-    QSpinBox,
-    QDoubleSpinBox,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -69,8 +72,9 @@ def _resolve_algorithms_target(window: QWidget) -> Optional[QRect]:
     if rpc is None:
         return None
     scroll = getattr(rpc, "config_scroll", None)
-    reg_rect = _mapped_rect(window, getattr(rpc, "registration_group", None), clamp_to=scroll)
-    method_rect = _mapped_rect(window, getattr(rpc, "method_group", None), clamp_to=scroll)
+    viewport = scroll.viewport() if scroll is not None else None
+    reg_rect = _mapped_rect(window, getattr(rpc, "registration_group", None), clamp_to=viewport)
+    method_rect = _mapped_rect(window, getattr(rpc, "method_group", None), clamp_to=viewport)
     if reg_rect and method_rect:
         return reg_rect.united(method_rect)
     return method_rect or reg_rect
@@ -81,6 +85,10 @@ def _resolve_render_target(window: QWidget) -> Optional[QRect]:
 
 
 def _resolve_compare_target(window: QWidget) -> Optional[QRect]:
+    if getattr(window, "wipe_active", False):
+        canvas = _mapped_rect(window, getattr(window, "wipe_widget", None))
+        if canvas is not None:
+            return canvas
     return _mapped_rect(window, getattr(window, "btn_wipe", None))
 
 
@@ -99,25 +107,18 @@ def _try_render_action(tour: "OnboardingTour") -> None:
     if getattr(window, "_shutting_down", False):
         return
     if not getattr(window, "raw_images", None):
+        source = getattr(window, "source_manager", None)
         load_demo = getattr(window, "load_demo_stack", None)
-        if callable(load_demo):
-            load_demo(on_loaded=lambda: QTimer.singleShot(150, lambda: _click_render_if_ready(tour)))
-            return
-    _click_render_if_ready(tour)
-
-
-def _click_render_if_ready(tour: "OnboardingTour") -> None:
-    if not tour.is_active:
+        if getattr(source, "_load_worker", None) is None and callable(load_demo):
+            load_demo()
         return
-    btn = getattr(tour.window, "btn_render", None)
+    btn = getattr(window, "btn_render", None)
     if btn is not None and not sip.isdeleted(btn) and btn.isEnabled():
         btn.click()
 
 
 def _try_toggle_wipe_action(tour: "OnboardingTour") -> None:
     if not tour.is_active:
-        return
-    if not getattr(tour.window, "fusion_results", None) and getattr(tour.window, "fusion_result", None) is None:
         return
     btn = getattr(tour.window, "btn_wipe", None)
     if btn is not None and not sip.isdeleted(btn) and btn.isEnabled():
@@ -129,7 +130,7 @@ class _SpotlightBackdrop(QWidget):
 
     def __init__(self, parent: QWidget):
         super().__init__(parent)
-        self._target_rect: Optional[QRect] = None
+        self._target_rects: tuple[QRect, ...] = ()
         self._card_rect: Optional[QRect] = None
         self._theme: str = "dark"
         self.setObjectName("onboardingSpotlightBackdrop")
@@ -140,26 +141,28 @@ class _SpotlightBackdrop(QWidget):
         self,
         *,
         theme: str,
-        target_rect: Optional[QRect],
+        target_rects: tuple[QRect, ...],
+        interaction_rects: tuple[QRect, ...],
         card_rect: Optional[QRect],
         allow_click_through: bool,
     ) -> None:
         self._theme = theme
-        self._target_rect = QRect(target_rect) if target_rect is not None else None
+        self._target_rects = target_rects
         self._card_rect = QRect(card_rect) if card_rect is not None else None
-        full = QRegion(self.rect())
-        if allow_click_through and self._target_rect is not None and not self._target_rect.isEmpty():
-            hole = self._target_rect.adjusted(-4, -4, 4, 4).intersected(self.rect())
-            if not hole.isEmpty():
-                self.setMask(full.subtracted(QRegion(hole)))
-            else:
-                self.clearMask()
+        if allow_click_through and interaction_rects:
+            mask = QRegion(self.rect())
+            for rect in interaction_rects:
+                mask = mask.subtracted(QRegion(rect.adjusted(-4, -4, 4, 4)))
+            self.setMask(mask)
         else:
             self.clearMask()
         self.update()
 
     def mousePressEvent(self, event):  # noqa: N802
         # Absorb clicks outside the spotlight hole so users don't trigger unrelated widgets.
+        event.accept()
+
+    def wheelEvent(self, event):  # noqa: N802
         event.accept()
 
     def paintEvent(self, _event):  # noqa: N802
@@ -171,12 +174,15 @@ class _SpotlightBackdrop(QWidget):
 
         full_path = QPainterPath()
         full_path.addRect(QRectF(self.rect()))
-        if self._target_rect is not None and not self._target_rect.isEmpty():
-            hole = QRectF(self._target_rect.adjusted(-5, -5, 5, 5))
+        holes = []
+        for rect in self._target_rects:
+            hole = QRectF(rect.adjusted(-5, -5, 5, 5))
+            holes.append(hole)
             hole_path = QPainterPath()
             hole_path.addRoundedRect(hole, float(RADIUS["md"]), float(RADIUS["md"]))
-            painter.fillPath(full_path.subtracted(hole_path), scrim)
-
+            full_path = full_path.subtracted(hole_path)
+        painter.fillPath(full_path, scrim)
+        for hole in holes:
             halo = QColor(accent)
             halo.setAlpha(95)
             painter.setPen(QPen(halo, 4.0))
@@ -187,10 +193,8 @@ class _SpotlightBackdrop(QWidget):
             painter.setPen(QPen(ring, 2.0))
             painter.drawRoundedRect(hole, float(RADIUS["md"]), float(RADIUS["md"]))
 
-            if self._card_rect is not None and not self._card_rect.isEmpty():
-                self._paint_connector(painter, QRectF(self._card_rect), hole, ring)
-        else:
-            painter.fillPath(full_path, scrim)
+        if holes and self._card_rect is not None and not self._card_rect.isEmpty():
+            self._paint_connector(painter, QRectF(self._card_rect), holes[0], ring)
 
     @staticmethod
     def _paint_connector(painter: QPainter, card: QRectF, hole: QRectF, color: QColor) -> None:
@@ -349,10 +353,6 @@ class _CoachCard(QFrame):
         self._apply_styles(index=index, completed=completed, busy=busy)
         self.adjustSize()
 
-    def reapply_theme(self, *, index: int, completed: bool, busy: bool, theme: str) -> None:
-        self._theme = theme
-        self._apply_styles(index=index, completed=completed, busy=busy)
-
     def _apply_styles(self, *, index: int, completed: bool, busy: bool) -> None:
         t = palette(self._theme)
         status_bg = t["successSoft"] if completed else (t["warningSoft"] if busy else t["accentSoft"])
@@ -442,11 +442,16 @@ class OnboardingTour(QObject):
         self._index = 0
         self._active = False
         self._completed_keys: set[str] = set()
-        self._busy_rendering = False
+        self._seen_render_result = None
         self._backdrop: Optional[_SpotlightBackdrop] = None
         self._card: Optional[_CoachCard] = None
         self._connections: list[tuple[object, object]] = []
-        self._auto_advance_timer: Optional[QTimer] = None
+        self._ui_timer = QTimer(self, singleShot=True)
+        self._ui_timer.timeout.connect(self._sync_ui)
+        self._geometry_timer = QTimer(self, singleShot=True)
+        self._geometry_timer.timeout.connect(self._sync_geometry)
+        self._auto_advance_timer = QTimer(self, singleShot=True)
+        self._auto_advance_timer.timeout.connect(self._advance_after_render)
 
     @property
     def is_active(self) -> bool:
@@ -528,14 +533,14 @@ class OnboardingTour(QObject):
             return
         self.stop()
         self._completed_keys.clear()
-        self._busy_rendering = False
+        self._seen_render_result = getattr(getattr(self.window, "render_manager", None), "last_result", None)
         self._active = True
         self._index = max(0, min(step_index, len(self.steps) - 1))
 
         self._backdrop = _SpotlightBackdrop(self.window)
         self._card = _CoachCard(self.window, self)
         self._card.set_step_count(len(self.steps))
-        self.window.installEventFilter(self)
+        QApplication.instance().installEventFilter(self)
         self._connect_signals()
 
         self._backdrop.show()
@@ -546,25 +551,18 @@ class OnboardingTour(QObject):
 
     def stop(self) -> None:
         self._active = False
-        self._busy_rendering = False
-        if self._auto_advance_timer is not None:
-            try:
-                self._auto_advance_timer.stop()
-                self._auto_advance_timer.deleteLater()
-            except RuntimeError:
-                pass
-            self._auto_advance_timer = None
+        self._ui_timer.stop()
+        self._geometry_timer.stop()
+        self._auto_advance_timer.stop()
         for signal, slot in self._connections:
             try:
                 signal.disconnect(slot)
             except (TypeError, RuntimeError):
                 pass
         self._connections.clear()
-        if not sip.isdeleted(self.window):
-            try:
-                self.window.removeEventFilter(self)
-            except RuntimeError:
-                pass
+        app = QApplication.instance()
+        if app is not None:
+            app.removeEventFilter(self)
         if self._card is not None:
             try:
                 self._card.hide()
@@ -596,8 +594,14 @@ class OnboardingTour(QObject):
     def go_to(self, index: int) -> None:
         if not self._active:
             return
-        self._index = max(0, min(index, len(self.steps) - 1))
-        self._busy_rendering = False
+        index = max(0, min(index, len(self.steps) - 1))
+        if index == self._index:
+            return
+        self._index = index
+        self._auto_advance_timer.stop()
+        if self.steps[self._index].key == "render":
+            self._completed_keys.discard("render")
+        self._seen_render_result = getattr(getattr(self.window, "render_manager", None), "last_result", None)
         self._sync_ui()
 
     def trigger_step_action(self) -> None:
@@ -608,16 +612,7 @@ class OnboardingTour(QObject):
             step.action_callback(self)
 
     def reapply_theme(self) -> None:
-        if not self._active or self._card is None or sip.isdeleted(self._card):
-            return
-        step = self.steps[self._index]
-        self._card.reapply_theme(
-            index=self._index,
-            completed=step.key in self._completed_keys,
-            busy=self._busy_rendering,
-            theme=self._current_theme(),
-        )
-        self._sync_geometry()
+        self._sync_ui()
 
     def _current_theme(self) -> str:
         return getattr(self.window, "ui_theme", "dark") or "dark"
@@ -629,16 +624,21 @@ class OnboardingTour(QObject):
             self._connections.append((signal, slot))
 
     def _connect_signals(self) -> None:
-        self._connect(getattr(self.window, "stack_slider", None), "valueChanged", self._on_slider_moved)
+        slider = getattr(self.window, "stack_slider", None)
+        self._connect(slider, "actionTriggered", self._on_slider_moved)
+        source_list = getattr(self.window, "file_list", None)
+        if source_list is not None:
+            self._connect(source_list.model(), "modelReset", self._queue_ui_sync)
+            self._connect(source_list.model(), "rowsInserted", self._queue_ui_sync)
         self._connect(getattr(self.window, "combo_fusion", None), "currentIndexChanged", self._on_algorithm_changed)
         self._connect(getattr(self.window, "combo_align", None), "currentIndexChanged", self._on_algorithm_changed)
-        self._connect(getattr(self.window, "btn_render", None), "clicked", self._on_render_clicked)
-        self._connect(getattr(self.window, "btn_wipe", None), "toggled", self._on_wipe_toggled)
+        self._connect(trans, "languageChanged", self._sync_ui)
+        self._connect(getattr(self.window, "btn_render", None), "clicked", self._queue_ui_sync)
+        self._connect(getattr(self.window, "btn_wipe", None), "toggled", self._queue_ui_sync)
         out_list = getattr(self.window, "output_list", None)
         if out_list is not None and not sip.isdeleted(out_list):
-            model = out_list.model()
-            if model is not None:
-                self._connect(model, "rowsInserted", self._on_output_added)
+            # Cached alignment can publish synchronously through the output model.
+            self._connect(out_list.model(), "rowsInserted", self._queue_ui_sync)
 
     def _on_slider_moved(self, *_args) -> None:
         if self._active and self.steps[self._index].key == "source_browse":
@@ -650,67 +650,94 @@ class OnboardingTour(QObject):
             self._completed_keys.add("algorithms")
             self._sync_ui()
 
-    def _on_render_clicked(self, *_args) -> None:
-        if self._active and self.steps[self._index].key == "render" and getattr(self.window, "raw_images", None):
-            self._busy_rendering = True
-            self._sync_ui()
+    def _queue_ui_sync(self, *_args) -> None:
+        if self._active and not self._ui_timer.isActive():
+            self._ui_timer.start(0)
 
-    def _on_output_added(self, *_args) -> None:
-        if not self._active:
+    def _is_rendering(self) -> bool:
+        if self.steps[self._index].key != "render":
+            return False
+        manager = getattr(self.window, "render_manager", None)
+        progress = getattr(manager, "_status_bar_progress", None)
+        # Explicit visibility follows render progress even when the window is hidden.
+        return progress is not None and not progress.isHidden()
+
+    def _sync_render_outcome(self, busy: bool) -> None:
+        if busy:
+            self._auto_advance_timer.stop()
+            self._completed_keys.discard("render")
             return
-        self._busy_rendering = False
-        if self.steps[self._index].key == "render":
+        manager = getattr(self.window, "render_manager", None)
+        result = getattr(manager, "last_result", None)
+        if (getattr(manager, "last_state", None) == "done"
+                and result is not None and result is not self._seen_render_result):
+            self._seen_render_result = result
             self._completed_keys.add("render")
-            self._sync_ui()
-            if self._auto_advance_timer is None:
-                timer = QTimer(self)
-                timer.setSingleShot(True)
-                timer.timeout.connect(self._advance_after_render)
-                self._auto_advance_timer = timer
-                timer.start(350)
+            self._auto_advance_timer.start(350)
 
     def _advance_after_render(self) -> None:
-        if self._auto_advance_timer is not None:
-            self._auto_advance_timer.deleteLater()
-            self._auto_advance_timer = None
-        if self._active and self.steps[self._index].key == "render":
+        if self._active and self.steps[self._index].key == "render" and not self._is_rendering():
             self.next_step()
 
-    def _on_wipe_toggled(self, checked: bool) -> None:
-        if self._active and self.steps[self._index].key == "compare":
-            self._completed_keys.add("compare")
-            self._sync_ui()
-
     def eventFilter(self, watched, event):  # noqa: N802
-        if not self._active or watched is not self.window:
+        if not self._active or not isinstance(watched, QWidget):
             return False
         etype = event.type()
-        if etype in (QEvent.Type.Resize, QEvent.Type.Move, QEvent.Type.LayoutRequest):
-            QTimer.singleShot(0, self._sync_geometry)
-        elif etype == QEvent.Type.Close:
-            self.stop()
-        elif etype == QEvent.Type.KeyPress:
-            focus = self.window.focusWidget()
-            if isinstance(focus, (QLineEdit, QTextEdit, QPlainTextEdit, QComboBox, QSpinBox, QDoubleSpinBox)):
-                return False
+        if etype not in (QEvent.Type.ShowToParent, QEvent.Type.HideToParent, QEvent.Type.Show,
+                         QEvent.Type.Hide, QEvent.Type.Resize, QEvent.Type.Move, QEvent.Type.LayoutRequest,
+                         QEvent.Type.ShortcutOverride, QEvent.Type.KeyPress):
+            return False
+        if watched.window() is not self.window:
+            return False
+        if etype in (QEvent.Type.ShowToParent, QEvent.Type.HideToParent):
+            manager = getattr(self.window, "render_manager", None)
+            if watched is getattr(manager, "_status_bar_progress", None):
+                # The controller sets the final outcome on the same event-loop turn.
+                self._queue_ui_sync()
+        if etype in (QEvent.Type.Resize, QEvent.Type.Move, QEvent.Type.LayoutRequest,
+                     QEvent.Type.Show, QEvent.Type.Hide):
+            if (watched is not self._backdrop and watched is not self._card
+                    and not self._card.isAncestorOf(watched) and not self._geometry_timer.isActive()):
+                self._geometry_timer.start(0)
+        elif etype in (QEvent.Type.ShortcutOverride, QEvent.Type.KeyPress):
             key = event.key()
             if key == Qt.Key.Key_Escape:
-                self.stop()
+                if etype == QEvent.Type.KeyPress:
+                    self.stop()
+                event.accept()
                 return True
-            if key == Qt.Key.Key_Right:
-                self.next_step()
-                return True
-            if key == Qt.Key.Key_Left:
-                self.prev_step()
-                return True
+            if key not in (Qt.Key.Key_Right, Qt.Key.Key_Left) or event.modifiers() != Qt.KeyboardModifier.NoModifier:
+                return False
+            focus = self.window.focusWidget()
+            if focus is not None and not self._card.isAncestorOf(focus):
+                while focus is not None:
+                    if isinstance(focus, (QLineEdit, QTextEdit, QPlainTextEdit, QComboBox,
+                                          QAbstractSpinBox, QAbstractSlider, QAbstractItemView, QAbstractButton)):
+                        return False
+                    focus = focus.parentWidget()
+            if etype == QEvent.Type.KeyPress:
+                if key == Qt.Key.Key_Right:
+                    self.next_step()
+                else:
+                    self.prev_step()
+            event.accept()
+            return True
         return False
 
     def _sync_ui(self) -> None:
         if not self._active or self._card is None or self._backdrop is None:
             return
         step = self.steps[self._index]
+        busy = self._is_rendering()
+        if step.key == "render":
+            self._sync_render_outcome(busy)
+        elif step.key == "compare":
+            if getattr(self.window, "wipe_active", False):
+                self._completed_keys.add("compare")
+            else:
+                self._completed_keys.discard("compare")
         completed = step.key in self._completed_keys
-        if self._busy_rendering:
+        if busy:
             status_text = trans.t("tour_rendering_wait")
         elif completed and step.done_key:
             status_text = trans.t(step.done_key)
@@ -731,7 +758,7 @@ class OnboardingTour(QObject):
             body=trans.t(step.body_key),
             status_text=status_text,
             completed=completed,
-            busy=self._busy_rendering,
+            busy=busy,
             action_label=action_label,
             shortcuts_text=trans.t(step.shortcuts_key) if step.shortcuts_key else None,
             theme=self._current_theme(),
@@ -746,26 +773,42 @@ class OnboardingTour(QObject):
         wrect = self.window.rect()
         self._backdrop.setGeometry(wrect)
         step = self.steps[self._index]
-        target_rect = None if self._busy_rendering else step.target_resolver(self.window)
-        card_pos = self._choose_card_pos(wrect, target_rect, self._card.size())
+        busy = self._is_rendering()
+        target_rect = None if busy else step.target_resolver(self.window)
+        target_center = target_rect.center() if target_rect is not None else None
+        target_rects = (target_rect,) if target_rect is not None else ()
+        if step.key == "compare" and getattr(self.window, "wipe_active", False):
+            for name in ("btn_wipe", "wipe_bar"):
+                rect = _mapped_rect(self.window, getattr(self.window, name, None))
+                if rect is not None and rect not in target_rects:
+                    target_rects += (rect,)
+                    target_rect = target_rect.united(rect) if target_rect is not None else rect
+        card_pos = self._choose_card_pos(wrect, target_rect, self._card.size(), target_center)
         self._card.move(card_pos)
-        card_rect = self._card.geometry()
-        if self._busy_rendering:
+        if busy:
             self._backdrop.hide()
         else:
+            interaction_rects = target_rects
+            if step.key == "algorithms":
+                rpc = getattr(self.window, "right_panel_components", None)
+                scroll_rect = _mapped_rect(self.window, getattr(rpc, "config_scroll", None))
+                if scroll_rect is not None:
+                    interaction_rects = (scroll_rect,)
             if not self._backdrop.isVisible():
                 self._backdrop.show()
             self._backdrop.set_geometry_state(
                 theme=self._current_theme(),
-                target_rect=target_rect,
-                card_rect=card_rect,
+                target_rects=target_rects,
+                interaction_rects=interaction_rects,
+                card_rect=self._card.geometry(),
                 allow_click_through=step.allow_click_through,
             )
             self._backdrop.raise_()
         self._card.raise_()
 
     @staticmethod
-    def _choose_card_pos(window_rect: QRect, target_rect: Optional[QRect], card_size) -> QPoint:
+    def _choose_card_pos(window_rect: QRect, target_rect: Optional[QRect], card_size,
+                         target_center: Optional[QPoint] = None) -> QPoint:
         margin = 16
         top_margin = 38
         cw, ch = card_size.width(), card_size.height()
@@ -792,7 +835,7 @@ class OnboardingTour(QObject):
 
         hole = target_rect.adjusted(-10, -10, 10, 10)
         best_pt = None
-        best_overlap = None
+        best_score = None
         for cand in candidates:
             pt = clamp(cand)
             rect = QRect(pt.x(), pt.y(), cw, ch)
@@ -800,7 +843,8 @@ class OnboardingTour(QObject):
             overlap = inter.width() * inter.height() if not inter.isEmpty() else 0
             if overlap == 0:
                 return pt
-            if best_overlap is None or overlap < best_overlap:
-                best_overlap = overlap
+            score = (target_center is not None and rect.contains(target_center), overlap)
+            if best_score is None or score < best_score:
+                best_score = score
                 best_pt = pt
         return best_pt or clamp(QPoint(bounds.left() + (bounds.width() - cw) // 2, bounds.top() + (bounds.height() - ch) // 2))

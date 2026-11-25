@@ -866,7 +866,7 @@ PACK = {
     "tour_btn_load_demo": "Wczytaj demo",
     "tour_rendering_wait": "Trwa renderowanie… Automatyczne przejście po zakończeniu.",
     "tour_step1_title": "Przeglądaj stos źródłowy",
-    "tour_step1_body": "Przesuń podświetlony suwak lub użyj kółka myszy na lewym podglądzie, aby zobaczyć zmiany ostrości. Przytrzymaj Spację, by przesuwać widok.",
+    "tour_step1_body": "Przeciągnij podświetlony suwak, by przeglądać obrazy źródłowe. Na podglądzie zobaczysz, jak ostry obszar zmienia położenie między klatkami.",
     "tour_step1_hint": "Spróbuj przesunąć suwak klatek w lewym dolnym rogu.",
     "tour_step1_done": "✓ Klatka sprawdzona — przejdź dalej.",
     "tour_step2_title": "Wybierz wyrównanie i fuzję",
