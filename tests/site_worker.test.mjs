@@ -1040,11 +1040,39 @@ function analyticsDb() {
   };
 }
 
+test("website traffic counts served homepages without redirects, prefetches or previews", async () => {
+  const stats = analyticsDb();
+  const env = { SITE_ANALYTICS: stats, ASSETS: {
+    async fetch(request) {
+      if (request.headers.has("If-None-Match")) return new Response(null, { status: 304 });
+      const url = new URL(request.url);
+      return new Response("page", { status: url.searchParams.has("missing") ? 404 : 200, headers: { "Content-Type": "text/html" } });
+    },
+  } };
+  const origin = "https://openfocus.top";
+  for (const [url, options, status] of [
+    [`${origin}/?lang=en`, {}, 200],
+    [`${origin}/?lang=zh`, {}, 302],
+    [`${origin}/zh/?lang=zh`, {}, 200],
+    [`${origin}/zh/`, { headers: { "If-None-Match": ETAG } }, 304],
+    [`${origin}/`, { method: "HEAD" }, 200],
+    [`${origin}/`, { headers: { "Sec-Purpose": "prefetch;prerender" } }, 200],
+    [`${origin}/zh/?missing`, {}, 404],
+    [`${origin}/404.html`, {}, 200],
+    ["https://preview.example.test/", {}, 200],
+    ["https://www.openfocus.top/", {}, 301],
+  ]) assert.equal((await run(url, { ...options, env })).status, status);
+  assert.deepEqual(stats.writes.map(({ values }) => values.slice(1)), [[1, 0], [1, 0], [1, 0]]);
+  env.SITE_ANALYTICS = { prepare() { throw new Error("database down"); } };
+  assert.equal(await (await run(`${origin}/`, { env })).text(), "page");
+});
+
 test("download analytics counts only successful starts with resolved version, route and source", async () => {
   installCache();
   installReleaseFetch();
   const db = analyticsDb();
-  const env = { ...makeEnv({ [NAMES["windows-zip"]]: PAYLOAD }), ANALYTICS: db };
+  const stats = analyticsDb();
+  const env = { ...makeEnv({ [NAMES["windows-zip"]]: PAYLOAD }), ANALYTICS: db, SITE_ANALYTICS: stats };
   const latest = "https://openfocus.top/download/latest/windows-zip";
   const pinned = `https://openfocus.top/download/releases/${TAG}/windows-zip`;
   assert.equal((await run(latest, { env })).status, 200);
@@ -1062,11 +1090,17 @@ test("download analytics counts only successful starts with resolved version, ro
     [TAG, "windows-zip", "in-app", "r2"],
     [TAG, "macos-dmg", "website", "github"],
   ]);
+  assert.deepEqual(stats.writes.map(({ values }) => values.slice(1)), [[0, 1], [0, 1], [0, 1]]);
   assert.match(db.writes[0].sql, /ON CONFLICT.*count = count \+ 1/);
   env.ANALYTICS = { prepare() { throw new Error("database down"); } };
   assert.equal((await run(latest, { env })).status, 200);
   delete env.ANALYTICS;
   assert.equal((await run(latest, { env })).status, 200);
+  assert.equal(stats.writes.length, 5);
+  assert.equal((await run(latest, { env, headers: { Purpose: "prefetch" } })).status, 200);
+  assert.equal((await run("https://preview.example.test/download/latest/windows-zip", { env })).status, 200);
+  assert.equal(stats.writes.length, 5);
+  assert.equal((await run("https://openfocus.top/api/admin/stats", { env })).status, 503);
 });
 
 test("usage accepts only bounded reports and stores no request metadata", async () => {
