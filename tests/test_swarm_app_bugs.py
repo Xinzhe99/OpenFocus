@@ -408,4 +408,3 @@ def test_apply_appearance_parses_css_font_stack_into_qfont_families(qapp, monkey
         qapp.setFont(prev_font)
         qapp.setStyleSheet(prev_sheet)
         host.close()
-
