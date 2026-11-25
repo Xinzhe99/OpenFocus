@@ -1,15 +1,28 @@
 from __future__ import annotations
 
 import os
-from typing import Iterable, Optional
+from typing import Any, Iterable, Optional
 
 from PyQt6.QtCore import QThread, Qt
 from PyQt6.QtWidgets import QMessageBox, QProgressDialog
 
 from ui import styles as ui_styles
-from core.workers import BatchWorker
 from locales import trans
 from utils.platform_utils import configure_native_worker_stack
+
+
+def _get_batch_worker():
+    worker_cls = globals().get('BatchWorker')
+    if worker_cls is None:
+        from core.workers import BatchWorker as worker_cls
+        globals()['BatchWorker'] = worker_cls
+    return worker_cls
+
+
+def __getattr__(name: str):
+    if name == 'BatchWorker':
+        return _get_batch_worker()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 # Threads still running when the manager is torn down. Never terminate() a
 # worker that may be inside OpenCV/NumPy native code; park the pair instead
@@ -24,7 +37,7 @@ class BatchManager:
     def __init__(self, window):
         self.window = window
         self._thread: Optional[QThread] = None
-        self._worker: Optional[BatchWorker] = None
+        self._worker: Optional[Any] = None
         self._progress_dialog: Optional[QProgressDialog] = None
 
     def add_folder(self, folder_path: str) -> None:
@@ -76,7 +89,7 @@ class BatchManager:
             if widget is not None:
                 widget.setEnabled(False)
         runtime = processing_settings.get('runtime_settings', {})
-        self._worker = BatchWorker(
+        self._worker = _get_batch_worker()(
             folder_paths=folder_paths,
             output_type=output_type,
             output_path=output_path,

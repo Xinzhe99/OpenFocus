@@ -5,9 +5,22 @@ from core.source_frames import PreviewPixels, SourceFrame, display_image, previe
 
 from PyQt6.QtGui import QFont
 
-from dialogs import DownsampleDialog
 from utils import show_error_box, show_success_box, show_warning_box, get_default_font
 from locales import trans
+
+
+def _get_downsample_dialog():
+    dialog_cls = globals().get('DownsampleDialog')
+    if dialog_cls is None:
+        from dialogs import DownsampleDialog as dialog_cls
+        globals()['DownsampleDialog'] = dialog_cls
+    return dialog_cls
+
+
+def __getattr__(name: str):
+    if name == 'DownsampleDialog':
+        return _get_downsample_dialog()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 class TransformManager:
@@ -74,7 +87,7 @@ class TransformManager:
         base_scale = min(1.0, max(0.01, base_scale))
         current_scale = min(base_scale, float(getattr(window, "current_scale_factor", 1.0) or 1.0))
         base_height, base_width = window.base_images[0].shape[:2]
-        dialog = DownsampleDialog(window, initial_scale=current_scale, max_scale=base_scale,
+        dialog = _get_downsample_dialog()(window, initial_scale=current_scale, max_scale=base_scale,
                                   base_dimensions=(base_width, base_height))
         if not dialog.exec():
             return

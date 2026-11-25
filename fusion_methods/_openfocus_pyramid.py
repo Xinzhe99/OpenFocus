@@ -868,10 +868,42 @@ def fuse_pyramid(frames, shape, img_resize, smoothing, should_cancel, progress_c
         progress_callback(0, total)
     parameter = np.float32(max(0.0, (float(smoothing) - 1.0) / 5.0))
 
-    for index, frame in enumerate(frames):
-        cancel()
+    from math import prod
+    from core import resource_policy
+    from core.multi_focus_fusion import memory_budget_bytes
+    from core.source_frames import frame_resolution_bytes
+    from fusion_methods._openfocus_gpu import _iter_prefetched, _prefetch_window
+
+    host_budget = min(memory_budget_bytes(),
+                      resource_policy.ram_ceiling(resource_policy.probe_memory()))
+    samples = prod(shape)
+    per_slot = max(
+        frame_resolution_bytes(frame, metadata_only=True)
+        + (2 * frame.nbytes if img_resize is None and frame.dtype in (np.uint8, np.uint16)
+           else 8 * (frame.size + samples))
+        for frame in frames
+    )
+    planes = [*accumulators, *maxima, coarsest, *(rolling or ()),
+              weight_plane if detail_levels else None, winner, full]
+    seen_ids = set()
+    fixed_host = per_slot + sum(
+        plane.nbytes for plane in planes
+        if plane is not None and id(plane) not in seen_ids and not seen_ids.add(id(plane))
+    )
+    slots = _prefetch_window(host_budget, fixed_host, per_slot, len(frames), max_slots=2)
+
+    def prepare_pyramid_source(_index, frame, cancelled):
+        _check_cancel(cancelled)
         with without_source_cache_growth():
-            pixels, scale = _source_codes(frame, img_resize, should_cancel)
+            return _source_codes(frame, img_resize, cancelled)
+
+    prepared_iter = _iter_prefetched(
+        frames, prepare_pyramid_source, enabled=slots > 0,
+        should_cancel=should_cancel, max_in_flight=max(1, slots),
+    )
+    try:
+      for index, (pixels, scale) in prepared_iter:
+        cancel()
         if pixels.shape != shape:
             raise ValueError('OpenFocus C requires frames with matching shapes')
         if detail_levels or index == 0:
@@ -931,6 +963,8 @@ def fuse_pyramid(frames, shape, img_resize, smoothing, should_cancel, progress_c
                 live_preview.show_positions(np.zeros((1, 1), np.uint8), index, len(frames), 1)
         if progress_callback is not None:
             progress_callback(index + 1, total)
+    finally:
+        prepared_iter.close()
     del maxima, full, fine
     if detail_levels:
         del rolling, weight_plane
