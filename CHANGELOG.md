@@ -216,6 +216,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   destination, including exports from large image stacks.
 
 ### Fixed
+- Preserve saved result metadata and protect original stack files during
+  desktop exports. Release ROI previews and finish export and batch cleanup
+  safely when closing the window. Resolve Qt UI font fallback families and
+  find uppercase multi-page TIFF containers when reopening projects.
 - Bundle trusted CA roots with the desktop app so sign-in and other HTTPS
   requests can verify server certificates on macOS.
 - Keep desktop sign-in responsive when the browser opens an idle connection,

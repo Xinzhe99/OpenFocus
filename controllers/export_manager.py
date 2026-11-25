@@ -5,7 +5,8 @@ from dataclasses import replace
 from typing import Any, Optional
 
 import cv2
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6 import sip
+from PyQt6.QtCore import QObject, Qt, QThread, pyqtSignal
 from utils.file_dialogs import FileDialog
 from PyQt6.QtWidgets import QMessageBox, QProgressDialog, QInputDialog
 
@@ -194,9 +195,6 @@ class LayeredTiffWorker(QThread):
 
 def _window_unavailable(window: Any) -> bool:
     """True when the host window is torn down or closing."""
-    from PyQt6 import sip
-    from PyQt6.QtCore import QObject
-
     return (window is None
             or (isinstance(window, QObject) and sip.isdeleted(window))
             or bool(getattr(window, '_shutting_down', False)))
@@ -414,9 +412,9 @@ class ExportManager:
                            f"{trans.t('msg_save_failed_text')}\n{message}")
 
     def _layered_tiff_finished(self):
-        if self.layered_progress_dialog is not None:
-            self.layered_progress_dialog.close()
-            self.layered_progress_dialog = None
+        dialog, self.layered_progress_dialog = self.layered_progress_dialog, None
+        if dialog is not None and not (isinstance(dialog, QObject) and sip.isdeleted(dialog)):
+            dialog.close()
         self.layered_worker = None
         self._layered_record = None
 
@@ -901,9 +899,9 @@ class ExportManager:
     def on_gif_saved(self, success: bool, message: str, duration_ms: int) -> None:
         window = self.window
 
-        if self.gif_progress_dialog:
-            self.gif_progress_dialog.close()
-            self.gif_progress_dialog = None
+        dialog, self.gif_progress_dialog = self.gif_progress_dialog, None
+        if dialog is not None and not (isinstance(dialog, QObject) and sip.isdeleted(dialog)):
+            dialog.close()
 
         if _window_unavailable(window):
             return

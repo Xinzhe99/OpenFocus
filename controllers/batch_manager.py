@@ -3,7 +3,8 @@ from __future__ import annotations
 import os
 from typing import Any, Iterable, Optional
 
-from PyQt6.QtCore import QThread, Qt
+from PyQt6 import sip
+from PyQt6.QtCore import QObject, QThread, Qt
 from PyQt6.QtWidgets import QMessageBox, QProgressDialog
 
 from ui import styles as ui_styles
@@ -141,9 +142,6 @@ class BatchManager:
         self._progress_dialog = dialog
 
     def _window_unavailable(self) -> bool:
-        from PyQt6 import sip
-        from PyQt6.QtCore import QObject
-
         window = self.window
         return (window is None
                 or (isinstance(window, QObject) and sip.isdeleted(window))
@@ -254,10 +252,7 @@ class BatchManager:
         # StackMFF-V3 stays disabled when torch is missing.
         hook = getattr(self.window, "refresh_method_availability", None)
         if callable(hook):
-            try:
-                hook()
-            except RuntimeError:
-                pass
+            hook()
 
     def _handle_error(self, error_msg: str) -> None:
         self.last_error = str(error_msg)
@@ -296,9 +291,9 @@ class BatchManager:
             self._progress_dialog.show()
 
     def _close_progress_dialog(self) -> None:
-        if self._progress_dialog:
-            self._progress_dialog.close()
-            self._progress_dialog = None
+        dialog, self._progress_dialog = self._progress_dialog, None
+        if dialog is not None and not (isinstance(dialog, QObject) and sip.isdeleted(dialog)):
+            dialog.close()
 
     def _thread_finished(self) -> None:
         thread, worker = self._thread, self._worker

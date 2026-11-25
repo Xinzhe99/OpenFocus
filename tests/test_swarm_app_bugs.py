@@ -253,15 +253,21 @@ def test_export_and_batch_callbacks_ignore_shutting_down_or_deleted_window(
     assert not notified
 
     # Also safe after Qt destroys the C++ window wrapper.
-    batch._progress_dialog = None
-    window.export_manager.gif_progress_dialog = None
+    progress = [QtWidgets.QProgressDialog(window) for _ in range(3)]
+    (batch._progress_dialog, window.export_manager.gif_progress_dialog,
+     window.export_manager.layered_progress_dialog) = progress
     sip.delete(window)
+    assert all(sip.isdeleted(dialog) for dialog in progress)
     batch.window.refresh_method_availability = lambda: alerts.append("refreshed")
     batch._restore_controls()
     batch._handle_finished({"success": 1, "total": 1})
     batch._handle_error("boom")
     window.export_manager.on_gif_saved(True, str(tmp_path / "a.gif"), 200)
     window.export_manager._layered_tiff_completed(False, "fail")
+    window.export_manager._layered_tiff_finished()
+    assert batch._progress_dialog is None
+    assert window.export_manager.gif_progress_dialog is None
+    assert window.export_manager.layered_progress_dialog is None
     assert not alerts
 
 
