@@ -378,7 +378,8 @@ available. The Linux path installs the stable CLI from PyPI and does not use the
 
 `install.ps1`:
 
-- downloads `windows-setup` through the site and runs the setup;
+- downloads `windows-setup` through the site and checks the published byte
+  size and SHA-256 digest before starting setup;
 - a non-zero setup exit code is reported as an error;
 - `OPENFOCUS_DRY_RUN=1` (also `true`, `yes` or `on`) prints the plan without
   downloading or installing anything.

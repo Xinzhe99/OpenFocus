@@ -757,7 +757,10 @@ test("unknown kinds are 404 and non-read methods are 405", async () => {
 
 test("latest metadata is no-store for clients while the edge caches it", async () => {
   installCache();
-  const calls = installReleaseFetch();
+  const release = releaseBody();
+  const installer = release.assets.find((asset) => asset.name === NAMES["windows-setup"]);
+  installer.digest = `sha256:${"A".repeat(64)}`;
+  const calls = installReleaseFetch({ release });
   const env = makeEnv();
 
   let response = await run("https://openfocus.top/api/latest", { env });
@@ -766,11 +769,14 @@ test("latest metadata is no-store for clients while the edge caches it", async (
   const data = await response.json();
   assert.equal(data.tag, TAG);
   assert.equal(data.assets["windows-setup"].name, NAMES["windows-setup"]);
+  assert.equal(data.assets["windows-setup"].digest, installer.digest);
   assert.equal(calls(), 1);
 
   response = await run("https://openfocus.top/api/latest", { env });
   assert.equal(response.status, 200);
-  assert.equal((await response.json()).tag, TAG);
+  const cached = await response.json();
+  assert.equal(cached.tag, TAG);
+  assert.equal(cached.assets["windows-setup"].digest, installer.digest);
   assert.equal(calls(), 1, "the second request should come from the edge cache");
 });
 

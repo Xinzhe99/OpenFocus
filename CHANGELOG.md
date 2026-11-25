@@ -222,6 +222,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   handle unsupported system proxy schemes, and recover stale macOS Keychain
   sessions after a confirmed write mismatch.
 - Restore embedded TIFF thumbnail previews in Batch Image Converter.
+- Keep desktop updates recoverable across channel changes, failed delta
+  downloads and interrupted installation. Verify the Windows website
+  installer against the release's published size and SHA-256 digest.
 - Use the Darwin C ABI for system memory and CPU topology probes, including
   64-bit page sizes and validated system counter lengths.
 - Admit large JPEG stacks for ECC using reduced grayscale decodes, including
