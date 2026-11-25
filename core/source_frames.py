@@ -2357,7 +2357,8 @@ def _validate_tiff_alpha(page, should_cancel=None):
     from core.resource_policy import require_memory
     require_memory(working)
     try:
-        for segment, _position, _shape in page.segments(maxworkers=1):
+        # The budget covers one compressed segment and its decoded pixels.
+        for segment, _position, _shape in page.segments(maxworkers=1, buffersize=0):
             _check_preview_cancel(should_cancel)
             if segment is not None and np.min(segment[..., 3]) != opaque:
                 raise UnsupportedTransparency('Transparent TIFF pages are unsupported')
@@ -2410,7 +2411,8 @@ def _tiff_preview(page, should_cancel=None):
         require_memory(working)
         small = np.zeros((math.ceil(h / step), math.ceil(w / step), channels), dtype=page.dtype)
         try:
-            for segment, position, _shape in page.segments(maxworkers=1):
+            # The default TIFF read buffer can hold more than the preview budget.
+            for segment, position, _shape in page.segments(maxworkers=1, buffersize=0):
                 _check_preview_cancel(should_cancel)
                 if segment is None:
                     continue

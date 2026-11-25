@@ -224,6 +224,21 @@ from core.algorithms import (
     registration_parameter_specs,
 )
 
+
+def _get_roi_alignment_worker():
+    worker_cls = globals().get('ROIAlignmentWorker')
+    if worker_cls is None:
+        from core.workers import ROIAlignmentWorker as worker_cls
+        globals()['ROIAlignmentWorker'] = worker_cls
+    return worker_cls
+
+
+def __getattr__(name: str):
+    if name == 'ROIAlignmentWorker':
+        return _get_roi_alignment_worker()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 # QThreads still running when the app shuts down. They are kept alive at
 # module scope instead of being terminated: QThread.terminate() on a thread
 # inside cv2/torch native code can corrupt the process, and dropping the last
@@ -5121,17 +5136,3 @@ if __name__ == "__main__":
         window.deleteLater()
         QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     sys.exit(exit_code)
-
-
-def _get_roi_alignment_worker():
-    worker_cls = globals().get('ROIAlignmentWorker')
-    if worker_cls is None:
-        from core.workers import ROIAlignmentWorker as worker_cls
-        globals()['ROIAlignmentWorker'] = worker_cls
-    return worker_cls
-
-
-def __getattr__(name: str):
-    if name == 'ROIAlignmentWorker':
-        return _get_roi_alignment_worker()
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

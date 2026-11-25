@@ -66,6 +66,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Read eligible uncompressed 8-bit and 16-bit gray and RGB TIFF pages directly
   from the file, preserving pixel values. Keep decoder validation for incomplete
   strip tables, configured limits, and other TIFF layouts.
+- Stream large LZW TIFF previews within the decode budget. Overlap source
+  preparation with OpenFocus B and C CPU fusion when memory permits.
 - Reuse the open stack's import mode when appending a folder, skipping the
   mode-selection scan before the loader starts.
 - Compute deferred perspective, OpenFocus alignment, and OpenFocus translation
