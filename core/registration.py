@@ -330,6 +330,21 @@ def _compute_valid_region_from_transforms(H_matrices, img_shape, margin=2):
 
 
 
+def _registration_gray(image, *, is_rgb=False):
+    if image.ndim == 2:
+        return image
+    if image.shape[2] == 1:
+        return image[:, :, 0]
+    from core.openfocus_alignment import _is_bgr_rev
+
+    if _is_bgr_rev(image):
+        image = image[..., ::-1]
+        is_rgb = True
+    if image.dtype == np.float64:
+        image = image.astype(np.float32)
+    return cv2.cvtColor(image, cv2.COLOR_RGB2GRAY if is_rgb else cv2.COLOR_BGR2GRAY)
+
+
 # ========== 单应性对齐算法实现（非线性） ==========
 
 
@@ -406,7 +421,8 @@ def _align_homography_impl(input_source, output_path=None, img_filenames=None, d
             else:
                 divisor = 1.0
             img_small = (img_small.astype(np.float32) / divisor * 255.0).round().clip(0, 255).astype(np.uint8)
-        kps, des = local_detector.detectAndCompute(img_small, None)
+        # SIFT converts to gray after resize and byte quantization.
+        kps, des = local_detector.detectAndCompute(_registration_gray(img_small), None)
         return kps, des, scale, identity
 
     # 使用线程池并行提取特征
@@ -418,6 +434,8 @@ def _align_homography_impl(input_source, output_path=None, img_filenames=None, d
 
     # Matching retains its last accepted reference, including failed frames.
     bf = cv2.BFMatcher(cv2.NORM_L2)
+    flann_index_params = {'algorithm': 1, 'trees': 4}
+    flann_search_params = {'checks': 64}
     with _bounded_registration_map(get_features_task, images, max_workers,
                                    should_cancel, stage='registration.features') as features:
         last_kps, last_des, last_scale, identity = next(features)
@@ -437,7 +455,16 @@ def _align_homography_impl(input_source, output_path=None, img_filenames=None, d
                 H_matrices.append(H_global.copy())
                 continue
 
-            matches = bf.knnMatch(curr_des, last_des, k=2)
+            if len(curr_des) < 2 or len(last_des) < 2:
+                matches = ()
+            elif len(curr_des) * len(last_des) > 400_000_000:
+                try:
+                    matcher = cv2.FlannBasedMatcher(flann_index_params, flann_search_params)
+                    matches = matcher.knnMatch(curr_des, last_des, k=2)
+                except cv2.error:
+                    matches = bf.knnMatch(curr_des, last_des, k=2)
+            else:
+                matches = bf.knnMatch(curr_des, last_des, k=2)
             good_matches = []
             for match_pair in matches:
                 if len(match_pair) == 2:
@@ -1776,29 +1803,19 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
             is_rgb = False
             if scale < 1.0:
                 resized = None
-                if area_gpu is not None:
-                    # OpenCV keeps fx/fy when it rounds the destination height.
-                    # An explicit size is equivalent only if it gives the same scale.
-                    height = pixels.shape[0]
-                    if target_height > 0 and target_height / height == scale:
-                        resized = area_gpu.resize(pixels, (downscale_width, target_height))
+                if area_gpu is not None and target_height > 0 and target_height / pixels.shape[0] == scale:
+                    # An explicit size preserves OpenCV's scale only at this geometry.
+                    resized = area_gpu.resize(pixels, (downscale_width, target_height))
                 if resized is not None:
                     pixels = resized
-                elif _is_bgr_rev(pixels):
-                    pixels = cv2.resize(pixels[..., ::-1], (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
-                    is_rgb = True
                 else:
+                    is_rgb = _is_bgr_rev(pixels)
+                    if is_rgb:
+                        pixels = pixels[..., ::-1]
+                    # Resize color first to preserve integer rounding in the ECC inputs.
                     pixels = cv2.resize(pixels, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
                 del resized
-            elif _is_bgr_rev(pixels):
-                pixels = pixels[..., ::-1]
-                is_rgb = True
-
-            if pixels.ndim != 2:
-                if pixels.shape[2] == 1:
-                    pixels = pixels[:, :, 0]
-                else:
-                    pixels = cv2.cvtColor(pixels, cv2.COLOR_RGB2GRAY if is_rgb else cv2.COLOR_BGR2GRAY)
+            pixels = _registration_gray(pixels, is_rgb=is_rgb)
         pixels = cv2.GaussianBlur(pixels, (5, 5), 0)
         # findTransformECC 的数值稳定性依赖归一化的浮点输入：uint8 的
         # 大幅值梯度会让优化步长过大，常见于小位移场景直接不收敛
@@ -2114,7 +2131,15 @@ def _stabilisation_impl(input_source, output_path=None, filenames=None):
              if os.path.splitext(file)[1].lower() in ['.jpg', '.jpeg', '.jpe', '.jfif', '.png', '.bmp', '.tif', '.tiff', '.webp']],
             key=_image_sort_key
         )
-        images = [cv2.imread(path) for path in img_paths]
+        images = []
+        for path in img_paths:
+            if os.name == 'nt' and not path.isascii():
+                data = np.fromfile(path, dtype=np.uint8)
+                frame = cv2.imdecode(data, cv2.IMREAD_COLOR) if data.size else None
+                del data
+            else:
+                frame = cv2.imread(path)
+            images.append(frame)
         # Store original filenames with extensions
         img_filenames = [os.path.basename(path) for path in img_paths]
     else:
@@ -2124,7 +2149,7 @@ def _stabilisation_impl(input_source, output_path=None, filenames=None):
     img_first = images[0]
     h, w = img_first.shape[:2]
 
-    prev_gray = cv2.cvtColor(img_first, cv2.COLOR_BGR2GRAY)
+    prev_gray = img_first if img_first.ndim == 2 else cv2.cvtColor(img_first, cv2.COLOR_BGR2GRAY)
     transforms = np.zeros((n_frames, 3), np.float32)
 
     # Feature detection parameters
@@ -2134,7 +2159,7 @@ def _stabilisation_impl(input_source, output_path=None, filenames=None):
     # Calculate transforms (frame i to frame i+1)
     for i in range(n_frames - 1):
         curr = images[i + 1]
-        curr_gray = cv2.cvtColor(curr, cv2.COLOR_BGR2GRAY)
+        curr_gray = curr if curr.ndim == 2 else cv2.cvtColor(curr, cv2.COLOR_BGR2GRAY)
 
         prev_pts = cv2.goodFeaturesToTrack(prev_gray, **feature_params)
         if prev_pts is None:
@@ -2209,7 +2234,8 @@ def _stabilisation_impl(input_source, output_path=None, filenames=None):
                 output_file = os.path.join(output_path, img_filenames[i])
             else:
                 output_file = os.path.join(output_path, f'frame_{i:04d}.png')
-            cv2.imwrite(output_file, frame_stabilized)
+            from utils.image_utils import imwrite_auto
+            imwrite_auto(output_file, frame_stabilized, exif=b'')
 
     return stabilized_images
 

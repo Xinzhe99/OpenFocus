@@ -25,7 +25,7 @@ def _synthetic_stack(shape, dtype, *, count=4, bgr_rev=False, seed=77):
             if c > 2:
                 arr[:, :, 2] = np.clip(plane * 0.70 + 0.12 * np.cos(xx * 0.15), 0.0, 1.0)
             if c > 3:
-                arr[:, :, 3] = 1.0
+                arr[:, :, 3] = 0.5 + 0.5 * np.sin(xx * 0.3 + yy * 0.1 + idx)
         else:
             arr = plane
         if dtype == np.uint8:
@@ -42,7 +42,7 @@ def _synthetic_stack(shape, dtype, *, count=4, bgr_rev=False, seed=77):
     ((64, 64, 3), False),
     ((97, 83, 3), True),
     ((73, 101), False),
-    ((48, 52, 4), False),
+    ((131, 67, 4), False),
     ((20, 22, 3), False),
     ((12, 14, 3), False),
 ])
@@ -60,13 +60,13 @@ def test_cpp_openfocus_c_matches_numba(monkeypatch, shape, bgr_rev, dtype, smoot
     winners_nb = []
 
     out_cpp = openfocus_bc.openfocus_c_impl(
-        frames, thread_count=2, blend_smoothing=smoothing,
+        frames, thread_count=2, blend_smoothing=smoothing, use_gpu=False,
         focus_callback=lambda w, mx: winners_cpp.append(w.copy()),
     )
 
     monkeypatch.setattr(_native, 'load_native', lambda: None)
     out_nb = openfocus_bc.openfocus_c_impl(
-        frames, thread_count=2, blend_smoothing=smoothing,
+        frames, thread_count=2, blend_smoothing=smoothing, use_gpu=False,
         focus_callback=lambda w, mx: winners_nb.append(w.copy()),
     )
 

@@ -130,6 +130,48 @@ def _hard_pyramid(gray, radius, should_cancel, check_cancel):
     return half_gray, laplacians, len(shapes) - 1
 
 
+def _soft_log_cache(response, frames, img_resize, workers):
+    """Reserve a RAM-only cache after allowing for the remaining soft passes."""
+    from core import resource_policy as policy
+    from core.multi_focus_fusion import memory_budget_bytes
+    from core.source_frames import frame_resolution_bytes, source_cache_growth_bytes
+
+    cache_bytes = len(frames) * response.nbytes
+    budget = min(policy.ram_budget(policy.probe_memory()), memory_budget_bytes())
+    if cache_bytes > budget // 4:
+        return None
+
+    height, width = response.shape
+    pixels = height * width
+    band_pixels = min(128, height) * width
+    channels = max(frame.shape[2] if len(frame.shape) == 3 else 1 for frame in frames)
+    frame_bytes = pixels * channels * 4
+    decode_bytes = max(frame_resolution_bytes(frame, metadata_only=True) for frame in frames)
+    # Codes, gray pyramid, and response coexist with the active Burt band.
+    response_bytes = frame_bytes + pixels * 16 + response.nbytes + band_pixels * 64 + width * 64
+    prepare_bytes = frame_bytes
+    if img_resize is not None:
+        source_bytes = max(frame.shape[0] * frame.shape[1] *
+                           (frame.shape[2] if len(frame.shape) == 3 else 1) * 4
+                           for frame in frames)
+        response_bytes = max(response_bytes, 2 * (source_bytes + frame_bytes))
+        prepare_bytes = source_bytes + 2 * frame_bytes
+    # The log maximum already exists. The last pass adds a denominator,
+    # the output, and band work while prepared frames are in flight.
+    remaining_bytes = max(
+        workers * (decode_bytes + response_bytes),
+        workers * (decode_bytes + prepare_bytes) + response.nbytes + frame_bytes
+        + band_pixels * max(64, 24 + channels * 8),
+    ) + source_cache_growth_bytes(frames)
+    if cache_bytes + remaining_bytes > budget:
+        return None
+
+    try:
+        return np.empty((len(frames), height, width), dtype=response.dtype)
+    except MemoryError:
+        return None
+
+
 @execution_job
 def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
                      thread_count: int = None, blend_smoothing: float = 2.0,
@@ -187,6 +229,12 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
         progress_callback(0, len(frames))
     _check_cancel(should_cancel)
 
+    def produce_response(index, cancelled):
+        source = frames[index]
+        code = frame_codes(source, img_resize, cancelled)
+        return _response(code, radius, cancelled, _check_cancel,
+                         u8=source.dtype == np.uint8)
+
     def produce(index, cancelled):
         source = frames[index]
         if native_hard and source.dtype in (np.uint8, np.uint16):
@@ -205,6 +253,9 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
                              u8=source.dtype == np.uint8)
         return _prepare_frame(source, img_resize, cancelled), response
 
+    def prepare(index, cancelled):
+        return _prepare_frame(frames[index], img_resize, cancelled)
+
     soft = blend_mode == 'soft'
     feather = blend_mode == 'feather'
     _soft_gamma = float(soft_gamma)
@@ -212,13 +263,14 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
     step = 0
 
     output = best = None
-    produced = _ordered_frame_results(len(frames), produce, workers, should_cancel)
+    first_pass_fn = produce if hard else produce_response
+    produced = _ordered_frame_results(len(frames), first_pass_fn, workers, should_cancel)
     try:
         if feather:
             # pass 1: streaming top-2 (value + index) per pixel
             i1 = i2 = None
             v1 = v2 = None
-            for index, (frame, response) in produced:
+            for index, response in produced:
                 _check_cancel(should_cancel)
                 if i1 is None:
                     i1 = np.full(response.shape, index, np.int32)
@@ -246,7 +298,7 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
                               scratch_bytes=min(128, response.shape[0]) * response.shape[1] * 8)
                 if live_preview is not None:
                     live_preview.show_positions(i1, index, len(frames), len(frames) - 1)
-                del frame, response
+                del response
                 step += 1
                 if progress_callback is not None:
                     progress_callback(step, total_steps)
@@ -257,9 +309,6 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
             blend2 = w2 >= float(feather_theta)
 
             # pass 2: weighted accumulation over top-2 picks
-            def prepare(index, cancelled):
-                return _prepare_frame(frames[index], img_resize, cancelled)
-
             accumulated = None
             produced = _ordered_frame_results(len(frames), prepare, workers, should_cancel)
             for index, frame in produced:
@@ -286,9 +335,9 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
                     progress_callback(step, total_steps)
             output = accumulated
         elif soft:
-            def _log_rows(response):
-                """In-place log of a copy, rows blocked."""
-                out = np.empty_like(response)
+            def _log_rows(response, out=None):
+                if out is None:
+                    out = np.empty_like(response)
                 def log_rows(start, stop):
                     _check_cancel(should_cancel)
                     rows = slice(start, stop)
@@ -298,18 +347,23 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
                           scratch_bytes=min(128, response.shape[0]) * response.shape[1] * 4)
                 return out
 
-            # pass 1: per-pixel max of log response
+            # Pass 1: keep the per-pixel log maximum, and retain logs when admitted.
             log_max = None
-            for index, (frame, response) in produced:
+            cached_logs = None
+            for index, response in produced:
                 _check_cancel(should_cancel)
-                lr = _log_rows(response)
                 if log_max is None:
-                    log_max = lr
+                    log_max = _log_rows(response)
+                    cached_logs = _soft_log_cache(response, frames, img_resize, workers)
+                    if cached_logs is not None:
+                        np.copyto(cached_logs[0], log_max)
                 else:
+                    lr = _log_rows(response, None if cached_logs is None else cached_logs[index])
                     np.maximum(log_max, lr, out=log_max)
+                    del lr
+                del response
                 if live_preview is not None:
                     live_preview.update_best(log_max, index, len(frames))
-                del frame, response, lr
                 step += 1
                 if progress_callback is not None:
                     progress_callback(step, total_steps)
@@ -317,35 +371,45 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
             produced.close()
 
             # pass 2: softmax denominator with the stabilized exponent
-            denom = None
-            produced = _ordered_frame_results(len(frames), produce, workers, should_cancel)
-            for index, (frame, response) in produced:
+            denom = np.zeros_like(log_max)
+            if cached_logs is None:
+                produced = _ordered_frame_results(len(frames), produce_response, workers, should_cancel)
+                responses = produced
+            else:
+                responses = enumerate(cached_logs)
+            for _, response in responses:
                 _check_cancel(should_cancel)
-                lr = _log_rows(response)
-                if denom is None:
-                    denom = np.zeros_like(lr)
+                lr = _log_rows(response) if cached_logs is None else response
                 def denominator(start, stop):
                     _check_cancel(should_cancel)
                     rows = slice(start, stop)
                     denom[rows] += np.exp(_soft_gamma * (lr[rows] - log_max[rows]))
                 run_bands(denom.shape[0], 128, denominator,
                           scratch_bytes=min(128, denom.shape[0]) * denom.shape[1] * 24)
-                del frame, response, lr
+                del response, lr
                 step += 1
                 if progress_callback is not None:
                     progress_callback(step, total_steps)
             _check_cancel(should_cancel)
             produced.close()
+            del responses
 
-            # pass 3: weighted accumulation
+            # Pass 3: accumulate source pixels with the normalized weights.
             accumulated = None
-            produced = _ordered_frame_results(len(frames), produce, workers, should_cancel)
-            for index, (frame, response) in produced:
+            producer = produce if cached_logs is None else prepare
+            produced = _ordered_frame_results(len(frames), producer, workers, should_cancel)
+            for index, result in produced:
                 _check_cancel(should_cancel)
+                if cached_logs is None:
+                    frame, response = result
+                    lr = _log_rows(response)
+                    del response
+                else:
+                    frame, lr = result, cached_logs[index]
+                del result
                 if accumulated is None:
                     accumulated = np.zeros(frame.shape, np.float32)
                     height, width = accumulated.shape[:2]
-                lr = _log_rows(response)
                 def accumulate_soft(start, stop):
                     _check_cancel(should_cancel)
                     rows = slice(start, stop)
@@ -357,10 +421,11 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
                         accumulated[rows] += weight * frame[rows]
                 run_bands(height, 128, accumulate_soft,
                           scratch_bytes=min(128, height) * width * 64)
-                del frame, response, lr
+                del frame, lr
                 step += 1
                 if progress_callback is not None:
                     progress_callback(step, total_steps)
+            del cached_logs, log_max, denom
             output = accumulated
         else:
             from fusion_methods._openfocus_kernels import (

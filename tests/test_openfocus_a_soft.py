@@ -51,6 +51,51 @@ def test_soft_blend_honors_cancellation_between_passes():
                                     progress_callback=progress)
 
 
+@pytest.mark.parametrize('fallback', ['headroom', 'allocation'])
+def test_soft_log_cache_fallback_preserves_resized_uint16(monkeypatch, fallback):
+    from core import multi_focus_fusion, resource_policy
+
+    rng = np.random.default_rng(529)
+    frames = [rng.integers(0, 65536, (65, 49, 3), dtype=np.uint16) for _ in range(3)]
+    width, height = resize = (13, 11)
+    cache_shape = (len(frames), height, width)
+    monkeypatch.setattr(resource_policy, 'ram_budget', lambda snapshot: 64 * 1024 ** 2)
+    monkeypatch.setattr(multi_focus_fusion, 'memory_budget_bytes', lambda: 64 * 1024 ** 2)
+    original_response = openfocus_a._response
+    response_calls = 0
+
+    def response(*args, **kwargs):
+        nonlocal response_calls
+        response_calls += 1
+        return original_response(*args, **kwargs)
+
+    monkeypatch.setattr(openfocus_a, '_response', response)
+    options = dict(img_resize=resize, blend_mode='soft', thread_count=1, use_gpu=False)
+    cached = openfocus_a.openfocus_a_impl(frames, **options)
+    assert response_calls == len(frames)
+
+    if fallback == 'headroom':
+        # The resize fits, with no room for the log stack.
+        monkeypatch.setattr(multi_focus_fusion, 'memory_budget_bytes', lambda: 80_000)
+    else:
+        original_empty = np.empty
+
+        def empty(shape, *args, **kwargs):
+            if (isinstance(shape, tuple) and shape == cache_shape
+                    and kwargs.get('dtype') == np.float64):
+                raise MemoryError
+            return original_empty(shape, *args, **kwargs)
+
+        monkeypatch.setattr(np, 'empty', empty)
+
+    response_calls = 0
+    streamed = openfocus_a.openfocus_a_impl(frames, **options)
+    assert response_calls == 3 * len(frames)
+    assert streamed.shape == (height, width, 3)
+    assert streamed.dtype == np.float32
+    np.testing.assert_array_equal(cached, streamed)
+
+
 @pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
 def test_prototype_responses_use_code_domain_and_current_radius(dtype):
     from tools import _proto_soft_blend

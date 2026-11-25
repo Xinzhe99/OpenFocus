@@ -47,10 +47,11 @@ def test_native_parallel_result_matches_serial_with_odd_edges(resources, monkeyp
     def fuse(threads):
         if method == 'depth':
             return openfocus_depth.depth_map(frames, None, 17, 6, None,
-                                             thread_count=threads, return_codes=True)
+                                             thread_count=threads, return_codes=True,
+                                             use_gpu=False)
         runner = {'a': openfocus_a.openfocus_a_impl,
                   'b': openfocus_bc.openfocus_b_impl}[method]
-        return runner(frames, thread_count=threads)
+        return runner(frames, thread_count=threads, use_gpu=False)
     serial = fuse(1)
     from fusion_methods import _openfocus_kernels, _openfocus_depth_rows
     module, name = ((_openfocus_depth_rows, 'select_activity_rows') if method == 'depth'
@@ -235,9 +236,9 @@ def test_native_workers_join_before_cancel_or_error_escapes(resources, monkeypat
         if phase == 'merge':
             depth = np.zeros(frames[0].shape[:2], np.float32)
             openfocus_bc.openfocus_b_impl(frames, thread_count=2,
-                depth_override=depth, should_cancel=cancelled)
+                depth_override=depth, should_cancel=cancelled, use_gpu=False)
         else:
-            openfocus_depth.depth_map(frames, None, 17, 6, cancelled, thread_count=2)
+            openfocus_depth.depth_map(frames, None, 17, 6, cancelled, thread_count=2, use_gpu=False)
     assert entered >= 2
     assert active == 0 and finished == entered
     assert scratch_states and scratch_states[0] is not None
@@ -255,7 +256,7 @@ def test_small_fusion_uses_calling_thread(resources, monkeypatch):
         identities.add(threading.get_ident())
         return original(*args)
     monkeypatch.setattr(_openfocus_kernels, 'select_rows', select)
-    result = openfocus_a.openfocus_a_impl(frames, thread_count=4)
+    result = openfocus_a.openfocus_a_impl(frames, thread_count=4, use_gpu=False)
     assert result.shape == frames[0].shape
     assert identities == {threading.get_ident()}
 
@@ -263,7 +264,7 @@ def test_small_fusion_uses_calling_thread(resources, monkeypatch):
 def test_medium_images_use_bounded_frame_parallelism_without_row_pool(resources, monkeypatch):
     from fusion_methods import _openfocus_kernels
     frames = _stack(np.uint16, 257, 259)
-    expected = openfocus_a.openfocus_a_impl(frames, thread_count=1)
+    expected = openfocus_a.openfocus_a_impl(frames, thread_count=1, use_gpu=False)
     original_reduce = _openfocus_kernels.down2_rows
     original_select = _openfocus_kernels.select_rows
     barrier = threading.Barrier(2)
@@ -285,7 +286,7 @@ def test_medium_images_use_bounded_frame_parallelism_without_row_pool(resources,
         return original_select(*args)
     monkeypatch.setattr(_openfocus_kernels, 'down2_rows', reduce_rows)
     monkeypatch.setattr(_openfocus_kernels, 'select_rows', select_rows)
-    actual = openfocus_a.openfocus_a_impl(frames, thread_count=4)
+    actual = openfocus_a.openfocus_a_impl(frames, thread_count=4, use_gpu=False)
     np.testing.assert_array_equal(actual, expected)
     assert len(producers) == 2
     assert consumers == {threading.get_ident()}

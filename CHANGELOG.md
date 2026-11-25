@@ -197,6 +197,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   inactive OpenFocus B merge tiles and reuse OpenFocus C pyramid buffers.
 - Reduce the OpenFocus C OpenCL working set by processing the finest layer
   from packed source pixels. Log the device and admission limit on CPU fallback.
+- Run half-resolution OpenFocus C depth on supported OpenCL devices. Reduce
+  CPU pyramid memory and reuse OpenFocus A responses during soft and feather
+  blending. Decode eligible compressed TIFF strips in parallel and read JPEG
+  and PNG headers and pixels from the same file handle.
 - Count prepared frames and reuse OpenFocus B scratch data for matching renders
   in the same session, including the aligned depth validity mask.
 - Screen unsupported extensions before resolving paths in Batch Image

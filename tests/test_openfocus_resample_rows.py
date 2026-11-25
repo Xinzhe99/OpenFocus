@@ -182,7 +182,7 @@ def test_b_fusion_matches_per_pixel_resample_kernel(resources, monkeypatch, dtyp
     high = np.iinfo(dtype).max + 1
     # Odd half-size rows (273) span three 128-row bands among four workers.
     frames = [rng.integers(0, high, (547, 515, 3), dtype=dtype) for _ in range(3)]
-    result = openfocus_b_impl(frames, thread_count=4)
+    result = openfocus_b_impl(frames, thread_count=4, use_gpu=False)
     calls = []
 
     def per_pixel(*args):
@@ -191,7 +191,7 @@ def test_b_fusion_matches_per_pixel_resample_kernel(resources, monkeypatch, dtyp
     # _resample reads the dispatcher's signatures to admit compiler memory.
     per_pixel.signatures = _per_pixel_resample_rows.signatures
     monkeypatch.setattr(resample, '_resample_rows', per_pixel)
-    expected = openfocus_b_impl(frames, thread_count=4)
+    expected = openfocus_b_impl(frames, thread_count=4, use_gpu=False)
     np.testing.assert_array_equal(result, expected)
     # Three half-gray reductions and one depth expansion, in bands on workers.
     assert len(calls) >= 4 * 3

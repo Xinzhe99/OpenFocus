@@ -219,4 +219,5 @@ def depth_openfocus_b(images, progress_callback=None, should_cancel=None, **para
 def depth_openfocus_c(images, progress_callback=None, should_cancel=None, **parameters):
     from fusion_methods.openfocus_depth import depth_map
     return depth_map(images, None, 17, parameters['smoothing'], should_cancel, progress_callback,
-                     thread_count=parameters.get('thread_count'), half_resolution=True)
+                     thread_count=parameters.get('thread_count'), half_resolution=True,
+                     use_gpu=parameters.get('use_gpu', True))
