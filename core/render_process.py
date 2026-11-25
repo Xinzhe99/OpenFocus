@@ -270,33 +270,39 @@ def _restore_algorithms(fusions, registrations):
                 register(spec)
 
 
-def _render_child(connection, cancel_event, request, budget, directory, language):
-    """Top-level spawn target; image computation never runs in the GUI process."""
-    from utils.logging_setup import set_log_level, setup_logging
-    from utils.diagnostics import install_exception_hooks
-    setup_logging()
-    install_exception_hooks()
+def _send_child_error(relay, exc):
+    logger.exception('isolated render failed')
+    relay.send(('error', str(exc), None,
+                (_render_error_category(exc), 'child_setup_or_transfer', relay.last_stage),
+                _capture_error_details(exc)))
+
+
+def _run_decoded_render_job(connection, cancel_event, relay, request, budget, directory,
+                            language, *, mailbox=None, live_preview_requested=False):
+    """Execute one isolated render job and relay results, errors, and cleanup."""
+    from utils.logging_setup import set_log_level
     trans.current_lang = language
-    relay = _Relay(connection, cancel_event)
+    worker = None
+    inputs = None
     encoder = None
+    results, errors = [], []
     try:
         if _windows_source_run() and multiprocessing.parent_process() is not None:
             request = unwrap_source_request(request, _LOADED_SOURCE_REVISION)
             if request is None:
                 raise RuntimeError(trans.t('render_source_changed'))
-        mailbox = None
-        if isinstance(request, tuple) and len(request) == 3 and request[0] == 'live_preview':
+        if mailbox is None and isinstance(request, tuple) and len(request) == 3 and request[0] == 'live_preview':
             _, request, shared = request
             mailbox = _LivePreviewMailbox(shared)
+            live_preview_requested = True
         storage.restore_storage_directory(directory)
         with process_budget(budget), storage.observe_temp_files(relay.temporary_file):
             inputs = FrameDecoder(should_cancel=cancel_event.is_set).decode(request)
             set_log_level(inputs['log_level'])
             _restore_algorithms(inputs['fusions'], inputs['registrations'])
             worker = _ChildRenderWorker(cancel_event, *inputs['args'], **inputs['kwargs'])
-            if mailbox is not None:
+            if live_preview_requested and mailbox is not None:
                 worker.live_preview_sink = mailbox.publish
-            results, errors = [], []
             direct = Qt.ConnectionType.DirectConnection
             worker.progress_signal.connect(relay.progress, direct)
             worker.stage_signal.connect(relay.stage, direct)
@@ -314,35 +320,59 @@ def _render_child(connection, cancel_event, request, budget, directory, language
                 if metadata is not None and worker._error_details:
                     message += (worker._error_details,)
                 relay.send(message)
-                return
-            if not results:
+            elif not results:
                 raise RuntimeError('Render worker produced neither a result nor an error')
-            relay.stage('publish')
-            state = {name: getattr(worker, name) for name in _SUCCESS_STATE_FIELDS}
-            encoder = FrameEncoder(cancel_event.is_set, on_shared_memory=relay.shared_memory)
-            payload = encoder.encode({'result': results[-1], 'state': state})
-            paths = encoder.owned_paths
-            if not relay.send(('completed', payload, paths, relay.directories)):
-                return
-            # Retain every source, map and preview until the GUI has opened it.
-            while not connection.poll(.05):
-                if cancel_event.is_set():
-                    return
-            if connection.recv() == 'accepted':
-                storage.disown_temp_files(paths)
-                from core import scratch_registry
-                scratch_registry.forget([*paths, *relay.directories])
-    except RegistrationCancelled:
-        relay.send(('error', 'CANCELLED: render cancelled', None, None))
-    except Exception as exc:
-        logger.exception('isolated render failed')
-        relay.send(('error', str(exc), None,
-                    (_render_error_category(exc), 'child_setup_or_transfer', relay.last_stage),
-                    _capture_error_details(exc)))
+            else:
+                relay.stage('publish')
+                state = {name: getattr(worker, name) for name in _SUCCESS_STATE_FIELDS}
+                encoder = FrameEncoder(cancel_event.is_set, on_shared_memory=relay.shared_memory)
+                payload = encoder.encode({'result': results[-1], 'state': state})
+                paths = encoder.owned_paths
+                if relay.send(('completed', payload, paths, relay.directories)):
+                    # Retain every source, map and preview until the GUI has opened it.
+                    while not connection.poll(.05):
+                        if cancel_event.is_set():
+                            break
+                    if not cancel_event.is_set() and connection.recv() == 'accepted':
+                        storage.disown_temp_files(paths)
+                        from core import scratch_registry
+                        scratch_registry.forget([*paths, *relay.directories])
     finally:
         if encoder is not None:
             encoder.close(unlink=True)
             encoder = None
+        if worker is not None:
+            for sig in (worker.progress_signal, worker.stage_signal,
+                        worker.finished_signal, worker.error_signal):
+                try:
+                    sig.disconnect()
+                except TypeError:
+                    pass
+            for attr in ('raw_images', 'aligned_images', 'prepared_cache',
+                         'rendered_depth', 'live_preview_sink'):
+                if hasattr(worker, attr):
+                    setattr(worker, attr, None)
+        results.clear()
+        errors.clear()
+        if isinstance(inputs, dict):
+            inputs.clear()
+
+
+def _render_child(connection, cancel_event, request, budget, directory, language):
+    """Top-level spawn target; image computation never runs in the GUI process."""
+    from utils.logging_setup import setup_logging
+    from utils.diagnostics import install_exception_hooks
+    setup_logging()
+    install_exception_hooks()
+    relay = _Relay(connection, cancel_event)
+    try:
+        _run_decoded_render_job(connection, cancel_event, relay, request,
+                                budget, directory, language)
+    except RegistrationCancelled:
+        relay.send(('error', 'CANCELLED: render cancelled', None, None))
+    except Exception as exc:
+        _send_child_error(relay, exc)
+    finally:
         connection.close()
 
 
@@ -585,84 +615,15 @@ def _checkin_persistent_worker(handle, *, bounded=False):
 def _run_one_persistent_job(connection, cancel_event, request, budget, job_directory, language,
                             mailbox, live_preview_requested):
     """Run a single render job in a dedicated stack frame so all mmaps close on return."""
-    from utils.logging_setup import set_log_level
-    trans.current_lang = language
     relay = _Relay(connection, cancel_event)
-    worker = None
-    inputs = None
-    encoder = None
-    results, errors = [], []
     try:
-        if _windows_source_run() and multiprocessing.parent_process() is not None:
-            request = unwrap_source_request(request, _LOADED_SOURCE_REVISION)
-            if request is None:
-                raise RuntimeError(trans.t('render_source_changed'))
-        storage.restore_storage_directory(job_directory)
-        with process_budget(budget), storage.observe_temp_files(relay.temporary_file):
-            inputs = FrameDecoder(should_cancel=cancel_event.is_set).decode(request)
-            set_log_level(inputs['log_level'])
-            _restore_algorithms(inputs['fusions'], inputs['registrations'])
-            worker = _ChildRenderWorker(cancel_event, *inputs['args'], **inputs['kwargs'])
-            if live_preview_requested and mailbox is not None:
-                worker.live_preview_sink = mailbox.publish
-            direct = Qt.ConnectionType.DirectConnection
-            worker.progress_signal.connect(relay.progress, direct)
-            worker.stage_signal.connect(relay.stage, direct)
-            worker.finished_signal.connect(lambda *result: results.append(result), direct)
-            worker.error_signal.connect(errors.append, direct)
-            worker.run()
-            if errors:
-                state = {name: getattr(worker, name) for name in _ERROR_STATE_FIELDS}
-                # Error packets have no receiver acknowledgement.
-                encoder = FrameEncoder(allow_shared_memory=False)
-                metadata = ((worker._render_error_category, 'child_worker', relay.last_stage)
-                            if worker._render_error_category is not None else None)
-                message = ('error', errors[-1], encoder.encode(state), metadata)
-                if metadata is not None and worker._error_details:
-                    message += (worker._error_details,)
-                relay.send(message)
-            elif not results:
-                raise RuntimeError('Render worker produced neither a result nor an error')
-            else:
-                relay.stage('publish')
-                state = {name: getattr(worker, name) for name in _SUCCESS_STATE_FIELDS}
-                encoder = FrameEncoder(cancel_event.is_set, on_shared_memory=relay.shared_memory)
-                payload = encoder.encode({'result': results[-1], 'state': state})
-                paths = encoder.owned_paths
-                if relay.send(('completed', payload, paths, relay.directories)):
-                    while not connection.poll(.05):
-                        if cancel_event.is_set():
-                            break
-                    if not cancel_event.is_set() and connection.recv() == 'accepted':
-                        storage.disown_temp_files(paths)
-                        from core import scratch_registry
-                        scratch_registry.forget([*paths, *relay.directories])
+        _run_decoded_render_job(connection, cancel_event, relay, request,
+                                budget, job_directory, language,
+                                mailbox=mailbox, live_preview_requested=live_preview_requested)
     except RegistrationCancelled:
         relay.send(('error', 'CANCELLED: render cancelled', None, None))
     except Exception as exc:
-        logger.exception('isolated render failed')
-        relay.send(('error', str(exc), None,
-                    (_render_error_category(exc), 'child_setup_or_transfer', relay.last_stage),
-                    _capture_error_details(exc)))
-    finally:
-        if encoder is not None:
-            encoder.close(unlink=True)
-            encoder = None
-        if worker is not None:
-            for sig in (worker.progress_signal, worker.stage_signal,
-                        worker.finished_signal, worker.error_signal):
-                try:
-                    sig.disconnect()
-                except TypeError:
-                    pass
-            for attr in ('raw_images', 'aligned_images', 'prepared_cache',
-                         'rendered_depth', 'live_preview_sink'):
-                if hasattr(worker, attr):
-                    setattr(worker, attr, None)
-        results.clear()
-        errors.clear()
-        if isinstance(inputs, dict):
-            inputs.clear()
+        _send_child_error(relay, exc)
 
 
 def _persistent_render_child(connection, cancel_event, directory, mailbox_shared):
@@ -890,6 +851,70 @@ class RenderProcessWorker(RenderWorker):
             self.finished_signal.emit(*result)
         self._child_error_evidence = None
 
+    def _encode_request_payload(self, encoder, source_revision, *, live_preview_mailbox=None):
+        request = encoder.encode({
+            'args': self._render_args,
+            'kwargs': self._render_kwargs,
+            'fusions': fusion_algorithms(),
+            'registrations': registration_algorithms(),
+            'log_level': logger.getEffectiveLevel(),
+        })
+        if live_preview_mailbox is not None:
+            # Standard multiprocessing handles keep the same spawn signature
+            # so a mismatched Windows child can still reject the revision.
+            request = ('live_preview', request, live_preview_mailbox.shared)
+        if source_revision is not None:
+            request = wrap_source_request(request, source_revision)
+        return request
+
+    def _poll_child_exchange(self, process, parent, cancel_event, exchange, *, stop_on_idle=False):
+        """Relay messages until the child exits or signals idle; enforce cancel grace."""
+        cancel_deadline = None
+        idle_confirmed = False
+        while True:
+            if self._check_current():
+                cancel_event.set()
+                if cancel_deadline is None:
+                    cancel_deadline = time.monotonic() + _CANCEL_GRACE_SECONDS
+                elif process.is_alive() and time.monotonic() >= cancel_deadline:
+                    process.terminate()
+                    process.join(1)
+                    if process.is_alive():
+                        process.kill()
+            try:
+                available = parent.poll(.05)
+                message = parent.recv() if available else None
+            except (EOFError, OSError):
+                message = None
+                available = False
+            if message is not None:
+                if stop_on_idle and message[0] == 'idle':
+                    idle_confirmed = True
+                    break
+                exchange.receive(message, parent)
+            if not process.is_alive() and not available:
+                break
+        return idle_confirmed
+
+    def _raise_child_crash(self, exit_code_raw, exchange):
+        evidence = dict(exchange.error_metadata or {'error_category': 'runtime'})
+        evidence.update(error_origin=_CHILD_EXIT_ORIGIN, render_stage=exchange.last_stage)
+        exit_code = _bounded_exit_code(exit_code_raw)
+        if exit_code is not None:
+            evidence['exit_code'] = exit_code
+        self._child_error_evidence = evidence
+        raise RuntimeError(trans.t('render_worker_crashed').format(
+            reason=_exit_reason(exit_code_raw)))
+
+    def _finalize_exchange_result(self, exchange, source_revision):
+        if exchange.error is not None:
+            self._child_error_evidence = exchange.error_metadata
+            if source_revision is not None and exchange.error == LEGACY_SOURCE_REQUEST_ERROR:
+                raise RuntimeError(trans.t('render_source_changed'))
+            raise RuntimeError(exchange.error)
+        exchange.restore_state(exchange.packet['state'])
+        return exchange.packet['result'], exchange.decoder.adopted_paths
+
     def _run_process(self):
         source_revision = None
         if _windows_source_run():
@@ -908,16 +933,11 @@ class RenderProcessWorker(RenderWorker):
         try:
             log_action('render_dispatch.ipc_ready')
             encoder = FrameEncoder(self._check_current)
-            request = encoder.encode({'args': self._render_args, 'kwargs': self._render_kwargs,
-                'fusions': fusion_algorithms(), 'registrations': registration_algorithms(),
-                'log_level': logger.getEffectiveLevel()})
+            mailbox = None
             if self.live_preview_requested:
                 mailbox = self._live_preview_mailbox = _LivePreviewMailbox.create(context)
-                # Standard multiprocessing handles keep the same spawn signature
-                # so a mismatched Windows child can still reject the revision.
-                request = ('live_preview', request, mailbox.shared)
-            if source_revision is not None:
-                request = wrap_source_request(request, source_revision)
+            request = self._encode_request_payload(encoder, source_revision,
+                                                   live_preview_mailbox=mailbox)
             log_action('render_dispatch.request_encoded')
             budget = make_process_budget(storage.ram_snapshot_bytes())
             scratch = storage.capture_scratch()
@@ -932,50 +952,14 @@ class RenderProcessWorker(RenderWorker):
             log_action('render_dispatch.spawn_completed')
             self.child_pid = process.pid
             child.close()
-            cancel_deadline = None
-            while True:
-                if self._check_current():
-                    self._cancel_event.set()
-                    if cancel_deadline is None:
-                        cancel_deadline = time.monotonic() + _CANCEL_GRACE_SECONDS
-                    elif process.is_alive() and time.monotonic() >= cancel_deadline:
-                        process.terminate()
-                        process.join(1)
-                        if process.is_alive():
-                            process.kill()
-                try:
-                    available = parent.poll(.05)
-                    if available:
-                        message = parent.recv()
-                    else:
-                        message = None
-                except (EOFError, OSError):
-                    message = None
-                    available = False
-                if message is not None:
-                    exchange.receive(message, parent)
-                if not process.is_alive() and not available:
-                    break
+            self._poll_child_exchange(process, parent, self._cancel_event, exchange)
             process.join()
             if self.is_cancelled:
                 raise RegistrationCancelled()
             if process.exitcode != 0 or (exchange.packet is None and exchange.error is None):
-                evidence = dict(exchange.error_metadata or {'error_category': 'runtime'})
-                evidence.update(error_origin=_CHILD_EXIT_ORIGIN, render_stage=exchange.last_stage)
-                exit_code = _bounded_exit_code(process.exitcode)
-                if exit_code is not None:
-                    evidence['exit_code'] = exit_code
-                self._child_error_evidence = evidence
-                raise RuntimeError(trans.t('render_worker_crashed').format(
-                    reason=_exit_reason(process.exitcode)))
-            if exchange.error is not None:
-                self._child_error_evidence = exchange.error_metadata
-                if source_revision is not None and exchange.error == LEGACY_SOURCE_REQUEST_ERROR:
-                    raise RuntimeError(trans.t('render_source_changed'))
-                raise RuntimeError(exchange.error)
-            exchange.restore_state(exchange.packet['state'])
-            adopted = exchange.decoder.adopted_paths
-            return exchange.packet['result']
+                self._raise_child_crash(process.exitcode, exchange)
+            result, adopted = self._finalize_exchange_result(exchange, source_revision)
+            return result
         finally:
             # A failed decode/start/connection must not leave a child or scratch behind.
             if process is not None and process.pid is not None:
@@ -1030,11 +1014,7 @@ class RenderProcessWorker(RenderWorker):
         try:
             log_action('render_dispatch.ipc_ready')
             encoder = FrameEncoder(self._check_current)
-            request = encoder.encode({'args': self._render_args, 'kwargs': self._render_kwargs,
-                'fusions': fusion_algorithms(), 'registrations': registration_algorithms(),
-                'log_level': logger.getEffectiveLevel()})
-            if source_revision is not None:
-                request = wrap_source_request(request, source_revision)
+            request = self._encode_request_payload(encoder, source_revision)
             log_action('render_dispatch.request_encoded')
             budget = make_process_budget(storage.ram_snapshot_bytes())
             if process.pid is None:
@@ -1046,34 +1026,8 @@ class RenderProcessWorker(RenderWorker):
                 child = None
             self.child_pid = process.pid
             parent.send(('run', request, budget, directory, trans.current_lang, bool(self.live_preview_requested)))
-            cancel_deadline = None
-            idle_confirmed = False
-            while True:
-                if self._check_current():
-                    cancel_event.set()
-                    if cancel_deadline is None:
-                        cancel_deadline = time.monotonic() + _CANCEL_GRACE_SECONDS
-                    elif process.is_alive() and time.monotonic() >= cancel_deadline:
-                        process.terminate()
-                        process.join(1)
-                        if process.is_alive():
-                            process.kill()
-                try:
-                    available = parent.poll(.05)
-                    if available:
-                        message = parent.recv()
-                    else:
-                        message = None
-                except (EOFError, OSError):
-                    message = None
-                    available = False
-                if message is not None:
-                    if message[0] == 'idle':
-                        idle_confirmed = True
-                        break
-                    exchange.receive(message, parent)
-                if not process.is_alive() and not available:
-                    break
+            idle_confirmed = self._poll_child_exchange(
+                process, parent, cancel_event, exchange, stop_on_idle=True)
             if not idle_confirmed and not process.is_alive():
                 process.join()
             if self.is_cancelled:
@@ -1082,27 +1036,14 @@ class RenderProcessWorker(RenderWorker):
                 exchange.packet is None and exchange.error is None
             ):
                 exit_code_raw = process.exitcode if not process.is_alive() else -1
-                evidence = dict(exchange.error_metadata or {'error_category': 'runtime'})
-                evidence.update(error_origin=_CHILD_EXIT_ORIGIN, render_stage=exchange.last_stage)
-                exit_code = _bounded_exit_code(exit_code_raw)
-                if exit_code is not None:
-                    evidence['exit_code'] = exit_code
-                self._child_error_evidence = evidence
-                raise RuntimeError(trans.t('render_worker_crashed').format(
-                    reason=_exit_reason(exit_code_raw)))
+                self._raise_child_crash(exit_code_raw, exchange)
             category = (exchange.error_metadata or {}).get('error_category')
             # A retry after memory exhaustion needs fresh native allocators
             # and device contexts.
             reusable = (idle_confirmed and process.is_alive() and not cancel_event.is_set()
                         and category not in ('resource_limit', 'memory'))
-            if exchange.error is not None:
-                self._child_error_evidence = exchange.error_metadata
-                if source_revision is not None and exchange.error == LEGACY_SOURCE_REQUEST_ERROR:
-                    raise RuntimeError(trans.t('render_source_changed'))
-                raise RuntimeError(exchange.error)
-            exchange.restore_state(exchange.packet['state'])
-            adopted = exchange.decoder.adopted_paths
-            return exchange.packet['result']
+            result, adopted = self._finalize_exchange_result(exchange, source_revision)
+            return result
         finally:
             if child is not None:
                 try:

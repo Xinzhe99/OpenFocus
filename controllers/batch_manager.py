@@ -3,13 +3,12 @@ from __future__ import annotations
 import os
 from typing import Any, Iterable, Optional
 
-from PyQt6 import sip
-from PyQt6.QtCore import QObject, QThread, Qt
+from PyQt6.QtCore import QThread, Qt
 from PyQt6.QtWidgets import QMessageBox
 
 from ui import styles as ui_styles
 from locales import trans
-from utils.frame_pixels import _PixelProgress
+from utils.frame_pixels import _PixelProgress, is_qobject_alive, window_unavailable
 from utils.platform_utils import configure_native_worker_stack
 
 
@@ -35,6 +34,14 @@ _ORPHAN_WORKERS: list = []
 
 class BatchManager:
     """Coordinates batch processing workflows and lifetime of background workers."""
+
+    _LOCKED_CONTROLS = (
+        "fusion_parameter_panel",
+        "registration_parameter_panel",
+        "combo_fusion",
+        "combo_align",
+        "btn_reset",
+    )
 
     def __init__(self, window):
         self.window = window
@@ -86,8 +93,7 @@ class BatchManager:
             total_items = 1
 
         self._initialise_progress_dialog(total_items)
-        for name in ("fusion_parameter_panel", "registration_parameter_panel",
-                     "combo_fusion", "combo_align", "btn_reset"):
+        for name in self._LOCKED_CONTROLS:
             widget = getattr(self.window, name, None)
             if widget is not None:
                 widget.setEnabled(False)
@@ -138,10 +144,7 @@ class BatchManager:
         self._progress_dialog = dialog
 
     def _window_unavailable(self) -> bool:
-        window = self.window
-        return (window is None
-                or (isinstance(window, QObject) and sip.isdeleted(window))
-                or bool(getattr(window, "_shutting_down", False)))
+        return window_unavailable(self.window)
 
     def _handle_progress_update(self, current: int, total: int, message: str) -> None:
         if self._window_unavailable():
@@ -237,8 +240,7 @@ class BatchManager:
         """Re-enable the controls a batch job disabled (unless a render owns them)."""
         if self._window_unavailable() or self._render_owns_controls():
             return
-        for name in ("fusion_parameter_panel", "registration_parameter_panel",
-                     "combo_fusion", "combo_align", "btn_reset"):
+        for name in self._LOCKED_CONTROLS:
             widget = getattr(self.window, name, None)
             if widget is None:
                 continue
@@ -299,7 +301,7 @@ class BatchManager:
 
     def _close_progress_dialog(self) -> None:
         dialog, self._progress_dialog = self._progress_dialog, None
-        if dialog is not None and not (isinstance(dialog, QObject) and sip.isdeleted(dialog)):
+        if is_qobject_alive(dialog):
             dialog.finish()
             dialog.deleteLater()
 
@@ -315,6 +317,7 @@ class BatchManager:
 
     def _teardown_worker(self) -> None:
         """Request shutdown without blocking the GUI on native processing."""
+        self._close_progress_dialog()
         if self._worker:
             self._worker.cancel()
         if self._thread:
@@ -323,4 +326,7 @@ class BatchManager:
                 pair = (self._thread, self._worker)
                 if pair not in _ORPHAN_WORKERS:
                     _ORPHAN_WORKERS.append(pair)
-                    self._thread.finished.connect(lambda: _ORPHAN_WORKERS.remove(pair))
+                    def _discard_orphan(entry=pair):
+                        if entry in _ORPHAN_WORKERS:
+                            _ORPHAN_WORKERS.remove(entry)
+                    self._thread.finished.connect(_discard_orphan)

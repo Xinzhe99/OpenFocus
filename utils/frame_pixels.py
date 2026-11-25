@@ -1,4 +1,5 @@
 """Bounded preview geometry and background pixel work for lazy consumers."""
+from contextlib import contextmanager
 import threading
 from copy import copy
 
@@ -9,6 +10,43 @@ from PyQt6.QtGui import QShortcut
 from PyQt6.QtWidgets import QApplication, QProgressBar, QProgressDialog, QPushButton, QWidget
 
 from utils.platform_utils import configure_native_worker_stack
+
+
+def is_qobject_alive(obj) -> bool:
+    """True when ``obj`` is present and not a destroyed Qt wrapper."""
+    return obj is not None and not (isinstance(obj, QObject) and sip.isdeleted(obj))
+
+
+def window_unavailable(window) -> bool:
+    """True when a host window is missing, destroyed, or shutting down."""
+    return not is_qobject_alive(window) or bool(getattr(window, "_shutting_down", False))
+
+
+def safe_disconnect(signal, slot=None) -> None:
+    """Disconnect a Qt signal without failing if already detached or deleted."""
+    if signal is None:
+        return
+    try:
+        if slot is None:
+            signal.disconnect()
+        else:
+            signal.disconnect(slot)
+    except (TypeError, RuntimeError):
+        pass
+
+
+@contextmanager
+def block_signals(widget):
+    """Temporarily block signals on a Qt widget or test double."""
+    if widget is None or not hasattr(widget, "blockSignals"):
+        yield
+        return
+    previous = bool(widget.blockSignals(True))
+    try:
+        yield
+    finally:
+        if is_qobject_alive(widget):
+            widget.blockSignals(previous)
 
 
 def preview_label_config(config, source_shape, preview_shape):

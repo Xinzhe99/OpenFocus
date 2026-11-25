@@ -43,7 +43,7 @@ from utils.image_utils import ImageWriteError, imwrite_auto
 from utils import scalebar
 from utils.export_paths import create_stack_directory, frame_export_name
 from core.source_frames import resolve_frame, materialize_frames
-from utils.frame_pixels import run_pixel_worker
+from utils.frame_pixels import is_qobject_alive, run_pixel_worker, window_unavailable
 from utils.platform_utils import configure_native_worker_stack
 
 _IMAGE_WRITE_MESSAGE_KEYS = {
@@ -195,9 +195,7 @@ class LayeredTiffWorker(QThread):
 
 def _window_unavailable(window: Any) -> bool:
     """True when the host window is torn down or closing."""
-    return (window is None
-            or (isinstance(window, QObject) and sip.isdeleted(window))
-            or bool(getattr(window, '_shutting_down', False)))
+    return window_unavailable(window)
 
 
 class ExportManager:
@@ -413,7 +411,7 @@ class ExportManager:
 
     def _layered_tiff_finished(self):
         dialog, self.layered_progress_dialog = self.layered_progress_dialog, None
-        if dialog is not None and not (isinstance(dialog, QObject) and sip.isdeleted(dialog)):
+        if is_qobject_alive(dialog):
             dialog.close()
         self.layered_worker = None
         self._layered_record = None
@@ -512,16 +510,10 @@ class ExportManager:
                     show_warning_box(window, trans.t('linear_dng_filter'),
                                      trans.t('linear_dng_requires_raw'))
                     return
-                from copy import deepcopy
-                from dataclasses import replace
                 from controllers.output_manager import OutputRecord
                 original = record
                 if original is not None:
-                    export_record = replace(
-                        original,
-                        scale_bar_config=deepcopy(original.scale_bar_config),
-                        watermark_config=deepcopy(original.watermark_config),
-                    )
+                    export_record = original.snapshot_for_export()
                     if export_record.linear_dng_metadata is None:
                         export_record.linear_dng_metadata = metadata
                 else:
@@ -937,7 +929,7 @@ class ExportManager:
         window = self.window
 
         dialog, self.gif_progress_dialog = self.gif_progress_dialog, None
-        if dialog is not None and not (isinstance(dialog, QObject) and sip.isdeleted(dialog)):
+        if is_qobject_alive(dialog):
             dialog.finish()
             dialog.deleteLater()
 

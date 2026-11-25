@@ -953,6 +953,10 @@ class BatchProcessingDialog(QDialog):
             # it really stops even if this dialog is being destroyed.
             worker.cancel()
 
+    def done(self, result):
+        self.cancel_imports()
+        super().done(result)
+
     def closeEvent(self, event):
         self.cancel_imports()
         super().closeEvent(event)
@@ -1661,14 +1665,18 @@ class BatchProcessingDialog(QDialog):
         if output_type == "subfolder" and not (output_path or "").strip():
             return trans.t("msg_no_folder_text")
 
+        from utils.export_paths import resolve_output_subfolder
         for folder in self._source_output_folders():
             if not os.path.isdir(folder):
                 return f"{trans.t('msg_save_failed_info_write')}\n{folder}"
-            target = os.path.realpath(os.path.join(folder, output_path)) if output_type == 'subfolder' else folder
-            root = os.path.realpath(folder)
-            if output_type == 'subfolder' and (os.path.isabs(output_path) or
-                    os.path.commonpath((root, target)) != root):
-                return f"{trans.t('msg_save_failed_info_write')}\n{target}"
+            if output_type == 'subfolder':
+                try:
+                    target = resolve_output_subfolder(folder, output_path)
+                except ValueError:
+                    target = os.path.realpath(os.path.join(folder, output_path))
+                    return f"{trans.t('msg_save_failed_info_write')}\n{target}"
+            else:
+                target = folder
             if os.path.exists(target) and not os.path.isdir(target):
                 return f"{trans.t('msg_save_failed_info_write')}\n{target}"
             if not _is_writable_dir(target if os.path.isdir(target) else folder):
