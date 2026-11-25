@@ -592,7 +592,7 @@ def _supported_languages():
     """
     try:
         from locales import trans
-        return tuple(trans.translations)
+        return tuple(trans.available_codes())
     except Exception:  # pragma: no cover - settings must never import-fail
         return ("en", "zh", "ja", "es")
 

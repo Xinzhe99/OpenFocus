@@ -9,39 +9,42 @@ OpenFocus Dialogs Package
 - batch: 批处理相关对话框
 - roi: ROI相关对话框
 """
+import importlib
 
-from dialogs.about import (
-    EnvironmentInfoDialog,
-    ContactInfoDialog,
-)
+_LAZY_EXPORTS = {
+    'EnvironmentInfoDialog': 'dialogs.about',
+    'ContactInfoDialog': 'dialogs.about',
+    'HelpDialog': 'dialogs.help',
+    'RenderMethodHelpDialog': 'dialogs.help',
+    'RegistrationHelpDialog': 'dialogs.help',
+    'TileHelpDialog': 'dialogs.help',
+    'DurationDialog': 'dialogs.settings',
+    'DownsampleDialog': 'dialogs.settings',
+    'TileSettingsDialog': 'dialogs.settings',
+    'RegistrationSettingsDialog': 'dialogs.settings',
+    'ThreadSettingsDialog': 'dialogs.settings',
+    'AIBatchSettingsDialog': 'dialogs.settings',
+    'BatchProcessingDialog': 'dialogs.batch',
+    'FolderImportDialog': 'dialogs.batch',
+    'ROIRenderOptionsDialog': 'dialogs.roi',
+    'WelcomeDialog': 'dialogs.welcome',
+    'ScaleBarDialog': 'dialogs.scalebar',
+}
 
-from dialogs.help import (
-    HelpDialog,
-    RenderMethodHelpDialog,
-    RegistrationHelpDialog,
-    TileHelpDialog,
-)
 
-from dialogs.settings import (
-    DurationDialog,
-    DownsampleDialog,
-    TileSettingsDialog,
-    RegistrationSettingsDialog,
-    ThreadSettingsDialog,
-    AIBatchSettingsDialog,
-)
+def __getattr__(name):
+    """Lazily resolve top-level dialog exports so cold startup skips unused UI modules."""
+    module_name = _LAZY_EXPORTS.get(name)
+    if module_name is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module = importlib.import_module(module_name)
+    value = getattr(module, name)
+    globals()[name] = value
+    return value
 
-from dialogs.batch import (
-    BatchProcessingDialog,
-    FolderImportDialog,
-)
 
-from dialogs.roi import (
-    ROIRenderOptionsDialog,
-)
-
-from dialogs.welcome import WelcomeDialog
-from dialogs.scalebar import ScaleBarDialog
+def __dir__():
+    return sorted(set(globals()) | set(__all__))
 
 __all__ = [
     # About dialogs

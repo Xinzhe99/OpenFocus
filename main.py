@@ -164,16 +164,6 @@ from core.workers import ROIAlignmentWorker
 import cv2
 from ui.styles import GLOBAL_DARK_STYLE
 from locales import trans
-from dialogs import (
-    ContactInfoDialog,
-    BatchProcessingDialog,
-    TileSettingsDialog,
-    ThreadSettingsDialog,
-    AIBatchSettingsDialog,
-    ROIRenderOptionsDialog,
-)
-from dialogs.help import RenderMethodHelpDialog
-from dialogs.settings import RegistrationSettingsDialog
 from utils import (
     get_ui_font_family,
     get_monospace_font_family,
@@ -4114,6 +4104,7 @@ class OpenFocus(QMainWindow):
 
     def show_contact_info(self):
         """Open Contact Us without interrupting work in the main window."""
+        from dialogs.about import ContactInfoDialog
         from dialogs._community_layout import show_community_dialog
         show_community_dialog(self, ContactInfoDialog)
     
@@ -4171,6 +4162,7 @@ class OpenFocus(QMainWindow):
 
     def show_tile_settings(self):
         """显示 Tile 设置对话框"""
+        from dialogs.settings import TileSettingsDialog
         dialog = TileSettingsDialog(self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             # 设置已由对话框写回到 self 属性；可在此处触发必要的刷新
@@ -4196,6 +4188,7 @@ class OpenFocus(QMainWindow):
 
     def show_ai_batch_settings(self):
         """显示 StackMFF V3 批量大小设置对话框"""
+        from dialogs.settings import AIBatchSettingsDialog
         dialog = AIBatchSettingsDialog(self)
         dialog.exec()
 

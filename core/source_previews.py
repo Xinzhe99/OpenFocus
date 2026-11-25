@@ -26,7 +26,7 @@ def _preview_parallelism():
     from core.resource_policy import (PREFERENCE_RESPONSIVE, cpu_capacity,
                                       probe_resources, ram_budget)
     snapshot = probe_resources()
-    return max(1, min(2, cpu_capacity(snapshot, PREFERENCE_RESPONSIVE),
+    return max(1, min(6, cpu_capacity(snapshot, PREFERENCE_RESPONSIVE),
                       ram_budget(snapshot) // _PREVIEW_WORKING_BYTES))
 
 
@@ -147,49 +147,61 @@ class SourcePreviewWorker(QThread):
                                 operation.cancel()
                                 return
                             continue
+                        futures = {}
+                        in_flight_ids = set()
                         try:
                             if cancelled():
                                 operation.cancel()
                                 return
                             count = 1 if self.selected_display else _preview_parallelism()
-                            batch = []
-                            identities = set()
-                            while position < len(self.indices) and len(batch) < count:
-                                index = self.indices[position]
-                                identity = id(self.frames[index])
-                                if identity in identities:
-                                    break
-                                identities.add(identity)
-                                batch.append(index)
-                                position += 1
                             if executor is None:
-                                executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix='source-preview')
-                            futures = {}
-                            try:
-                                for index in batch:
-                                    make = _make_display_thumbnail if self.selected_display else _make_thumbnail
+                                executor = ThreadPoolExecutor(max_workers=count, thread_name_prefix='source-preview')
+                            make = _make_display_thumbnail if self.selected_display else _make_thumbnail
+
+                            def submit_available():
+                                nonlocal position
+                                while (position < len(self.indices)
+                                       and len(futures) < count
+                                       and (priority or not _PREVIEW_PRIORITY_WAITERS)
+                                       and not cancelled()):
+                                    index = self.indices[position]
+                                    identity = id(self.frames[index])
+                                    if identity in in_flight_ids:
+                                        break
+                                    in_flight_ids.add(identity)
+                                    position += 1
                                     futures[executor.submit(make, self.frames[index],
-                                                            self._cancel_event.is_set)] = index
-                                pending = set(futures)
-                                while pending:
-                                    done, pending = wait(pending, timeout=.05, return_when=FIRST_COMPLETED)
-                                    cancelled()
+                                                            self._cancel_event.is_set)] = (index, identity)
+
+                            submit_available()
+                            while futures:
+                                if cancelled():
+                                    break
+                                done, _pending = wait(futures, timeout=.05, return_when=FIRST_COMPLETED)
+                                if cancelled():
+                                    break
+                                if done:
                                     for future in done:
-                                        index = futures[future]
+                                        index, identity = futures.pop(future)
+                                        in_flight_ids.discard(identity)
                                         try:
                                             thumb = future.result()
                                             if not cancelled():
-                                                self.ready.emit(self.request, index, id(self.frames[index]), thumb)
+                                                self.ready.emit(self.request, index, identity, thumb)
                                         except Exception as exc:
                                             if not cancelled():
                                                 operation.fail(exc)
                                                 self.failed.emit(self.request, str(exc))
-                            finally:
-                                wait(futures)
+                                    if priority or not _PREVIEW_PRIORITY_WAITERS:
+                                        submit_available()
                             if cancelled():
                                 operation.cancel()
                                 return
                         finally:
+                            for future in futures:
+                                future.cancel()
+                            if futures:
+                                wait(futures)
                             _release_preview_turn()
             except Exception as exc:
                 if cancelled():

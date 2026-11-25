@@ -3,6 +3,7 @@
 The wide detector uses float32 evaluation order. Plans retain immutable source
 identities, never decoded frame stacks.
 """
+from collections import deque
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor, wait
 from contextvars import copy_context
@@ -2028,12 +2029,18 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
                    required_bytes=min_needed, budget_bytes=ceiling_now)
     host_budget = getattr(plan, 'ram_budget', 0) or 0
     gray_bytes = int(h) * int(w) * 2
-    use_prefetch = (
+    align_workers = _alignment_workers(h * w, min_items=1)
+    prefetch_workers = 0
+    per_prefetch_bytes = max(1, decode_peak + gray_bytes)
+    if (
         not low_ram_spill
         and len(sources) >= 2
-        and _alignment_workers(h * w, min_items=1) > 1
-        and (needed + decode_peak + gray_bytes) <= host_budget
-    )
+        and align_workers > 1
+        and host_budget > needed
+    ):
+        max_prefetch = min(4, len(sources), align_workers)
+        affordable = (host_budget - needed) // per_prefetch_bytes
+        prefetch_workers = max(0, min(max_prefetch, int(affordable)))
     ref = reference_frame - 1
     has_right_chain = 0 < ref < len(sources) - 1
     order = (ref, *range(ref - 1, -1, -1), *range(ref + 1, len(sources)))
@@ -2064,7 +2071,7 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
         return identity, gray
 
     def iter_prepared():
-        if not use_prefetch:
+        if prefetch_workers <= 0:
             for source_index in order:
                 _check_cancel(should_cancel)
                 yield prepare_source(source_index, should_cancel)
@@ -2074,24 +2081,29 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
         def cancelled():
             return stop.is_set() or (should_cancel is not None and should_cancel())
 
-        with ThreadPoolExecutor(max_workers=1, thread_name_prefix='openfocus-align-io') as pool:
-            pending = pool.submit(copy_context().run, prepare_source, order[0], cancelled)
+        with ThreadPoolExecutor(max_workers=prefetch_workers, thread_name_prefix='openfocus-align-io') as pool:
+            pending = deque()
+            next_pos = 0
+            while next_pos < len(order) and len(pending) < prefetch_workers:
+                pending.append(pool.submit(copy_context().run, prepare_source, order[next_pos], cancelled))
+                next_pos += 1
             try:
-                for pos in range(len(order)):
-                    while not pending.done():
+                for _ in range(len(order)):
+                    fut = pending.popleft()
+                    while not fut.done():
                         _check_cancel(should_cancel)
-                        wait((pending,), timeout=0.05)
+                        wait((fut,), timeout=0.05)
                     _check_cancel(should_cancel)
-                    prepared = pending.result()
-                    pending = None
-                    if pos + 1 < len(order):
-                        pending = pool.submit(copy_context().run, prepare_source, order[pos + 1], cancelled)
+                    prepared = fut.result()
+                    if next_pos < len(order):
+                        pending.append(pool.submit(copy_context().run, prepare_source, order[next_pos], cancelled))
+                        next_pos += 1
                     yield prepared
                     del prepared
             finally:
                 stop.set()
-                if pending is not None:
-                    pending.cancel()
+                for fut in pending:
+                    fut.cancel()
 
     prepared_stream = iter_prepared()
     try:

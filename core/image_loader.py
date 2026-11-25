@@ -740,13 +740,13 @@ def _read_raw_exif_bytes(path: str) -> bytes:
             return b""
 
 
-def _exif_bytes_from_image(image) -> bytes:
+def _exif_bytes_from_image(image, *, pre_exif=None) -> bytes:
     """Read EXIF from the active image page without loading pixels."""
     try:
         raw = image.info.get('exif', b'') or b''
         if raw and image.format != 'TIFF':
             return raw
-        exif = read_image_exif(image)
+        exif = pre_exif if pre_exif is not None else read_image_exif(image)
         if not len(exif):
             return b''
         safe = export_exif(exif.tobytes())
@@ -894,12 +894,13 @@ def _frame_metadata(path, frames, should_cancel):
     return result
 
 
-def _pil_metadata_from_image(path: str, image) -> Tuple[bytes, bytes]:
+def _pil_metadata_from_image(path: str, image, *, pre_exif=None) -> Tuple[bytes, bytes]:
     """Extract sanitized EXIF and ICC profile from an already-opened Pillow image."""
     if not PIL_AVAILABLE:
         return b'', b''
     ext = os.path.splitext(path)[1].lower()
-    raw_exif = _exif_bytes_from_image(image) if ext in ('.jpg', '.jpeg', '.jpe', '.jfif', '.png', '.webp') else b''
+    raw_exif = (_exif_bytes_from_image(image, pre_exif=pre_exif)
+                if ext in ('.jpg', '.jpeg', '.jpe', '.jfif', '.png', '.webp') else b'')
     safe_exif = _safe_exif_bytes(path, raw_exif)
     try:
         profile = _display_profile(path, image.info.get('icc_profile', b''), image.mode == 'CMYK')
@@ -1580,18 +1581,21 @@ class ImageStackLoader:
         images, names, paths, px_sizes, exifs, profiles = [], [], [], [], [], []
         failed = 0
         exif = b""
-        workers = min(4, max(1, int(thread_count or 4)))
+        default_workers = min(8, max(4, os.cpu_count() or 4))
+        workers = min(8, max(1, int(thread_count))) if thread_count else default_workers
         def inspect(path):
             if self.should_cancel():
                 raise _DecodeCancelled()
             metadata = []
+            px_size_holder = []
             try:
                 frames = scan_source(path, scale_factor, header_only=True,
                                      should_cancel=self.should_cancel,
-                                     metadata_out=metadata)
+                                     metadata_out=metadata,
+                                     px_size_out=px_size_holder)
                 if len(metadata) != len(frames):
                     metadata = _frame_metadata(path, frames, self.should_cancel)
-                px_um = detect_px_size_um(path)
+                px_um = px_size_holder[0] if px_size_holder else detect_px_size_um(path)
                 return (frames, metadata, px_um), None
             except SourceExifTooLarge:
                 raise

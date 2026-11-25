@@ -459,7 +459,43 @@ def _pil_preview(image, *, itemsize=1, alpha=False, jpeg_single_scan=None):
                     if info.get('progressive') or info.get('progression')
                     or (jpeg and not jpeg_single_scan) else 0)
     row_scratch = width * max(4, bands) * 32
-    from core.resource_policy import require_memory
+    from core.resource_policy import ResourceLimitError, require_memory
+    if (getattr(image, 'format', None) == 'PNG' and source_path and not cmyk
+            and itemsize == 1 and 'transparency' not in info
+            and Image.Image.thumbnail is _DEFAULT_PIL_THUMBNAIL
+            and os.path.isfile(source_path)):
+        try:
+            with open(source_path, 'rb') as fh:
+                ihdr = fh.read(26)
+                if (len(ihdr) == 26 and ihdr[:8] == b'\x89PNG\r\n\x1a\n'
+                        and ihdr[12:16] == b'IHDR' and ihdr[24] == 8
+                        and ihdr[25] in (0, 2, 6)):
+                    color_type = ihdr[25]
+                    out_channels = 4 if color_type == 6 else (3 if color_type == 2 else 1)
+                    working = width * height * out_channels
+                    if working <= PREVIEW_DECODE_BUDGET:
+                        require_memory(working)
+                        fh.seek(0)
+                        raw_bytes = fh.read()
+                        import imagecodecs
+                        decoded = imagecodecs.spng_decode(raw_bytes)
+                        del raw_bytes
+                        if decoded is not None and decoded.dtype == np.uint8:
+                            if decoded.shape[1] != target[0] or decoded.shape[0] != target[1]:
+                                decoded = cv2.resize(decoded, target, interpolation=cv2.INTER_AREA)
+                            if decoded.ndim == 2:
+                                return cv2.cvtColor(decoded, cv2.COLOR_GRAY2BGR)
+                            if decoded.shape[2] == 3:
+                                return cv2.cvtColor(decoded, cv2.COLOR_RGB2BGR)
+                            if decoded.shape[2] == 4:
+                                return cv2.cvtColor(
+                                    decoded,
+                                    cv2.COLOR_RGBA2BGRA if alpha else cv2.COLOR_RGBA2BGR,
+                                )
+        except ResourceLimitError:
+            raise
+        except Exception:
+            pass
     if (jpeg and source_path and not cmyk
             and not alpha and itemsize == 1 and Image.Image.thumbnail is _DEFAULT_PIL_THUMBNAIL
             and os.path.isfile(source_path)):
@@ -2349,7 +2385,7 @@ def _tiff_embedded_preview(page, candidates, should_cancel):
 
 
 def scan_source(path, scale=1.0, *, linear=False, header_only=False, page_index=None, should_cancel=None,
-                metadata_out=None):
+                metadata_out=None, px_size_out=None):
     """Read headers and bounded previews; linear RAW calibration may unpack the sensor."""
     from core.image_loader import is_raw_source
     _check_preview_cancel(should_cancel)
@@ -2404,6 +2440,21 @@ def scan_source(path, scale=1.0, *, linear=False, header_only=False, page_index=
         import tifffile
         with tifffile.TiffFile(path) as tif:
             pages = list(tif.pages)
+            if px_size_out is not None:
+                from utils.scalebar import _calibration_from_tags, _rational
+                if not pages:
+                    px_size_out.append(None)
+                else:
+                    try:
+                        tags = pages[0].tags
+                        desc = tags.get(270).value if 270 in tags else ""
+                        if isinstance(desc, bytes):
+                            desc = desc.decode("utf-8", "replace")
+                        xres = _rational(tags.get(282).value) if 282 in tags else None
+                        resunit = int(tags.get(296).value) if 296 in tags else 2
+                        px_size_out.append(_calibration_from_tags(str(desc or ""), xres, resunit))
+                    except Exception:
+                        pass
             first_index = next((i for i, p in enumerate(pages)
                                 if not getattr(p, 'is_reduced', False)), None)
             for index, page in enumerate(pages):
@@ -2457,7 +2508,8 @@ def scan_source(path, scale=1.0, *, linear=False, header_only=False, page_index=
                                and extension in _JPEG_EXTENSIONS else 0)
             jpeg_single_scan = (_jpeg_header_is_single_scan(image, jpeg_components)
                                 if jpeg_components else None)
-            orientation = int(read_image_exif(image).get(274, 1))
+            parsed_exif = read_image_exif(image)
+            orientation = int(parsed_exif.get(274, 1))
             if extension == '.png':
                 # Pillow presents RGB16 PNG as RGB8; the IHDR bit depth is
                 # still authoritative for the original pixel decoder.
@@ -2469,7 +2521,7 @@ def scan_source(path, scale=1.0, *, linear=False, header_only=False, page_index=
                 width, height = height, width
             if metadata_out is not None:
                 from core.image_loader import _pil_metadata_from_image
-                metadata_out.append(_pil_metadata_from_image(path, image))
+                metadata_out.append(_pil_metadata_from_image(path, image, pre_exif=parsed_exif))
             preview = None
             if not header_only:
                 preview = _orient(_pil_preview(image, itemsize=dtype.itemsize, alpha=alpha,

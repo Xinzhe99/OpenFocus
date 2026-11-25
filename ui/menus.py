@@ -529,7 +529,7 @@ def setup_menus(window: QMainWindow) -> None:
     # Built from the packs that actually loaded, so adding locales_xx.py puts
     # the language in this menu without touching it. Order comes from
     # TranslationManager.PACK_ORDER.
-    for code, label in trans.available_languages():
+    for code, label in trans.menu_languages():
         act = QAction(label, window)
         act.setCheckable(True)
         act.setChecked(trans.current_lang == code)
