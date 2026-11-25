@@ -105,6 +105,7 @@ def test_account_http_uses_https_handler_and_logs_safe_tls_reason(monkeypatch):
 
 
 def test_all_other_server_clients_attach_https_context(monkeypatch, tmp_path):
+    monkeypatch.setattr(tls.urllib.request, "getproxies", lambda: {})
     report_handlers = []
     monkeypatch.setattr(
         report_client.urllib.request,
@@ -125,18 +126,6 @@ def test_all_other_server_clients_attach_https_context(monkeypatch, tmp_path):
     inference_pack._opener.cache_clear()
     assert any(isinstance(h, urllib.request.HTTPSHandler) for h in pack_handlers)
 
-    community_handlers = []
-    monkeypatch.setattr(
-        _community_download,
-        "build_opener",
-        lambda *handlers: community_handlers.extend(handlers) or SimpleNamespace(open=lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("stop"))),
-    )
-    fetch = _community_download._Fetch("https://account.openfocus.top/v1/qr/wechat-group", "image/png", 1024, 1.0)
-    fetch.run()
-    assert any(isinstance(h, urllib.request.HTTPSHandler) for h in community_handlers)
-
-    contexts = []
-
     class FakeReply:
         status = 204
 
@@ -148,6 +137,22 @@ def test_all_other_server_clients_attach_https_context(monkeypatch, tmp_path):
 
         def __exit__(self, *args):
             return False
+
+    community_handlers = []
+    monkeypatch.setattr(
+        _community_download,
+        "build_opener",
+        lambda *handlers: community_handlers.extend(handlers) or SimpleNamespace(
+            open=lambda request, timeout: FakeReply(),
+        ),
+    )
+    monkeypatch.setattr(_community_download, "monotonic", lambda: 0.0)
+    fetch = _community_download._Fetch("https://account.openfocus.top/v1/qr/wechat-group", "image/png", 1024, 1.0)
+    fetch.run()
+    assert fetch.status == 204
+    assert any(isinstance(h, urllib.request.HTTPSHandler) for h in community_handlers)
+
+    contexts = []
 
     def fake_stdlib_urlopen(request, timeout=None, context=None):
         contexts.append(context)

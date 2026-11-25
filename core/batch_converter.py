@@ -896,7 +896,7 @@ def thumbnail_rgb(path, size=(96, 72)):
             if first is None:
                 raise ValueError('No full-resolution TIFF page is available')
             following = takewhile(lambda page: page.is_reduced, pages)
-            candidates = chain((first,), _matching_tiff_previews(first, following))
+            candidates = chain((first,), _matching_tiff_previews(first, following, should_cancel=None))
             small = [p for p in candidates if p.imagewidth * p.imagelength <= 4_000_000
                      and p.photometric.name in ('RGB', 'MINISBLACK')]
             if not small:
