@@ -143,6 +143,7 @@ if __name__ == "__main__":
         sys.exit(run_cli(_argv))
 
 
+from PyQt6 import sip
 from PyQt6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -2372,17 +2373,27 @@ class OpenFocus(QMainWindow):
             return not getattr(self, "_project_dirty", False)
         return clicked is discard
 
-    def load_demo_stack(self) -> None:
-        """Load the bundled demo stack (no downsample dialog)."""
-        from utils import resource_path
+    def load_demo_stack(self, *, on_loaded=None) -> None:
+        """Load the bundled demo stack without a downsample dialog."""
+        if (getattr(self, "_shutting_down", False)
+                or getattr(self, "_close_confirmation_active", False)):
+            return
         demo_dir = resource_path("assets", "demo_stack")
         if not os.path.isdir(demo_dir):
             show_warning_box(self, trans.t("msg_warning"), trans.t("msg_demo_missing"))
             return
-        self.current_folder_path = demo_dir
+
+        def _after_demo():
+            if getattr(self, "_shutting_down", False):
+                return
+            if hasattr(self, "add_recent_file"):
+                self.add_recent_file(demo_dir)
+            if callable(on_loaded):
+                on_loaded()
+
         self.source_manager._start_load_worker(
             folder=demo_dir, scale=1.0, append=False,
-            on_success=lambda: self.add_recent_file(demo_dir) if hasattr(self, "add_recent_file") else None,
+            on_success=_after_demo,
         )
 
     def _apply_update_and_restart(self, zip_url: str, tag: str) -> None:
@@ -2886,8 +2897,47 @@ class OpenFocus(QMainWindow):
         return True
 
     def show_quick_start(self) -> None:
+        if (getattr(self, "_shutting_down", False)
+                or getattr(self, "_close_confirmation_active", False)):
+            return
         from dialogs.welcome import WelcomeDialog
-        WelcomeDialog(self, main_window=self).exec()
+
+        if any(dialog.isVisible() for dialog in self.findChildren(WelcomeDialog)):
+            return
+        dialog = WelcomeDialog(self, main_window=self)
+        try:
+            dialog.exec()
+        finally:
+            if not sip.isdeleted(dialog):
+                dialog.deleteLater()
+
+    def start_guided_tour(self, *, load_demo_if_empty: bool = True) -> None:
+        """Launch the interactive spotlight guided tour over the main workspace."""
+        if (getattr(self, "_shutting_down", False)
+                or getattr(self, "_close_confirmation_active", False)):
+            return
+        from ui.onboarding_tour import OnboardingTour
+
+        tour = getattr(self, "_onboarding_tour", None)
+        if tour is None:
+            tour = OnboardingTour(self)
+            self._onboarding_tour = tour
+        tour.start()
+        if not load_demo_if_empty or self.raw_images:
+            return
+
+        app = QApplication.instance()
+        if (isinstance(app, OpenFocusApplication) and app.main_window is self
+                and (app._pending or app._import_queue or app._import_processing)):
+            return
+
+        source = self.source_manager
+        # The load transaction also owns the worker while its GUI result is pending.
+        if (getattr(source, "_load_worker", None) is None
+                and not self._has_work_in_flight() and not source._render_blocks_load()
+                and QApplication.activeModalWidget() is None
+                and os.path.isdir(resource_path("assets", "demo_stack"))):
+            self.load_demo_stack()
 
     def get_or_create_source_pixmap(self, index: int):
         """Return a bounded display pixmap without resolving original pixels."""
@@ -4094,6 +4144,10 @@ class OpenFocus(QMainWindow):
             except RuntimeError:
                 pass
 
+        tour = getattr(self, "_onboarding_tour", None)
+        if tour is not None and tour.is_active:
+            tour.reapply_theme()
+
         self._enable_dark_title_bar(dark=(theme != "light"))
         self._sync_appearance_actions()
 
@@ -4344,6 +4398,13 @@ class OpenFocus(QMainWindow):
             finally:
                 self._close_confirmation_active = False
         self._shutting_down = True
+        tour = getattr(self, "_onboarding_tour", None)
+        if tour is not None:
+            tour.stop()
+        from dialogs.welcome import WelcomeDialog
+        for dialog in self.findChildren(WelcomeDialog):
+            if dialog.isVisible():
+                dialog.reject()
         self._cancel_depth_warmup()
         self.render_manager.cancel_storage_preflight()
 
@@ -5132,11 +5193,10 @@ if __name__ == "__main__":
         def _show_welcome():
             # A slow cooperative close can make this timer overdue. Entering
             # exec() now would consume Qt's posted last-window Quit event.
-            if getattr(window, "_shutting_down", False):
+            if (getattr(window, "_shutting_down", False)
+                    or getattr(window, "_close_confirmation_active", False)):
                 return
-            from dialogs.welcome import WelcomeDialog
-            dlg = WelcomeDialog(window, main_window=window)
-            dlg.exec()
+            window.show_quick_start()
             get_settings().setValue("ui/first_run_done", "1")
         QTimer.singleShot(1500, _show_welcome)
 

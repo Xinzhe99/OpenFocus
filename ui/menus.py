@@ -592,6 +592,14 @@ def setup_menus(window: QMainWindow) -> None:
     help_menu.addAction(quickstart_action)
     window.ui_objs['menu_quick_start'] = quickstart_action
 
+    guided_tour_action = QAction(trans.t('menu_guided_tour'), window)
+    guided_tour_action.setProperty('trans_key', 'menu_guided_tour')
+    guided_tour_action.triggered.connect(
+        lambda: getattr(window, 'start_guided_tour', lambda **_k: None)(load_demo_if_empty=True)
+    )
+    help_menu.addAction(guided_tour_action)
+    window.ui_objs['menu_guided_tour'] = guided_tour_action
+
     manual_action = QAction(trans.t('menu_github_manual'), window)
     manual_action.triggered.connect(_open_github_manual)
     help_menu.addAction(manual_action)
