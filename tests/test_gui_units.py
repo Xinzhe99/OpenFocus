@@ -763,8 +763,8 @@ def test_compare_all_cancel_between_renders_unlocks_the_ui(qapp, monkeypatch):
     rm, _saved = _patched_render_manager(monkeypatch, w)
     rm.start_compare_all()
     rm.worker._running = False
-    rm.on_render_finished(frames, frames[0], False, 0.0, 1.0, 'CPU')
-    assert rm.last_state == 'done' and rm._compare_chain_timer.isActive()
+    rm.on_render_error('This comparison method is unavailable')
+    assert rm.worker is None and rm._compare_chain_timer.isActive()
 
     rm.start_compare_all()
 
