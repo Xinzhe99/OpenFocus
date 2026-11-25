@@ -78,7 +78,7 @@ class AdvancedSettingsDialog(QDialog):
         super().__init__(parent or window)
         self.window_main = window
         self.setWindowTitle(trans.t("advanced_settings_title"))
-        self.resize(min(640, self.screen().availableGeometry().width()), 400)
+        self.resize(min(700, self.screen().availableGeometry().width()), 400)
 
         root = QVBoxLayout(self)
         self.tabs = QTabWidget()
@@ -108,11 +108,14 @@ class AdvancedSettingsDialog(QDialog):
         self.status.hide()
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText(trans.t("btn_ok"))
+        ok_btn = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        ok_btn.setText(trans.t("btn_ok"))
+        ok_btn.setObjectName("primaryButton")
         buttons.button(QDialogButtonBox.StandardButton.Cancel).setText(trans.t("btn_cancel"))
         buttons.accepted.connect(self._apply)
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
+        ok_btn.setDefault(True)
         self.tabs.currentChanged.connect(self._fit_page)
         self.manual_tile_disclosure.toggled.connect(self._fit_page)
         self.sensor_cleanup_disclosure.toggled.connect(self._fit_page)
@@ -279,6 +282,8 @@ class AdvancedSettingsDialog(QDialog):
         self.spin_reg_width = StepperSpinBox(
             minimum=REG_WIDTH_MIN, maximum=REG_WIDTH_MAX, step=64, decimals=0,
             value=int(getattr(w, "reg_downscale_width", 1024)))
+        self.spin_reg_width.setMinimumWidth(max(126, self.spin_reg_width.minimumSizeHint().width()))
+        self.spin_reg_width.setMaximumWidth(180)
         self.spin_reg_width.setToolTip(trans.t("parameter_help_registration_width"))
         add_help_row(reg, trans.t("advanced_reg_width"), self.spin_reg_width,
                      "registration_width", "parameter_help_registration_width")

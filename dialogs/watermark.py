@@ -272,6 +272,8 @@ class WatermarkDialog(QDialog):
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.setObjectName("dialogButtonBar")
+        buttons.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        buttons.setContentsMargins(SPACE["sm"], SPACE["xs"], SPACE["sm"], SPACE["xs"])
         self._ok_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
         self._ok_button.setText(trans.t("label_apply_close"))
         self._ok_button.setObjectName("primaryButton")
