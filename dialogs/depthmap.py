@@ -634,6 +634,14 @@ class _GradientBar(QLabel):
         p.drawText(self.width() - 8 - w_label, label_y, self._right)
 
 
+def _contrasting_text_color(color: QColor) -> str:
+    """Return dark or light foreground hex color with readable contrast."""
+    if not color.isValid():
+        return "#FFFFFF"
+    luminance = 0.299 * color.red() + 0.587 * color.green() + 0.114 * color.blue()
+    return "#111111" if luminance >= 140 else "#FFFFFF"
+
+
 class _CustomSchemeDialog(QDialog):
     """Edit one custom scheme: named list of (position, color) stops."""
 
@@ -695,7 +703,9 @@ class _CustomSchemeDialog(QDialog):
         self.listw.clear()
         for pos, color in self.stops:
             item = QListWidgetItem(f"{pos:.2f}   {color}")
-            item.setBackground(QColor(color))
+            bg = QColor(color)
+            item.setBackground(bg)
+            item.setForeground(QColor(_contrasting_text_color(bg)))
             self.listw.addItem(item)
         try:
             lut = cmap.build_lut_from_stops(self.stops)
@@ -725,13 +735,19 @@ class _CustomSchemeDialog(QDialog):
         color_btn = QPushButton(color)
         holder = {"color": color}
 
+        def apply_swatch(hex_color):
+            fg = _contrasting_text_color(QColor(hex_color))
+            color_btn.setText(hex_color)
+            color_btn.setStyleSheet(f"background: {hex_color}; color: {fg};")
+
+        apply_swatch(holder["color"])
+
         def pick():
             c = QColorDialog.getColor(QColor(holder["color"]), d,
                                       trans.t("depth_pick_color"))
             if c.isValid():
                 holder["color"] = c.name().upper()
-                color_btn.setText(holder["color"])
-                color_btn.setStyleSheet(f"background: {holder['color']};")
+                apply_swatch(holder["color"])
 
         color_btn.clicked.connect(pick)
         lay.addRow(trans.t("depth_stop_position"), spin)
@@ -895,7 +911,9 @@ class DepthMapDialog(QDialog):
         self.source_combo = QComboBox()
         self.source_combo.addItem(trans.t("depth_source_current"), "current")
         self.source_combo.addItem(trans.t("depth_source_from_output"), "output")
-        self.source_combo.setCurrentIndex(1 if self._output_selected else 0)
+        prefer_output = self._output_selected and (
+            self._output_context is not None or len(self._current_images) < 2)
+        self.source_combo.setCurrentIndex(1 if prefer_output else 0)
         self._source_mode = self.source_combo.currentData()
         form.addRow(trans.t("depth_source_label"), self.source_combo)
         self.align_combo = QComboBox()

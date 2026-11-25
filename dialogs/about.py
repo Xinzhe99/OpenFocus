@@ -9,7 +9,7 @@ from unicodedata import category
 from urllib.parse import urlencode, urlsplit
 
 from PyQt6.QtCore import QEvent, QRect, QRectF, QTimer, Qt, QUrl
-from PyQt6.QtGui import QColor, QFont, QImage
+from PyQt6.QtGui import QColor, QFont, QFontDatabase, QImage
 from PyQt6.QtWidgets import (
     QDialog,
     QVBoxLayout,
@@ -20,7 +20,6 @@ from PyQt6.QtWidgets import (
 )
 from dialogs._community_download import CommunityDownloads
 from locales import trans
-from utils import get_monospace_font_family
 from utils.account_client import BASE_URL
 
 
@@ -44,7 +43,13 @@ class EnvironmentInfoDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle(trans.t('dialog_env_title'))
-        self.resize(600, 500)
+        screen = self.screen()
+        if screen is not None:
+            available = screen.availableGeometry()
+            self.resize(min(600, max(420, available.width() - 48)),
+                        min(500, max(320, available.height() - 64)))
+        else:
+            self.resize(600, 500)
 
         # Styling comes from the generated application stylesheet.
 
@@ -55,7 +60,9 @@ class EnvironmentInfoDialog(QDialog):
         self.text_edit = QTextEdit()
         self.text_edit.setToolTip(trans.t('env_subtitle'))
         self.text_edit.setReadOnly(True)
-        self.text_edit.setFont(QFont("Consolas", 10))
+        mono_font = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
+        mono_font.setPointSize(10)
+        self.text_edit.setFont(mono_font)
         layout.addWidget(self.text_edit)
 
         self._probe = _EnvironmentProbe()

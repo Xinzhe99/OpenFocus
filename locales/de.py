@@ -922,7 +922,7 @@ PACK = {
     "retouch_fit": "An Fenster anpassen (F)",
     "retouch_keys": "Links ziehen: malen · Mausrad: zoomen · Rechts/Mitte ziehen: verschieben · [ ]: Pinselgröße · , .: vorheriges/nächstes Bild · Strg+Z / Strg+Y: rückgängig/wiederholen",
     "retouch_apply": "Als neue Ausgabe übernehmen",
-    "retouch_apply_close": "Anwenden & schließen",
+    "retouch_apply_close": "Anwenden && schließen",
     "retouch_need_result": "Zuerst ein Fusionsergebnis rendern, dann retuschieren.",
     "retouch_size_mismatch": "Kein Quellbild entspricht der Größe des Ergebnisses (ROI-Renderings und skalierte Stacks können nicht retuschiert werden).",
     "retouch_applied": "Retuschiertes Ergebnis zur Ausgabeliste hinzugefügt.",

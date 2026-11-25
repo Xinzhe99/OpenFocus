@@ -1,7 +1,8 @@
 from dataclasses import dataclass
 
+from PyQt6 import sip
 from PyQt6.QtCore import QEvent, Qt, QSize, pyqtSignal
-from PyQt6.QtGui import QKeySequence, QShortcut, QFont
+from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -225,6 +226,8 @@ def set_panel_label(button, text: str, tooltip: str = None) -> None:
     width and the full string — plus the explanatory hint — goes into the
     tooltip.
     """
+    if button is None or sip.isdeleted(button):
+        return
     full = text or ""
     panel = _right_panel_for(button)
     if isinstance(button, ElidingCheckBox):
@@ -288,26 +291,57 @@ class _SourceListWidget(QListWidget):
         self.order_changed.emit()
 
 
-class _DeviceStatusLabel(QLabel):
-    def __init__(self, text):
+class ElidingLabel(QLabel):
+    def __init__(self, text, *, elide_mode=Qt.TextElideMode.ElideRight, auto_tooltip=True):
         super().__init__()
+        self._elide_mode = elide_mode
+        self._auto_tooltip = auto_tooltip
+        self._full_text = ""
         self.setTextFormat(Qt.TextFormat.PlainText)
-        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+        self.setMinimumWidth(0)
         self.setText(text)
 
+    def minimumSizeHint(self):
+        hint = super().minimumSizeHint()
+        return QSize(0, hint.height())
+
+    def sizeHint(self):
+        hint = super().sizeHint()
+        text_w = self.fontMetrics().horizontalAdvance(self._full_text) + 2 * self.margin() + 2
+        return QSize(text_w, hint.height())
+
     def setText(self, text):
-        self._full_text = text
+        self._full_text = text or ""
+        self.updateGeometry()
         self._refit()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._refit()
 
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.FontChange:
+            self._refit()
+
     def _refit(self):
         available = self.contentsRect().width() - 2 * self.margin()
+        if available <= 0:
+            super().setText(self._full_text)
+            if self._auto_tooltip:
+                self.setToolTip("")
+            return
+        elided = self.fontMetrics().elidedText(self._full_text, self._elide_mode, available)
+        super().setText(elided)
+        if self._auto_tooltip:
+            self.setToolTip(self._full_text if elided != self._full_text else "")
+
+
+class _DeviceStatusLabel(ElidingLabel):
+    def __init__(self, text):
         # Keep the distinguishing model suffix visible at narrow widths.
-        super().setText(self.fontMetrics().elidedText(
-            self._full_text, Qt.TextElideMode.ElideLeft, max(0, available)))
+        super().__init__(text, elide_mode=Qt.TextElideMode.ElideLeft, auto_tooltip=False)
 
 
 class _ConfigurationContents(QWidget):
@@ -461,7 +495,6 @@ def create_right_panel() -> RightPanelComponents:
     method_help_layout.addWidget(combo_fusion, 1)
     btn_method_help = QPushButton("?")
     btn_method_help.setFixedSize(26, 26)
-    btn_method_help.setFont(QFont("Arial", 12))
     btn_method_help.setStyleSheet(help_button_style())
     btn_method_help.setObjectName("helpButton")
     method_help_layout.addWidget(btn_method_help)
@@ -484,7 +517,6 @@ def create_right_panel() -> RightPanelComponents:
     reg_help_layout.addWidget(combo_align, 1)
     btn_reg_help = QPushButton("?")
     btn_reg_help.setFixedSize(26, 26)
-    btn_reg_help.setFont(QFont("Arial", 12))
     btn_reg_help.setStyleSheet(help_button_style())
     btn_reg_help.setObjectName("helpButton")
     reg_help_layout.addWidget(btn_reg_help)
@@ -619,10 +651,10 @@ def create_right_panel() -> RightPanelComponents:
     status_layout.setHorizontalSpacing(18)
     status_layout.setVerticalSpacing(6)
 
-    lbl_status_loaded = QLabel(trans.t('status_loaded').format(0))
+    lbl_status_loaded = ElidingLabel(trans.t('status_loaded').format(0))
     lbl_status_gpu = _DeviceStatusLabel(trans.t('status_gpu').format('-'))
-    lbl_status_resolution = QLabel(trans.t('status_res').format('-'))
-    lbl_status_memory = QLabel(trans.t('status_ram').format('-'))
+    lbl_status_resolution = ElidingLabel(trans.t('status_res').format('-'))
+    lbl_status_memory = ElidingLabel(trans.t('status_ram').format('-'))
 
     # Keep two rows to leave room for the lists. Give the device label the
     # wider column and keep the full report in its tooltip.
@@ -630,8 +662,8 @@ def create_right_panel() -> RightPanelComponents:
     status_layout.addWidget(lbl_status_gpu, 0, 1)
     status_layout.addWidget(lbl_status_resolution, 1, 0)
     status_layout.addWidget(lbl_status_memory, 1, 1)
-    status_layout.setColumnStretch(0, 1)
-    status_layout.setColumnStretch(1, 2)
+    status_layout.setColumnStretch(0, 4)
+    status_layout.setColumnStretch(1, 5)
 
     right_layout.addWidget(status_widget)
 

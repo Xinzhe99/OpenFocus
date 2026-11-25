@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import QMessageBox
 from locales import trans
 from utils import diagnostics, logging_setup
 from utils.settings_store import get_settings
+from utils.ui_utils import style_message_box
 
 _MAX_TAIL = 2 * 1024 * 1024
 _MAX_BANNER_BYTES = 4096
@@ -138,6 +139,9 @@ def offer_previous_crash(window):
     if pending is None:
         return
     box = QMessageBox(window)
+    if hasattr(QMessageBox, 'Option'):
+        box.setOption(QMessageBox.Option.DontUseNativeDialog)
+    style_message_box(box)
     box.setIcon(QMessageBox.Icon.Question)
     box.setWindowTitle(trans.t('report_crash_title'))
     box.setText(trans.t('report_crash_prompt'))

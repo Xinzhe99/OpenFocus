@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 
-from PyQt6.QtCore import QRect, Qt
-from PyQt6.QtGui import QFont, QImage, QPainter
+from PyQt6.QtCore import QRect, QSize, QTimer, Qt
+from PyQt6.QtGui import QImage, QPainter
 from PyQt6.QtWidgets import (
     QCheckBox,
     QHBoxLayout,
@@ -11,6 +11,9 @@ from PyQt6.QtWidgets import (
     QSlider,
     QStackedWidget,
     QVBoxLayout,
+    QStyle,
+    QStyleOptionButton,
+    QStylePainter,
     QWidget,
     QPushButton,
 )
@@ -19,6 +22,7 @@ from widgets.magnifier_label import MagnifierLabel
 from widgets.sharpness_curve import SharpnessCurveWidget
 from widgets.wipe_compare import WipeCompareWidget
 from locales import trans
+from ui.right_panel import ElidingLabel
 from utils.design_tokens import RADIUS, SPACE, WEIGHT, palette
 
 
@@ -34,6 +38,13 @@ QLabel#panelTitle {{
     font-size: 9pt;
     font-weight: {WEIGHT['semibold']};
     padding-left: {SPACE['md']}px;
+}}
+QLabel#panelTitleText {{
+    background: transparent;
+    color: {t['textMuted']};
+    border: none;
+    font-size: 9pt;
+    font-weight: {WEIGHT['semibold']};
 }}
 QLabel#panelCanvas, QLabel#panelCanvasHint, QWidget#livePreviewPage {{
     background-color: {t['canvas']};
@@ -203,6 +214,52 @@ class _ResultZoomBar(QWidget):
         self._update_controls()
 
 
+class _WipeFollowCheckBox(QCheckBox):
+    def __init__(self, text):
+        super().__init__()
+        self.setText(text)
+
+    def setText(self, text):
+        super().setText(text)
+        self.setToolTip(text)
+
+    def minimumSizeHint(self):
+        option = QStyleOptionButton()
+        self.initStyleOption(option)
+        option.text = ""
+        return self.style().sizeFromContents(
+            QStyle.ContentsType.CT_CheckBox, option, QSize(0, self.fontMetrics().height()), self)
+
+    def paintEvent(self, event):
+        option = QStyleOptionButton()
+        self.initStyleOption(option)
+        contents = self.style().subElementRect(QStyle.SubElement.SE_CheckBoxContents, option, self)
+        option.text = self.fontMetrics().elidedText(
+            option.text, Qt.TextElideMode.ElideRight, max(0, contents.width()),
+            Qt.TextFlag.TextShowMnemonic.value)
+        with QStylePainter(self) as painter:
+            painter.drawControl(QStyle.ControlElement.CE_CheckBox, option)
+
+
+class _WipeBar(QWidget):
+    """Two-row A/B wipe controls whose signal lifetime follows the widget."""
+
+    def __init__(self, label_a, label_b, container):
+        super().__init__()
+        self._label_a = label_a
+        self._label_b = label_b
+        self._container = container
+        self.setObjectName("panelControlBar")
+        trans.languageChanged.connect(self.retranslate)
+
+    def retranslate(self):
+        self._label_a.setText(trans.t('wipe_side_a'))
+        self._label_b.setText(trans.t('wipe_side_b'))
+        win = self._container.window()
+        if getattr(win, 'wipe_active', False) and hasattr(win, '_update_wipe_images'):
+            QTimer.singleShot(0, win._update_wipe_images)
+
+
 def create_source_panel() -> SourcePanel:
     container = QWidget()
     container.setMinimumWidth(200)
@@ -222,7 +279,6 @@ def create_source_panel() -> SourcePanel:
     # either line much longer than the panel (German needs 1014 px for 566 px
     # of canvas). With wrap on, Qt re-breaks the line instead of clipping it.
     image_label.setWordWrap(True)
-    image_label.setFont(QFont("Microsoft YaHei", 10))
     image_label.setObjectName("panelCanvasHint")
     image_label.setAcceptDrops(True)
     image_label.setScaledContents(False)
@@ -243,7 +299,8 @@ def create_source_panel() -> SourcePanel:
 
     info_label = QLabel("-- / --")
     info_label.setObjectName("mutedLabel")
-    info_label.setFixedWidth(60)
+    info_label.setMinimumWidth(64)
+    info_label.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Preferred)
     info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
     slider = QSlider(Qt.Orientation.Horizontal)
@@ -294,13 +351,13 @@ def create_result_panel() -> ResultPanel:
     container.setObjectName("panelRoot")
     title_bar = QWidget()
     title_bar.setObjectName("panelTitleBar")
-    title_bar.setFixedHeight(26)
+    title_bar.setMinimumHeight(26)
     title_layout = QHBoxLayout(title_bar)
-    title_layout.setContentsMargins(10, 0, 6, 0)
+    title_layout.setContentsMargins(SPACE['md'], 0, 6, 0)
     title_layout.setSpacing(6)
 
     title = QLabel(trans.t('panel_output'))
-    title.setObjectName("panelTitle")
+    title.setObjectName("panelTitleText")
     title.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
     wipe_btn = QPushButton(trans.t('btn_wipe'))
@@ -333,7 +390,8 @@ def create_result_panel() -> ResultPanel:
 
     info_label = QLabel("-- / --")
     info_label.setObjectName("mutedLabel")
-    info_label.setFixedWidth(60)
+    info_label.setMinimumWidth(64)
+    info_label.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Preferred)
     info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
     slider = QSlider(Qt.Orientation.Horizontal)
@@ -352,15 +410,16 @@ def create_result_panel() -> ResultPanel:
         """One wipe side: follow checkbox + frame slider + index label."""
         side_label = QLabel(label_text)
         side_label.setObjectName("mutedLabel")
-        follow_chk = QCheckBox(follow_text)
+        follow_chk = _WipeFollowCheckBox(follow_text)
         follow_chk.setChecked(True)
         frame_slider = QSlider(Qt.Orientation.Horizontal)
         frame_slider.setRange(0, 0)
         frame_slider.setEnabled(False)
         frame_slider.setMinimumWidth(60)
-        index_label = QLabel("-")
+        index_label = ElidingLabel("-")
         index_label.setObjectName("mutedLabel")
-        index_label.setMinimumWidth(52)
+        index_label.setMinimumWidth(36)
+        index_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         return follow_chk, frame_slider, index_label, side_label
 
     chk_follow_left, slider_wipe_left, lbl_left_idx, label_a = _make_wipe_group(
@@ -368,27 +427,23 @@ def create_result_panel() -> ResultPanel:
     chk_follow_right, slider_wipe_right, lbl_right_idx, label_b = _make_wipe_group(
         trans.t('wipe_side_b'), trans.t('wipe_follow_latest'))
 
-    wipe_bar = QWidget()
-    wipe_bar.setObjectName("panelControlBar")
-    wipe_bar.setFixedHeight(42)
-    wipe_bar_layout = QHBoxLayout(wipe_bar)
-    wipe_bar_layout.setContentsMargins(8, 2, 8, 2)
-    wipe_bar_layout.setSpacing(6)
+    wipe_bar = _WipeBar(label_a, label_b, container)
+    wipe_bar_layout = QVBoxLayout(wipe_bar)
+    wipe_bar_layout.setContentsMargins(8, 4, 8, 4)
+    wipe_bar_layout.setSpacing(2)
 
-    def _add_side(layout, side_label, follow_chk, frame_slider, index_label):
-        layout.addWidget(side_label)
-        layout.addWidget(follow_chk)
-        layout.addWidget(frame_slider, 1)
-        layout.addWidget(index_label)
+    def _add_side(side_label, follow_chk, frame_slider, index_label):
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(6)
+        row.addWidget(side_label)
+        row.addWidget(follow_chk)
+        row.addWidget(frame_slider, 1)
+        row.addWidget(index_label)
+        wipe_bar_layout.addLayout(row)
 
-    _add_side(wipe_bar_layout, label_a, chk_follow_left, slider_wipe_left, lbl_left_idx)
-
-    divider = QFrame()
-    divider.setFrameShape(QFrame.Shape.VLine)
-    divider.setObjectName("divider")
-    wipe_bar_layout.addWidget(divider)
-
-    _add_side(wipe_bar_layout, label_b, chk_follow_right, slider_wipe_right, lbl_right_idx)
+    _add_side(label_a, chk_follow_left, slider_wipe_left, lbl_left_idx)
+    _add_side(label_b, chk_follow_right, slider_wipe_right, lbl_right_idx)
     wipe_bar.setVisible(False)
 
     wipe_page = QWidget()
