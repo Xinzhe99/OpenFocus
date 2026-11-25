@@ -99,6 +99,13 @@ def _as_str_tuple(value: Any, default: tuple[str, ...] = ()) -> tuple[str, ...]:
     return tuple(item for item in value if isinstance(item, str) and item)
 
 
+def _badge_keys(value: Any) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple)):
+        return ()
+    keys = (item.get("badge_key") if isinstance(item, Mapping) else item for item in value)
+    return tuple(key for key in keys if isinstance(key, str) and key)
+
+
 @dataclass(frozen=True)
 class GalleryConfig:
     """Remote /api/v1/config settings including the global circuit breaker."""
@@ -285,7 +292,7 @@ class AccountProfile:
             can_hide_gallery=_as_bool(data.get("can_hide_gallery"), False),
             interests=_as_str_tuple(data.get("interests")),
             privacy=AccountPrivacy.from_dict(data.get("privacy")),
-            badges=_as_str_tuple(data.get("badges")),
+            badges=_badge_keys(data.get("badges")),
             pending_honor_cards=tuple(cards),
             unread_notifications_count=_as_int(data.get("unread_notifications_count"), 0, minimum=0),
             gallery_terms_accepted_version=terms_ver if isinstance(terms_ver, str) and terms_ver else None,
@@ -350,7 +357,7 @@ class GalleryWork:
         author_id = _as_str(data.get("author_id")) or _as_str(author.get("user_id")) or _as_str(author.get("id"))
         author_nickname = _as_str(data.get("author_nickname")) or _as_str(author.get("nickname"))
         author_avatar_url = _as_str(data.get("author_avatar_url")) or _as_str(author.get("avatar_url"))
-        author_badges = _as_str_tuple(data.get("author_badges")) or _as_str_tuple(author.get("badges"))
+        author_badges = _badge_keys(data.get("author_badges")) or _badge_keys(author.get("badges"))
 
         raw_badge = data.get("source_badge")
         source_badge = raw_badge if raw_badge in ("ad", "following") else None
@@ -444,12 +451,12 @@ class GalleryComment:
             work_id=_as_str(data.get("work_id")),
             author_id=_as_str(data.get("author_id")) or _as_str(author.get("user_id")) or _as_str(author.get("id")),
             author_nickname=_as_str(data.get("author_nickname")) or _as_str(author.get("nickname")),
-            author_badges=_as_str_tuple(data.get("author_badges")) or _as_str_tuple(author.get("badges")),
+            author_badges=_badge_keys(data.get("author_badges")) or _badge_keys(author.get("badges")),
             content=_as_str(data.get("content")),
             is_danmaku=is_danmaku,
             parent_id=parent_id,
-            upvotes=_as_int(data.get("upvotes", data.get("upvote_count", 0)), 0, minimum=0),
-            downvotes=_as_int(data.get("downvotes", data.get("downvote_count", 0)), 0, minimum=0),
+            upvotes=_as_int(data.get("up_count", data.get("upvotes", data.get("upvote_count", 0))), 0, minimum=0),
+            downvotes=_as_int(data.get("down_count", data.get("downvotes", data.get("downvote_count", 0))), 0, minimum=0),
             viewer_vote=raw_vote,
             created_at=_as_str(data.get("created_at")),
             is_author_reply=_as_bool(data.get("is_author_reply"), False),
@@ -468,6 +475,7 @@ class GalleryNotification:
     actor_id: str = ""
     actor_nickname: str = ""
     work_id: str = ""
+    work_title: str = ""
     work_thumb_url: str = ""
     comment_id: str = ""
     params: dict[str, Any] = field(default_factory=dict)
@@ -480,16 +488,18 @@ class GalleryNotification:
     def from_dict(cls, data: Mapping[str, Any]) -> "GalleryNotification":
         if not isinstance(data, Mapping):
             return cls(notification_id="")
-        raw_params = data.get("params") if isinstance(data.get("params"), Mapping) else {}
+        payload = data.get("payload", data.get("params"))
+        raw_params = payload if isinstance(payload, Mapping) else {}
         actor = data.get("actor") if isinstance(data.get("actor"), Mapping) else {}
         return cls(
             notification_id=_as_str(data.get("notification_id")) or _as_str(data.get("id")),
             type=_as_str(data.get("type"), "system_announcement"),
-            is_read=_as_bool(data.get("is_read", data.get("read", False)), False),
+            is_read=_as_bool(data.get("is_read", data.get("read", bool(data.get("read_at")))), False),
             created_at=_as_str(data.get("created_at")),
             actor_id=_as_str(data.get("actor_id")) or _as_str(actor.get("user_id")) or _as_str(actor.get("id")),
             actor_nickname=_as_str(data.get("actor_nickname")) or _as_str(actor.get("nickname")),
             work_id=_as_str(data.get("work_id")),
+            work_title=_as_str(data.get("work_title")),
             work_thumb_url=_as_str(data.get("work_thumb_url")),
             comment_id=_as_str(data.get("comment_id")),
             params=copy.deepcopy(dict(raw_params)),
@@ -722,7 +732,7 @@ class GalleryStateStore(QObject):
     _profile_loaded = pyqtSignal(int, object)
     _feed_loaded = pyqtSignal(int, object)
     _notifications_loaded = pyqtSignal(int, object)
-    _operation_failed = pyqtSignal(str, str)
+    _operation_failed = pyqtSignal(object, str, str)
 
     def __init__(
         self,
@@ -909,6 +919,7 @@ class GalleryStateStore(QObject):
             self._on_poll_tick()
 
     def stop_polling(self) -> None:
+        self._deferred_poll = False
         try:
             if self._poll_timer.isActive():
                 self._poll_timer.stop()
@@ -919,11 +930,11 @@ class GalleryStateStore(QObject):
         self._closed = True
         self.stop_polling()
 
-    def _safe_emit(self, signal: Any, *args: Any) -> None:
+    def _safe_emit(self, signal_name: str, *args: Any) -> None:
         if self._closed:
             return
         try:
-            signal.emit(*args)
+            getattr(self, signal_name).emit(*args)
         except RuntimeError:
             pass
 
@@ -978,7 +989,7 @@ class GalleryStateStore(QObject):
         if not self._config.gallery_enabled:
             return
         if self._client.has_session():
-            self.refresh_account_silently()
+            self.refresh_account_silently(bypass_backoff=False)
 
     def refresh_config(self, *, force_refresh: bool = False) -> bool:
         """Fetch /api/v1/config off the UI thread (paused while fusion_busy)."""
@@ -989,12 +1000,12 @@ class GalleryStateStore(QObject):
             try:
                 raw = self._client.get_config(force_refresh=force_refresh)
                 cfg = GalleryConfig.from_dict(raw)
-                self._safe_emit(self._config_loaded, cfg)
+                self._safe_emit("_config_loaded", cfg)
             except GalleryClientError as exc:
-                self._safe_emit(self._operation_failed, "config", exc.code)
+                self._safe_emit("_operation_failed", None, "config", exc.code)
             except Exception:
                 _logger.debug("Unexpected gallery config refresh error", exc_info=True)
-                self._safe_emit(self._operation_failed, "config", "internal_error")
+                self._safe_emit("_operation_failed", None, "config", "internal_error")
 
         return self._submit("config", _work)
 
@@ -1015,12 +1026,12 @@ class GalleryStateStore(QObject):
             try:
                 raw = self._client.get_me(bypass_backoff=bypass_backoff)
                 profile = AccountProfile.from_dict(raw)
-                self._safe_emit(self._profile_loaded, generation, profile)
+                self._safe_emit("_profile_loaded", generation, profile)
             except GalleryClientError as exc:
-                self._safe_emit(self._operation_failed, "account", exc.code)
+                self._safe_emit("_operation_failed", generation, "account", exc.code)
             except Exception:
                 _logger.debug("Unexpected gallery account refresh error", exc_info=True)
-                self._safe_emit(self._operation_failed, "account", "internal_error")
+                self._safe_emit("_operation_failed", generation, "account", "internal_error")
 
         return self._submit("account", _work, generation=generation)
 
@@ -1060,12 +1071,12 @@ class GalleryStateStore(QObject):
                             work = GalleryWork.from_dict(item)
                             if work.work_id:
                                 works.append(work)
-                self._safe_emit(self._feed_loaded, generation, works)
+                self._safe_emit("_feed_loaded", generation, works)
             except GalleryClientError as exc:
-                self._safe_emit(self._operation_failed, "feed", exc.code)
+                self._safe_emit("_operation_failed", generation, "feed", exc.code)
             except Exception:
                 _logger.debug("Unexpected gallery feed refresh error", exc_info=True)
-                self._safe_emit(self._operation_failed, "feed", "internal_error")
+                self._safe_emit("_operation_failed", generation, "feed", "internal_error")
 
         return self._submit("feed", _work, generation=generation)
 
@@ -1089,12 +1100,12 @@ class GalleryStateStore(QObject):
                             note = GalleryNotification.from_dict(item)
                             if note.notification_id:
                                 parsed.append(note)
-                self._safe_emit(self._notifications_loaded, generation, parsed)
+                self._safe_emit("_notifications_loaded", generation, parsed)
             except GalleryClientError as exc:
-                self._safe_emit(self._operation_failed, "notifications", exc.code)
+                self._safe_emit("_operation_failed", generation, "notifications", exc.code)
             except Exception:
                 _logger.debug("Unexpected gallery notifications refresh error", exc_info=True)
-                self._safe_emit(self._operation_failed, "notifications", "internal_error")
+                self._safe_emit("_operation_failed", generation, "notifications", "internal_error")
 
         return self._submit("notifications", _work, generation=generation)
 
@@ -1139,8 +1150,8 @@ class GalleryStateStore(QObject):
         unread = sum(1 for item in self._notifications if not item.is_read)
         self.notifications_changed.emit(list(self._notifications), unread)
 
-    def _handle_operation_failed(self, operation: str, error_code: str) -> None:
-        if self._closed:
+    def _handle_operation_failed(self, generation: Optional[int], operation: str, error_code: str) -> None:
+        if self._closed or generation is not None and generation != self._account_generation:
             return
         # Silent degradation: emit diagnostic signal only, never pop dialogs
         self.sync_error.emit(operation, error_code)

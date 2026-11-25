@@ -7,6 +7,7 @@ import socketserver
 import threading
 import time
 import urllib.parse
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -129,7 +130,7 @@ def test_loopback_headers_and_config_cache_control():
         assert cfg1["gallery_enabled"] is True
         assert len(recorded) == 1
         hdrs = recorded[0]["headers"]
-        assert hdrs["authorization"] == "Bearer secret-bearer-token"
+        assert "authorization" not in hdrs
         assert hdrs["x-openfocus-platform"] in ("windows", "macos", "linux")
         assert hdrs["x-openfocus-run"] == account_client._RUN_ID
         assert hdrs["x-openfocus-run-started"] == str(account_client._RUN_STARTED)
@@ -265,9 +266,8 @@ def test_loopback_atomic_upload_happy_path_and_no_bearer_to_r2():
 
             if self.path == "/api/v1/gallery/uploads/upl_12345/confirm":
                 payload = json.dumps({
-                    "work_id": "wrk_999",
+                    "work": {"id": "wrk_999"},
                     "points_balance": 400,
-                    "points_deducted": 100,
                 }).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
@@ -304,8 +304,8 @@ def test_loopback_atomic_upload_happy_path_and_no_bearer_to_r2():
             idempotency_key="idem-upload-1",
         )
         assert stages == ["inspecting", "uploading", "confirming", "done"]
-        assert result["work_id"] == "wrk_999"
-        assert result["ai_tags"] == ["insects", "microscopy"]
+        assert result["work"]["id"] == "wrk_999"
+        assert result["work"]["ai_tags"] == ["insects", "microscopy"]
 
         # Verify stage 1 multipart inspect call
         assert len(api_calls) == 2
@@ -470,6 +470,56 @@ def test_exponential_backoff_progression_and_reset():
     assert not backoff.is_backed_off()
 
 
+def test_exponential_backoff_stays_bounded_during_prolonged_outage():
+    clock = _FakeClock()
+    backoff = gc.ExponentialBackoff(clock=clock)
+    for _ in range(1500):
+        backoff.record_failure("network_error")
+        clock.advance(backoff.remaining_sec())
+    assert backoff.record_failure("network_error") == gc.DEFAULT_BACKOFF_MAX_SEC
+
+
+@pytest.mark.parametrize("renewal_fails", [False, True])
+def test_gallery_authentication_shares_the_request_budget(monkeypatch, renewal_fails):
+    clock = _FakeClock()
+    monotonic_time = SimpleNamespace(monotonic=clock)
+    monkeypatch.setattr(account_client, "time", monotonic_time)
+    monkeypatch.setattr(gc, "time", monotonic_time)
+    user = {"id": "gallery-test-user"}
+    session = {"token": "before-renewal", "expires_at": 100, "user": user}
+    saved = []
+    store = SimpleNamespace(load=lambda: session, save=saved.append)
+    remaining = []
+
+    def renew(method, url, body=None, token=None, timeout=None):
+        assert url.endswith("/v1/auth/refresh")
+        assert timeout == 5.0
+        clock.advance(2.0)
+        if renewal_fails:
+            raise account_client.AccountError("http", 429, retry_after=12)
+        return {**session, "token": "after-renewal", "expires_at": 100_000}
+
+    def transport(method, url, headers, body, timeout):
+        assert headers["Authorization"] == "Bearer after-renewal"
+        remaining.append(timeout)
+        return _json_response({"user_id": user["id"]})
+
+    account = account_client.AccountClient(
+        store=store, request=renew, clock=lambda: 1, device_id="gallery-device",
+    )
+    client = gc.GalleryClient(account_client=account, transport=transport, clock=clock)
+    if renewal_fails:
+        with pytest.raises(gc.GalleryClientError, match="rate_limited") as caught:
+            client.get_me()
+        assert caught.value.retry_after == 12
+        assert client.backoff.remaining_sec() == 12
+        assert remaining == [] and saved == []
+    else:
+        assert client.get_me() == {"user_id": user["id"]}
+        assert remaining == [3.0]
+        assert [session["token"] for session in saved] == ["after-renewal"]
+
+
 def test_backoff_respects_retry_after_header_and_4xx_does_not_backoff():
     clock = _FakeClock(10.0)
     responses = iter([
@@ -581,7 +631,7 @@ def test_all_api_endpoints_and_idempotency_headers():
         ("GET", "/api/v1/gallery/users/usr_7/works"),
         ("GET", "/api/v1/gallery/users/usr_7/following"),
         ("GET", "/api/v1/gallery/users/usr_7/followers"),
-        ("GET", "/api/v1/gallery/my-works"),
+        ("GET", "/api/v1/gallery/my/works"),
         ("PATCH", "/api/v1/gallery/works/wrk_42"),
         ("DELETE", "/api/v1/gallery/works/wrk_42"),
         ("POST", "/api/v1/gallery/works/wrk_42/like"),
@@ -604,7 +654,7 @@ def test_all_api_endpoints_and_idempotency_headers():
     # Verify idempotency headers on redeem & checkout
     assert by_path[3][3]["Idempotency-Key"] == "idem-redeem"
     assert by_path[4][3]["Idempotency-Key"] == "idem-checkout"
-    assert by_path[4][4] == {"tier": "pack_1200"}
+    assert by_path[4][4] == {"pack_id": "pack_1200"}
 
     # Verify danmaku vs reply payload rules
     danmaku_body = by_path[26][4]
@@ -711,6 +761,8 @@ def test_presigned_upload_strips_any_openfocus_header_dedupes_content_type_and_v
         if method == "PUT":
             seen_put_headers.append(dict(headers))
             return gc.HttpResponse(status=200, headers={}, body=b"")
+        if url.endswith("/confirm"):
+            return _json_response({"work": {"id": "published-header-test"}})
         return _json_response({
             "upload_id": "upl_hdr",
             "expires_at": "2026-11-26T10:00:00Z",
@@ -804,3 +856,34 @@ def test_get_config_304_after_concurrent_cache_clear_refetches_instead_of_cachin
     clock.advance(10.0)
     assert client.get_config() == {"gallery_enabled": True, "slide_interval_sec": 8}
     assert len(calls) == 3
+
+
+def test_late_config_304_leaves_the_replacement_cache_validator_intact():
+    clock = _FakeClock()
+    validators = []
+
+    def transport(method, url, headers, body, timeout):
+        validators.append(headers.get("If-None-Match"))
+        if len(validators) == 1:
+            return _json_response({"gallery_enabled": True}, headers={"ETag": '"v1"', "Cache-Control": "max-age=10"})
+        if len(validators) == 2:
+            assert client.get_config(force_refresh=True) == {"gallery_enabled": False}
+            return gc.HttpResponse(304, {"etag": '"v1"', "cache-control": "max-age=60"}, b"")
+        if len(validators) == 3:
+            return _json_response({"gallery_enabled": False}, headers={"ETag": '"v2"', "Cache-Control": "max-age=10"})
+        return gc.HttpResponse(304, {"etag": '"v2"', "cache-control": "max-age=10"}, b"")
+
+    client = gc.GalleryClient(transport=transport, clock=clock)
+    assert client.get_config() == {"gallery_enabled": True}
+    clock.advance(11)
+    assert client.get_config() == {"gallery_enabled": False}
+    clock.advance(11)
+    assert client.get_config() == {"gallery_enabled": False}
+    assert validators == [None, '"v1"', None, '"v2"']
+
+
+def test_confirmation_requires_a_published_work_receipt():
+    client = gc.GalleryClient(token="tok", transport=lambda *_args: _json_response({"points_balance": 300}))
+    with pytest.raises(gc.GalleryClientError, match="invalid_response") as error:
+        client.confirm_upload("waiting", idempotency_key="same-receipt")
+    assert error.value.stage == "confirm"

@@ -80,7 +80,7 @@ ROUTES: dict[str, str] = {
     "user_works": f"{API_PREFIX}/gallery/users/{{user_id}}/works",
     "user_following": f"{API_PREFIX}/gallery/users/{{user_id}}/following",
     "user_followers": f"{API_PREFIX}/gallery/users/{{user_id}}/followers",
-    "my_works": f"{API_PREFIX}/gallery/my-works",
+    "my_works": f"{API_PREFIX}/gallery/my/works",
     "upload_inspect": f"{API_PREFIX}/gallery/uploads/inspect",
     "upload_confirm": f"{API_PREFIX}/gallery/uploads/{{upload_id}}/confirm",
     "work_like": f"{API_PREFIX}/gallery/works/{{work_id}}/like",
@@ -94,7 +94,7 @@ ROUTES: dict[str, str] = {
 }
 
 FIELDS: dict[str, str] = {
-    "checkout_tier": "tier",
+    "checkout_pack": "pack_id",
     "redeem_code": "code",
     "upload_thumb_part": "thumb",
     "upload_meta_part": "meta",
@@ -358,6 +358,7 @@ class ExponentialBackoff:
         self._clock = clock
         self._lock = threading.Lock()
         self._failure_count = 0
+        self._exponential_delay = 0.0
         self._current_delay = 0.0
         self._next_allowed_at = 0.0
         self._last_error_code: Optional[str] = None
@@ -365,6 +366,7 @@ class ExponentialBackoff:
     def record_success(self) -> None:
         with self._lock:
             self._failure_count = 0
+            self._exponential_delay = 0.0
             self._current_delay = 0.0
             self._next_allowed_at = 0.0
             self._last_error_code = None
@@ -379,10 +381,10 @@ class ExponentialBackoff:
         ts = self._clock() if now is None else float(now)
         with self._lock:
             self._failure_count += 1
-            delay = min(
-                self.max_delay,
-                self.initial_delay * (self.multiplier ** (self._failure_count - 1)),
+            self._exponential_delay = min(
+                self.max_delay, max(self.initial_delay, self._exponential_delay * self.multiplier),
             )
+            delay = self._exponential_delay
             if retry_after is not None and retry_after > 0:
                 delay = min(self.max_delay, max(delay, float(retry_after)))
             self._current_delay = delay
@@ -785,7 +787,7 @@ class GalleryClient:
     def __init__(
         self,
         *,
-        account_client: Any = None,
+        account_client: Optional[_account_client.AccountClient] = None,
         token_provider: Optional[Callable[[], Optional[str]]] = None,
         token: Optional[str] = None,
         base_url: str = BASE_URL,
@@ -862,25 +864,32 @@ class GalleryClient:
                 return False
         return self._token_provider is not None
 
-    def _resolve_token(self, *, required: bool) -> Optional[str]:
-        token: Optional[str] = None
-        if self._static_token:
-            token = self._static_token
-        elif self._token_provider is not None:
-            try:
+    def _resolve_token(self, *, required: bool, deadline: Optional[float]) -> Optional[str]:
+        token = self._static_token
+        try:
+            if not token and self._token_provider is not None:
                 token = self._token_provider()
-            except Exception:
-                if required:
-                    raise GalleryClientError("unauthorized", "Failed to obtain session token") from None
+            elif not token and self._account_client is not None:
+                token = self._account_client.token(deadline=deadline)
+        except _account_client.AccountError as exc:
+            if exc.category == "network":
+                code = "network_error"
+            elif exc.category == "timeout":
+                code = "timeout"
+            elif exc.status in _TRANSIENT_HTTP_STATUSES:
+                code = "rate_limited" if exc.status == 429 else "http_error"
+            elif required:
+                code = "unauthorized"
+            else:
                 return None
-        elif self._account_client is not None:
-            try:
-                token = self._account_client.token()
-            except Exception:
-                if required:
-                    raise GalleryClientError("unauthorized", "Session token unavailable") from None
-                return None
-
+            raise GalleryClientError(
+                code, "Could not renew the account session", status=exc.status,
+                retry_after=exc.retry_after, edge_request_id=exc.edge_request_id,
+            ) from None
+        except Exception:
+            if required:
+                raise GalleryClientError("unauthorized", "Session token unavailable") from None
+            return None
         if isinstance(token, str) and token.strip():
             return token.strip()
         if required:
@@ -962,11 +971,12 @@ class GalleryClient:
                 points_deducted=points_deducted,
             )
 
-        token: Optional[str] = None
-        if auth_required:
-            token = self._resolve_token(required=True)
-        elif auth_optional:
-            token = self._resolve_token(required=False)
+        effective_timeout = self.timeout if timeout is None else float(timeout)
+        authenticated = auth_required or auth_optional
+        resolves_session = authenticated and not self._static_token and (
+            self._account_client is not None or self._token_provider is not None
+        )
+        deadline = time.monotonic() + effective_timeout if resolves_session else None
 
         url = self.base_url + path
         if query:
@@ -982,8 +992,6 @@ class GalleryClient:
         if extra_headers:
             for k, v in extra_headers.items():
                 headers[k] = v
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
         if idempotency_key:
             headers[FIELDS["idempotency_header"]] = idempotency_key
 
@@ -994,8 +1002,15 @@ class GalleryClient:
         elif content_type:
             headers["Content-Type"] = content_type
 
-        effective_timeout = self.timeout if timeout is None else float(timeout)
         try:
+            if authenticated:
+                token = self._resolve_token(required=auth_required, deadline=deadline)
+                if token:
+                    headers["Authorization"] = f"Bearer {token}"
+            if deadline is not None:
+                effective_timeout = deadline - time.monotonic()
+                if effective_timeout <= 0:
+                    raise GalleryClientError("timeout", "Gallery request deadline expired")
             response = self._transport(method, url, headers, payload, effective_timeout)
         except GalleryClientError as exc:
             if exc.is_transient:
@@ -1077,7 +1092,6 @@ class GalleryClient:
             "GET",
             ROUTES["config"],
             extra_headers=extra,
-            auth_optional=True,
             respect_backoff=not bypass_backoff,
         )
         ttl = _parse_cache_control_ttl(response.headers, default_ttl=DEFAULT_CONFIG_TTL_SEC)
@@ -1086,12 +1100,15 @@ class GalleryClient:
 
         with self._config_lock:
             if response.status == 304:
-                if self._config_cache is not None:
+                if not etag or self._config_etag != etag:
+                    if self._config_cache is not None and now_after < self._config_expires_at:
+                        return copy.deepcopy(self._config_cache)
+                elif self._config_cache is not None:
                     self._config_expires_at = now_after + ttl
                     if new_etag:
                         self._config_etag = new_etag
                     return copy.deepcopy(self._config_cache)
-                # Cache was cleared while If-None-Match was in flight; never cache {}
+                # The validator no longer identifies a usable cached payload.
                 refetch_needed = True
             else:
                 refetch_needed = False
@@ -1101,7 +1118,6 @@ class GalleryClient:
                 "GET",
                 ROUTES["config"],
                 extra_headers=None,
-                auth_optional=True,
                 respect_backoff=not bypass_backoff,
             )
             if response.status == 304:
@@ -1199,7 +1215,7 @@ class GalleryClient:
         data, _ = self._request_json(
             "POST",
             ROUTES["checkout"],
-            json_body={FIELDS["checkout_tier"]: tier},
+            json_body={FIELDS["checkout_pack"]: tier},
             auth_required=True,
             idempotency_key=key,
         )
@@ -1427,7 +1443,7 @@ class GalleryClient:
         cursor: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> dict[str, Any]:
-        """GET /api/v1/gallery/my-works"""
+        """GET /api/v1/gallery/my/works"""
         data, _ = self._request_json(
             "GET",
             ROUTES["my_works"],
@@ -1554,6 +1570,12 @@ class GalleryClient:
             idempotency_key=key,
             stage="confirm",
         )
+        work = data.get("work", data)
+        work_id = (work.get("id") or work.get("work_id")) if isinstance(work, dict) else None
+        if not isinstance(work_id, str) or not work_id.strip():
+            raise GalleryClientError(
+                "invalid_response", "Missing published work ID in confirm response", stage="confirm",
+            )
         return data
 
     def upload_work_atomic(
@@ -1625,9 +1647,9 @@ class GalleryClient:
         if on_stage is not None:
             on_stage("confirming")
         confirmed = self.confirm_upload(upload_id, idempotency_key=idempotency_key)
-        if "ai_tags" not in confirmed and isinstance(inspect_res.get("ai_tags"), list):
-            confirmed = dict(confirmed)
-            confirmed["ai_tags"] = list(inspect_res["ai_tags"])
+        work = confirmed.get("work", confirmed)
+        if "ai_tags" not in work and isinstance(inspect_res.get("ai_tags"), list):
+            work["ai_tags"] = list(inspect_res["ai_tags"])
         if on_stage is not None:
             on_stage("done")
         return confirmed

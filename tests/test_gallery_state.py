@@ -8,7 +8,8 @@ from queue import Queue
 from threading import Event, Thread
 from typing import Any
 
-from PyQt6.QtCore import QCoreApplication
+from PyQt6 import sip
+from PyQt6.QtCore import QCoreApplication, QEvent
 import pytest
 
 from core import gallery_state as gs
@@ -71,7 +72,7 @@ def test_dataclasses_parse_contract_fields_and_fallbacks():
         "can_hide_gallery": True,
         "interests": ["insects", "minerals"],
         "privacy": {"show_gallery": True, "show_following": False, "show_followers": True},
-        "badges": ["pioneer_creator", "top_7d"],
+        "badges": [{"badge_key": "pioneer_creator"}, {"badge_key": "top_7d"}],
         "pending_honor_cards": [
             {"card_id": "hc_7d_1", "badge_key": "top_7d", "period": "7d", "rank": 1, "points_awarded": 500}
         ],
@@ -85,6 +86,7 @@ def test_dataclasses_parse_contract_fields_and_fallbacks():
     assert "can_hide_gallery" not in ui_dict
     assert ui_dict["points_balance"] == 1250
     assert ui_dict["followers_count"] == 88
+    assert ui_dict["badges"] == ["pioneer_creator", "top_7d"]
     assert len(profile.pending_honor_cards) == 1
     assert profile.pending_honor_cards[0].badge_key == "top_7d"
 
@@ -129,10 +131,13 @@ def test_dataclasses_parse_contract_fields_and_fallbacks():
         "id": "c_1",
         "content": "Sharp details!",
         "is_danmaku": True,
+        "up_count": 7,
+        "down_count": 2,
         "replies": [{"id": "c_2", "parent_id": "c_1", "content": "Thank you!", "is_author_reply": True}],
     })
     assert c_top.is_reply is False
     assert c_top.is_danmaku is True
+    assert (c_top.upvotes, c_top.downvotes) == (7, 2)
     assert len(c_top.replies) == 1
     assert c_top.replies[0].is_reply is True
     assert c_top.replies[0].is_danmaku is False
@@ -140,12 +145,14 @@ def test_dataclasses_parse_contract_fields_and_fallbacks():
     note = gs.GalleryNotification.from_dict({
         "id": "n_1",
         "type": "work_downloaded",
-        "is_read": False,
+        "read_at": 1795680000,
         "work_id": "w_1",
-        "params": {"count": 5},
+        "work_title": "Spider eyes",
+        "payload": {"count": 5},
     })
     assert note.type == "work_downloaded"
     assert note.params == {"count": 5}
+    assert note.is_read and note.work_title == "Spider eyes"
 
 
 # ---------------------------------------------------------------------------
@@ -362,36 +369,69 @@ def test_state_store_offline_builtin_fallback_and_silent_degradation(qapp):
     store.shutdown()
 
 
-def test_state_store_safe_emit_and_destroyed_lifecycle(qapp):
-    pending_tasks: list[Any] = []
+def test_state_store_worker_can_finish_after_qt_destruction(qapp):
+    started = Event()
+    finish = Event()
+    pending = []
+    errors = []
 
     def transport(method, url, headers, body, timeout):
-        return _json_response({"gallery_enabled": True, "slide_interval_sec": 5})
+        started.set()
+        assert finish.wait(5)
+        return _json_response({"gallery_enabled": True})
+
+    def run():
+        try:
+            pending[0]()
+        except Exception as exc:
+            errors.append(exc)
 
     client = gc.GalleryClient(token="tok", transport=transport)
-    store = gs.GalleryStateStore(client=client, background_runner=pending_tasks.append)
+    store = gs.GalleryStateStore(client=client, background_runner=pending.append)
     store.start_polling()
-    assert store.refresh_config(force_refresh=True) is True
-    assert len(pending_tasks) == 1
-
-    # Simulate Qt C++ deletion while a worker is still in flight
-    store.deleteLater()
-    qapp.processEvents()
-
-    # Running the queued worker task after Qt destruction must not raise RuntimeError
-    pending_tasks[0]()
-
-    # Also verify _safe_emit explicitly swallows RuntimeError from deleted signals
-    class _DeletedSignal:
-        def emit(self, *args):
-            raise RuntimeError("wrapped C/C++ object of type GalleryStateStore has been deleted")
-
-    store2 = gs.GalleryStateStore(client=client, background_runner=lambda fn: fn())
-    store2._safe_emit(_DeletedSignal(), "payload")
-    store2.shutdown()
+    assert store.refresh_config(force_refresh=True)
+    worker = Thread(target=run)
+    worker.start()
+    try:
+        assert started.wait(5)
+        store.deleteLater()
+        qapp.sendPostedEvents(store, QEvent.Type.DeferredDelete)
+        assert sip.isdeleted(store)
+    finally:
+        finish.set()
+        worker.join(5)
+    assert not worker.is_alive()
+    assert errors == []
 
 
-def test_retired_gallery_responses_cannot_replace_new_session(qapp):
+def test_scheduled_gallery_poll_respects_backoff_and_stop(qapp):
+    clock = _FakeClock()
+    paths = []
+
+    def transport(method, url, headers, body, timeout):
+        paths.append(url.removeprefix(gc.BASE_URL))
+        return _json_response({})
+
+    client = gc.GalleryClient(token="tok", transport=transport, clock=clock)
+    client.backoff.record_failure("rate_limited", retry_after=15)
+    store = gs.GalleryStateStore(client=client, background_runner=lambda work: work())
+    store.start_polling(immediate=True)
+    assert paths == []
+
+    store.set_fusion_busy(True)
+    store.start_polling(immediate=True)
+    store.stop_polling()
+    clock.advance(16)
+    store.set_fusion_busy(False)
+    assert paths == []
+
+    store.start_polling(immediate=True)
+    assert paths == [gc.ROUTES["config"], gc.ROUTES["me"]]
+    store.shutdown()
+
+
+@pytest.mark.parametrize("retired_request_fails", [False, True])
+def test_retired_gallery_responses_cannot_replace_new_session(qapp, retired_request_fails):
     release = Event()
     requested = Queue()
     pending = []
@@ -403,6 +443,8 @@ def test_retired_gallery_responses_cannot_replace_new_session(qapp):
         if user == "retired":
             requested.put(operation)
             assert release.wait(10)
+            if retired_request_fails:
+                raise gc.GalleryClientError("unauthorized", status=401)
         if operation == "me":
             return _json_response({"user_id": user, "nickname": user})
         if operation == "notifications":
@@ -411,6 +453,8 @@ def test_retired_gallery_responses_cannot_replace_new_session(qapp):
 
     client = gc.GalleryClient(token_provider=lambda: token, transport=transport)
     store = gs.GalleryStateStore(client, background_runner=pending.append)
+    errors = []
+    store.sync_error.connect(lambda *args: errors.append(args))
     refreshes = (store.refresh_account_silently, store.refresh_notifications, store.refresh_feed)
     for refresh in refreshes:
         assert refresh()
@@ -433,6 +477,7 @@ def test_retired_gallery_responses_cannot_replace_new_session(qapp):
             assert not worker.is_alive()
 
     qapp.processEvents()
+    assert errors == []
     assert store.profile.user_id == "replacement"
     assert [notice.notification_id for notice in store.notifications] == ["notice-replacement"]
     assert [work.work_id for work in store.feed_works] == ["work-replacement"]
