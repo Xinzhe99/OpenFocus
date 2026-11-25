@@ -2372,7 +2372,7 @@ class OpenFocus(QMainWindow):
             return not getattr(self, "_project_dirty", False)
         return clicked is discard
 
-    def load_demo_stack(self) -> None:
+    def load_demo_stack(self, *, on_loaded=None) -> None:
         """Load the bundled demo stack (no downsample dialog)."""
         from utils import resource_path
         demo_dir = resource_path("assets", "demo_stack")
@@ -2380,9 +2380,14 @@ class OpenFocus(QMainWindow):
             show_warning_box(self, trans.t("msg_warning"), trans.t("msg_demo_missing"))
             return
         self.current_folder_path = demo_dir
+        def _after_demo():
+            if hasattr(self, "add_recent_file"):
+                self.add_recent_file(demo_dir)
+            if callable(on_loaded) and not getattr(self, "_shutting_down", False):
+                on_loaded()
         self.source_manager._start_load_worker(
             folder=demo_dir, scale=1.0, append=False,
-            on_success=lambda: self.add_recent_file(demo_dir) if hasattr(self, "add_recent_file") else None,
+            on_success=_after_demo,
         )
 
     def _apply_update_and_restart(self, zip_url: str, tag: str) -> None:
@@ -2888,6 +2893,28 @@ class OpenFocus(QMainWindow):
     def show_quick_start(self) -> None:
         from dialogs.welcome import WelcomeDialog
         WelcomeDialog(self, main_window=self).exec()
+
+    def start_guided_tour(self, *, load_demo_if_empty: bool = True) -> None:
+        """Launch the interactive spotlight guided tour over the main workspace."""
+        if getattr(self, "_shutting_down", False):
+            return
+        from ui.onboarding_tour import OnboardingTour
+
+        tour = getattr(self, "_onboarding_tour", None)
+        if tour is None:
+            tour = OnboardingTour(self)
+            self._onboarding_tour = tour
+        else:
+            tour.stop()
+
+        if load_demo_if_empty and not getattr(self, "raw_images", None):
+            from PyQt6.QtCore import QTimer
+            from utils import resource_path
+            demo_dir = resource_path("assets", "demo_stack")
+            if os.path.isdir(demo_dir):
+                self.load_demo_stack(on_loaded=lambda: QTimer.singleShot(80, tour.start))
+                return
+        tour.start()
 
     def get_or_create_source_pixmap(self, index: int):
         """Return a bounded display pixmap without resolving original pixels."""
@@ -4094,6 +4121,10 @@ class OpenFocus(QMainWindow):
             except RuntimeError:
                 pass
 
+        tour = getattr(self, "_onboarding_tour", None)
+        if tour is not None and tour.is_active:
+            tour.reapply_theme()
+
         self._enable_dark_title_bar(dark=(theme != "light"))
         self._sync_appearance_actions()
 
@@ -4344,6 +4375,9 @@ class OpenFocus(QMainWindow):
             finally:
                 self._close_confirmation_active = False
         self._shutting_down = True
+        tour = getattr(self, "_onboarding_tour", None)
+        if tour is not None:
+            tour.stop()
         self._cancel_depth_warmup()
         self.render_manager.cancel_storage_preflight()
 
