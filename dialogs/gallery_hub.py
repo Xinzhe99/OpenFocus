@@ -1,20 +1,37 @@
 """Standalone OpenFocus Gallery Hub, Author Showcase, Upload Prompt, and Honor Card dialogs.
 
-All UI copy resolves through ``locales.gallery_i18n`` (12 languages). Network
-and state operations accept duck-typed ``client`` / ``state_store`` /
-``media_helper`` objects so these dialogs work both standalone in tests and
-wired to ``GalleryClient`` / ``GalleryStateStore`` in the main application.
+All UI copy resolves through ``locales.gallery_i18n`` (12 languages). Every
+network request and upload media preparation runs off the Qt GUI thread via
+``_DialogTaskRunner`` / ``_BoundedMediaLoader`` so slow connections never freeze
+the interface.
 """
 from __future__ import annotations
 
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 import io
 import os
-from dataclasses import dataclass, field
+import threading
+import time
+import urllib.parse
+import urllib.request
+import uuid
 from typing import Any, Callable, Mapping, Sequence
 
-from PyQt6.QtCore import QEvent, QRectF, QSize, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QFontMetrics, QImage, QPainter, QPainterPath, QPixmap
+from PyQt6.QtCore import QEvent, QObject, QRectF, QSize, Qt, pyqtSignal
+from PyQt6.QtGui import (
+    QColor,
+    QFont,
+    QFontMetrics,
+    QIcon,
+    QImage,
+    QPainter,
+    QPainterPath,
+    QPixmap,
+)
 from PyQt6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -30,7 +47,6 @@ from PyQt6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
-    QSizePolicy,
     QTabWidget,
     QToolButton,
     QVBoxLayout,
@@ -55,9 +71,28 @@ from utils.file_dialogs import FileDialog
 MAX_BATCH_UPLOAD = 10
 DEFAULT_UPLOAD_COST_POINTS = 100
 DEFAULT_COMMENT_MAX_CHARS = 500
+MEDIA_TIMEOUT_SEC = 5.0
+MAX_MEDIA_BYTES = 8 * 1024 * 1024
+MAX_MEDIA_CACHE_ENTRIES = 64
 _IMAGE_FILE_FILTER = (
     "Images (*.png *.jpg *.jpeg *.webp *.tif *.tiff *.bmp);;All Files (*)"
 )
+_DEFINITIVE_NO_CHARGE_ERRORS = frozenset({
+    "unauthorized",
+    "account_disabled",
+    "gallery_disabled",
+    "gallery_terms_required",
+    "forbidden",
+    "invalid_request",
+    "invalid_media",
+    "file_too_large",
+    "content_rejected",
+    "insufficient_points",
+    "upload_not_found",
+    "upload_expired",
+    "upload_incomplete",
+    "batch_limit_exceeded",
+})
 
 
 def _set_cid(widget: QWidget, cid: str, *, object_name: str | None = None) -> None:
@@ -73,7 +108,7 @@ def _get(obj: Any, key: str, default: Any = None) -> Any:
 
 
 def _work_id(work: Any) -> str:
-    return str(_get(work, "id", "") or _get(work, "work_id", ""))
+    return str(_get(work, "work_id", "") or _get(work, "id", ""))
 
 
 def _work_title(work: Any) -> str:
@@ -95,6 +130,39 @@ def _work_tags(work: Any) -> list[str]:
     return [str(t) for t in (tags or ())]
 
 
+def _work_author(work: Any) -> tuple[str, str, tuple[str, ...]]:
+    """Normalize author fields from flat keys or nested ``author`` objects."""
+    nested = _get(work, "author", None)
+    author_id = str(
+        _get(work, "author_id", "")
+        or _get(work, "user_id", "")
+        or (_get(nested, "user_id", "") or _get(nested, "id", "") if nested is not None else "")
+    )
+    nickname = str(
+        _get(work, "author_nickname", "")
+        or _get(work, "author_name", "")
+        or (_get(nested, "nickname", "") or _get(nested, "name", "") if nested is not None else "")
+        or t_gallery("gallery_author_label")
+    )
+    raw_badges = (
+        _get(work, "author_badges", None)
+        or (_get(nested, "badges", None) if nested is not None else None)
+        or ()
+    )
+    badges = tuple(str(b) for b in raw_badges)
+    return author_id, nickname, badges
+
+
+def _comment_author(comment: Any) -> str:
+    nested = _get(comment, "author", None)
+    name = (
+        _get(comment, "author_nickname", "")
+        or _get(comment, "author_name", "")
+        or (_get(nested, "nickname", "") or _get(nested, "name", "") if nested is not None else "")
+    )
+    return str(name or t_gallery("gallery_author_label"))
+
+
 def _error_code_from_exc(exc: Exception) -> str:
     for attr in ("error", "code", "error_code", "category"):
         val = getattr(exc, attr, None)
@@ -108,43 +176,501 @@ def _error_details_from_exc(exc: Exception) -> dict[str, Any]:
     return dict(details) if isinstance(details, Mapping) else {}
 
 
-def _pixmap_from_any(source: Any, *, size: QSize | None = None) -> QPixmap:
-    """Convert QPixmap, QImage, bytes, numpy array, or local path into QPixmap."""
-    pix = QPixmap()
-    if isinstance(source, QPixmap):
-        pix = source
-    elif isinstance(source, QImage):
-        pix = QPixmap.fromImage(source)
+def _is_ambiguous_confirm_error(exc: Exception) -> bool:
+    """Return True when a confirm error may have succeeded server-side."""
+    if getattr(exc, "points_deducted", None) is False:
+        code = _error_code_from_exc(exc)
+        if code in _DEFINITIVE_NO_CHARGE_ERRORS:
+            return False
+    code = _error_code_from_exc(exc)
+    if code in _DEFINITIVE_NO_CHARGE_ERRORS:
+        return False
+    is_transient = getattr(exc, "is_transient", None)
+    if callable(is_transient):
+        try:
+            if is_transient():
+                return True
+        except Exception:
+            pass
+    return code in (
+        "network_error",
+        "timeout",
+        "rate_limited",
+        "provider_error",
+        "internal_error",
+        "http_error",
+        "invalid_response",
+    ) or isinstance(exc, (TimeoutError, ConnectionError, OSError))
+
+
+def _array_to_uint8_rgb(arr: Any) -> Any:
+    """Convert 8-bit, 16-bit, or float numpy image arrays safely to 8-bit RGB."""
+    import numpy as np
+
+    data = np.asarray(arr)
+    if data.ndim == 2:
+        data = np.stack([data, data, data], axis=-1)
+    if data.ndim != 3 or data.shape[2] < 3:
+        return None
+    if data.dtype == np.uint16:
+        data = (data >> 8).astype(np.uint8)
+    elif np.issubdtype(data.dtype, np.floating):
+        hi = float(np.nanmax(data)) if data.size else 1.0
+        scale = 255.0 if hi <= 1.0 else (255.0 / 65535.0 if hi > 255.0 else 1.0)
+        data = np.clip(np.rint(data * scale), 0, 255).astype(np.uint8)
+    elif data.dtype != np.uint8:
+        data = np.clip(data, 0, 255).astype(np.uint8)
+    return np.ascontiguousarray(data[:, :, :3][:, :, ::-1])
+
+
+def _image_from_any(source: Any, *, size: QSize | None = None) -> QImage:
+    """Thread-safe conversion of QImage/bytes/path/8-bit or 16-bit ndarray to QImage."""
+    img = QImage()
+    if isinstance(source, QImage):
+        img = QImage(source)
+    elif isinstance(source, QPixmap):
+        img = source.toImage()
     elif isinstance(source, (bytes, bytearray)):
-        pix.loadFromData(bytes(source))
+        img.loadFromData(bytes(source))
     elif isinstance(source, (str, os.PathLike)):
         path = os.fspath(source)
         if path and os.path.isfile(path):
-            pix.load(path)
+            loaded = False
+            # Handle 16-bit PNG/TIFF accurately via cv2/tifffile/Pillow before QImage
+            ext = os.path.splitext(path)[1].lower()
+            if ext in (".tif", ".tiff", ".png"):
+                try:
+                    import cv2
+
+                    raw = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+                    if raw is not None and raw.dtype != "uint8":
+                        rgb = _array_to_uint8_rgb(raw)
+                        if rgb is not None:
+                            h, w, _ = rgb.shape
+                            img = QImage(
+                                rgb.data, w, h, w * 3, QImage.Format.Format_RGB888
+                            ).copy()
+                            loaded = True
+                except Exception:
+                    loaded = False
+            if not loaded:
+                img.load(path)
+            if img.isNull():
+                try:
+                    import numpy as np
+                    from PIL import Image
+
+                    with Image.open(path) as pil_img:
+                        arr = np.asarray(pil_img)
+                        if arr.ndim == 2:
+                            if arr.dtype == np.uint16 or pil_img.mode.startswith("I;16"):
+                                arr = (arr.astype(np.uint32) >> 8).astype(np.uint8)
+                            rgb = np.ascontiguousarray(np.stack([arr, arr, arr], axis=-1))
+                        else:
+                            rgb_img = pil_img.convert("RGB")
+                            rgb = np.ascontiguousarray(np.asarray(rgb_img, dtype=np.uint8))
+                        h, w, _ = rgb.shape
+                        img = QImage(
+                            rgb.data, w, h, w * 3, QImage.Format.Format_RGB888
+                        ).copy()
+                except Exception:
+                    img = QImage()
     elif source is not None and hasattr(source, "shape"):
         try:
-            import numpy as np
-
-            arr = np.asarray(source)
-            if arr.ndim == 2:
-                arr = np.stack([arr, arr, arr], axis=-1)
-            if arr.ndim == 3 and arr.shape[2] >= 3:
-                if arr.dtype != np.uint8:
-                    arr = np.clip(arr, 0, 255).astype(np.uint8)
-                rgb = np.ascontiguousarray(arr[:, :, :3][:, :, ::-1])
+            rgb = _array_to_uint8_rgb(source)
+            if rgb is not None:
                 h, w, _ = rgb.shape
                 img = QImage(rgb.data, w, h, w * 3, QImage.Format.Format_RGB888).copy()
-                pix = QPixmap.fromImage(img)
         except Exception:
-            pix = QPixmap()
+            img = QImage()
 
-    if not pix.isNull() and size is not None:
-        pix = pix.scaled(
+    if not img.isNull() and size is not None:
+        img = img.scaled(
             size,
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
-    return pix
+    return img
+
+
+def _pixmap_from_any(source: Any, *, size: QSize | None = None) -> QPixmap:
+    """Convert QPixmap, QImage, bytes, 8/16-bit ndarray, or path into QPixmap (GUI thread)."""
+    if isinstance(source, QPixmap):
+        pix = QPixmap(source)
+        if not pix.isNull() and size is not None:
+            pix = pix.scaled(
+                size,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        return pix
+    img = _image_from_any(source, size=size)
+    return QPixmap.fromImage(img) if not img.isNull() else QPixmap()
+
+
+class _DialogTaskRunner(QObject):
+    """Qt-lifecycle-safe background task runner delivering results via QueuedConnection."""
+
+    _task_done = pyqtSignal(int, object, object)
+    _progress_event = pyqtSignal(int, object)
+
+    def __init__(self, owner: QObject):
+        super().__init__(owner)
+        self._lock = threading.Lock()
+        self._seq = 0
+        self._inflight = 0
+        self._shutdown = False
+        self._latest_by_key: dict[str, int] = {}
+        self._callbacks: dict[int, tuple[str | None, Any, Any, Any, Any]] = {}
+        self._task_done.connect(self._handle_done, Qt.ConnectionType.QueuedConnection)
+        self._progress_event.connect(
+            self._handle_progress, Qt.ConnectionType.QueuedConnection
+        )
+        owner.destroyed.connect(self.shutdown)
+
+    def shutdown(self) -> None:
+        with self._lock:
+            self._shutdown = True
+            self._callbacks.clear()
+            self._latest_by_key.clear()
+
+    @property
+    def is_busy(self) -> bool:
+        with self._lock:
+            return self._inflight > 0
+
+    def wait_for_idle(self, timeout: float = 5.0) -> bool:
+        """Pump Qt events until all queued jobs settle (for deterministic tests)."""
+        app = QApplication.instance()
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if app is not None:
+                app.processEvents()
+            with self._lock:
+                if self._inflight == 0 and not self._callbacks:
+                    return True
+            time.sleep(0.005)
+        if app is not None:
+            app.processEvents()
+        with self._lock:
+            return self._inflight == 0 and not self._callbacks
+
+    def submit(
+        self,
+        fn: Callable[..., Any],
+        *,
+        key: str | None = None,
+        on_success: Callable[[Any], None] | None = None,
+        on_error: Callable[[Exception], None] | None = None,
+        on_finally: Callable[[], None] | None = None,
+        on_progress: Callable[[Any], None] | None = None,
+    ) -> int:
+        with self._lock:
+            if self._shutdown:
+                return -1
+            self._seq += 1
+            req_id = self._seq
+            self._inflight += 1
+            if key is not None:
+                self._latest_by_key[key] = req_id
+            self._callbacks[req_id] = (key, on_success, on_error, on_finally, on_progress)
+
+        def _emit_progress(payload: Any) -> None:
+            with self._lock:
+                if self._shutdown:
+                    return
+            try:
+                self._progress_event.emit(req_id, payload)
+            except RuntimeError:
+                pass
+
+        def _worker() -> None:
+            result: Any = None
+            err: Exception | None = None
+            try:
+                if on_progress is not None:
+                    result = fn(_emit_progress)
+                else:
+                    result = fn()
+            except Exception as exc:  # noqa: BLE001
+                err = exc
+            try:
+                self._task_done.emit(req_id, result, err)
+            except RuntimeError:
+                with self._lock:
+                    self._inflight = max(0, self._inflight - 1)
+                    self._callbacks.pop(req_id, None)
+
+        thread = threading.Thread(target=_worker, daemon=True)
+        thread.start()
+        return req_id
+
+    def _handle_progress(self, req_id: int, payload: Any) -> None:
+        with self._lock:
+            if self._shutdown:
+                return
+            entry = self._callbacks.get(req_id)
+        if entry is None:
+            return
+        key, _ok, _err, _fin, on_progress = entry
+        if key is not None and self._latest_by_key.get(key) != req_id:
+            return
+        if on_progress is not None:
+            on_progress(payload)
+
+    def _handle_done(self, req_id: int, result: Any, err: Any) -> None:
+        with self._lock:
+            self._inflight = max(0, self._inflight - 1)
+            entry = self._callbacks.pop(req_id, None)
+            shutdown = self._shutdown
+            is_stale = False
+            if entry is not None and entry[0] is not None:
+                is_stale = self._latest_by_key.get(entry[0]) != req_id
+
+        if shutdown or entry is None:
+            return
+        _key, on_success, on_error, on_finally, _on_prog = entry
+        try:
+            if not is_stale:
+                if err is not None:
+                    if on_error is not None:
+                        on_error(err)
+                elif on_success is not None:
+                    on_success(result)
+        finally:
+            if on_finally is not None:
+                on_finally()
+
+
+class _BoundedMediaLoader(QObject):
+    """Bounded off-thread image loader for local paths and remote thumb/full URLs."""
+
+    _image_ready = pyqtSignal(int, object)
+
+    def __init__(
+        self,
+        owner: QObject,
+        *,
+        fetcher: Callable[[str], bytes] | None = None,
+        disk_cache: Any = None,
+        max_workers: int = 4,
+    ):
+        super().__init__(owner)
+        self._fetcher = fetcher
+        self._disk_cache = disk_cache
+        self._lock = threading.Lock()
+        self._seq = 0
+        self._inflight = 0
+        self._shutdown = False
+        self._cache: OrderedDict[tuple[str, int, int], QImage] = OrderedDict()
+        self._pending: dict[int, Callable[[QPixmap], None]] = {}
+        self._pool = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="gallery-media")
+        self._image_ready.connect(self._deliver, Qt.ConnectionType.QueuedConnection)
+        owner.destroyed.connect(self.shutdown)
+
+    def shutdown(self) -> None:
+        with self._lock:
+            self._shutdown = True
+            self._pending.clear()
+        self._pool.shutdown(wait=False, cancel_futures=True)
+
+    def wait_for_idle(self, timeout: float = 5.0) -> bool:
+        app = QApplication.instance()
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if app is not None:
+                app.processEvents()
+            with self._lock:
+                if self._inflight == 0 and not self._pending:
+                    return True
+            time.sleep(0.005)
+        if app is not None:
+            app.processEvents()
+        with self._lock:
+            return self._inflight == 0 and not self._pending
+
+    def _cache_get(self, key: tuple[str, int, int]) -> QImage | None:
+        with self._lock:
+            img = self._cache.get(key)
+            if img is not None:
+                self._cache.move_to_end(key)
+            return img
+
+    def _cache_put(self, key: tuple[str, int, int], img: QImage) -> None:
+        if img.isNull():
+            return
+        with self._lock:
+            self._cache[key] = img
+            self._cache.move_to_end(key)
+            while len(self._cache) > MAX_MEDIA_CACHE_ENTRIES:
+                self._cache.popitem(last=False)
+
+    def _fetch_url_bytes(self, url: str) -> bytes:
+        if self._disk_cache is not None and hasattr(self._disk_cache, "get"):
+            try:
+                cached = self._disk_cache.get(url)
+                if cached:
+                    return bytes(cached)
+            except Exception:
+                pass
+        if self._fetcher is not None:
+            data = bytes(self._fetcher(url) or b"")
+        else:
+            parsed = urllib.parse.urlparse(url)
+            if parsed.scheme not in ("http", "https"):
+                return b""
+            req = urllib.request.Request(url, method="GET")
+            handlers: tuple[Any, ...] = ()
+            try:
+                from utils.tls import https_handlers
+
+                handlers = tuple(https_handlers())
+            except Exception:
+                handlers = ()
+            opener = urllib.request.build_opener(*handlers)
+            with opener.open(req, timeout=MEDIA_TIMEOUT_SEC) as resp:
+                data = resp.read(MAX_MEDIA_BYTES + 1)
+                if len(data) > MAX_MEDIA_BYTES:
+                    return b""
+        if data and self._disk_cache is not None and hasattr(self._disk_cache, "put"):
+            try:
+                self._disk_cache.put(url, data)
+            except Exception:
+                pass
+        return data
+
+    def load_for_work(
+        self,
+        work: Any,
+        *,
+        prefer_full: bool = False,
+        size: QSize | None = None,
+        on_ready: Callable[[QPixmap], None],
+    ) -> None:
+        """Resolve work media (in-memory, local_path, thumb_url, full_url) safely."""
+        direct = (
+            _get(work, "pixmap", None)
+            or _get(work, "thumb_pixmap", None)
+            or _get(work, "thumb_bytes", None)
+        )
+        if direct is not None:
+            pix = _pixmap_from_any(direct, size=size)
+            if not pix.isNull():
+                on_ready(pix)
+                return
+
+        local_path = str(_get(work, "local_path", "") or _get(work, "image_path", "") or "")
+        if prefer_full:
+            url = str(
+                _get(work, "full_url", "")
+                or _get(work, "thumb_url", "")
+                or _get(work, "work_thumb_url", "")
+                or ""
+            )
+        else:
+            url = str(
+                _get(work, "thumb_url", "")
+                or _get(work, "work_thumb_url", "")
+                or _get(work, "full_url", "")
+                or ""
+            )
+
+        target = local_path if (local_path and os.path.isfile(local_path)) else url
+        if not target:
+            return
+
+        cache_key = (target, size.width() if size else 0, size.height() if size else 0)
+        cached = self._cache_get(cache_key)
+        if cached is not None:
+            on_ready(QPixmap.fromImage(cached))
+            return
+
+        with self._lock:
+            if self._shutdown:
+                return
+            self._seq += 1
+            req_id = self._seq
+            self._inflight += 1
+            self._pending[req_id] = on_ready
+
+        def _worker() -> None:
+            img = QImage()
+            try:
+                if target == local_path:
+                    img = _image_from_any(local_path, size=size)
+                else:
+                    data = self._fetch_url_bytes(target)
+                    if data:
+                        img = _image_from_any(data, size=size)
+                if not img.isNull():
+                    self._cache_put(cache_key, img)
+            except Exception:
+                img = QImage()
+            try:
+                self._image_ready.emit(req_id, img)
+            except RuntimeError:
+                with self._lock:
+                    self._inflight = max(0, self._inflight - 1)
+                    self._pending.pop(req_id, None)
+
+        try:
+            self._pool.submit(_worker)
+        except RuntimeError:
+            with self._lock:
+                self._inflight = max(0, self._inflight - 1)
+                self._pending.pop(req_id, None)
+
+    def _deliver(self, req_id: int, img: Any) -> None:
+        with self._lock:
+            self._inflight = max(0, self._inflight - 1)
+            cb = self._pending.pop(req_id, None)
+            shutdown = self._shutdown
+        if shutdown or cb is None or not isinstance(img, QImage) or img.isNull():
+            return
+        try:
+            cb(QPixmap.fromImage(img))
+        except RuntimeError:
+            pass
+
+
+_PUBLIC_EXIF_ALLOWLIST = frozenset({
+    "camera",
+    "make",
+    "model",
+    "lens",
+    "focal_length",
+    "aperture",
+    "shutter",
+    "iso",
+    "date_time",
+})
+
+
+def _filter_public_exif(mapping: Mapping[str, Any] | None) -> dict[str, str]:
+    """Filter EXIF strictly to the documented public camera/exposure/date allowlist.
+
+    Delegates lazily to ``core.gallery_media.filter_public_exif`` when available,
+    falling back to the exact allowlist so GPS/private tags never leave the client.
+    """
+    if not isinstance(mapping, Mapping):
+        return {}
+    try:
+        from core.gallery_media import filter_public_exif  # type: ignore[import-not-found]
+
+        filtered = filter_public_exif(mapping)
+        if isinstance(filtered, Mapping):
+            return {
+                str(k): str(v).strip()
+                for k, v in filtered.items()
+                if str(k) in _PUBLIC_EXIF_ALLOWLIST and v not in (None, "") and str(v).strip()
+            }
+    except Exception:
+        pass
+    return {
+        str(k): str(v).strip()
+        for k, v in mapping.items()
+        if str(k) in _PUBLIC_EXIF_ALLOWLIST and v not in (None, "") and str(v).strip()
+    }
 
 
 def _extract_exif_dict(source: Any, media_helper: Any = None) -> dict[str, str]:
@@ -218,23 +744,19 @@ def format_exif_line(exif: Mapping[str, Any] | None) -> str:
     return " · ".join(p for p in parts if p)
 
 
-def render_watermark_preview(
-    pixmap: QPixmap,
+def _draw_watermark_on_qimage(
+    image: QImage,
     attribution: str,
     enabled: bool = True,
-) -> QPixmap:
-    """Render a crisp bottom-right ``© <attribution>`` watermark onto a QPixmap.
-
-    Returns a clean copy without modification if ``enabled`` is ``False`` or
-    ``attribution`` is empty.
-    """
-    if pixmap.isNull():
-        return pixmap
+) -> QImage:
+    """Thread-safe bottom-right ``© <attribution>`` watermark renderer on QImage."""
+    if image.isNull():
+        return image
     clean_text = (attribution or "").strip()
     if not enabled or not clean_text:
-        return QPixmap(pixmap)
+        return QImage(image)
 
-    result = QPixmap(pixmap)
+    result = image.convertToFormat(QImage.Format.Format_ARGB32_Premultiplied)
     label = clean_text if clean_text.startswith("©") else f"© {clean_text}"
 
     painter = QPainter(result)
@@ -263,7 +785,6 @@ def render_watermark_preview(
     pill.addRoundedRect(box_rect, 6.0, 6.0)
     painter.fillPath(pill, QColor(0, 0, 0, 148))
 
-    # Subtle drop shadow + crisp white text for dark/light image legibility
     painter.setPen(QColor(0, 0, 0, 190))
     painter.drawText(
         box_rect.adjusted(1.0, 1.0, 1.0, 1.0),
@@ -276,6 +797,29 @@ def render_watermark_preview(
     return result
 
 
+def render_watermark_preview(
+    source: Any,
+    attribution: str,
+    enabled: bool = True,
+) -> QPixmap:
+    """Render a crisp bottom-right ``© <attribution>`` watermark onto a QPixmap.
+
+    Supports ``QPixmap``, ``QImage``, 8-bit & 16-bit numpy arrays, bytes, or
+    image paths. Returns a clean unmodified image if ``enabled`` is ``False``
+    or ``attribution`` is empty.
+    """
+    if isinstance(source, QPixmap):
+        if source.isNull():
+            return source
+        img = source.toImage()
+    else:
+        img = _image_from_any(source)
+        if img.isNull():
+            return QPixmap()
+    rendered = _draw_watermark_on_qimage(img, attribution, enabled=enabled)
+    return QPixmap.fromImage(rendered)
+
+
 def _encode_webp_pair(
     source: Any,
     *,
@@ -283,7 +827,7 @@ def _encode_webp_pair(
     watermark_enabled: bool = True,
     media_helper: Any = None,
 ) -> tuple[bytes, bytes, dict[str, Any]]:
-    """Prepare ``(thumb_webp, full_webp, meta)`` for atomic upload."""
+    """Prepare ``(thumb_webp, full_webp, meta)`` off the GUI thread."""
     if media_helper is not None and hasattr(media_helper, "prepare_gallery_upload"):
         prepared = media_helper.prepare_gallery_upload(
             source,
@@ -316,30 +860,50 @@ def _encode_webp_pair(
                 "exif": dict(_get(prepared, "exif", {}) or {}),
             },
         )
-    except Exception:
+    except ImportError:
         pass
 
-    # Standalone lightweight fallback using Pillow / QPixmap
-    pix = _pixmap_from_any(source)
-    if pix.isNull():
-        return b"", b"", {"width": 0, "height": 0, "exif": {}}
-    pix = render_watermark_preview(pix, attribution, enabled=watermark_enabled)
-    w, h = pix.width(), pix.height()
-    try:
-        from PIL import Image
+    # Standalone thread-safe QImage/Pillow fallback (never touches QPixmap on worker thread)
+    img = _image_from_any(source)
+    if img.isNull():
+        raise ValueError("invalid_media")
+    img = _draw_watermark_on_qimage(img, attribution, enabled=watermark_enabled)
+    w, h = img.width(), img.height()
+    from PIL import Image
 
-        qimg = pix.toImage().convertToFormat(QImage.Format.Format_RGBA8888)
-        raw = qimg.constBits().asarray(qimg.sizeInBytes())
-        pil_img = Image.frombytes("RGBA", (qimg.width(), qimg.height()), bytes(raw)).convert("RGB")
-        full_buf = io.BytesIO()
-        pil_img.save(full_buf, format="WEBP", quality=86)
-        thumb = pil_img.copy()
-        thumb.thumbnail((512, 512))
-        thumb_buf = io.BytesIO()
-        thumb.save(thumb_buf, format="WEBP", quality=80)
-        return thumb_buf.getvalue(), full_buf.getvalue(), {"width": w, "height": h, "exif": {}}
-    except Exception:
-        return b"RIFF", b"RIFF", {"width": w, "height": h, "exif": {}}
+    qimg = img.convertToFormat(QImage.Format.Format_RGBA8888)
+    raw = qimg.constBits().asarray(qimg.sizeInBytes())
+    pil_img = Image.frombytes("RGBA", (qimg.width(), qimg.height()), bytes(raw)).convert("RGB")
+    full_buf = io.BytesIO()
+    pil_img.save(full_buf, format="WEBP", quality=86)
+    thumb = pil_img.copy()
+    thumb.thumbnail((512, 512))
+    thumb_buf = io.BytesIO()
+    thumb.save(thumb_buf, format="WEBP", quality=80)
+    return thumb_buf.getvalue(), full_buf.getvalue(), {"width": w, "height": h, "exif": {}}
+
+
+def _extract_upload_urls(inspect_resp: Mapping[str, Any]) -> tuple[str, dict[str, str], str, dict[str, str]]:
+    """Parse canonical PR #264 / server upload_urls.{full,thumb} or flat fallbacks."""
+    urls = _get(inspect_resp, "upload_urls", None) or {}
+    full_entry = _get(urls, "full", None) or _get(inspect_resp, "full", None)
+    thumb_entry = _get(urls, "thumb", None) or _get(inspect_resp, "thumb", None)
+
+    if isinstance(full_entry, Mapping):
+        full_url = str(full_entry.get("url") or "")
+        full_headers = dict(full_entry.get("headers") or {})
+    else:
+        full_url = str(full_entry or _get(inspect_resp, "full_upload_url", "") or "")
+        full_headers = {"Content-Type": "image/webp"}
+
+    if isinstance(thumb_entry, Mapping):
+        thumb_url = str(thumb_entry.get("url") or "")
+        thumb_headers = dict(thumb_entry.get("headers") or {})
+    else:
+        thumb_url = str(thumb_entry or _get(inspect_resp, "thumb_upload_url", "") or "")
+        thumb_headers = {"Content-Type": "image/webp"}
+
+    return full_url, full_headers, thumb_url, thumb_headers
 
 
 def _dialog_stylesheet(theme: str = "dark") -> str:
@@ -409,11 +973,14 @@ class PublishQueueItem:
     label: str
     title: str = ""
     exif: dict[str, str] = field(default_factory=dict)
-    stage: str = "pending"  # pending | inspecting | uploading | confirming | done | failed
+    manual_exif_overrides: dict[str, str] = field(default_factory=dict)
+    stage: str = "pending"  # pending | inspecting | uploading | confirming | confirm_unknown | done | failed
     status_message: str = ""
-    points_deducted: bool = False
+    points_deducted: bool | None = False
     openfocus_badge: bool = False
     work_id: str = ""
+    upload_id: str = ""
+    idempotency_key: str = ""
 
 
 class GalleryAgreementDialog(QDialog):
@@ -572,6 +1139,7 @@ class HonorCardDialog(QDialog):
         *,
         on_acknowledge: Callable[[str], Any] | None = None,
         client: Any = None,
+        media_fetcher: Callable[[str], bytes] | None = None,
         parent: QWidget | None = None,
         theme: str = "dark",
     ):
@@ -582,10 +1150,11 @@ class HonorCardDialog(QDialog):
         self.setStyleSheet(_dialog_stylesheet(theme))
 
         self.card = card
-        self.card_id = str(_get(card, "id", "") or _get(card, "card_id", ""))
+        self.card_id = str(_get(card, "card_id", "") or _get(card, "id", ""))
         self._on_acknowledge = on_acknowledge
         self._client = client
         self._acked = False
+        self._media_loader = _BoundedMediaLoader(self, fetcher=media_fetcher)
 
         author = str(_get(card, "author_nickname", "") or _get(card, "nickname", "") or "")
         if not author:
@@ -619,6 +1188,16 @@ class HonorCardDialog(QDialog):
         trophy.setAlignment(Qt.AlignmentFlag.AlignCenter)
         trophy.setStyleSheet("font-size: 30pt;")
         card_layout.addWidget(trophy)
+
+        self.thumb_label = QLabel()
+        self.thumb_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.thumb_label.setVisible(False)
+        card_layout.addWidget(self.thumb_label)
+        self._media_loader.load_for_work(
+            card,
+            size=QSize(260, 140),
+            on_ready=self._on_thumb_loaded,
+        )
 
         self.congrats_label = QLabel(t_gallery("gallery_honor_card_congrats", author=author))
         _set_cid(self.congrats_label, "honor_card_congrats_label")
@@ -664,6 +1243,10 @@ class HonorCardDialog(QDialog):
         btn_row.addStretch()
         root.addLayout(btn_row)
 
+    def _on_thumb_loaded(self, pix: QPixmap) -> None:
+        self.thumb_label.setPixmap(pix)
+        self.thumb_label.setVisible(True)
+
     def _acknowledge_once(self) -> None:
         if self._acked:
             return
@@ -674,18 +1257,26 @@ class HonorCardDialog(QDialog):
             except Exception:
                 pass
         elif self._client is not None and hasattr(self._client, "ack_honor_card") and self.card_id:
-            try:
-                self._client.ack_honor_card(self.card_id)
-            except Exception:
-                pass
+            client = self._client
+            card_id = self.card_id
+
+            def _bg_ack() -> None:
+                try:
+                    client.ack_honor_card(card_id)
+                except Exception:
+                    pass
+
+            threading.Thread(target=_bg_ack, daemon=True).start()
         self.acknowledged.emit(self.card_id)
 
     def done(self, result: int) -> None:
         self._acknowledge_once()
+        self._media_loader.shutdown()
         super().done(result)
 
     def closeEvent(self, event: QEvent) -> None:
         self._acknowledge_once()
+        self._media_loader.shutdown()
         super().closeEvent(event)
 
 
@@ -701,6 +1292,7 @@ class AuthorShowcaseDialog(QDialog):
         *,
         author_name: str = "",
         client: Any = None,
+        media_fetcher: Callable[[str], bytes] | None = None,
         initial_data: Mapping[str, Any] | None = None,
         current_user_id: str = "",
         parent: QWidget | None = None,
@@ -716,6 +1308,9 @@ class AuthorShowcaseDialog(QDialog):
         self._viewer_following = False
         self._privacy_restricted = False
         self._works: list[Any] = []
+        self._next_cursor: str | None = None
+        self._runner = _DialogTaskRunner(self)
+        self._media_loader = _BoundedMediaLoader(self, fetcher=media_fetcher)
 
         self.setWindowTitle(
             t_gallery("gallery_author_showcase_title", author=self.author_name)
@@ -727,7 +1322,6 @@ class AuthorShowcaseDialog(QDialog):
         root.setContentsMargins(SPACE["md"], SPACE["md"], SPACE["md"], SPACE["md"])
         root.setSpacing(SPACE["sm"])
 
-        # Header card
         header_frame = QFrame()
         header_frame.setObjectName("galleryCard")
         header_row = QHBoxLayout(header_frame)
@@ -754,7 +1348,6 @@ class AuthorShowcaseDialog(QDialog):
         header_row.addWidget(self.follow_btn)
         root.addWidget(header_frame)
 
-        # Privacy-restricted empty state (hidden unless restricted)
         self.privacy_empty_label = QLabel(t_gallery("gallery_author_privacy_restricted"))
         _set_cid(
             self.privacy_empty_label,
@@ -766,7 +1359,6 @@ class AuthorShowcaseDialog(QDialog):
         self.privacy_empty_label.setVisible(False)
         root.addWidget(self.privacy_empty_label)
 
-        # Works list
         self.works_scroll = QScrollArea()
         self.works_scroll.setWidgetResizable(True)
         self.works_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
@@ -776,8 +1368,16 @@ class AuthorShowcaseDialog(QDialog):
         self.works_scroll.setWidget(self._works_host)
         root.addWidget(self.works_scroll, 1)
 
+        self.load_more_btn = QPushButton(t_gallery("gallery_load_more"))
+        _set_cid(self.load_more_btn, "author_load_more_btn")
+        self.load_more_btn.setVisible(False)
+        self.load_more_btn.clicked.connect(self.load_more_works)
+        root.addWidget(self.load_more_btn)
+
         bottom = QHBoxLayout()
-        bottom.addStretch()
+        self.status_label = QLabel("")
+        self.status_label.setObjectName("mutedLabel")
+        bottom.addWidget(self.status_label, 1)
         close_btn = QPushButton(t_gallery("gallery_btn_close"))
         _set_cid(close_btn, "btn_author_showcase_close")
         close_btn.clicked.connect(self.accept)
@@ -789,6 +1389,14 @@ class AuthorShowcaseDialog(QDialog):
         elif self._client is not None:
             self.load_author_works()
 
+    def closeEvent(self, event: QEvent) -> None:
+        self._runner.shutdown()
+        self._media_loader.shutdown()
+        super().closeEvent(event)
+
+    def wait_for_idle(self, timeout: float = 5.0) -> bool:
+        return self._runner.wait_for_idle(timeout) and self._media_loader.wait_for_idle(timeout)
+
     @property
     def is_privacy_restricted(self) -> bool:
         return self._privacy_restricted
@@ -797,13 +1405,19 @@ class AuthorShowcaseDialog(QDialog):
     def is_following(self) -> bool:
         return self._viewer_following
 
-    def load_author_works(self) -> None:
+    def load_author_works(self, *, cursor: str | None = None, append: bool = False) -> None:
         if self._client is None or not hasattr(self._client, "get_user_works"):
             return
-        try:
-            payload = self._client.get_user_works(self.author_id)
-            self.apply_payload(payload)
-        except Exception as exc:
+
+        def _fetch() -> Any:
+            if cursor is not None:
+                try:
+                    return self._client.get_user_works(self.author_id, cursor=cursor)
+                except TypeError:
+                    return self._client.get_user_works(self.author_id)
+            return self._client.get_user_works(self.author_id)
+
+        def _on_error(exc: Exception) -> None:
             code = _error_code_from_exc(exc)
             if code == "privacy_restricted":
                 details = _error_details_from_exc(exc)
@@ -813,10 +1427,21 @@ class AuthorShowcaseDialog(QDialog):
                     "viewer_following": details.get("viewer_following", False),
                     "items": [],
                 })
-            else:
+            elif not append:
                 self.apply_payload({"items": []})
 
-    def apply_payload(self, payload: Any) -> None:
+        self._runner.submit(
+            _fetch,
+            key="author_works",
+            on_success=lambda payload: self.apply_payload(payload, append=append),
+            on_error=_on_error,
+        )
+
+    def load_more_works(self) -> None:
+        if self._next_cursor:
+            self.load_author_works(cursor=self._next_cursor, append=True)
+
+    def apply_payload(self, payload: Any, *, append: bool = False) -> None:
         profile = _get(payload, "profile", None) or {}
         nickname = str(_get(profile, "nickname", "") or _get(payload, "nickname", "") or "")
         if nickname:
@@ -828,19 +1453,22 @@ class AuthorShowcaseDialog(QDialog):
         badges = _get(profile, "badges", None) or _get(payload, "badges", ()) or ()
         if badges:
             self.badges_label.setText(" · ".join(translate_badge(str(b)) for b in badges))
-        else:
+        elif not append:
             self.badges_label.setText("")
 
         following = _get(payload, "viewer_following", None)
         if following is None:
-            following = _get(payload, "author_followed_by_me", False)
-        self._viewer_following = bool(following)
-        self._update_follow_button()
+            following = _get(payload, "author_followed_by_me", None)
+        if following is not None:
+            self._viewer_following = bool(following)
+            self._update_follow_button()
 
         restricted = bool(_get(payload, "privacy_restricted", False))
         self._privacy_restricted = restricted
         if restricted:
             self._works = []
+            self._next_cursor = None
+            self.load_more_btn.setVisible(False)
             self._clear_grid()
             self.works_scroll.setVisible(False)
             self.privacy_empty_label.setText(t_gallery("gallery_author_privacy_restricted"))
@@ -852,7 +1480,19 @@ class AuthorShowcaseDialog(QDialog):
         items = _get(payload, "items", None)
         if items is None:
             items = _get(payload, "works", ())
-        self._works = list(items or ())
+        new_items = list(items or ())
+        if append:
+            existing_ids = {_work_id(w) for w in self._works if _work_id(w)}
+            for w in new_items:
+                wid = _work_id(w)
+                if not wid or wid not in existing_ids:
+                    self._works.append(w)
+        else:
+            self._works = new_items
+
+        next_cur = _get(payload, "next_cursor", None)
+        self._next_cursor = str(next_cur) if next_cur else None
+        self.load_more_btn.setVisible(bool(self._next_cursor))
         self._render_works()
 
     def _update_follow_button(self) -> None:
@@ -866,18 +1506,32 @@ class AuthorShowcaseDialog(QDialog):
         self.follow_btn.style().polish(self.follow_btn)
 
     def _toggle_follow(self) -> None:
-        target_state = not self._viewer_following
-        if self._client is not None:
-            try:
-                if target_state and hasattr(self._client, "follow_user"):
-                    self._client.follow_user(self.author_id)
-                elif not target_state and hasattr(self._client, "unfollow_user"):
-                    self._client.unfollow_user(self.author_id)
-            except Exception:
-                return
+        prev_state = self._viewer_following
+        target_state = not prev_state
         self._viewer_following = target_state
         self._update_follow_button()
-        self.follow_changed.emit(self.author_id, target_state)
+
+        if self._client is None:
+            self.follow_changed.emit(self.author_id, target_state)
+            return
+
+        def _call() -> None:
+            if target_state and hasattr(self._client, "follow_user"):
+                self._client.follow_user(self.author_id)
+            elif not target_state and hasattr(self._client, "unfollow_user"):
+                self._client.unfollow_user(self.author_id)
+
+        def _on_error(exc: Exception) -> None:
+            self._viewer_following = prev_state
+            self._update_follow_button()
+            self.status_label.setText(translate_error(_error_code_from_exc(exc)))
+
+        self._runner.submit(
+            _call,
+            key="author_follow",
+            on_success=lambda _res: self.follow_changed.emit(self.author_id, target_state),
+            on_error=_on_error,
+        )
 
     def _clear_grid(self) -> None:
         while self._works_grid.count():
@@ -901,6 +1555,20 @@ class AuthorShowcaseDialog(QDialog):
             card.setObjectName("galleryCard")
             col_lay = QVBoxLayout(card)
             col_lay.setContentsMargins(SPACE["sm"], SPACE["sm"], SPACE["sm"], SPACE["sm"])
+
+            thumb_lbl = QLabel()
+            thumb_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            thumb_lbl.setVisible(False)
+            col_lay.addWidget(thumb_lbl)
+
+            def _apply_thumb(pix: QPixmap, lbl: QLabel = thumb_lbl) -> None:
+                lbl.setPixmap(pix)
+                lbl.setVisible(True)
+
+            self._media_loader.load_for_work(
+                work, size=QSize(240, 130), on_ready=_apply_thumb
+            )
+
             title_btn = QPushButton(_work_title(work))
             title_btn.setFlat(True)
             title_btn.clicked.connect(lambda _=False, w=work: self.work_selected.emit(w))
@@ -913,7 +1581,7 @@ class AuthorShowcaseDialog(QDialog):
 
 
 class WorkDetailDialog(QDialog):
-    """Detailed view of a single gallery work with likes, comments/replies, download & report."""
+    """Detailed view of a single gallery work with async likes, comments/replies, download & report."""
 
     author_clicked = pyqtSignal(str, str)
     download_requested = pyqtSignal(object)
@@ -924,6 +1592,7 @@ class WorkDetailDialog(QDialog):
         work: Any,
         *,
         client: Any = None,
+        media_fetcher: Callable[[str], bytes] | None = None,
         parent: QWidget | None = None,
         theme: str = "dark",
     ):
@@ -939,6 +1608,8 @@ class WorkDetailDialog(QDialog):
         )
         self._reply_parent_id: str | None = None
         self._comments: list[Any] = []
+        self._runner = _DialogTaskRunner(self)
+        self._media_loader = _BoundedMediaLoader(self, fetcher=media_fetcher)
 
         self.setWindowTitle(t_gallery("gallery_work_detail_title"))
         self.resize(740, 620)
@@ -948,35 +1619,23 @@ class WorkDetailDialog(QDialog):
         root.setContentsMargins(SPACE["md"], SPACE["md"], SPACE["md"], SPACE["md"])
         root.setSpacing(SPACE["sm"])
 
-        # Top image preview
-        self.preview_label = QLabel()
+        self.preview_label = QLabel(_work_title(work))
         self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview_label.setMinimumHeight(200)
-        pix_src = (
-            _get(work, "pixmap", None)
-            or _get(work, "image_path", None)
-            or _get(work, "thumb_pixmap", None)
-            or _get(work, "thumb_bytes", None)
-        )
-        pix = _pixmap_from_any(pix_src, size=QSize(680, 280))
-        if not pix.isNull():
-            self.preview_label.setPixmap(pix)
-        else:
-            self.preview_label.setText(_work_title(work))
         root.addWidget(self.preview_label)
+        self._media_loader.load_for_work(
+            work,
+            prefer_full=True,
+            size=QSize(680, 280),
+            on_ready=self.preview_label.setPixmap,
+        )
 
-        # Title + author + badges
         info_row = QHBoxLayout()
         title_lbl = QLabel(_work_title(work))
         title_lbl.setStyleSheet("font-size: 13pt; font-weight: 700;")
         info_row.addWidget(title_lbl)
 
-        author_id = str(_get(work, "author_id", "") or _get(work, "user_id", ""))
-        author_name = str(
-            _get(work, "author_nickname", "")
-            or _get(work, "author_name", "")
-            or t_gallery("gallery_author_label")
-        )
+        author_id, author_name, _author_badges = _work_author(work)
         self.author_btn = QPushButton(author_name)
         _set_cid(self.author_btn, "work_detail_author_btn")
         self.author_btn.setFlat(True)
@@ -992,7 +1651,6 @@ class WorkDetailDialog(QDialog):
         info_row.addStretch()
         root.addLayout(info_row)
 
-        # Tags & EXIF
         tags = _work_tags(work)
         exif_line = format_exif_line(_get(work, "exif", None))
         meta_parts = []
@@ -1006,7 +1664,6 @@ class WorkDetailDialog(QDialog):
             meta_lbl.setWordWrap(True)
             root.addWidget(meta_lbl)
 
-        # Action bar
         actions = QHBoxLayout()
         self.like_btn = QPushButton()
         _set_cid(self.like_btn, "work_detail_like_btn")
@@ -1035,7 +1692,6 @@ class WorkDetailDialog(QDialog):
         actions.addWidget(self.status_label)
         root.addLayout(actions)
 
-        # Comments section
         root.addWidget(QLabel(t_gallery("gallery_comments_title")))
         self.comments_list = QListWidget()
         _set_cid(self.comments_list, "work_detail_comments_list")
@@ -1066,62 +1722,107 @@ class WorkDetailDialog(QDialog):
 
         self.load_comments()
 
+    def closeEvent(self, event: QEvent) -> None:
+        self._runner.shutdown()
+        self._media_loader.shutdown()
+        super().closeEvent(event)
+
+    def wait_for_idle(self, timeout: float = 5.0) -> bool:
+        return self._runner.wait_for_idle(timeout) and self._media_loader.wait_for_idle(timeout)
+
     def _refresh_like_btn(self) -> None:
         label = t_gallery("gallery_btn_unlike" if self._liked else "gallery_btn_like")
         self.like_btn.setText(f"{label} ({self._likes_count})")
 
     def _toggle_like(self) -> None:
-        next_state = not self._liked
-        if self._client is not None:
-            try:
-                if next_state and hasattr(self._client, "like_work"):
-                    self._client.like_work(self.work_id)
-                elif not next_state and hasattr(self._client, "unlike_work"):
-                    self._client.unlike_work(self.work_id)
-            except Exception as exc:
-                self.status_label.setText(translate_error(_error_code_from_exc(exc)))
-                return
+        prev_liked = self._liked
+        prev_count = self._likes_count
+        next_state = not prev_liked
         self._liked = next_state
-        self._likes_count = max(0, self._likes_count + (1 if next_state else -1))
+        self._likes_count = max(0, prev_count + (1 if next_state else -1))
         self._refresh_like_btn()
-        self.like_changed.emit(self.work_id, self._liked, self._likes_count)
+
+        if self._client is None:
+            self.like_changed.emit(self.work_id, self._liked, self._likes_count)
+            return
+
+        def _call() -> None:
+            if next_state and hasattr(self._client, "like_work"):
+                self._client.like_work(self.work_id)
+            elif not next_state and hasattr(self._client, "unlike_work"):
+                self._client.unlike_work(self.work_id)
+
+        def _on_error(exc: Exception) -> None:
+            self._liked = prev_liked
+            self._likes_count = prev_count
+            self._refresh_like_btn()
+            self.status_label.setText(translate_error(_error_code_from_exc(exc)))
+
+        self._runner.submit(
+            _call,
+            key="work_like",
+            on_success=lambda _res: self.like_changed.emit(
+                self.work_id, self._liked, self._likes_count
+            ),
+            on_error=_on_error,
+        )
 
     def _on_download(self) -> None:
         if not bool(_get(self.work, "allow_download", True)):
             self.status_label.setText(t_gallery("gallery_download_disabled_tip"))
             return
-        if self._client is not None and hasattr(self._client, "record_download"):
-            try:
-                self._client.record_download(self.work_id)
-            except Exception as exc:
-                self.status_label.setText(translate_error(_error_code_from_exc(exc)))
-                return
-        self.download_requested.emit(self.work)
+        if self._client is None or not hasattr(self._client, "record_download"):
+            self.download_requested.emit(self.work)
+            return
+
+        self._runner.submit(
+            lambda: self._client.record_download(self.work_id),
+            key="work_download",
+            on_success=lambda _res: self.download_requested.emit(self.work),
+            on_error=lambda exc: self.status_label.setText(
+                translate_error(_error_code_from_exc(exc))
+            ),
+        )
 
     def _on_report(self) -> None:
         dlg = ReportContentDialog(self, theme=self._theme)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-        if self._client is not None and hasattr(self._client, "report_work"):
-            try:
-                self._client.report_work(
-                    self.work_id, dlg.selected_reason, detail=dlg.detail_text
-                )
-            except Exception as exc:
-                self.status_label.setText(translate_error(_error_code_from_exc(exc)))
-                return
-        self.status_label.setText(t_gallery("gallery_report_success"))
+        reason = dlg.selected_reason
+        detail = dlg.detail_text
+        if self._client is None or not hasattr(self._client, "report_work"):
+            self.status_label.setText(t_gallery("gallery_report_success"))
+            return
+
+        self._runner.submit(
+            lambda: self._client.report_work(self.work_id, reason, detail=detail),
+            key="work_report",
+            on_success=lambda _res: self.status_label.setText(
+                t_gallery("gallery_report_success")
+            ),
+            on_error=lambda exc: self.status_label.setText(
+                translate_error(_error_code_from_exc(exc))
+            ),
+        )
 
     def load_comments(self) -> None:
-        items = _get(self.work, "comments", None)
-        if self._client is not None and hasattr(self._client, "get_comments"):
-            try:
-                resp = self._client.get_comments(self.work_id)
-                items = _get(resp, "items", resp) if isinstance(resp, Mapping) else resp
-            except Exception:
-                items = items or []
-        self._comments = list(items or ())
-        self._render_comments()
+        initial = _get(self.work, "comments", None)
+        if initial:
+            self._comments = list(initial)
+            self._render_comments()
+        if self._client is None or not hasattr(self._client, "get_comments"):
+            return
+
+        def _fetch() -> list[Any]:
+            resp = self._client.get_comments(self.work_id)
+            items = _get(resp, "items", resp) if isinstance(resp, Mapping) else resp
+            return list(items or ())
+
+        def _apply(items: list[Any]) -> None:
+            self._comments = items
+            self._render_comments()
+
+        self._runner.submit(_fetch, key="work_comments", on_success=_apply)
 
     def _render_comments(self) -> None:
         self.comments_list.clear()
@@ -1133,9 +1834,7 @@ class WorkDetailDialog(QDialog):
                 return
             if cid:
                 seen_ids.add(cid)
-            author = str(
-                _get(comment, "author_nickname", "") or t_gallery("gallery_author_label")
-            )
+            author = _comment_author(comment)
             content = str(_get(comment, "content", ""))
             is_reply = bool(
                 force_reply
@@ -1176,43 +1875,54 @@ class WorkDetailDialog(QDialog):
         if not text:
             return
         parent_id = self._reply_parent_id
-        created: Any = {
+        fallback_comment: dict[str, Any] = {
             "id": f"local-{len(self._comments) + 1}",
             "author_nickname": t_gallery("gallery_author_label"),
             "content": text,
             "parent_id": parent_id,
             "is_danmaku": False,
         }
-        if self._client is not None and hasattr(self._client, "post_comment"):
+
+        def _finish(created: Any) -> None:
+            self._comments.append(created if created is not None else fallback_comment)
+            self._reply_parent_id = None
+            self.comment_input.clear()
+            self.comment_input.setPlaceholderText(t_gallery("gallery_comment_placeholder"))
+            self._render_comments()
+
+        if self._client is None or not hasattr(self._client, "post_comment"):
+            _finish(fallback_comment)
+            return
+
+        def _post() -> Any:
+            kwargs: dict[str, Any] = {"is_danmaku": False}
+            if parent_id:
+                kwargs["parent_id"] = parent_id
             try:
-                kwargs: dict[str, Any] = {"is_danmaku": False}
-                if parent_id:
-                    kwargs["parent_id"] = parent_id
-                try:
-                    resp = self._client.post_comment(self.work_id, text, **kwargs)
-                except TypeError:
-                    resp = self._client.post_comment(self.work_id, text, parent_id=parent_id)
-                if resp is not None:
-                    created = resp
-            except Exception as exc:
-                self.status_label.setText(translate_error(_error_code_from_exc(exc)))
-                return
-        self._comments.append(created)
-        self._reply_parent_id = None
-        self.comment_input.clear()
-        self.comment_input.setPlaceholderText(t_gallery("gallery_comment_placeholder"))
-        self._render_comments()
+                return self._client.post_comment(self.work_id, text, **kwargs)
+            except TypeError:
+                return self._client.post_comment(self.work_id, text, parent_id=parent_id)
+
+        self._runner.submit(
+            _post,
+            key="work_post_comment",
+            on_success=_finish,
+            on_error=lambda exc: self.status_label.setText(
+                translate_error(_error_code_from_exc(exc))
+            ),
+        )
 
 
 class GalleryHubDialog(QDialog):
-    """Standalone OpenFocus Gallery window with 4 tabs.
+    """Standalone OpenFocus Gallery window with 4 tabs (100% non-blocking GUI).
 
     Tabs:
-      0. Square / Gallery (grid browser, AI tag chips, sort, detail interaction)
+      0. Square / Gallery (grid browser, AI tag chips, sort, next_cursor pagination)
       1. Leaderboard (UTC 7d/1m/6m/1y/3y/5y ranking & reward tier info)
-      2. Publish Work (10-image batch cap, live watermark preview, EXIF +
-         collapsible manual EXIF, agreement default checked, atomic status)
-      3. My Showcase (own works, stats, inline Allow Download toggle, delete)
+      2. Publish Work (10-image batch cap, live 8/16-bit watermark preview, per-row
+         EXIF preservation + collapsible manual EXIF, agreement default checked,
+         off-thread media prep & terms acceptance, safe idempotent confirm retry)
+      3. My Showcase (own works, stats, inline Allow Download toggle with rollback, delete)
     """
 
     download_work_requested = pyqtSignal(object)
@@ -1224,6 +1934,8 @@ class GalleryHubDialog(QDialog):
         client: Any = None,
         state_store: Any = None,
         media_helper: Any = None,
+        media_fetcher: Callable[[str], bytes] | None = None,
+        disk_cache: Any = None,
         parent: QWidget | None = None,
         theme: str = "dark",
         initial_tab: int = 0,
@@ -1235,16 +1947,24 @@ class GalleryHubDialog(QDialog):
         self._client = client
         self._state_store = state_store
         self._media_helper = media_helper
+        self._media_fetcher = media_fetcher
         self._theme = theme
         self._did_initial_refresh = False
+        self._runner = _DialogTaskRunner(self)
+        self._media_loader = _BoundedMediaLoader(
+            self, fetcher=media_fetcher, disk_cache=disk_cache
+        )
 
         self._active_tag: str | None = None
         self._active_sort: str = "latest"
         self._active_period: str = "7d"
         self._square_works: list[Any] = []
+        self._square_next_cursor: str | None = None
         self._leaderboard_works: list[Any] = []
         self._my_works: list[Any] = []
+        self._my_work_checkboxes: dict[str, QCheckBox] = {}
         self._publish_queue: list[PublishQueueItem] = []
+        self._cached_profile: Any = {}
         self._watermark_preview_has_overlay = False
         self._watermark_preview_rendered_text = ""
 
@@ -1271,6 +1991,8 @@ class GalleryHubDialog(QDialog):
         self.tabs.addTab(self._my_showcase_tab, t_gallery("gallery_tab_my_showcase"))
         self.tabs.currentChanged.connect(self._on_tab_changed)
 
+        self._connect_state_store()
+
         if prefill_images:
             self.add_publish_files(
                 prefill_images,
@@ -1282,7 +2004,35 @@ class GalleryHubDialog(QDialog):
         if 0 <= initial_tab < self.tabs.count():
             self.tabs.setCurrentIndex(initial_tab)
 
+    def closeEvent(self, event: QEvent) -> None:
+        self._runner.shutdown()
+        self._media_loader.shutdown()
+        super().closeEvent(event)
+
+    def wait_for_idle(self, timeout: float = 5.0) -> bool:
+        return self._runner.wait_for_idle(timeout) and self._media_loader.wait_for_idle(timeout)
+
     # --------------------------------------------------------- silent refresh
+    def _connect_state_store(self) -> None:
+        if self._state_store is None:
+            return
+        prof_sig = getattr(self._state_store, "profile_changed", None)
+        if prof_sig is not None and hasattr(prof_sig, "connect"):
+            prof_sig.connect(self._on_store_profile_changed)
+        cfg_sig = getattr(self._state_store, "config_changed", None)
+        if cfg_sig is not None and hasattr(cfg_sig, "connect"):
+            cfg_sig.connect(self._on_store_config_changed)
+
+    def _on_store_profile_changed(self, profile: Any) -> None:
+        if profile is not None:
+            self._cached_profile = profile
+
+    def _on_store_config_changed(self, cfg: Any) -> None:
+        if cfg is not None:
+            cost = int(_get(cfg, "upload_cost_points", DEFAULT_UPLOAD_COST_POINTS) or DEFAULT_UPLOAD_COST_POINTS)
+            self.cost_hint_label.setText(t_gallery("gallery_publish_cost_hint", cost=cost))
+            self.lb_reward_banner.setText(self._leaderboard_reward_text(self._active_period))
+
     def showEvent(self, event: QEvent) -> None:
         super().showEvent(event)
         if not self._did_initial_refresh:
@@ -1290,16 +2040,20 @@ class GalleryHubDialog(QDialog):
             self.refresh_silently()
 
     def refresh_silently(self) -> None:
-        """Silently refresh profile/points and active tab without popups."""
-        try:
-            if self._state_store is not None and hasattr(
-                self._state_store, "refresh_account_silently"
-            ):
+        """Silently refresh profile/points and active tab off the GUI thread."""
+        if self._state_store is not None and hasattr(
+            self._state_store, "refresh_account_silently"
+        ):
+            try:
                 self._state_store.refresh_account_silently()
-            elif self._client is not None and hasattr(self._client, "get_me"):
-                self._client.get_me()
-        except Exception:
-            pass
+            except Exception:
+                pass
+        elif self._client is not None and hasattr(self._client, "get_me"):
+            self._runner.submit(
+                self._client.get_me,
+                key="hub_get_me",
+                on_success=self._on_store_profile_changed,
+            )
         self._refresh_current_tab()
 
     def _on_tab_changed(self, _index: int) -> None:
@@ -1328,7 +2082,7 @@ class GalleryHubDialog(QDialog):
                 val = getattr(self._state_store, attr, None)
                 if val is not None:
                     return val
-        return {}
+        return self._cached_profile
 
     def _get_config(self) -> Any:
         if self._state_store is not None:
@@ -1345,7 +2099,6 @@ class GalleryHubDialog(QDialog):
         layout.setContentsMargins(SPACE["sm"], SPACE["sm"], SPACE["sm"], SPACE["sm"])
         layout.setSpacing(SPACE["sm"])
 
-        # Top sort & refresh row
         top_row = QHBoxLayout()
         top_row.addWidget(QLabel(t_gallery("gallery_sort_label")))
         self.sort_combo = QComboBox()
@@ -1363,7 +2116,6 @@ class GalleryHubDialog(QDialog):
         top_row.addWidget(self.square_refresh_btn)
         layout.addLayout(top_row)
 
-        # AI tag filter chips
         chip_scroll = QScrollArea()
         chip_scroll.setWidgetResizable(True)
         chip_scroll.setFixedHeight(46)
@@ -1398,7 +2150,6 @@ class GalleryHubDialog(QDialog):
         chip_scroll.setWidget(chip_host)
         layout.addWidget(chip_scroll)
 
-        # Multi-column waterfall / grid container
         self.square_scroll = QScrollArea()
         self.square_scroll.setWidgetResizable(True)
         self.square_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
@@ -1408,6 +2159,12 @@ class GalleryHubDialog(QDialog):
         self._square_grid.setSpacing(SPACE["md"])
         self.square_scroll.setWidget(self._square_grid_host)
         layout.addWidget(self.square_scroll, 1)
+
+        self.load_more_btn = QPushButton(t_gallery("gallery_load_more"))
+        _set_cid(self.load_more_btn, "gallery_square_load_more")
+        self.load_more_btn.setVisible(False)
+        self.load_more_btn.clicked.connect(self.load_more_square)
+        layout.addWidget(self.load_more_btn)
 
         return tab
 
@@ -1422,20 +2179,61 @@ class GalleryHubDialog(QDialog):
         self.refresh_square()
 
     def refresh_square(self) -> None:
-        works: list[Any] = []
-        if self._client is not None and hasattr(self._client, "get_feed"):
+        if self._client is None or not hasattr(self._client, "get_feed"):
+            self.set_square_works(self._square_works)
+            return
+        tag = self._active_tag
+        sort = self._active_sort
+
+        def _fetch() -> Any:
+            return self._client.get_feed(tag=tag, sort=sort)
+
+        def _apply(resp: Any) -> None:
+            items = _get(resp, "items", resp) if isinstance(resp, Mapping) else resp
+            next_cur = _get(resp, "next_cursor", None) if isinstance(resp, Mapping) else None
+            self._square_next_cursor = str(next_cur) if next_cur else None
+            self.set_square_works(list(items or ()))
+
+        self._runner.submit(
+            _fetch,
+            key="square_feed",
+            on_success=_apply,
+            on_error=lambda _exc: self.set_square_works([]),
+        )
+
+    def load_more_square(self) -> None:
+        """Fetch next page using ``next_cursor`` off-thread and append works."""
+        cursor = self._square_next_cursor
+        if not cursor or self._client is None or not hasattr(self._client, "get_feed"):
+            return
+        tag = self._active_tag
+        sort = self._active_sort
+        self.load_more_btn.setEnabled(False)
+
+        def _fetch() -> Any:
             try:
-                resp = self._client.get_feed(
-                    tag=self._active_tag,
-                    sort=self._active_sort,
-                )
-                items = _get(resp, "items", resp) if isinstance(resp, Mapping) else resp
-                works = list(items or ())
-            except Exception:
-                works = []
-        elif self._square_works:
-            works = list(self._square_works)
-        self.set_square_works(works)
+                return self._client.get_feed(cursor=cursor, tag=tag, sort=sort)
+            except TypeError:
+                return self._client.get_feed(tag=tag, sort=sort)
+
+        def _apply(resp: Any) -> None:
+            items = _get(resp, "items", resp) if isinstance(resp, Mapping) else resp
+            next_cur = _get(resp, "next_cursor", None) if isinstance(resp, Mapping) else None
+            self._square_next_cursor = str(next_cur) if next_cur else None
+            existing_ids = {_work_id(w) for w in self._square_works if _work_id(w)}
+            merged = list(self._square_works)
+            for work in (items or ()):
+                wid = _work_id(work)
+                if not wid or wid not in existing_ids:
+                    merged.append(work)
+            self.set_square_works(merged)
+
+        self._runner.submit(
+            _fetch,
+            key="square_feed_more",
+            on_success=_apply,
+            on_finally=lambda: self.load_more_btn.setEnabled(True),
+        )
 
     def set_square_works(self, works: Sequence[Any]) -> None:
         self._square_works = list(works)
@@ -1445,6 +2243,8 @@ class GalleryHubDialog(QDialog):
             if widget is not None:
                 widget.setParent(None)
                 widget.deleteLater()
+
+        self.load_more_btn.setVisible(bool(self._square_next_cursor))
 
         if not self._square_works:
             empty = QLabel(t_gallery("gallery_empty_square"))
@@ -1466,7 +2266,6 @@ class GalleryHubDialog(QDialog):
         lay.setContentsMargins(SPACE["sm"], SPACE["sm"], SPACE["sm"], SPACE["sm"])
         lay.setSpacing(SPACE["xs"])
 
-        # Top badges
         badge_row = QHBoxLayout()
         if bool(_get(work, "openfocus_badge", False)):
             of_badge = QLabel(t_gallery("gallery_badge_openfocus"))
@@ -1480,38 +2279,25 @@ class GalleryHubDialog(QDialog):
         badge_row.addStretch()
         lay.addLayout(badge_row)
 
-        # Thumbnail button
-        thumb_btn = QPushButton()
+        thumb_btn = QPushButton(_work_title(work))
+        _set_cid(thumb_btn, f"gallery_work_thumb_{wid}")
         thumb_btn.setFlat(True)
         thumb_btn.setMinimumHeight(130)
-        pix_src = (
-            _get(work, "thumb_pixmap", None)
-            or _get(work, "pixmap", None)
-            or _get(work, "image_path", None)
-            or _get(work, "thumb_bytes", None)
-        )
-        pix = _pixmap_from_any(pix_src, size=QSize(260, 140))
-        if not pix.isNull():
-            thumb_btn.setIconSize(pix.size())
-            from PyQt6.QtGui import QIcon
-
-            thumb_btn.setIcon(QIcon(pix))
-        else:
-            thumb_btn.setText(_work_title(work))
         thumb_btn.clicked.connect(lambda _=False, w=work: self.open_work_detail(w))
         lay.addWidget(thumb_btn)
 
-        # Title + Author
+        def _apply_icon(pix: QPixmap, btn: QPushButton = thumb_btn) -> None:
+            btn.setText("")
+            btn.setIconSize(pix.size())
+            btn.setIcon(QIcon(pix))
+
+        self._media_loader.load_for_work(work, size=QSize(260, 140), on_ready=_apply_icon)
+
         title_lbl = QLabel(_work_title(work))
         title_lbl.setStyleSheet("font-weight: 600;")
         lay.addWidget(title_lbl)
 
-        author_id = str(_get(work, "author_id", "") or _get(work, "user_id", ""))
-        author_name = str(
-            _get(work, "author_nickname", "")
-            or _get(work, "author_name", "")
-            or t_gallery("gallery_author_label")
-        )
+        author_id, author_name, _badges = _work_author(work)
         author_btn = QPushButton(author_name)
         author_btn.setFlat(True)
         author_btn.setStyleSheet("text-align: left; padding: 0;")
@@ -1522,7 +2308,6 @@ class GalleryHubDialog(QDialog):
         )
         lay.addWidget(author_btn)
 
-        # Footer counts + open detail
         likes = int(_get(work, "likes_count", 0) or _get(work, "like_count", 0) or 0)
         comments = int(_get(work, "comments_count", 0) or _get(work, "comment_count", 0) or 0)
         downloads = int(_get(work, "downloads_count", 0) or _get(work, "download_count", 0) or 0)
@@ -1540,25 +2325,30 @@ class GalleryHubDialog(QDialog):
         return card
 
     def open_work_detail(self, work: Any) -> WorkDetailDialog:
-        dlg = WorkDetailDialog(work, client=self._client, parent=self, theme=self._theme)
+        dlg = WorkDetailDialog(
+            work,
+            client=self._client,
+            media_fetcher=self._media_fetcher,
+            parent=self,
+            theme=self._theme,
+        )
         dlg.author_clicked.connect(self.open_author_showcase)
         dlg.download_requested.connect(self.download_work_requested.emit)
         dlg.show()
         return dlg
 
     def open_work_by_id(self, work_id: str) -> WorkDetailDialog | None:
-        """Open work detail by ID (used for Message Box click-to-jump)."""
+        """Open work detail by ID (fetches off-thread if not yet loaded locally)."""
         for collection in (self._square_works, self._leaderboard_works, self._my_works):
             for work in collection:
                 if _work_id(work) == work_id:
                     return self.open_work_detail(work)
         if self._client is not None and hasattr(self._client, "get_work"):
-            try:
-                work = self._client.get_work(work_id)
-                if work is not None:
-                    return self.open_work_detail(work)
-            except Exception:
-                return None
+            self._runner.submit(
+                lambda: self._client.get_work(work_id),
+                key="open_work_by_id",
+                on_success=lambda work: self.open_work_detail(work) if work is not None else None,
+            )
         return None
 
     def open_author_showcase(
@@ -1572,6 +2362,7 @@ class GalleryHubDialog(QDialog):
             author_id,
             author_name=author_name,
             client=self._client,
+            media_fetcher=self._media_fetcher,
             initial_data=initial_data,
             current_user_id=self._current_user_id(),
             parent=self,
@@ -1593,7 +2384,6 @@ class GalleryHubDialog(QDialog):
         heading.setStyleSheet("font-size: 13pt; font-weight: 700;")
         layout.addWidget(heading)
 
-        # Period buttons (UTC: 7d, 1m, 6m, 1y, 3y, 5y)
         period_row = QHBoxLayout()
         self.period_buttons: dict[str, QPushButton] = {}
         for period in LEADERBOARD_PERIOD_KEYS:
@@ -1644,17 +2434,22 @@ class GalleryHubDialog(QDialog):
         self.refresh_leaderboard()
 
     def refresh_leaderboard(self) -> None:
-        works: list[Any] = []
-        if self._client is not None and hasattr(self._client, "get_leaderboard"):
-            try:
-                resp = self._client.get_leaderboard(period=self._active_period)
-                items = _get(resp, "items", resp) if isinstance(resp, Mapping) else resp
-                works = list(items or ())
-            except Exception:
-                works = []
-        elif self._leaderboard_works:
-            works = list(self._leaderboard_works)
-        self.set_leaderboard_works(works)
+        if self._client is None or not hasattr(self._client, "get_leaderboard"):
+            self.set_leaderboard_works(self._leaderboard_works)
+            return
+        period = self._active_period
+
+        def _fetch() -> list[Any]:
+            resp = self._client.get_leaderboard(period=period)
+            items = _get(resp, "items", resp) if isinstance(resp, Mapping) else resp
+            return list(items or ())
+
+        self._runner.submit(
+            _fetch,
+            key="leaderboard",
+            on_success=self.set_leaderboard_works,
+            on_error=lambda _exc: self.set_leaderboard_works([]),
+        )
 
     def set_leaderboard_works(self, works: Sequence[Any]) -> None:
         self._leaderboard_works = list(works)
@@ -1670,11 +2465,7 @@ class GalleryHubDialog(QDialog):
             rank = int(_get(work, "rank", idx) or idx)
             medal = medals.get(rank, "")
             rank_txt = t_gallery("gallery_leaderboard_rank", rank=rank)
-            author = str(
-                _get(work, "author_nickname", "")
-                or _get(work, "author_name", "")
-                or t_gallery("gallery_author_label")
-            )
+            _aid, author, _badges = _work_author(work)
             likes = int(_get(work, "likes_count", 0) or _get(work, "like_count", 0) or 0)
             likes_txt = t_gallery("gallery_leaderboard_likes", count=likes)
             text = f"{medal} {rank_txt}  {_work_title(work)} — {author}  ({likes_txt})".strip()
@@ -1695,7 +2486,6 @@ class GalleryHubDialog(QDialog):
         outer.setContentsMargins(SPACE["sm"], SPACE["sm"], SPACE["sm"], SPACE["sm"])
         outer.setSpacing(SPACE["md"])
 
-        # Left column: file picker, queue, preview
         left_col = QVBoxLayout()
         left_col.setSpacing(SPACE["sm"])
 
@@ -1745,7 +2535,6 @@ class GalleryHubDialog(QDialog):
 
         outer.addLayout(left_col, 5)
 
-        # Right column: metadata, watermark, EXIF, agreement, publish button
         right_scroll = QScrollArea()
         right_scroll.setWidgetResizable(True)
         right_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
@@ -1763,7 +2552,6 @@ class GalleryHubDialog(QDialog):
         title_form.addRow(t_gallery("gallery_publish_title_label"), self.publish_title_edit)
         right_col.addLayout(title_form)
 
-        # Watermark controls (default ON)
         self.watermark_enabled_check = QCheckBox(
             t_gallery("gallery_publish_watermark_enable")
         )
@@ -1789,7 +2577,6 @@ class GalleryHubDialog(QDialog):
         wm_row.addWidget(self.use_nickname_btn)
         right_col.addLayout(wm_row)
 
-        # Auto EXIF summary + collapsible Advanced Settings
         self.auto_exif_label = QLabel(t_gallery("gallery_publish_exif_none"))
         _set_cid(self.auto_exif_label, "gallery_publish_auto_exif")
         self.auto_exif_label.setObjectName("mutedLabel")
@@ -1824,11 +2611,14 @@ class GalleryHubDialog(QDialog):
         ):
             edit = QLineEdit()
             _set_cid(edit, f"gallery_publish_exif_{field_key}")
+            # Record overrides ONLY when the user explicitly edits a field!
+            edit.textEdited.connect(
+                lambda val, fk=field_key: self._on_manual_exif_edited(fk, val)
+            )
             exif_form.addRow(t_gallery(label_key), edit)
             self.manual_exif_edits[field_key] = edit
         right_col.addWidget(self.advanced_exif_panel)
 
-        # Allow Download & OpenFocus Exclusive Badge toggles
         self.allow_download_check = QCheckBox(t_gallery("gallery_publish_allow_download"))
         _set_cid(self.allow_download_check, "gallery_publish_allow_download")
         self.allow_download_check.setChecked(True)
@@ -1841,7 +2631,6 @@ class GalleryHubDialog(QDialog):
         self.openfocus_badge_check.setChecked(False)
         right_col.addWidget(self.openfocus_badge_check)
 
-        # Gallery User Agreement (default checked = True)
         agree_row = QHBoxLayout()
         self.agreement_check = QCheckBox(t_gallery("gallery_publish_agreement_check"))
         _set_cid(self.agreement_check, "gallery_publish_agreement_check")
@@ -1856,7 +2645,10 @@ class GalleryHubDialog(QDialog):
         agree_row.addWidget(self.agreement_view_btn)
         right_col.addLayout(agree_row)
 
-        cost = int(_get(self._get_config(), "upload_cost_points", DEFAULT_UPLOAD_COST_POINTS) or DEFAULT_UPLOAD_COST_POINTS)
+        cost = int(
+            _get(self._get_config(), "upload_cost_points", DEFAULT_UPLOAD_COST_POINTS)
+            or DEFAULT_UPLOAD_COST_POINTS
+        )
         self.cost_hint_label = QLabel(t_gallery("gallery_publish_cost_hint", cost=cost))
         self.cost_hint_label.setObjectName("mutedLabel")
         self.cost_hint_label.setWordWrap(True)
@@ -1885,6 +2677,27 @@ class GalleryHubDialog(QDialog):
         self.advanced_exif_toggle.setArrowType(
             Qt.ArrowType.DownArrow if checked else Qt.ArrowType.RightArrow
         )
+
+    def _on_manual_exif_edited(self, field_key: str, value: str) -> None:
+        row = self.publish_queue_list.currentRow()
+        if 0 <= row < len(self._publish_queue):
+            item = self._publish_queue[row]
+            clean = value.strip()
+            if clean:
+                item.manual_exif_overrides[field_key] = clean
+            else:
+                item.manual_exif_overrides.pop(field_key, None)
+
+    def set_manual_exif_override(self, row: int, field_key: str, value: str) -> None:
+        """Explicitly set a manual EXIF override for a single queued row."""
+        if 0 <= row < len(self._publish_queue):
+            clean = value.strip()
+            if clean:
+                self._publish_queue[row].manual_exif_overrides[field_key] = clean
+            else:
+                self._publish_queue[row].manual_exif_overrides.pop(field_key, None)
+            if self.publish_queue_list.currentRow() == row and field_key in self.manual_exif_edits:
+                self.manual_exif_edits[field_key].setText(clean)
 
     def _pick_publish_files(self) -> None:
         paths, _ = FileDialog.getOpenFileNames(
@@ -1960,6 +2773,7 @@ class GalleryHubDialog(QDialog):
         self._refresh_publish_queue_ui()
         if self._publish_queue and self.publish_queue_list.currentRow() < 0:
             self.publish_queue_list.setCurrentRow(0)
+            self._on_publish_selection_changed(0)
         self._update_watermark_preview()
         self._update_publish_button_state()
         return len(accepted)
@@ -1969,6 +2783,7 @@ class GalleryHubDialog(QDialog):
         self.batch_warning_label.setVisible(False)
         self.publish_feedback_label.setText("")
         self._refresh_publish_queue_ui()
+        self._on_publish_selection_changed(-1)
         self._update_watermark_preview()
         self._update_publish_button_state()
 
@@ -1977,9 +2792,9 @@ class GalleryHubDialog(QDialog):
         return list(self._publish_queue)
 
     def _stage_label(self, item: PublishQueueItem) -> str:
-        if item.stage == "failed":
+        if item.stage in ("failed", "confirm_unknown"):
             return item.status_message or t_gallery(
-                "gallery_publish_status_failed", reason=""
+                f"gallery_publish_status_{item.stage}", reason=""
             )
         return t_gallery(f"gallery_publish_status_{item.stage}")
 
@@ -2001,11 +2816,20 @@ class GalleryHubDialog(QDialog):
                 max_batch=MAX_BATCH_UPLOAD,
             )
         )
+        has_confirm_unknown = any(
+            it.stage == "confirm_unknown" for it in self._publish_queue
+        )
+        self.publish_btn.setText(
+            t_gallery("gallery_publish_retry_confirm")
+            if has_confirm_unknown
+            else t_gallery("gallery_publish_start")
+        )
 
     def _on_publish_selection_changed(self, row: int) -> None:
         if 0 <= row < len(self._publish_queue):
             item = self._publish_queue[row]
-            summary = format_exif_line(item.exif)
+            merged = self._merged_exif_for_item(item)
+            summary = format_exif_line(merged)
             if summary:
                 self.auto_exif_label.setText(
                     t_gallery("gallery_publish_exif_auto", summary=summary)
@@ -2013,10 +2837,17 @@ class GalleryHubDialog(QDialog):
             else:
                 self.auto_exif_label.setText(t_gallery("gallery_publish_exif_none"))
             for key, edit in self.manual_exif_edits.items():
-                if not edit.isModified():
-                    edit.setText(str(item.exif.get(key, "")))
+                edit.blockSignals(True)
+                edit.setText(str(merged.get(key, "")))
+                edit.setModified(False)
+                edit.blockSignals(False)
         else:
             self.auto_exif_label.setText(t_gallery("gallery_publish_exif_none"))
+            for edit in self.manual_exif_edits.values():
+                edit.blockSignals(True)
+                edit.clear()
+                edit.setModified(False)
+                edit.blockSignals(False)
         self._update_watermark_preview()
 
     def _fill_watermark_with_nickname(self) -> None:
@@ -2039,7 +2870,6 @@ class GalleryHubDialog(QDialog):
                 size=QSize(360, 240),
             )
         else:
-            # Neutral preview canvas so watermark toggle is visibly testable even before picking a file
             pix = QPixmap(320, 200)
             pix.fill(QColor(palette(self._theme)["canvas"]))
 
@@ -2069,15 +2899,20 @@ class GalleryHubDialog(QDialog):
         return dlg
 
     def _merged_exif_for_item(self, item: PublishQueueItem) -> dict[str, str]:
+        """Preserve each image's extracted EXIF plus only explicit per-row user edits."""
         merged = dict(item.exif)
-        for key, edit in self.manual_exif_edits.items():
-            val = edit.text().strip()
+        for key, val in item.manual_exif_overrides.items():
             if val:
                 merged[key] = val
         return merged
 
-    def publish_all(self) -> list[PublishQueueItem]:
-        """Run the per-image atomic upload flow (inspect -> upload -> confirm)."""
+    def publish_all(self, *, wait: bool = False) -> list[PublishQueueItem]:
+        """Run off-thread per-image atomic upload flow (inspect -> upload -> confirm).
+
+        By default runs non-blockingly on a worker thread and streams per-row
+        progress back to the GUI thread. Pass ``wait=True`` only in unit tests
+        that want to await completion synchronously.
+        """
         if not self.agreement_check.isChecked():
             self.publish_feedback_label.setText(
                 t_gallery("gallery_publish_agreement_required")
@@ -2086,108 +2921,320 @@ class GalleryHubDialog(QDialog):
         if not self._publish_queue:
             return []
 
-        terms_version = str(_get(self._get_config(), "gallery_terms_version", "2026-11") or "2026-11")
+        cfg = self._get_config()
+        profile = self._get_profile()
+        terms_version = str(_get(cfg, "gallery_terms_version", "2026-11") or "2026-11")
+        accepted_terms = str(_get(profile, "gallery_terms_accepted_version", "") or "")
         attribution = self.watermark_text_edit.text().strip()
         watermark_enabled = self.watermark_enabled_check.isChecked()
         allow_download = self.allow_download_check.isChecked()
         openfocus_badge = self.openfocus_badge_check.isChecked()
         default_title = self.publish_title_edit.text().strip()
 
-        for item in self._publish_queue:
+        # Snapshot per-row job inputs on GUI thread before spawning worker thread
+        jobs: list[tuple[int, PublishQueueItem, str, dict[str, str], bool]] = []
+        for idx, item in enumerate(self._publish_queue):
             if item.stage == "done":
                 continue
-            self._publish_single_item(
-                item,
-                title=default_title or item.title or os.path.splitext(item.label)[0],
-                attribution=attribution,
-                watermark_enabled=watermark_enabled,
-                allow_download=allow_download,
-                openfocus_badge=openfocus_badge or item.openfocus_badge,
-                terms_version=terms_version,
-            )
+            item_title = default_title or item.title or os.path.splitext(item.label)[0]
+            item_exif = self._merged_exif_for_item(item)
+            item_badge = openfocus_badge or item.openfocus_badge
+            jobs.append((idx, item, item_title, item_exif, item_badge))
 
-        self._refresh_publish_queue_ui()
+        if not jobs:
+            return list(self._publish_queue)
+
+        self.publish_btn.setEnabled(False)
+
+        def _worker(emit_progress: Callable[[Any], None]) -> list[tuple[int, Any]]:
+            published_results: list[tuple[int, Any]] = []
+            terms_synced = (not terms_version) or (accepted_terms == terms_version)
+
+            def _ensure_terms_accepted() -> None:
+                nonlocal terms_synced
+                if terms_synced or self._client is None:
+                    return
+                if hasattr(self._client, "update_profile"):
+                    try:
+                        self._client.update_profile(
+                            accept_gallery_terms_version=terms_version
+                        )
+                        terms_synced = True
+                    except TypeError:
+                        # Older mock update_profile without accept_gallery_terms_version
+                        terms_synced = True
+
+            for idx, item, item_title, item_exif, item_badge in jobs:
+                result = self._run_single_upload_worker(
+                    idx,
+                    item,
+                    title=item_title,
+                    exif=item_exif,
+                    attribution=attribution,
+                    watermark_enabled=watermark_enabled,
+                    allow_download=allow_download,
+                    openfocus_badge=item_badge,
+                    terms_version=terms_version,
+                    ensure_terms=_ensure_terms_accepted,
+                    emit_progress=emit_progress,
+                )
+                if result is not None:
+                    published_results.append((idx, result))
+            return published_results
+
+        def _on_progress(payload: Any) -> None:
+            idx, stage, status_msg, points_deducted, work_id, upload_id, idem_key = payload
+            if 0 <= idx < len(self._publish_queue):
+                row_item = self._publish_queue[idx]
+                row_item.stage = stage
+                row_item.status_message = status_msg
+                row_item.points_deducted = points_deducted
+                if work_id:
+                    row_item.work_id = work_id
+                if upload_id:
+                    row_item.upload_id = upload_id
+                if idem_key:
+                    row_item.idempotency_key = idem_key
+                if status_msg and stage in ("failed", "confirm_unknown"):
+                    self.publish_feedback_label.setText(status_msg)
+            self._refresh_publish_queue_ui()
+
+        def _on_success(published_results: list[tuple[int, Any]]) -> None:
+            for _idx, res in published_results:
+                self.work_published.emit(res)
+            self._refresh_publish_queue_ui()
+
+        def _on_finally() -> None:
+            self._update_publish_button_state()
+            self._refresh_publish_queue_ui()
+
+        self._runner.submit(
+            _worker,
+            key="publish_batch",
+            on_progress=_on_progress,
+            on_success=_on_success,
+            on_finally=_on_finally,
+        )
+        if wait:
+            self._runner.wait_for_idle()
         return list(self._publish_queue)
 
-    def _publish_single_item(
+    def _run_single_upload_worker(
         self,
+        idx: int,
         item: PublishQueueItem,
         *,
         title: str,
+        exif: dict[str, str],
         attribution: str,
         watermark_enabled: bool,
         allow_download: bool,
         openfocus_badge: bool,
         terms_version: str,
-    ) -> None:
-        def _set_stage(stage: str) -> None:
-            item.stage = stage
-            self._refresh_publish_queue_ui()
+        ensure_terms: Callable[[], None],
+        emit_progress: Callable[[Any], None],
+    ) -> Any:
+        """Execute one queued image upload off-thread with strict per-row isolation."""
+        client = self._client
+        idem_key = item.idempotency_key or str(uuid.uuid4())
+        upload_id = item.upload_id
 
-        _set_stage("inspecting")
-        thumb_webp, full_webp, media_meta = _encode_webp_pair(
-            item.source,
-            attribution=attribution,
-            watermark_enabled=watermark_enabled,
-            media_helper=self._media_helper,
-        )
-        exif = self._merged_exif_for_item(item)
+        def _emit(
+            stage: str,
+            msg: str = "",
+            points_deducted: bool | None = False,
+            work_id: str = "",
+        ) -> None:
+            emit_progress((idx, stage, msg, points_deducted, work_id, upload_id, idem_key))
+
+        if client is None:
+            reason = translate_error("gallery_disabled")
+            _emit("failed", t_gallery("gallery_publish_zero_deducted", reason=reason), False)
+            return None
+
+        # Safe confirm retry path: NEVER re-run inspect/PUT for an ambiguous confirm!
+        if item.stage == "confirm_unknown" and upload_id:
+            if not hasattr(client, "confirm_upload"):
+                reason = translate_error("internal_error")
+                _emit(
+                    "confirm_unknown",
+                    t_gallery("gallery_publish_confirm_unknown_hint", reason=reason),
+                    None,
+                )
+                return None
+            _emit("confirming", t_gallery("gallery_publish_status_confirming"), None)
+            return self._do_confirm_step(client, upload_id, idem_key, _emit)
+
+        # Stage 0: Per-row isolated media preparation (off GUI thread)
+        _emit("inspecting", t_gallery("gallery_publish_status_inspecting"), False)
+        try:
+            thumb_webp, full_webp, media_meta = _encode_webp_pair(
+                item.source,
+                attribution=attribution,
+                watermark_enabled=watermark_enabled,
+                media_helper=self._media_helper,
+            )
+            if not thumb_webp or not full_webp:
+                raise ValueError("invalid_media")
+        except Exception as exc:
+            code = _error_code_from_exc(exc)
+            if code == "internal_error":
+                code = "invalid_media"
+            reason = translate_error(code)
+            _emit("failed", t_gallery("gallery_publish_zero_deducted", reason=reason), False)
+            return None
+
+        merged_exif = dict(media_meta.get("exif") or {})
+        merged_exif.update(exif)
+        public_exif = _filter_public_exif(merged_exif)
         meta = {
             "title": title,
             "width": media_meta.get("width", 0),
             "height": media_meta.get("height", 0),
             "full_bytes": len(full_webp),
             "thumb_bytes": len(thumb_webp),
-            "exif": exif,
+            "exif": public_exif,
             "allow_download": allow_download,
             "openfocus_badge": openfocus_badge,
             "watermark_enabled": watermark_enabled,
             "terms_version": terms_version,
         }
 
-        if self._client is None or not hasattr(self._client, "upload_work_atomic"):
-            item.stage = "failed"
-            item.points_deducted = False
+        # Ensure Gallery User Agreement consent is persisted before inspect
+        try:
+            ensure_terms()
+        except Exception as exc:
+            reason = translate_error(_error_code_from_exc(exc))
+            _emit("failed", t_gallery("gallery_publish_zero_deducted", reason=reason), False)
+            return None
+
+        # Prefer explicit 3-stage API (PR #264 GalleryClient) so confirm retry reuses upload_id
+        has_3stage = (
+            hasattr(client, "inspect_upload")
+            and hasattr(client, "put_presigned_webp")
+            and hasattr(client, "confirm_upload")
+        )
+        if has_3stage:
+            try:
+                inspect_resp = client.inspect_upload(thumb_webp, meta)
+            except Exception as exc:
+                if _error_code_from_exc(exc) == "gallery_terms_required" and hasattr(
+                    client, "update_profile"
+                ):
+                    try:
+                        client.update_profile(accept_gallery_terms_version=terms_version)
+                        inspect_resp = client.inspect_upload(thumb_webp, meta)
+                    except Exception as retry_exc:
+                        self._emit_pre_confirm_failure(retry_exc, _emit)
+                        return None
+                else:
+                    self._emit_pre_confirm_failure(exc, _emit)
+                    return None
+
+            upload_id = str(_get(inspect_resp, "upload_id", "") or "")
+            full_url, full_headers, thumb_url, thumb_headers = _extract_upload_urls(inspect_resp)
+            if not upload_id or not full_url or not thumb_url:
+                reason = translate_error("invalid_request")
+                _emit("failed", t_gallery("gallery_publish_zero_deducted", reason=reason), False)
+                return None
+
+            _emit("uploading", t_gallery("gallery_publish_status_uploading"), False)
+            try:
+                client.put_presigned_webp(full_url, full_webp, headers=full_headers, stage="uploading")
+                client.put_presigned_webp(thumb_url, thumb_webp, headers=thumb_headers, stage="uploading")
+            except Exception as exc:
+                self._emit_pre_confirm_failure(exc, _emit)
+                return None
+
+            _emit("confirming", t_gallery("gallery_publish_status_confirming"), None)
+            return self._do_confirm_step(client, upload_id, idem_key, _emit)
+
+        # Fallback for clients exposing only upload_work_atomic
+        if not hasattr(client, "upload_work_atomic"):
             reason = translate_error("gallery_disabled")
-            item.status_message = t_gallery("gallery_publish_zero_deducted", reason=reason)
-            self.publish_feedback_label.setText(item.status_message)
-            return
+            _emit("failed", t_gallery("gallery_publish_zero_deducted", reason=reason), False)
+            return None
+
+        current_stage = "inspecting"
+
+        def _on_stage(stage: str) -> None:
+            nonlocal current_stage
+            current_stage = stage
+            _emit(stage, t_gallery(f"gallery_publish_status_{stage}"), None if stage == "confirming" else False)
 
         try:
-            result = self._client.upload_work_atomic(
-                thumb_webp,
-                full_webp,
-                meta,
-                on_stage=_set_stage,
-            )
-            item.stage = "done"
-            item.points_deducted = True
-            item.work_id = _work_id(result)
-            item.status_message = t_gallery("gallery_publish_status_done")
-            self.work_published.emit(result)
-        except Exception as exc:
-            code = _error_code_from_exc(exc)
-            details = _error_details_from_exc(exc)
-            points_deducted = bool(getattr(exc, "points_deducted", False))
-            item.stage = "failed"
-            item.points_deducted = points_deducted
-            if code == "content_rejected":
-                reason_key = str(details.get("reason") or "policy_violation")
-                reason = translate_rejection_reason(reason_key)
-                item.status_message = t_gallery(
-                    "gallery_publish_rejected_zero_deducted", reason=reason
+            try:
+                result = client.upload_work_atomic(
+                    thumb_webp,
+                    full_webp,
+                    meta,
+                    on_stage=_on_stage,
+                    idempotency_key=idem_key,
                 )
+            except TypeError:
+                result = client.upload_work_atomic(
+                    thumb_webp,
+                    full_webp,
+                    meta,
+                    on_stage=_on_stage,
+                )
+            _emit("done", t_gallery("gallery_publish_status_done"), True, _work_id(result))
+            return result
+        except Exception as exc:
+            err_stage = str(getattr(exc, "stage", "") or current_stage)
+            err_upload_id = str(getattr(exc, "upload_id", "") or _error_details_from_exc(exc).get("upload_id", "") or "")
+            if err_upload_id:
+                upload_id = err_upload_id
+            if err_stage in ("confirm", "confirming") and _is_ambiguous_confirm_error(exc):
+                reason = translate_error(_error_code_from_exc(exc))
+                _emit(
+                    "confirm_unknown",
+                    t_gallery("gallery_publish_confirm_unknown_hint", reason=reason),
+                    None,
+                )
+                return None
+            self._emit_pre_confirm_failure(exc, _emit)
+            return None
+
+    def _do_confirm_step(
+        self,
+        client: Any,
+        upload_id: str,
+        idem_key: str,
+        emit_fn: Callable[..., None],
+    ) -> Any:
+        try:
+            result = client.confirm_upload(upload_id, idempotency_key=idem_key)
+            emit_fn("done", t_gallery("gallery_publish_status_done"), True, _work_id(result))
+            return result
+        except Exception as exc:
+            if _is_ambiguous_confirm_error(exc):
+                reason = translate_error(_error_code_from_exc(exc))
+                emit_fn(
+                    "confirm_unknown",
+                    t_gallery("gallery_publish_confirm_unknown_hint", reason=reason),
+                    None,
+                )
+                return None
+            self._emit_pre_confirm_failure(exc, emit_fn)
+            return None
+
+    @staticmethod
+    def _emit_pre_confirm_failure(exc: Exception, emit_fn: Callable[..., None]) -> None:
+        code = _error_code_from_exc(exc)
+        details = _error_details_from_exc(exc)
+        points_deducted = bool(getattr(exc, "points_deducted", False))
+        if code == "content_rejected":
+            reason_key = str(details.get("reason") or "policy_violation")
+            reason = translate_rejection_reason(reason_key)
+            msg = t_gallery("gallery_publish_rejected_zero_deducted", reason=reason)
+        else:
+            reason = translate_error(code)
+            if not points_deducted:
+                msg = t_gallery("gallery_publish_zero_deducted", reason=reason)
             else:
-                reason = translate_error(code)
-                if not points_deducted:
-                    item.status_message = t_gallery(
-                        "gallery_publish_zero_deducted", reason=reason
-                    )
-                else:
-                    item.status_message = t_gallery(
-                        "gallery_publish_status_failed", reason=reason
-                    )
-            self.publish_feedback_label.setText(item.status_message)
+                msg = t_gallery("gallery_publish_status_failed", reason=reason)
+        emit_fn("failed", msg, points_deducted)
 
     # -------------------------------------------------- Tab 4: My Showcase
     def _build_my_showcase_tab(self) -> QWidget:
@@ -2221,20 +3268,25 @@ class GalleryHubDialog(QDialog):
         return tab
 
     def refresh_my_showcase(self) -> None:
-        works: list[Any] = []
-        if self._client is not None and hasattr(self._client, "get_my_works"):
-            try:
-                resp = self._client.get_my_works()
-                items = _get(resp, "items", resp) if isinstance(resp, Mapping) else resp
-                works = list(items or ())
-            except Exception:
-                works = []
-        elif self._my_works:
-            works = list(self._my_works)
-        self.set_my_works(works)
+        if self._client is None or not hasattr(self._client, "get_my_works"):
+            self.set_my_works(self._my_works)
+            return
+
+        def _fetch() -> list[Any]:
+            resp = self._client.get_my_works()
+            items = _get(resp, "items", resp) if isinstance(resp, Mapping) else resp
+            return list(items or ())
+
+        self._runner.submit(
+            _fetch,
+            key="my_showcase",
+            on_success=self.set_my_works,
+            on_error=lambda _exc: self.set_my_works([]),
+        )
 
     def set_my_works(self, works: Sequence[Any]) -> None:
         self._my_works = list(works)
+        self._my_work_checkboxes.clear()
         while self._my_showcase_layout.count():
             item = self._my_showcase_layout.takeAt(0)
             widget = item.widget()
@@ -2256,6 +3308,18 @@ class GalleryHubDialog(QDialog):
             row_card.setObjectName("galleryCard")
             row = QHBoxLayout(row_card)
             row.setContentsMargins(SPACE["sm"], SPACE["sm"], SPACE["sm"], SPACE["sm"])
+
+            thumb_lbl = QLabel()
+            thumb_lbl.setVisible(False)
+            row.addWidget(thumb_lbl)
+
+            def _apply_thumb(pix: QPixmap, lbl: QLabel = thumb_lbl) -> None:
+                lbl.setPixmap(pix)
+                lbl.setVisible(True)
+
+            self._media_loader.load_for_work(
+                work, size=QSize(56, 56), on_ready=_apply_thumb
+            )
 
             info = QVBoxLayout()
             title_lbl = QLabel(_work_title(work))
@@ -2283,6 +3347,7 @@ class GalleryHubDialog(QDialog):
             allow_cb.toggled.connect(
                 lambda checked, w_id=wid: self._on_toggle_my_work_download(w_id, checked)
             )
+            self._my_work_checkboxes[wid] = allow_cb
             row.addWidget(allow_cb)
 
             del_btn = QPushButton(t_gallery("gallery_my_works_delete"))
@@ -2296,23 +3361,42 @@ class GalleryHubDialog(QDialog):
         self._my_showcase_layout.addStretch()
 
     def _on_toggle_my_work_download(self, work_id: str, allow_download: bool) -> None:
-        if self._client is not None and hasattr(self._client, "update_work"):
-            try:
-                self._client.update_work(work_id, allow_download=allow_download)
-            except Exception as exc:
-                self.my_showcase_status.setText(
-                    translate_error(_error_code_from_exc(exc))
-                )
-                return
+        prev_state = not allow_download
         for work in self._my_works:
             if _work_id(work) == work_id:
-                if isinstance(work, dict):
-                    work["allow_download"] = allow_download
-                elif hasattr(work, "allow_download"):
-                    try:
-                        setattr(work, "allow_download", allow_download)
-                    except Exception:
-                        pass
+                prev_state = bool(_get(work, "allow_download", not allow_download))
+                break
+
+        def _commit_local(val: bool) -> None:
+            for work in self._my_works:
+                if _work_id(work) == work_id:
+                    if isinstance(work, dict):
+                        work["allow_download"] = val
+                    elif hasattr(work, "allow_download"):
+                        try:
+                            setattr(work, "allow_download", val)
+                        except Exception:
+                            pass
+
+        def _rollback(exc: Exception) -> None:
+            cb = self._my_work_checkboxes.get(work_id)
+            if cb is not None:
+                cb.blockSignals(True)
+                cb.setChecked(prev_state)
+                cb.blockSignals(False)
+            _commit_local(prev_state)
+            self.my_showcase_status.setText(translate_error(_error_code_from_exc(exc)))
+
+        if self._client is None or not hasattr(self._client, "update_work"):
+            _commit_local(allow_download)
+            return
+
+        self._runner.submit(
+            lambda: self._client.update_work(work_id, allow_download=allow_download),
+            key=f"update_work_{work_id}",
+            on_success=lambda _res: _commit_local(allow_download),
+            on_error=_rollback,
+        )
 
     def _confirm_delete_my_work(self, work: Any, *, skip_confirm: bool = False) -> bool:
         wid = _work_id(work)
@@ -2328,16 +3412,21 @@ class GalleryHubDialog(QDialog):
             if reply != QMessageBox.StandardButton.Yes:
                 return False
 
-        if self._client is not None and hasattr(self._client, "delete_work"):
-            try:
-                self._client.delete_work(wid)
-            except Exception as exc:
-                self.my_showcase_status.setText(
-                    translate_error(_error_code_from_exc(exc))
-                )
-                return False
+        def _remove_local() -> None:
+            self._my_works = [w for w in self._my_works if _work_id(w) != wid]
+            self.set_my_works(self._my_works)
+            self.my_showcase_status.setText(t_gallery("gallery_my_works_deleted"))
 
-        self._my_works = [w for w in self._my_works if _work_id(w) != wid]
-        self.set_my_works(self._my_works)
-        self.my_showcase_status.setText(t_gallery("gallery_my_works_deleted"))
+        if self._client is None or not hasattr(self._client, "delete_work"):
+            _remove_local()
+            return True
+
+        self._runner.submit(
+            lambda: self._client.delete_work(wid),
+            key=f"delete_work_{wid}",
+            on_success=lambda _res: _remove_local(),
+            on_error=lambda exc: self.my_showcase_status.setText(
+                translate_error(_error_code_from_exc(exc))
+            ),
+        )
         return True

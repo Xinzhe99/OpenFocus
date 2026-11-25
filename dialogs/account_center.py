@@ -1,16 +1,21 @@
 """OpenFocus Account Center & Message Box dialog.
 
+All network calls execute off the Qt GUI thread via ``_DialogTaskRunner`` and
+queued ``state_store`` completion signals (never issuing redundant synchronous
+``get_me`` calls on the UI thread).
+
 Provides two primary sections:
   1. **My Account**: signed-in info, editable nickname with validation, points
-     balance + manual refresh, Lemon Squeezy 3-tier recharge (500 / $9.99
-     highlighted Recommended, 1200 / $19.99, 5000 / $69.99) + Redeem Code box
-     with ``payment_region``-aware emphasis, 12 canonical Interest chips,
-     3 Privacy toggles (``show_gallery``, ``show_following``,
-     ``show_followers`` — NEVER exposing ``can_hide_gallery``), and My Likes /
+     balance + manual refresh (with explicit error feedback on failure), Lemon
+     Squeezy 3-tier recharge (500 / $9.99 highlighted Recommended,
+     1200 / $19.99, 5000 / $69.99) + Redeem Code box with ``payment_region``
+     emphasis, 12 canonical Interest chips, strictly 3 Privacy toggles
+     (``show_gallery``, ``show_following``, ``show_followers`` with rollback on
+     failed save — NEVER exposing ``can_hide_gallery``), and My Likes /
      My Comments / Following / Followers sub-tabs.
   2. **Message Box**: aggregated notifications rendered purely from structured
-     English keys via 12-language i18n, showing work thumbnails, unread dots,
-     mark-all-read, and click-to-jump-to-work.
+     English keys via 12-language i18n, showing work thumbnails via bounded
+     async loading, unread dots, mark-all-read, and click-to-jump-to-work.
 """
 from __future__ import annotations
 
@@ -35,7 +40,11 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from dialogs.gallery_hub import AuthorShowcaseDialog, _pixmap_from_any
+from dialogs.gallery_hub import (
+    AuthorShowcaseDialog,
+    _BoundedMediaLoader,
+    _DialogTaskRunner,
+)
 from locales.gallery_i18n import (
     INTEREST_KEYS,
     format_notification,
@@ -153,7 +162,7 @@ def _account_stylesheet(theme: str = "dark") -> str:
 
 
 class AccountCenterDialog(QDialog):
-    """Account Center & Message Box dialog with silent refresh on open."""
+    """Account Center & Message Box dialog with non-blocking silent refresh on open."""
 
     work_jump_requested = pyqtSignal(str)
     author_open_requested = pyqtSignal(str, str)
@@ -163,6 +172,8 @@ class AccountCenterDialog(QDialog):
         *,
         client: Any = None,
         state_store: Any = None,
+        media_fetcher: Callable[[str], bytes] | None = None,
+        disk_cache: Any = None,
         parent: QWidget | None = None,
         theme: str = "dark",
         initial_tab: int = 0,
@@ -174,15 +185,26 @@ class AccountCenterDialog(QDialog):
         _set_cid(self, "account_center_dialog", object_name="accountCenterDialog")
         self._client = client
         self._state_store = state_store
+        self._media_fetcher = media_fetcher
         self._theme = theme
         self._on_open_work = on_open_work
         self._on_open_author = on_open_author
         self._on_open_url = on_open_url
         self._did_initial_refresh = False
+        self._manual_refresh_pending = False
+        self._runner = _DialogTaskRunner(self)
+        self._media_loader = _BoundedMediaLoader(
+            self, fetcher=media_fetcher, disk_cache=disk_cache
+        )
 
         self._profile: dict[str, Any] = {}
         self._payment_region: str = "global"
         self._nickname_max_chars: int = DEFAULT_NICKNAME_MAX_CHARS
+        self._last_saved_privacy: dict[str, bool] = {
+            "show_gallery": True,
+            "show_following": True,
+            "show_followers": True,
+        }
         self._likes: list[Any] = []
         self._comments: list[Any] = []
         self._following: list[Any] = []
@@ -215,63 +237,180 @@ class AccountCenterDialog(QDialog):
         close_row.addWidget(close_btn)
         root.addLayout(close_row)
 
+        self._connect_state_store()
         self._sync_from_state_store()
         if 0 <= initial_tab < self.tabs.count():
             self.tabs.setCurrentIndex(initial_tab)
 
+    def closeEvent(self, event: QEvent) -> None:
+        self._runner.shutdown()
+        self._media_loader.shutdown()
+        super().closeEvent(event)
+
+    def wait_for_idle(self, timeout: float = 5.0) -> bool:
+        return self._runner.wait_for_idle(timeout) and self._media_loader.wait_for_idle(timeout)
+
     # --------------------------------------------------------- silent refresh
+    def _connect_state_store(self) -> None:
+        if self._state_store is None:
+            return
+        prof_sig = getattr(self._state_store, "profile_changed", None)
+        if prof_sig is not None and hasattr(prof_sig, "connect"):
+            prof_sig.connect(self._on_store_profile_changed)
+        cfg_sig = getattr(self._state_store, "config_changed", None)
+        if cfg_sig is not None and hasattr(cfg_sig, "connect"):
+            cfg_sig.connect(self._on_store_config_changed)
+        notif_sig = getattr(self._state_store, "notifications_changed", None)
+        if notif_sig is not None and hasattr(notif_sig, "connect"):
+            notif_sig.connect(self._on_store_notifications_changed)
+        err_sig = getattr(self._state_store, "sync_error", None)
+        if err_sig is not None and hasattr(err_sig, "connect"):
+            err_sig.connect(self._on_store_sync_error)
+
+    def _on_store_profile_changed(self, profile: Any) -> None:
+        if profile is not None:
+            self.apply_profile(profile)
+        if self._manual_refresh_pending:
+            self._manual_refresh_pending = False
+            self.points_status.setText(t_gallery("account_center_refreshed"))
+
+    def _on_store_config_changed(self, cfg: Any) -> None:
+        if cfg is None:
+            return
+        region = str(_get(cfg, "payment_region", "global") or "global").lower()
+        self.set_payment_region(region)
+        max_chars = int(
+            _get(cfg, "nickname_max_chars", DEFAULT_NICKNAME_MAX_CHARS)
+            or DEFAULT_NICKNAME_MAX_CHARS
+        )
+        self._nickname_max_chars = max_chars
+        self.nickname_input.setMaxLength(max_chars)
+
+    def _on_store_notifications_changed(self, notifications: Sequence[Any], _unread: int = 0) -> None:
+        self.set_notifications(notifications)
+
+    def _on_store_sync_error(self, operation: str, error_code: str) -> None:
+        if operation in ("profile", "account", "me") and self._manual_refresh_pending:
+            self._manual_refresh_pending = False
+            self.points_status.setText(
+                t_gallery(
+                    "account_center_refresh_failed",
+                    reason=translate_error(error_code),
+                )
+            )
+
     def showEvent(self, event: QEvent) -> None:
         super().showEvent(event)
         if not self._did_initial_refresh:
             self._did_initial_refresh = True
             self.refresh_silently()
 
-    def refresh_silently(self) -> None:
-        """Silently refresh profile, points, activity, and notifications."""
-        try:
-            if self._state_store is not None and hasattr(
-                self._state_store, "refresh_account_silently"
-            ):
+    def refresh_silently(self, *, manual: bool = False) -> None:
+        """Silently refresh profile, points, activity, and notifications off-thread.
+
+        When ``state_store`` exposes async queued signals (PR #264), delegates
+        profile & notification refresh to ``state_store`` without making a second
+        redundant ``get_me`` call.
+        """
+        self._manual_refresh_pending = manual
+        store_handles_profile = (
+            self._state_store is not None
+            and hasattr(self._state_store, "refresh_account_silently")
+            and hasattr(self._state_store, "profile_changed")
+        )
+        store_handles_notifs = (
+            self._state_store is not None
+            and hasattr(self._state_store, "refresh_notifications")
+            and hasattr(self._state_store, "notifications_changed")
+        )
+
+        if self._state_store is not None and hasattr(
+            self._state_store, "refresh_account_silently"
+        ):
+            try:
                 self._state_store.refresh_account_silently()
+            except Exception as exc:
+                if manual:
+                    self._manual_refresh_pending = False
+                    self.points_status.setText(
+                        t_gallery(
+                            "account_center_refresh_failed",
+                            reason=translate_error(_error_code_from_exc(exc)),
+                        )
+                    )
             self._sync_from_state_store()
-        except Exception:
-            pass
+
+        if store_handles_notifs:
+            try:
+                self._state_store.refresh_notifications(bypass_backoff=manual)
+            except TypeError:
+                try:
+                    self._state_store.refresh_notifications()
+                except Exception:
+                    pass
+            except Exception:
+                pass
 
         if self._client is not None:
-            if hasattr(self._client, "get_me"):
-                try:
-                    me = self._client.get_me()
+            # Avoid redundant get_me when state_store already drives queued profile updates
+            if not store_handles_profile and hasattr(self._client, "get_me"):
+
+                def _on_me_ok(me: Any) -> None:
                     if me is not None:
                         self.apply_profile(me)
-                except Exception:
-                    pass
-            if hasattr(self._client, "get_notifications"):
-                try:
+                    if manual:
+                        self._manual_refresh_pending = False
+                        self.points_status.setText(t_gallery("account_center_refreshed"))
+
+                def _on_me_err(exc: Exception) -> None:
+                    if manual:
+                        self._manual_refresh_pending = False
+                        self.points_status.setText(
+                            t_gallery(
+                                "account_center_refresh_failed",
+                                reason=translate_error(_error_code_from_exc(exc)),
+                            )
+                        )
+
+                self._runner.submit(
+                    self._client.get_me,
+                    key="account_get_me",
+                    on_success=_on_me_ok,
+                    on_error=_on_me_err,
+                )
+
+            if not store_handles_notifs and hasattr(self._client, "get_notifications"):
+
+                def _fetch_notifs() -> list[Any]:
                     resp = self._client.get_notifications()
                     items = _get(resp, "items", resp) if isinstance(resp, Mapping) else resp
-                    self.set_notifications(list(items or ()))
-                except Exception:
-                    pass
+                    return list(items or ())
+
+                self._runner.submit(
+                    _fetch_notifs,
+                    key="account_notifications",
+                    on_success=self.set_notifications,
+                )
+
             self._load_activity_lists()
+        elif manual and not store_handles_profile:
+            self._manual_refresh_pending = False
+            self.points_status.setText(t_gallery("account_center_refreshed"))
 
     def _sync_from_state_store(self) -> None:
         if self._state_store is None:
             return
         cfg = getattr(self._state_store, "config", None)
         if cfg is not None:
-            region = str(_get(cfg, "payment_region", "global") or "global").lower()
-            self.set_payment_region(region)
-            max_chars = int(
-                _get(cfg, "nickname_max_chars", DEFAULT_NICKNAME_MAX_CHARS)
-                or DEFAULT_NICKNAME_MAX_CHARS
-            )
-            self._nickname_max_chars = max_chars
-            self.nickname_input.setMaxLength(max_chars)
+            self._on_store_config_changed(cfg)
         profile = getattr(self._state_store, "profile", None) or getattr(
             self._state_store, "account_profile", None
         )
         if profile is not None:
             self.apply_profile(profile)
+        notifs = getattr(self._state_store, "notifications", None)
+        if notifs:
+            self.set_notifications(notifs)
 
     def _load_activity_lists(self) -> None:
         if self._client is None:
@@ -284,12 +423,13 @@ class AccountCenterDialog(QDialog):
         ):
             fn = getattr(self._client, method_name, None)
             if callable(fn):
-                try:
-                    resp = fn()
+
+                def _fetch(call: Callable[[], Any] = fn) -> list[Any]:
+                    resp = call()
                     items = _get(resp, "items", resp) if isinstance(resp, Mapping) else resp
-                    setter(list(items or ()))
-                except Exception:
-                    pass
+                    return list(items or ())
+
+                self._runner.submit(_fetch, key=f"account_{method_name}", on_success=setter)
 
     # ---------------------------------------------------- Tab 1: My Account
     def _build_account_tab(self) -> QWidget:
@@ -303,7 +443,6 @@ class AccountCenterDialog(QDialog):
         layout.setContentsMargins(SPACE["sm"], SPACE["sm"], SPACE["sm"], SPACE["sm"])
         layout.setSpacing(SPACE["md"])
 
-        # 1. Profile & Points card
         profile_card = QFrame()
         profile_card.setObjectName("accountSectionCard")
         p_lay = QVBoxLayout(profile_card)
@@ -326,6 +465,11 @@ class AccountCenterDialog(QDialog):
         self.refresh_points_btn.clicked.connect(self._on_manual_refresh)
         top_row.addWidget(self.refresh_points_btn)
         p_lay.addLayout(top_row)
+
+        self.points_status = QLabel("")
+        _set_cid(self.points_status, "account_points_status")
+        self.points_status.setObjectName("mutedLabel")
+        p_lay.addWidget(self.points_status)
 
         self.badges_label = QLabel("")
         _set_cid(self.badges_label, "account_badges_container")
@@ -356,7 +500,6 @@ class AccountCenterDialog(QDialog):
         p_lay.addWidget(self.nickname_status)
         layout.addWidget(profile_card)
 
-        # 2. Recharge & Redeem container (region-aware order & emphasis)
         self._billing_layout = QVBoxLayout()
         self._billing_layout.setSpacing(SPACE["sm"])
         layout.addLayout(self._billing_layout)
@@ -440,7 +583,6 @@ class AccountCenterDialog(QDialog):
 
         self._apply_payment_region_layout()
 
-        # 3. Interest direction multi-select chips (12 canonical keys)
         interests_group = QGroupBox(t_gallery("account_center_interests_title"))
         _set_cid(interests_group, "account_interests_group")
         int_lay = QVBoxLayout(interests_group)
@@ -473,8 +615,8 @@ class AccountCenterDialog(QDialog):
         int_lay.addLayout(int_action)
         layout.addWidget(interests_group)
 
-        # 4. Privacy Toggles (strictly show_gallery, show_following, show_followers;
-        # default all ON; NEVER expose can_hide_gallery!)
+        # Privacy Toggles: strictly show_gallery, show_following, show_followers
+        # (default all ON; NEVER expose can_hide_gallery!)
         privacy_group = QGroupBox(t_gallery("account_center_privacy_title"))
         _set_cid(privacy_group, "account_privacy_group")
         priv_lay = QVBoxLayout(privacy_group)
@@ -509,7 +651,6 @@ class AccountCenterDialog(QDialog):
         priv_lay.addWidget(self.privacy_status)
         layout.addWidget(privacy_group)
 
-        # 5. Activity Sub-tabs: My Likes, My Comments, Following, Followers
         self.activity_tabs = QTabWidget()
         _set_cid(self.activity_tabs, "account_activity_tabs")
 
@@ -586,6 +727,17 @@ class AccountCenterDialog(QDialog):
             grp.style().unpolish(grp)
             grp.style().polish(grp)
 
+    def _set_privacy_checkboxes(self, settings: Mapping[str, bool]) -> None:
+        for cb, key in (
+            (self.show_gallery_check, "show_gallery"),
+            (self.show_following_check, "show_following"),
+            (self.show_followers_check, "show_followers"),
+        ):
+            val = settings.get(key, True)
+            cb.blockSignals(True)
+            cb.setChecked(bool(True if val is None else val))
+            cb.blockSignals(False)
+
     def apply_profile(self, profile: Any) -> None:
         """Populate My Account widgets from profile data (never exposing can_hide_gallery)."""
         email = str(_get(profile, "email", "") or "")
@@ -630,18 +782,16 @@ class AccountCenterDialog(QDialog):
         show_gallery = _get(privacy, "show_gallery", True)
         show_following = _get(privacy, "show_following", True)
         show_followers = _get(privacy, "show_followers", True)
-        for cb, val in (
-            (self.show_gallery_check, bool(True if show_gallery is None else show_gallery)),
-            (self.show_following_check, bool(True if show_following is None else show_following)),
-            (self.show_followers_check, bool(True if show_followers is None else show_followers)),
-        ):
-            cb.blockSignals(True)
-            cb.setChecked(val)
-            cb.blockSignals(False)
+        saved_privacy = {
+            "show_gallery": bool(True if show_gallery is None else show_gallery),
+            "show_following": bool(True if show_following is None else show_following),
+            "show_followers": bool(True if show_followers is None else show_followers),
+        }
+        self._last_saved_privacy = dict(saved_privacy)
+        self._set_privacy_checkboxes(saved_privacy)
 
     def _on_manual_refresh(self) -> None:
-        self.refresh_silently()
-        self.nickname_status.setText(t_gallery("account_center_refreshed"))
+        self.refresh_silently(manual=True)
 
     def save_nickname(self) -> bool:
         nickname = self.nickname_input.text().strip()
@@ -656,43 +806,53 @@ class AccountCenterDialog(QDialog):
                 )
             )
             return False
-        if self._client is not None and hasattr(self._client, "update_profile"):
-            try:
-                updated = self._client.update_profile(nickname=nickname)
-                if updated is not None:
-                    self.apply_profile(updated)
-            except Exception as exc:
-                self.nickname_status.setText(
-                    translate_error(_error_code_from_exc(exc))
-                )
-                return False
-        self._profile["nickname"] = nickname
-        self.nickname_status.setText(t_gallery("account_center_nickname_saved"))
+        if self._client is None or not hasattr(self._client, "update_profile"):
+            self._profile["nickname"] = nickname
+            self.nickname_status.setText(t_gallery("account_center_nickname_saved"))
+            return True
+
+        def _on_ok(updated: Any) -> None:
+            if updated is not None:
+                self.apply_profile(updated)
+            self._profile["nickname"] = nickname
+            self.nickname_status.setText(t_gallery("account_center_nickname_saved"))
+
+        self._runner.submit(
+            lambda: self._client.update_profile(nickname=nickname),
+            key="account_save_nickname",
+            on_success=_on_ok,
+            on_error=lambda exc: self.nickname_status.setText(
+                translate_error(_error_code_from_exc(exc))
+            ),
+        )
         return True
 
-    def start_checkout(self, tier: str) -> str:
-        url = ""
-        if self._client is not None and hasattr(self._client, "create_checkout"):
-            try:
-                resp = self._client.create_checkout(tier)
-                url = str(
-                    _get(resp, "checkout_url", "")
-                    or _get(resp, "url", "")
-                    or (resp if isinstance(resp, str) else "")
-                )
-            except Exception as exc:
-                self.checkout_status.setText(
-                    translate_error(_error_code_from_exc(exc))
-                )
-                return ""
-        if url:
-            if self._on_open_url is not None:
-                self._on_open_url(url)
-            else:
-                if not QDesktopServices.openUrl(QUrl(url)):
-                    webbrowser.open(url)
-            self.checkout_status.setText(t_gallery("account_center_checkout_opened"))
-        return url
+    def start_checkout(self, tier: str) -> None:
+        if self._client is None or not hasattr(self._client, "create_checkout"):
+            return
+
+        def _on_ok(resp: Any) -> None:
+            url = str(
+                _get(resp, "checkout_url", "")
+                or _get(resp, "url", "")
+                or (resp if isinstance(resp, str) else "")
+            )
+            if url:
+                if self._on_open_url is not None:
+                    self._on_open_url(url)
+                else:
+                    if not QDesktopServices.openUrl(QUrl(url)):
+                        webbrowser.open(url)
+                self.checkout_status.setText(t_gallery("account_center_checkout_opened"))
+
+        self._runner.submit(
+            lambda: self._client.create_checkout(tier),
+            key="account_checkout",
+            on_success=_on_ok,
+            on_error=lambda exc: self.checkout_status.setText(
+                translate_error(_error_code_from_exc(exc))
+            ),
+        )
 
     def redeem_code(self) -> bool:
         code = self.redeem_input.text().strip()
@@ -701,28 +861,33 @@ class AccountCenterDialog(QDialog):
             return False
         if self._client is None or not hasattr(self._client, "redeem_code"):
             return False
-        try:
-            resp = self._client.redeem_code(code)
-        except Exception as exc:
-            self.redeem_status.setText(translate_error(_error_code_from_exc(exc)))
-            return False
 
-        added = int(_get(resp, "points_added", 0) or _get(resp, "points", 0) or 0)
-        new_balance = _get(resp, "points_balance", None)
-        if new_balance is not None:
-            self._profile["points_balance"] = int(new_balance)
-            self.points_label.setText(
-                t_gallery("account_center_points_value", points=int(new_balance))
+        def _on_ok(resp: Any) -> None:
+            added = int(_get(resp, "points_added", 0) or _get(resp, "points", 0) or 0)
+            new_balance = _get(resp, "points_balance", None)
+            if new_balance is not None:
+                self._profile["points_balance"] = int(new_balance)
+                self.points_label.setText(
+                    t_gallery("account_center_points_value", points=int(new_balance))
+                )
+            elif added > 0:
+                bal = int(self._profile.get("points_balance", 0)) + added
+                self._profile["points_balance"] = bal
+                self.points_label.setText(
+                    t_gallery("account_center_points_value", points=bal)
+                )
+            self.redeem_input.clear()
+            self.redeem_status.setText(
+                t_gallery("account_center_redeem_success", points=added)
             )
-        elif added > 0:
-            bal = int(self._profile.get("points_balance", 0)) + added
-            self._profile["points_balance"] = bal
-            self.points_label.setText(
-                t_gallery("account_center_points_value", points=bal)
-            )
-        self.redeem_input.clear()
-        self.redeem_status.setText(
-            t_gallery("account_center_redeem_success", points=added)
+
+        self._runner.submit(
+            lambda: self._client.redeem_code(code),
+            key="account_redeem",
+            on_success=_on_ok,
+            on_error=lambda exc: self.redeem_status.setText(
+                translate_error(_error_code_from_exc(exc))
+            ),
         )
         return True
 
@@ -731,15 +896,20 @@ class AccountCenterDialog(QDialog):
 
     def save_interests(self) -> bool:
         chosen = self.selected_interests()
-        if self._client is not None and hasattr(self._client, "update_profile"):
-            try:
-                self._client.update_profile(interests=chosen)
-            except Exception as exc:
-                self.interests_status.setText(
-                    translate_error(_error_code_from_exc(exc))
-                )
-                return False
-        self.interests_status.setText(t_gallery("account_center_interests_saved"))
+        if self._client is None or not hasattr(self._client, "update_profile"):
+            self.interests_status.setText(t_gallery("account_center_interests_saved"))
+            return True
+
+        self._runner.submit(
+            lambda: self._client.update_profile(interests=chosen),
+            key="account_save_interests",
+            on_success=lambda _res: self.interests_status.setText(
+                t_gallery("account_center_interests_saved")
+            ),
+            on_error=lambda exc: self.interests_status.setText(
+                translate_error(_error_code_from_exc(exc))
+            ),
+        )
         return True
 
     def privacy_settings(self) -> dict[str, bool]:
@@ -753,16 +923,27 @@ class AccountCenterDialog(QDialog):
         self.save_privacy()
 
     def save_privacy(self) -> bool:
+        prev_settings = dict(self._last_saved_privacy)
         settings = self.privacy_settings()
-        if self._client is not None and hasattr(self._client, "update_profile"):
-            try:
-                self._client.update_profile(privacy=settings)
-            except Exception as exc:
-                self.privacy_status.setText(
-                    translate_error(_error_code_from_exc(exc))
-                )
-                return False
-        self.privacy_status.setText(t_gallery("account_center_privacy_saved"))
+        if self._client is None or not hasattr(self._client, "update_profile"):
+            self._last_saved_privacy = dict(settings)
+            self.privacy_status.setText(t_gallery("account_center_privacy_saved"))
+            return True
+
+        def _on_ok(_res: Any) -> None:
+            self._last_saved_privacy = dict(settings)
+            self.privacy_status.setText(t_gallery("account_center_privacy_saved"))
+
+        def _on_err(exc: Exception) -> None:
+            self._set_privacy_checkboxes(prev_settings)
+            self.privacy_status.setText(translate_error(_error_code_from_exc(exc)))
+
+        self._runner.submit(
+            lambda: self._client.update_profile(privacy=settings),
+            key="account_save_privacy",
+            on_success=_on_ok,
+            on_error=_on_err,
+        )
         return True
 
     # ---------------------------------------------------- Activity sub-tabs
@@ -784,12 +965,13 @@ class AccountCenterDialog(QDialog):
             self._likes_layout.addWidget(lbl)
             return
         for work in self._likes:
-            wid = str(_get(work, "id", "") or _get(work, "work_id", ""))
+            wid = str(_get(work, "work_id", "") or _get(work, "id", ""))
             title = str(_get(work, "title", "") or t_gallery("gallery_untitled_work"))
             row_w = QWidget()
             row = QHBoxLayout(row_w)
             row.setContentsMargins(0, 2, 0, 2)
             title_btn = QPushButton(title)
+            _set_cid(title_btn, f"account_like_open_{wid}")
             title_btn.setFlat(True)
             title_btn.clicked.connect(lambda _=False, w_id=wid: self._jump_to_work(w_id))
             row.addWidget(title_btn, 1)
@@ -801,13 +983,20 @@ class AccountCenterDialog(QDialog):
             self._likes_layout.addWidget(row_w)
 
     def _unlike_work(self, work_id: str) -> None:
-        if self._client is not None and hasattr(self._client, "unlike_work"):
-            try:
-                self._client.unlike_work(work_id)
-            except Exception:
-                return
-        self.set_my_likes(
-            [w for w in self._likes if str(_get(w, "id", "") or _get(w, "work_id", "")) != work_id]
+        def _remove_local() -> None:
+            self.set_my_likes([
+                w for w in self._likes
+                if str(_get(w, "work_id", "") or _get(w, "id", "")) != work_id
+            ])
+
+        if self._client is None or not hasattr(self._client, "unlike_work"):
+            _remove_local()
+            return
+
+        self._runner.submit(
+            lambda: self._client.unlike_work(work_id),
+            key=f"account_unlike_{work_id}",
+            on_success=lambda _res: _remove_local(),
         )
 
     def set_my_comments(self, comments: Sequence[Any]) -> None:
@@ -819,7 +1008,7 @@ class AccountCenterDialog(QDialog):
             self._comments_layout.addWidget(lbl)
             return
         for comment in self._comments:
-            cid = str(_get(comment, "id", "") or _get(comment, "comment_id", ""))
+            cid = str(_get(comment, "comment_id", "") or _get(comment, "id", ""))
             content = str(_get(comment, "content", ""))
             row_w = QWidget()
             row = QHBoxLayout(row_w)
@@ -832,17 +1021,20 @@ class AccountCenterDialog(QDialog):
             self._comments_layout.addWidget(row_w)
 
     def _delete_comment(self, comment_id: str) -> None:
-        if self._client is not None and hasattr(self._client, "delete_comment"):
-            try:
-                self._client.delete_comment(comment_id)
-            except Exception:
-                return
-        self.set_my_comments(
-            [
-                c
-                for c in self._comments
-                if str(_get(c, "id", "") or _get(c, "comment_id", "")) != comment_id
-            ]
+        def _remove_local() -> None:
+            self.set_my_comments([
+                c for c in self._comments
+                if str(_get(c, "comment_id", "") or _get(c, "id", "")) != comment_id
+            ])
+
+        if self._client is None or not hasattr(self._client, "delete_comment"):
+            _remove_local()
+            return
+
+        self._runner.submit(
+            lambda: self._client.delete_comment(comment_id),
+            key=f"account_del_comment_{comment_id}",
+            on_success=lambda _res: _remove_local(),
         )
 
     def set_following(self, users: Sequence[Any]) -> None:
@@ -892,20 +1084,22 @@ class AccountCenterDialog(QDialog):
             row.addWidget(open_btn)
             layout.addWidget(row_w)
 
-    def _open_author(self, author_id: str, author_name: str) -> None:
+    def _open_author(self, author_id: str, author_name: str) -> AuthorShowcaseDialog | None:
         self.author_open_requested.emit(author_id, author_name)
         if self._on_open_author is not None:
             self._on_open_author(author_id, author_name)
-        else:
-            dlg = AuthorShowcaseDialog(
-                author_id,
-                author_name=author_name,
-                client=self._client,
-                current_user_id=str(self._profile.get("user_id", "")),
-                parent=self,
-                theme=self._theme,
-            )
-            dlg.show()
+            return None
+        dlg = AuthorShowcaseDialog(
+            author_id,
+            author_name=author_name,
+            client=self._client,
+            media_fetcher=self._media_fetcher,
+            current_user_id=str(self._profile.get("user_id", "")),
+            parent=self,
+            theme=self._theme,
+        )
+        dlg.show()
+        return dlg
 
     # ---------------------------------------------------- Tab 2: Message Box
     def _build_messages_tab(self) -> QWidget:
@@ -988,6 +1182,8 @@ class AccountCenterDialog(QDialog):
                     "params": dict(params) if isinstance(params, Mapping) else {},
                     "thumb_pixmap": _get(notif, "thumb_pixmap", None),
                     "thumb_bytes": _get(notif, "thumb_bytes", None),
+                    "work_thumb_url": _get(notif, "work_thumb_url", ""),
+                    "local_path": _get(notif, "local_path", ""),
                     "created_at": _get(notif, "created_at", ""),
                 })
         self._notifications = normalized
@@ -1026,15 +1222,18 @@ class AccountCenterDialog(QDialog):
             dot.setVisible(not is_read)
             row.addWidget(dot)
 
-            # Thumbnail if available
-            pix_src = notif.get("thumb_pixmap") or notif.get("thumb_bytes")
-            if pix_src is not None:
-                pix = _pixmap_from_any(pix_src, size=QSize(44, 44))
-                if not pix.isNull():
-                    thumb_lbl = QLabel()
-                    thumb_lbl.setProperty("controlId", f"account_notif_thumb_{nid}")
-                    thumb_lbl.setPixmap(pix)
-                    row.addWidget(thumb_lbl)
+            thumb_lbl = QLabel()
+            thumb_lbl.setProperty("controlId", f"account_notif_thumb_{nid}")
+            thumb_lbl.setVisible(False)
+            row.addWidget(thumb_lbl)
+
+            def _apply_thumb(pix: QPixmap, lbl: QLabel = thumb_lbl) -> None:
+                lbl.setPixmap(pix)
+                lbl.setVisible(True)
+
+            self._media_loader.load_for_work(
+                notif, size=QSize(44, 44), on_ready=_apply_thumb
+            )
 
             text_col = QVBoxLayout()
             formatted_text = format_notification(notif)
@@ -1068,12 +1267,12 @@ class AccountCenterDialog(QDialog):
         for n in self._notifications:
             if str(n.get("id") or "") == notif_id:
                 n["is_read"] = True
-        if self._client is not None and hasattr(self._client, "mark_notifications_read"):
-            try:
-                self._client.mark_notifications_read(ids=[notif_id])
-            except Exception:
-                pass
         self._render_notifications()
+        if self._client is not None and hasattr(self._client, "mark_notifications_read"):
+            self._runner.submit(
+                lambda: self._client.mark_notifications_read(ids=[notif_id]),
+                key=f"account_mark_read_{notif_id}",
+            )
         self._jump_to_work(work_id)
 
     def _jump_to_work(self, work_id: str) -> None:
@@ -1084,11 +1283,17 @@ class AccountCenterDialog(QDialog):
             self._on_open_work(work_id)
 
     def mark_all_notifications_read(self) -> None:
-        if self._client is not None and hasattr(self._client, "mark_notifications_read"):
-            try:
-                self._client.mark_notifications_read(all=True)
-            except Exception:
-                return
-        for n in self._notifications:
-            n["is_read"] = True
-        self._render_notifications()
+        def _apply_all_read() -> None:
+            for n in self._notifications:
+                n["is_read"] = True
+            self._render_notifications()
+
+        if self._client is None or not hasattr(self._client, "mark_notifications_read"):
+            _apply_all_read()
+            return
+
+        self._runner.submit(
+            lambda: self._client.mark_notifications_read(all=True),
+            key="account_mark_all_read",
+            on_success=lambda _res: _apply_all_read(),
+        )
