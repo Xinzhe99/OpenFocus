@@ -1064,7 +1064,8 @@ class Merge:
         # bincount casts the half-resolution uint16 confidence plane to native ints.
         final_staging = max(pixels * 2 + oh * ow * 2, oh * ow * (2 + np.dtype(np.intp).itemsize))
         host_staging = max(source_peak, final_staging + axes_bytes) + 16 * 1024 * 1024
-        vram_need = pixels * (24 if preserve_detail else 16) + max_src_bytes + axes_bytes + 16 * 1024 * 1024
+        # The guided path retains both filter workspaces through expansion.
+        vram_need = pixels * (24 if preserve_detail else 17) + max_src_bytes + axes_bytes + 16 * 1024 * 1024
         largest_alloc = max(pixels * 8, max_src_bytes, max(height, width) * 8 * 8)
         if host_staging > host_budget or largest_alloc > int(self.device.max_mem_alloc_size):
             logging.getLogger(__name__).info('OpenFocus full GPU depth exceeds the job memory budget')
@@ -2048,6 +2049,7 @@ class _GpuB:
         reader = None
         allocated = []
         try:
+            cancel()
             def _alloc(buf):
                 allocated.append(buf)
                 return buf
@@ -2147,7 +2149,7 @@ class _GpuB:
                         if sample is not None:
                             live_preview.show_positions(sample, idx, count, step * (count - 1),
                                                         sampled=True)
-                    del upload, prepared
+                del upload, prepared
                 if progress_callback is not None:
                     progress_callback(idx, count)
 
@@ -2201,6 +2203,7 @@ class _GpuB:
             if preserve_detail:
                 self.kernels['apply_detail'](self.q, (m,), None, depth_buf, d_second_buf,
                                              d_winner_buf, np.int32(m))
+            cancel()
             out = self.expand.run_buf(depth_buf, (oh, ow), shape)
             completed = True
             return out

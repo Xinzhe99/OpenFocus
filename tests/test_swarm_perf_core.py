@@ -320,18 +320,27 @@ def test_stabilisation_unicode_paths_and_grayscale(tmp_path):
 
 @pytest.mark.parametrize('compression', ['lzw', 'adobe_deflate'])
 @pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
-def test_decode_tiff_page_compressed_fast_path_parity(tmp_path, compression, dtype):
+def test_decode_tiff_page_compressed_fast_path_parity(tmp_path, monkeypatch, compression, dtype):
     from core.image_loader import decode_tiff_page
 
     rng = np.random.default_rng(11)
     high = 256 if dtype == np.uint8 else 65536
-    rgb = rng.integers(0, high, (192, 160, 3), dtype=dtype)
-    path = str(tmp_path / f'test_{compression}_{dtype.__name__}.tif')
-    tifffile.imwrite(path, rgb, compression=compression, rowsperstrip=64)
+    rgb = rng.integers(0, high, (1025, 1001, 3), dtype=dtype)
+    path = tmp_path / 'multi-strip.tif'
+    tifffile.imwrite(path, rgb, photometric='rgb', compression=compression, rowsperstrip=128,
+                     extratags=[(274, 'H', 1, 6, False)])
+
+    ok, pages = cv2.imdecodemulti(np.fromfile(path, dtype=np.uint8), cv2.IMREAD_UNCHANGED,
+                                  range=(0, 1))
+    assert ok and len(pages) == 1
+
+    def unexpected_libtiff(*args, **kwargs):
+        pytest.fail('Eligible compressed TIFF did not use the strip decoder')
+
+    monkeypatch.setattr(cv2, 'imdecodemulti', unexpected_libtiff)
 
     decoded = decode_tiff_page(path)
-    expected = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-    np.testing.assert_array_equal(decoded, expected)
+    np.testing.assert_array_equal(decoded, pages[0])
 
 
 def test_decode_image_single_open_png_and_jpeg_parity(tmp_path):
@@ -346,4 +355,4 @@ def test_decode_image_single_open_png_and_jpeg_parity(tmp_path):
 
     np.testing.assert_array_equal(decode_image(png_path), bgr)
     jpg_decoded = decode_image(jpg_path)
-    assert jpg_decoded.shape == bgr.shape and jpg_decoded.dtype == np.uint8
+    np.testing.assert_array_equal(jpg_decoded, cv2.imread(jpg_path, cv2.IMREAD_UNCHANGED))

@@ -66,15 +66,14 @@ class AlignResult:
 
 def _imread_unicode(path: str):
     """Read an image file safely across non-ASCII Windows paths."""
+    path = os.fspath(path)
+    if os.name != 'nt' or path.isascii():
+        return cv2.imread(path, cv2.IMREAD_UNCHANGED)
     try:
         data = np.fromfile(path, dtype=np.uint8)
-        if data.size:
-            im = cv2.imdecode(data, cv2.IMREAD_UNCHANGED)
-            if im is not None:
-                return im
     except OSError:
-        pass
-    return cv2.imread(path, cv2.IMREAD_UNCHANGED)
+        return None
+    return cv2.imdecode(data, cv2.IMREAD_UNCHANGED) if data.size else None
 
 
 class MosaicStitcher:
@@ -185,7 +184,7 @@ class MosaicStitcher:
             if im is None:
                 raise ValueError(f"cannot decode: {p}")
             if im.ndim == 2:                       # 灰度输入提升 3 通道
-                im = np.stack([im] * 3, axis=-1)
+                im = cv2.cvtColor(im, cv2.COLOR_GRAY2RGB)
             elif im.ndim == 3 and im.shape[2] == 4:
                 im = cv2.cvtColor(im, cv2.COLOR_BGRA2RGB)
             else:

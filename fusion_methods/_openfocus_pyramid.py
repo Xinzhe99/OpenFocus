@@ -1174,11 +1174,13 @@ def fuse_pyramid(frames, shape, img_resize, smoothing, should_cancel, progress_c
     )
     use_raw_pyr = use_native_pyr or (native is None and hooks_default)
     if detail_levels:
-        if use_raw_pyr:
-            rolling_even = (create_frame((levels[2][0] * levels[2][1] * channels,), np.float32)
-                            if len(levels) >= 3 else None)
-            rolling_odd = create_frame((levels[1][0] * levels[1][1] * channels,), np.float32)
-            rolling = [rolling_even, rolling_odd]
+        if (use_raw_pyr and img_resize is None
+                and all(frame.dtype in (np.uint8, np.uint16) for frame in frames)):
+            rolling = [
+                create_frame((levels[2][0] * levels[2][1] * channels,), np.float32)
+                if len(levels) >= 3 else None,
+                create_frame((levels[1][0] * levels[1][1] * channels,), np.float32),
+            ]
             full = None
         else:
             rolling = [create_frame((h * w * channels,), np.float32) for h, w in levels[:2]]
@@ -1208,12 +1210,9 @@ def fuse_pyramid(frames, shape, img_resize, smoothing, should_cancel, progress_c
         for frame in frames
     )
     planes = [*accumulators, *maxima, coarsest, *(rolling or ()),
-              weight_plane if detail_levels else None, winner, full]
-    seen_ids = set()
-    fixed_host = per_slot + sum(
-        plane.nbytes for plane in planes
-        if plane is not None and id(plane) not in seen_ids and not seen_ids.add(id(plane))
-    )
+              weight_plane if detail_levels else None, winner]
+    fixed_host = per_slot + sum(plane.nbytes for plane in planes if plane is not None)
+    del planes
     slots = _prefetch_window(host_budget, fixed_host, per_slot, len(frames), max_slots=2)
 
     def prepare_pyramid_source(_index, frame, cancelled):
@@ -1251,6 +1250,7 @@ def fuse_pyramid(frames, shape, img_resize, smoothing, should_cancel, progress_c
                     maxima[0], level_winner, factor, index == 0, index, cancel)
                 del source, pixels
                 fine = coarse0
+                del coarse0, weights0
                 start_level = 1
             else:
                 if full is None:
@@ -1281,6 +1281,7 @@ def fuse_pyramid(frames, shape, img_resize, smoothing, should_cancel, progress_c
                          accumulators[level], maxima[level], level_winner,
                          index == 0, index, cancel)
             fine = coarse
+            del coarse, weights
         if live_preview is not None:
             if detail_levels:
                 live_preview.update_best(maxima[0], index, len(frames))

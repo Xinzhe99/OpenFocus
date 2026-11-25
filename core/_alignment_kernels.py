@@ -640,8 +640,8 @@ if _HAVE_NUMBA:
         w_f = np.float32(w)
         w_m1 = np.float32(w - 1)
         h_m1 = np.float32(h - 1)
-        w_clamp = np.float32(w_f - np.float32(1.0010000467300415))
-        h_clamp = np.float32(h_f - np.float32(1.0010000467300415))
+        w_clamp = max(np.float32(0.0), np.float32(w_f - np.float32(1.0010000467300415)))
+        h_clamp = max(np.float32(0.0), np.float32(h_f - np.float32(1.0010000467300415)))
         f256 = np.float32(256)
         zero_f = np.float32(0.0)
         nyy = ys.shape[0]
@@ -675,7 +675,7 @@ if _HAVE_NUMBA:
         p18_k = p18_tab[t3, t2]
         cy_k = cy_tab[t1]
         for iy_i in range(nyy):
-            dy_ = np.float32(ys[iy_i] - cy_k)
+            dy_ = np.float32(np.float32(ys[iy_i]) - cy_k)
             v_dy_row[iy_i] = np.float32(dy_ * p18_k)
             u_dy_row[iy_i] = np.float32(dy_ * p08_k)
 
@@ -700,7 +700,7 @@ if _HAVE_NUMBA:
 
             if u_hi >= zero_f and u_lo < w_f and v_hi >= zero_f and v_lo < h_f:
                 for ix_i in range(nxx):
-                    dx_ = np.float32(xs[ix_i] - cx_k)
+                    dx_ = np.float32(np.float32(xs[ix_i]) - cx_k)
                     ux_col[ix_i] = np.float32(dx_ * p18_k)
                     vx_col[ix_i] = np.float32(dx_ * p08_k)
                 acc_sum = np.int64(0)
@@ -755,7 +755,7 @@ if _HAVE_NUMBA:
                         p18_k = p18_tab[t3, t2]
                     cy_k = cy_tab[t1]
                     for iy_i in range(nyy):
-                        dy_ = np.float32(ys[iy_i] - cy_k)
+                        dy_ = np.float32(np.float32(ys[iy_i]) - cy_k)
                         v_dy_row[iy_i] = np.float32(dy_ * p18_k)
                         u_dy_row[iy_i] = np.float32(dy_ * p08_k)
 
