@@ -18,6 +18,7 @@ import urllib.request
 import uuid
 
 from constants import app_display_version
+from utils.tls import https_handler
 
 BASE_URL = "https://account.openfocus.top"
 MAX_BUNDLE_BYTES = 2 * 1024 * 1024
@@ -173,7 +174,7 @@ class ReportClient:
         self._base_url = base_url.rstrip("/")
         self._timeout = min(HTTP_TIMEOUT, max(0.1, float(timeout)))
         self._clock = clock
-        self._opener = urllib.request.build_opener(_NoRedirect())
+        self._opener = urllib.request.build_opener(_NoRedirect(), https_handler())
 
     def _load(self):
         try:

@@ -53,11 +53,19 @@ def verify_resources(bundle: Path, source: Path = ROOT) -> list[str]:
     return sorted(set(errors))
 
 
+def verify_ca_bundle(bundle: Path) -> list[str]:
+    """Ensure PyInstaller runtime bundles include certifi's CA bundle."""
+    root = bundle.parent if bundle.name == 'Resources' else bundle
+    if any(p.parent.name == 'certifi' and p.is_file() for p in root.rglob('cacert.pem')):
+        return []
+    return ['missing certifi/cacert.pem']
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('bundle', type=Path, help='frozen resource root (sys._MEIPASS)')
     args = parser.parse_args(argv)
-    errors = verify_resources(args.bundle)
+    errors = verify_resources(args.bundle) + verify_ca_bundle(args.bundle)
     if errors:
         for error in errors:
             print(error)

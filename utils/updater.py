@@ -11,6 +11,7 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Callable, Optional, Tuple
 from utils.release_notes import LANGUAGES, RELEASE_NOTES, localized_bodies
+from utils.tls import open_url
 
 RELEASES_API_URL = "https://openfocus.top/api/updates"
 RELEASES_PAGE_URL = "https://openfocus.top/#download"
@@ -240,7 +241,7 @@ def _api_get(url: str, timeout: int = REQUEST_TIMEOUT_S) -> Optional[dict]:
         url,
         headers={"Accept": "application/json", "User-Agent": "OpenFocus"},
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with open_url(urllib.request.urlopen, req, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
@@ -368,7 +369,7 @@ def download_to_file(url: str, dest_path: str,
     part_path = dest_path + ".part"
     req = urllib.request.Request(url, headers={"User-Agent": "OpenFocus"})
     try:
-        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_S) as resp:
+        with open_url(urllib.request.urlopen, req, timeout=REQUEST_TIMEOUT_S) as resp:
             total = int(resp.headers.get("Content-Length", 0) or 0)
             done = 0
             with open(part_path, "wb") as f:

@@ -18,7 +18,7 @@ for _pattern in _manifest['include']:
 # Native extensions and provider libraries are needed even when their Python
 # imports are discovered through a lazy algorithm entry point.
 binaries = collect_dynamic_libs('rawpy') + collect_dynamic_libs('onnxruntime')
-for _package in ('rawpy', 'onnxruntime'):
+for _package in ('rawpy', 'onnxruntime', 'certifi'):
     for _source, _destination in collect_data_files(_package):
         _parts = {part.lower() for part in Path(_destination).parts}
         _name = Path(_source).name.lower()
@@ -27,11 +27,11 @@ for _package in ('rawpy', 'onnxruntime'):
             continue
         datas.append((_source, _destination))
 _distributions = packages_distributions()
-for _package in ('rawpy', 'onnxruntime'):
+for _package in ('rawpy', 'onnxruntime', 'certifi'):
     for _distribution in _distributions.get(_package, []):
         datas += copy_metadata(_distribution)
 
 hiddenimports = sorted(set(_EXPORTS.values()) | {
-    'utils.layered_tiff', 'PyQt6.QtCore', 'PyQt6.QtGui', 'PyQt6.QtWidgets',
-    'PyQt6.QtNetwork', 'PyQt6.QtSvg', 'rawpy', 'onnxruntime',
+    'utils.layered_tiff', 'utils.tls', 'certifi', 'PyQt6.QtCore', 'PyQt6.QtGui',
+    'PyQt6.QtWidgets', 'PyQt6.QtNetwork', 'PyQt6.QtSvg', 'rawpy', 'onnxruntime',
 })
