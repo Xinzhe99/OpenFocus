@@ -321,6 +321,10 @@ class _PinnedUploader:
 
     def upload(self, slot, dev_buf, host_array, *, wait_for=None, cancel=None):
         """Enqueue async H2D copy on the transfer queue and return its event."""
+        prev_dma = self._dma_events[slot]
+        if prev_dma is not None:
+            _wait_event(prev_dma, cancel)
+            self._dma_events[slot] = None
         wait_list = wait_for if (wait_for and self.separate_queue) else None
         try:
             ev = self._cl.enqueue_copy(
@@ -1211,7 +1215,7 @@ class Merge:
                     host_budget, host_staging, source_peak, len(frames),
                 )
                 extra_host = max(max_src_bytes, pixels * 2)
-                extra_vram = max(max_src_bytes, pixels * 2)
+                extra_vram = max_src_bytes + pixels * 2
                 unified_extra_vram = extra_vram if self.device.host_unified_memory else 0
                 ping_pong = (
                     len(frames) >= 2

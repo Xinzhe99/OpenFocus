@@ -252,18 +252,34 @@ def test_pinned_uploader_mock_wait_for_and_typeerror_fallback():
     assert ev.tag == "dma-1"
     assert copy_calls[-1] == ("transfer", False, [dep])
     assert flushed == ["transfer"]
-    uploader.finish()
+
+    # Reusing slot 0 must wait on prior DMA event for slot 0 (with cancel check)
+    # before enqueueing the next copy, while leaving slot 1 untouched.
+    cancel_checks = []
+    ev_slot1 = uploader.upload(1, object(), np.zeros(8, dtype=np.uint8))
+    assert ev_slot1.tag == "dma-2"
+    assert "dma-1" not in events_waited
+    ev_reuse = uploader.upload(
+        0, object(), np.zeros(8, dtype=np.uint8), wait_for=[dep],
+        cancel=lambda: cancel_checks.append(True),
+    )
+    assert ev_reuse.tag == "dma-3"
     assert "dma-1" in events_waited
+    assert "dma-2" not in events_waited
+    assert len(cancel_checks) >= 2
+    uploader.finish()
+    assert "dma-2" in events_waited
+    assert "dma-3" in events_waited
 
     # Fallback when mock enqueue_copy does not accept wait_for kwarg.
     uploader2 = _openfocus_gpu._PinnedUploader(
         FakeCL(reject_wait_for=True), object(), compute_q, transfer_q, 2, 1024,
     )
     ev2 = uploader2.upload(0, object(), np.zeros(8, dtype=np.uint8), wait_for=[dep])
-    assert ev2.tag == "dma-2"
+    assert ev2.tag == "dma-4"
     assert "prev-compute" in events_waited
     uploader2.close()
-    assert "dma-2" in events_waited
+    assert "dma-4" in events_waited
 
     # Single-queue fallback when transfer_q is None.
     uploader3 = _openfocus_gpu._PinnedUploader(

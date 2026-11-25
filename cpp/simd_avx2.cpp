@@ -1594,8 +1594,9 @@ void pyr_down_horiz_raw_3c_row_avx2(
     if (raw_is_u8) {
         const uint8_t* r8 = static_cast<const uint8_t*>(sr);
         auto load4 = [vfac](const uint8_t* p) -> __m128 {
-            return _mm_mul_ps(_mm_cvtepi32_ps(_mm_cvtepu8_epi32(_mm_cvtsi32_si128(
-                *reinterpret_cast<const int*>(p)))), vfac);
+            int32_t raw4;
+            std::memcpy(&raw4, p, sizeof(raw4));
+            return _mm_mul_ps(_mm_cvtepi32_ps(_mm_cvtepu8_epi32(_mm_cvtsi32_si128(raw4))), vfac);
         };
         if (x < safe_stop) {
             __m128 s0 = load4(r8 + 3);
