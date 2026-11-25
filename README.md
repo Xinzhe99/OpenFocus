@@ -15,7 +15,7 @@
 <p align="center">
   <a href="https://github.com/Xinzhe99/OpenFocus/releases"><img src="https://img.shields.io/github/v/release/Xinzhe99/OpenFocus?label=release&color=2f81f7" alt="Release"></a>
   <a href="https://github.com/Xinzhe99/OpenFocus/stargazers"><img src="https://img.shields.io/github/stars/Xinzhe99/OpenFocus?color=e3b341" alt="Stars"></a>
-  <a href="./docs/THIRD_PARTY_NOTICES.md"><img src="https://img.shields.io/badge/license-MIT%20%2B%20model%20terms-3fb950" alt="License: MIT and model terms"></a>
+  <a href="./docs/THIRD_PARTY_NOTICES.md"><img src="https://img.shields.io/badge/license-Apache--2.0%20%2B%20model%20terms-3fb950" alt="License: Apache-2.0 and model terms"></a>
   <img src="https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white" alt="Python 3.10+">
 </p>
 
@@ -352,7 +352,8 @@ Questions, ideas or feedback? Join our [Discord community](https://discord.gg/Ja
 <a id="license"></a>
 ## License
 
-The OpenFocus application is released under the [MIT License](./LICENSE).
+The OpenFocus application is released under the [Apache License, Version 2.0](./LICENSE)
+(see [NOTICE](./NOTICE)).
 The retrained StackMFF V1/V2 wrappers and weights have separate StackMFF V3
 License 1.0 terms, which restrict redistribution, inclusion in other projects
 and commercial use without the licensor's prior written permission. The
