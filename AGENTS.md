@@ -53,10 +53,11 @@ workspace parent, and default OS user profile/temp directories (`%LOCALAPPDATA%`
 isolated preview profiles, inference packs, build outputs, and tool caches.
 
 When running tests, preview desktop builds, or packaging checks, explicitly
-redirect `TEMP`, `TMP`, `OPENFOCUS_DATA_DIR`, and any package/build caches
-(`PIP_CACHE_DIR`, `UV_CACHE_DIR`, `PYINSTALLER_CONFIG_DIR`, virtual/Conda
-environments) to a task folder under `.tmp/` or a non-system workspace cache
-directory.
+redirect `TMPDIR`, `TEMP`, `TMP`, and `OPENFOCUS_DATA_DIR` to a task folder
+under `.tmp/` or a non-system workspace cache directory. Set tool cache paths
+there too, including `PIP_CACHE_DIR`, `UV_CACHE_DIR`, `PYINSTALLER_CONFIG_DIR`,
+and `CONDA_PKGS_DIRS`. Create task-specific virtual or Conda environments on
+the same non-system workspace volume.
 
 When the task is complete, archive any results needed for recovery or review.
 Remove the task's remaining temporary files, preview profiles, and downloaded

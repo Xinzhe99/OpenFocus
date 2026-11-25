@@ -29,8 +29,8 @@ relevant source, tests, or documentation linked from [CONTRIBUTING.md](CONTRIBUT
   them. Cancel timers with their owner and wait for native work to finish before
   destroying resources it still uses.
 - Isolate test profiles, runtime caches, and temporary files off the system drive
-  and default OS user directories by pointing `TEMP`, `TMP`,
-  `OPENFOCUS_DATA_DIR`, and tool caches onto the workspace volume or `.tmp/`.
+  and default OS user directories by pointing `TMPDIR`, `TEMP`, `TMP`,
+  `OPENFOCUS_DATA_DIR`, and tool caches to the non-system workspace volume.
   Clean up preview profiles, downloaded inference packs, and session-owned
   artifacts on completion; preserve failure evidence and leave files of unknown
   ownership alone.
