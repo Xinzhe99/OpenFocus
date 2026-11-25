@@ -433,3 +433,105 @@ def test_popover_and_visibility_pause_resume_slideshow(qapp):
     assert showcase.slide_timer.isActive() is True
 
     showcase.deleteLater()
+
+
+def test_switching_danmaku_popover_does_not_freeze_slideshow(qapp):
+    showcase = GalleryShowcaseWidget()
+    showcase.resize(720, 420)
+    showcase.show()
+    qapp.processEvents()
+
+    works = _sample_works()[:2]
+    works[0].comments = [
+        {"id": "c1", "work_id": "w1", "content": "Bullet A", "is_reply": False},
+        {"id": "c2", "work_id": "w1", "content": "Bullet B", "is_reply": False},
+    ]
+    showcase.set_works(works, start_index=0)
+    assert showcase.slide_timer.isActive() is True
+
+    # Open popover on bullet A, then directly switch to bullet B while open
+    assert showcase.danmaku_overlay.open_popover_for("c1") is True
+    assert showcase.danmaku_overlay.open_popover_for("c2") is True
+    assert showcase.slide_timer.isActive() is False
+    assert showcase._pause_reasons.get("hover_popover") == 1
+
+    # Dismissing once must cleanly resume the 5s slideshow
+    showcase.danmaku_overlay.popover.dismiss()
+    assert "hover_popover" not in showcase.active_pause_reasons()
+    assert showcase.slide_timer.isActive() is True
+    showcase.deleteLater()
+
+
+def test_nested_replies_and_is_author_reply_badge_in_drawer(qapp):
+    from PyQt6.QtWidgets import QFrame, QLabel
+
+    showcase = GalleryShowcaseWidget()
+    showcase.resize(720, 420)
+    works = _sample_works()[:1]
+    works[0].comments = [
+        {
+            "id": "top1",
+            "work_id": "w1",
+            "author_nickname": "ViewerOne",
+            "content": "How many frames?",
+            "is_reply": False,
+            "is_danmaku": True,
+            "replies": [
+                {
+                    "id": "rep1",
+                    "work_id": "w1",
+                    "author_nickname": "MacroMaster",
+                    "content": "64 frames stacked!",
+                    "parent_id": "top1",
+                    "is_reply": True,
+                    "is_danmaku": False,
+                    "is_author_reply": True,
+                }
+            ],
+        }
+    ]
+    showcase.set_works(works, start_index=0)
+
+    # Only top-level comment floats as danmaku
+    floating_ids = {
+        b.comment_id
+        for b in showcase.danmaku_overlay.active_bullets + showcase.danmaku_overlay.queued_comments
+    }
+    assert floating_ids == {"top1"}
+
+    # Comment drawer unpacks nested replies and renders the Author badge
+    showcase.open_comment_drawer()
+    reply_cards = showcase.comment_drawer.findChildren(QFrame, "replyCard")
+    assert len(reply_cards) == 1
+    author_tags = reply_cards[0].findChildren(QLabel, "commentAuthorTag")
+    assert len(author_tags) == 1
+    body_labels = [lbl.text() for lbl in reply_cards[0].findChildren(QLabel, "commentBody")]
+    assert "64 frames stacked!" in body_labels
+    showcase.deleteLater()
+
+
+def test_blur_cache_force_put_evicts_lru_and_previous_slide_single_cached_guard(qapp):
+    cache = StaticBlurBackgroundCache(max_entries=2)
+    showcase = GalleryShowcaseWidget(blur_cache=cache)
+    showcase.resize(400, 300)
+
+    w1 = ShowcaseWork(id="w1", pixmap=_make_pixmap(100, 100, QColor(10, 80, 200)))
+    w2 = ShowcaseWork(id="w2", image_url="https://cdn.openfocus.top/w2.webp", pixmap=None)
+    w3 = ShowcaseWork(id="w3", image_url="https://cdn.openfocus.top/w3.webp", pixmap=None)
+
+    # Single cached slide under fusion_busy: previous_slide must be a no-op
+    showcase.set_fusion_busy(True)
+    showcase.set_works([w1, w2, w3], start_index=0)
+    changes: list[str] = []
+    showcase.slide_changed.connect(changes.append)
+    assert showcase.previous_slide() is False
+    assert changes == []
+
+    # Fill cache beyond max_entries via force updates (set_work_pixmap)
+    showcase.set_work_pixmap("w1", _make_pixmap(100, 100, QColor(20, 90, 210)))
+    showcase.show_slide(1)
+    showcase.set_work_pixmap("w2", _make_pixmap(100, 100, QColor(30, 100, 220)))
+    showcase.show_slide(2)
+    showcase.set_work_pixmap("w3", _make_pixmap(100, 100, QColor(40, 110, 230)))
+    assert len(cache) == 2
+    showcase.deleteLater()

@@ -336,6 +336,15 @@ class StaticBlurBackgroundCache:
             self.cache_hits += 1
         return cached
 
+    def put(self, work_id: str, size: QSize, pixmap: QPixmap) -> None:
+        w = max(1, int(size.width()))
+        h = max(1, int(size.height()))
+        key = (str(work_id), w, h)
+        self._entries[key] = pixmap
+        self._entries.move_to_end(key)
+        while len(self._entries) > self._max_entries:
+            self._entries.popitem(last=False)
+
     def get_or_build(self, work_id: str, source: QPixmap, size: QSize) -> QPixmap:
         w = max(1, int(size.width()))
         h = max(1, int(size.height()))
@@ -348,10 +357,7 @@ class StaticBlurBackgroundCache:
 
         built = _build_blurred_background(source, QSize(w, h))
         self.compute_count += 1
-        self._entries[key] = built
-        self._entries.move_to_end(key)
-        while len(self._entries) > self._max_entries:
-            self._entries.popitem(last=False)
+        self.put(work_id, QSize(w, h), built)
         return built
 
     def clear(self) -> None:
@@ -493,25 +499,50 @@ class CommentReplyDrawer(QFrame):
 
         top_level: list[Any] = []
         replies_by_parent: dict[str, list[Any]] = {}
+        seen_reply_ids: dict[str, set[str]] = {}
         orphan_replies: list[Any] = []
         top_ids: set[str] = set()
+
+        def _append_reply(pid: str, reply: Any) -> None:
+            rid = str(_first_field(reply, ("id", "comment_id"), "") or "")
+            seen = seen_reply_ids.setdefault(pid, set())
+            if rid:
+                if rid in seen:
+                    return
+                seen.add(rid)
+            replies_by_parent.setdefault(pid, []).append(reply)
 
         for c in self._comments:
             cid = str(_first_field(c, ("id", "comment_id"), "") or "")
             parent_id = _field(c, "parent_id", None)
-            is_reply = bool(_field(c, "is_reply", False)) or bool(parent_id)
+            is_reply = (
+                bool(_field(c, "is_reply", False))
+                or bool(_field(c, "is_author_reply", False))
+                or bool(parent_id)
+            )
             if not is_reply:
                 top_level.append(c)
                 if cid:
                     top_ids.add(cid)
+                # Unpack nested replies (e.g. GalleryComment.replies from server)
+                nested = _field(c, "replies", ()) or ()
+                for rep in nested:
+                    if cid:
+                        _append_reply(cid, rep)
+                    else:
+                        orphan_replies.append(rep)
 
         for c in self._comments:
             parent_id = _field(c, "parent_id", None)
-            is_reply = bool(_field(c, "is_reply", False)) or bool(parent_id)
+            is_reply = (
+                bool(_field(c, "is_reply", False))
+                or bool(_field(c, "is_author_reply", False))
+                or bool(parent_id)
+            )
             if is_reply:
                 pid = str(parent_id or "")
                 if pid and pid in top_ids:
-                    replies_by_parent.setdefault(pid, []).append(c)
+                    _append_reply(pid, c)
                 else:
                     orphan_replies.append(c)
 
@@ -542,7 +573,9 @@ class CommentReplyDrawer(QFrame):
         )
         content = str(_field(comment, "content", "") or "")
         upvotes = int(_first_field(comment, ("upvotes", "upvote_count"), 0) or 0)
-        is_author = bool(_first_field(comment, ("is_author", "is_work_author"), False))
+        is_author = bool(
+            _first_field(comment, ("is_author", "is_work_author", "is_author_reply"), False)
+        )
         can_delete = bool(_first_field(comment, ("can_delete", "is_mine"), False))
 
         meta = QHBoxLayout()
@@ -914,6 +947,13 @@ class GalleryShowcaseWidget(QWidget):
         if len(self._works) <= 1:
             return False
         if self._fusion_busy:
+            cached_indices = [i for i, w in enumerate(self._works) if w.has_local_image()]
+            if not cached_indices:
+                return False
+            if len(cached_indices) == 1:
+                if self._current_index != cached_indices[0]:
+                    return self.show_slide(cached_indices[0])
+                return False
             for offset in range(1, len(self._works) + 1):
                 cand = (self._current_index - offset) % len(self._works)
                 if self._works[cand].has_local_image():
@@ -1031,7 +1071,7 @@ class GalleryShowcaseWidget(QWidget):
             return
         if force:
             self._cached_bg_pixmap = _build_blurred_background(source, QSize(w, h))
-            self._blur_cache._entries[key] = self._cached_bg_pixmap
+            self._blur_cache.put(work.id, QSize(w, h), self._cached_bg_pixmap)
             self._blur_cache.compute_count += 1
         else:
             self._cached_bg_pixmap = self._blur_cache.get_or_build(work.id, source, QSize(w, h))

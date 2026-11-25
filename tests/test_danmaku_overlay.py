@@ -101,6 +101,10 @@ def test_author_replies_never_float_as_danmaku(qapp):
     assert is_floating_danmaku_comment(comments[2]) is False
     assert is_floating_danmaku_comment(comments[3]) is False
     assert is_floating_danmaku_comment(comments[4]) is True
+    # Defensive rejection of is_author_reply=True even if parent_id/is_reply omitted
+    assert is_floating_danmaku_comment(
+        {"id": "c_author_reply", "work_id": "w1", "content": "Author reply", "is_author_reply": True}
+    ) is False
 
     overlay.set_comments(comments, work_id="w1")
     all_ids = {b.comment_id for b in overlay.active_bullets + overlay.queued_comments}
@@ -310,4 +314,35 @@ def test_danmaku_positions_and_enabled_toggle(qapp):
     assert overlay.active_bullets[0].x == x_before
     pm = overlay.grab()
     assert not pm.isNull()
+    overlay.deleteLater()
+
+
+def test_switching_popover_between_bullets_emits_opened_once(qapp):
+    overlay = DanmakuOverlay(settings=DanmakuSettings(density="high"))
+    overlay.resize(640, 360)
+    overlay.show()
+    qapp.processEvents()
+
+    overlay.set_comments(
+        [
+            _StubComment(id="c1", work_id="w1", content="Bullet A"),
+            _StubComment(id="c2", work_id="w1", content="Bullet B"),
+        ],
+        work_id="w1",
+    )
+    opened: list[bool] = []
+    closed: list[bool] = []
+    overlay.popover_opened.connect(lambda: opened.append(True))
+    overlay.popover_closed.connect(lambda: closed.append(True))
+
+    assert overlay.open_popover_for("c1") is True
+    assert overlay.open_popover_for("c2") is True
+    # Transitioned closed -> open once; switching bullet must not double-emit
+    assert len(opened) == 1
+    assert overlay.active_bullets[0].paused is False
+    assert overlay.active_bullets[1].paused is True
+
+    overlay.popover.dismiss()
+    assert len(closed) == 1
+    assert overlay.active_bullets[1].paused is False
     overlay.deleteLater()

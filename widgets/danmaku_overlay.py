@@ -146,14 +146,16 @@ def _first_field(obj: Any, names: Sequence[str], default: Any = None) -> Any:
 def is_floating_danmaku_comment(comment: Any) -> bool:
     """Return True iff *comment* is eligible to float as danmaku.
 
-    Author replies (``is_reply=True`` or non-empty ``parent_id``) and
-    non-danmaku comments (``is_danmaku=False``) NEVER float over the canvas.
+    Author replies (``is_reply=True``, ``is_author_reply=True``, or non-empty
+    ``parent_id``) and non-danmaku comments (``is_danmaku=False``) NEVER float
+    over the canvas.
     """
     if comment is None:
         return False
     is_reply = bool(_field(comment, "is_reply", False))
+    is_author_reply = bool(_field(comment, "is_author_reply", False))
     parent_id = _field(comment, "parent_id", None)
-    if is_reply or (parent_id is not None and str(parent_id).strip() != ""):
+    if is_reply or is_author_reply or (parent_id is not None and str(parent_id).strip() != ""):
         return False
     is_danmaku = _field(comment, "is_danmaku", None)
     if is_danmaku is False:
@@ -1048,13 +1050,15 @@ class DanmakuOverlay(QWidget):
         if item is None:
             return False
 
+        was_open = self.popover.isVisible() or self._popover_item_id is not None
         # Resume any previously pinned bullet before pinning the new one
         self._release_popover_pin()
         item.paused = True
         self._popover_item_id = item.comment_id
         anchor = QPoint(int(item.x + 8), int(item.y + item.height))
         self.popover.open_for(item, anchor, self.rect())
-        self.popover_opened.emit()
+        if not was_open:
+            self.popover_opened.emit()
         self.update()
         return True
 
