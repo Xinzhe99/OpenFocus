@@ -1,4 +1,3 @@
-import inspect
 from typing import Optional
 
 from functools import partial
@@ -385,17 +384,6 @@ def _ordered_openfocus_registration(alignment, algorithm, sort_mode):
     return (algorithm in ('openfocus_a', 'openfocus_b', 'openfocus_c')
             and 'openfocus' in alignment_steps(alignment)
             and get_fusion(algorithm).sort_frames and sort_mode == 'desc')
-
-
-def _accepts_keyword(callable_, name):
-    """True when ``callable_`` takes a keyword argument called ``name``."""
-    try:
-        parameters = inspect.signature(callable_).parameters
-    except (TypeError, ValueError):
-        return False
-    if name in parameters:
-        return True
-    return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values())
 
 
 def _registration_process(registration, images, reverse, **kwargs):
@@ -1137,14 +1125,10 @@ class RenderWorker(QThread):
             downscale_width=self.reg_downscale_width,
             brightness_reference='last' if self.exposure_match else 'first',
             accelerate_ecc=self.use_gpu, defer_warps=self._defer_warps)
-        process_kwargs = {}
-        if _accepts_keyword(registration.process, 'progress_callback'):
-            # Determinate alignment progress: only when the aligner reports it.
-            process_kwargs['progress_callback'] = self.progress_signal.emit
         try:
             images = _registration_process(registration, images, self._reverse_registration,
                 thread_count=self.thread_count, resource_preference=self.resource_preference,
-                should_cancel=should_cancel, **process_kwargs)
+                should_cancel=should_cancel)
         except RejectedAlignmentFrame as error:
             if self.alignment_report is None:
                 self.alignment_report = [{'method': error.method.lower(), 'status': 'failed',

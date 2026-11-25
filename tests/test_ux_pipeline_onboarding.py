@@ -254,52 +254,6 @@ def test_live_preview_stops_hijacking_source_row_after_user_selection(qapp):
         qapp.processEvents()
 
 
-def test_run_registration_forwards_progress_callback_only_when_supported(monkeypatch):
-    from core import workers
-
-    calls = []
-
-    class _RegWithoutProgress:
-        def __init__(self, **_kw):
-            self.dispatch = ()
-            self.alignment_plan = None
-
-        def process(self, images, thread_count=4, should_cancel=None, resource_preference="balanced"):
-            calls.append(("without", None))
-            return images
-
-    class _RegWithProgress:
-        def __init__(self, **_kw):
-            self.dispatch = ()
-            self.alignment_plan = None
-
-        def process(self, images, thread_count=4, should_cancel=None,
-                    resource_preference="balanced", progress_callback=None):
-            calls.append(("with", progress_callback))
-            if progress_callback is not None:
-                progress_callback(1, 2)
-            return images
-
-    emitted = []
-    worker = workers.RenderWorker(
-        [np.zeros((8, 8, 3), dtype=np.uint8)],
-        algorithm=None,
-        alignment="ecc",
-        need_fusion=False,
-    )
-    worker.progress_signal.connect(lambda d, t: emitted.append((d, t)))
-
-    monkeypatch.setattr(workers, "ImageRegistration", _RegWithoutProgress)
-    worker._run_registration(worker.raw_images)
-    assert calls[-1] == ("without", None)
-    assert emitted == []
-
-    monkeypatch.setattr(workers, "ImageRegistration", _RegWithProgress)
-    worker._run_registration(worker.raw_images)
-    assert calls[-1][0] == "with" and callable(calls[-1][1])
-    assert emitted == [(1, 2)]
-
-
 def test_onboarding_tour_never_wedges_on_cancel_and_guards_step4(qapp):
     from controllers.render_manager import RenderManager
     from locales import trans
