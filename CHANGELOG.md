@@ -243,6 +243,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   desktop exports. Release ROI previews and finish export and batch cleanup
   safely when closing the window. Resolve Qt UI font fallback families and
   find uppercase multi-page TIFF containers when reopening projects.
+- Keep the guided tour usable through render completion and cancellation.
+  Improve video and batch progress and prepare drag-out files off the UI thread.
 - Bundle trusted CA roots with the desktop app so sign-in and other HTTPS
   requests can verify server certificates on macOS.
 - Keep desktop sign-in responsive when the browser opens an idle connection,

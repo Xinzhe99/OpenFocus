@@ -1601,6 +1601,8 @@ class ImageStackLoader:
             if not cap.isOpened():
                 return False, "Failed to open video file"
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            if self.progress_callback is not None:
+                self.progress_callback(0, total_frames)
 
             while True:
                 if self.should_cancel():
@@ -1611,6 +1613,8 @@ class ImageStackLoader:
 
                 append_frame(_downscale_page(frame, scale_factor))
                 frame_index += 1
+                if self.progress_callback is not None:
+                    self.progress_callback(frame_index, total_frames)
         finally:
             cap.release()
 
