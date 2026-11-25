@@ -395,6 +395,32 @@ def decode_tiff_page(path, page_index=None, *, preserve_grayscale=False):
         stored = _stored_tiff_layout(page) if page_index >= 0 else None
         # Read from the same file handle used to inspect the strip layout.
         image = _read_stored_tiff_page(tif.filehandle, stored) if stored is not None else None
+        photometric = int(page.photometric)
+        if (image is None and not page.is_tiled
+                and int(page.compression) in (5, 8, 32946, 32773)
+                and int(page.planarconfig or 1) == 1
+                and int(getattr(page, 'fillorder', 1)) == 1
+                and len(page.dataoffsets or ()) >= 4
+                and page.imagewidth * page.imagelength >= 1_000_000
+                and ((photometric == 1 and page.samplesperpixel == 1)
+                     or (photometric == 2 and page.samplesperpixel in (3, 4)))
+                and page.dtype in (np.uint8, np.uint16)
+                and _within_opencv_decode_limits(page.imagewidth, page.imagelength)):
+            try:
+                workers = min(4, max(1, len(page.dataoffsets or ())), os.cpu_count() or 1)
+                decoded = page.asarray(maxworkers=workers)
+                if decoded.dtype in (np.uint8, np.uint16) and decoded.dtype.isnative:
+                    if decoded.ndim == 3 and decoded.shape[2] == 4:
+                        if _has_transparency(decoded):
+                            raise UnsupportedTransparency(f"Transparent TIFF pages are unsupported: {path}")
+                        decoded = cv2.cvtColor(decoded, cv2.COLOR_RGBA2BGRA)
+                    elif decoded.ndim == 3 and decoded.shape[2] == 3 and photometric == 2:
+                        decoded = rgb_to_bgr(decoded)
+                    image = _orient_tiff_pixels(page, decoded)
+            except UnsupportedTransparency:
+                raise
+            except Exception:
+                image = None
     if image is None:
         data = np.memmap(path, dtype=np.uint8, mode='r')
         success, decoded = cv2.imdecodemulti(data, flags=cv2.IMREAD_UNCHANGED,
@@ -585,13 +611,35 @@ def decode_image(path: str, *, allow_transparent_png: bool = False,
     jpeg_mode = None
     png_fast = False
     orientation = 1
-    if PIL_AVAILABLE:
+    raw_bytes = None
+    single_open = PIL_AVAILABLE and (ext in _JPEG_EXTENSIONS or ext == '.png')
+    if single_open:
+        with open(path, 'rb') as fh:
+            with PILImage.open(fh) as header:
+                validate_pil_header(path, header)
+                if ext in _JPEG_EXTENSIONS and header.format == 'JPEG':
+                    jpeg_mode = header.mode
+                    jpeg_size = header.size
+                try:
+                    orientation = int(read_image_exif(header).get(274, 1))
+                except SourceExifTooLarge:
+                    raise
+                except Exception:
+                    pass
+                if header.mode == 'CMYK':
+                    image = cmyk_to_bgr(header, path, header.info.get('icc_profile', b''))
+                    return _apply_orientation_value(_downscale_page(image, jpeg_scale, area_resizer), orientation)
+                # Color-key transparency follows OpenCV's existing PNG semantics.
+                png_fast = (ext == '.png' and header.format == 'PNG'
+                            and 'transparency' not in header.info
+                            and _within_opencv_decode_limits(*header.size))
+            if png_fast or jpeg_mode is not None:
+                fh.seek(0)
+                raw_bytes = fh.read()
+    elif PIL_AVAILABLE:
         with PILImage.open(path) as header:
             validate_pil_header(path, header)
-            if ext in _JPEG_EXTENSIONS and header.format == 'JPEG':
-                jpeg_mode = header.mode
-                jpeg_size = header.size
-            if ext in _JPEG_EXTENSIONS + ('.png', '.webp'):
+            if ext == '.webp':
                 try:
                     orientation = int(read_image_exif(header).get(274, 1))
                 except SourceExifTooLarge:
@@ -601,13 +649,7 @@ def decode_image(path: str, *, allow_transparent_png: bool = False,
             if header.mode == 'CMYK':
                 image = cmyk_to_bgr(header, path, header.info.get('icc_profile', b''))
                 return _apply_orientation_value(_downscale_page(image, jpeg_scale, area_resizer), orientation)
-            # Color-key transparency follows OpenCV's existing PNG semantics.
-            png_fast = (ext == '.png' and header.format == 'PNG'
-                        and 'transparency' not in header.info
-                        and _within_opencv_decode_limits(*header.size))
-    if png_fast or jpeg_mode is not None:
-        with open(path, 'rb') as fh:
-            raw_bytes = fh.read()
+    if raw_bytes is not None:
         if png_fast:
             img = _decode_png_fast(path, raw_bytes, allow_transparent_png=allow_transparent_png,
                                    preserve_grayscale=preserve_grayscale)

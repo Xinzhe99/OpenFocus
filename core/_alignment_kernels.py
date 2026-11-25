@@ -638,6 +638,11 @@ if _HAVE_NUMBA:
         h, w = img_b.shape
         h_f = np.float32(h)
         w_f = np.float32(w)
+        w_m1 = np.float32(w - 1)
+        h_m1 = np.float32(h - 1)
+        w_clamp = np.float32(w_f - np.float32(1.0010000467300415))
+        h_clamp = np.float32(h_f - np.float32(1.0010000467300415))
+        f256 = np.float32(256)
         zero_f = np.float32(0.0)
         nyy = ys.shape[0]
         nxx = xs.shape[0]
@@ -648,72 +653,111 @@ if _HAVE_NUMBA:
 
         best_sc = np.float32(np.inf)
         best_k = np.int64(-1)
+        if k_start >= k_stop:
+            out_best_k[slot] = best_k
+            out_best_sc[slot] = best_sc
+            return
+
+        v_dy_row = np.empty(nyy, np.float32)
+        u_dy_row = np.empty(nyy, np.float32)
+        ux_col = np.empty(nxx, np.float32)
+        vx_col = np.empty(nxx, np.float32)
+
+        rem = k_start
+        t0 = rem % n0
+        rem //= n0
+        t1 = rem % n1
+        rem //= n1
+        t2 = rem % n2
+        t3 = rem // n2
+
+        p08_k = p08_tab[t3, t2]
+        p18_k = p18_tab[t3, t2]
+        cy_k = cy_tab[t1]
+        for iy_i in range(nyy):
+            dy_ = np.float32(ys[iy_i] - cy_k)
+            v_dy_row[iy_i] = np.float32(dy_ * p18_k)
+            u_dy_row[iy_i] = np.float32(dy_ * p08_k)
 
         for k in range(k_start, k_stop):
-            rem = k
-            t0 = rem % n0
-            rem //= n0
-            t1 = rem % n1
-            rem //= n1
-            t2 = rem % n2
-            t3 = rem // n2
-
             cx_k = cx_tab[t0]
-            cy_k = cy_tab[t1]
-            p08_k = p08_tab[t3, t2]
-            p18_k = p18_tab[t3, t2]
-            p0c_k = p08_k
-            p1c_k = p18_k
-
-            c_u = np.float32(np.float32(tx0 - np.float32(cx_k * p18_k)) - np.float32(cy_k * p0c_k))
-            c_v = np.float32(np.float32(ty0 - np.float32(cy_k * p1c_k)) - np.float32(cx_k * p08_k))
+            c_u = np.float32(np.float32(tx0 - np.float32(cx_k * p18_k)) - np.float32(cy_k * p08_k))
+            c_v = np.float32(np.float32(ty0 - np.float32(cy_k * p18_k)) - np.float32(cx_k * p08_k))
 
             aux0 = np.float32(p18_k * x_lo)
             aux1 = np.float32(p18_k * x_hi)
-            buy0 = np.float32(p0c_k * y_lo)
-            buy1 = np.float32(p0c_k * y_hi)
+            buy0 = np.float32(p08_k * y_lo)
+            buy1 = np.float32(p08_k * y_hi)
             u_lo = np.float32(np.float32((aux0 if aux0 < aux1 else aux1) + (buy0 if buy0 < buy1 else buy1)) + c_u)
             u_hi = np.float32(np.float32((aux0 if aux0 > aux1 else aux1) + (buy0 if buy0 > buy1 else buy1)) + c_u)
 
-            avx0 = np.float32(p1c_k * x_lo)
-            avx1 = np.float32(p1c_k * x_hi)
+            avx0 = np.float32(p18_k * x_lo)
+            avx1 = np.float32(p18_k * x_hi)
             bvy0 = np.float32(p08_k * y_lo)
             bvy1 = np.float32(p08_k * y_hi)
             v_lo = np.float32(np.float32((avx0 if avx0 < avx1 else avx1) + (bvy0 if bvy0 < bvy1 else bvy1)) + c_v)
             v_hi = np.float32(np.float32((avx0 if avx0 > avx1 else avx1) + (bvy0 if bvy0 > bvy1 else bvy1)) + c_v)
 
-            if not (u_hi >= zero_f and u_lo < w_f and v_hi >= zero_f and v_lo < h_f):
-                continue
-
-            acc_sum = np.int64(0)
-            acc_sq = np.int64(0)
-            acc_cnt = np.int64(0)
-            for iy_i in range(nyy):
-                v_dy, u_dy = _map_uv_row(ys[iy_i], cy_k, p1c_k, p0c_k)
+            if u_hi >= zero_f and u_lo < w_f and v_hi >= zero_f and v_lo < h_f:
                 for ix_i in range(nxx):
-                    u, v = _map_uv_col(xs[ix_i], cx_k, p08_k, p18_k, tx0, ty0, v_dy, u_dy)
-                    if not (u >= zero_f and u < w_f and v >= zero_f and v < h_f):
-                        continue
-                    ix, jx, fx, _ = _axis(u, w)
-                    iy, jy, fy, _ = _axis(v, h)
-                    gx = np.uint32(256) - fx
-                    gy = np.uint32(256) - fy
-                    val = _bilinear_u32_2d(img_b, iy, jy, ix, jx, gx, fx, gy, fy)
-                    diff = np.int64(ref[iy_i, ix_i]) - np.int64(val)
-                    acc_sum += diff
-                    acc_sq += diff * diff
-                    acc_cnt += 1
+                    dx_ = np.float32(xs[ix_i] - cx_k)
+                    ux_col[ix_i] = np.float32(dx_ * p18_k)
+                    vx_col[ix_i] = np.float32(dx_ * p08_k)
+                acc_sum = np.int64(0)
+                acc_sq = np.int64(0)
+                acc_cnt = np.int64(0)
+                for iy_i in range(nyy):
+                    v_dy = v_dy_row[iy_i]
+                    u_dy = u_dy_row[iy_i]
+                    for ix_i in range(nxx):
+                        v = np.float32(np.float32(v_dy - vx_col[ix_i]) + ty0)
+                        u = np.float32(np.float32(ux_col[ix_i] + u_dy) + tx0)
+                        if zero_f <= u < w_f and zero_f <= v < h_f:
+                            uc = w_clamp if u >= w_m1 else u
+                            vc = h_clamp if v >= h_m1 else v
+                            ix = np.int32(uc)
+                            iy = np.int32(vc)
+                            fx = np.uint32((uc - np.float32(ix)) * f256)
+                            fy = np.uint32((vc - np.float32(iy)) * f256)
+                            jx = ix + 1 if ix + 1 < w else w - 1
+                            jy = iy + 1 if iy + 1 < h else h - 1
+                            gx = np.uint32(256) - fx
+                            gy = np.uint32(256) - fy
+                            val = _bilinear_u32_2d(img_b, iy, jy, ix, jx, gx, fx, gy, fy)
+                            diff = np.int64(ref[iy_i, ix_i]) - np.int64(val)
+                            acc_sum += diff
+                            acc_sq += diff * diff
+                            acc_cnt += 1
 
-            if acc_cnt >= 2:
-                denom = np.float64(np.float32(acc_cnt))
-                msq_f = np.float32(np.float64(acc_sq) / denom)
-                msu_f = np.float32(np.float64(acc_sum) / denom)
-                var_f = np.float32(msq_f - np.float32(msu_f * msu_f))
-                if var_f >= zero_f:
-                    sc = np.sqrt(var_f)
-                    if sc < best_sc:
-                        best_sc = sc
-                        best_k = k
+                if acc_cnt >= 2:
+                    denom = np.float64(np.float32(acc_cnt))
+                    msq_f = np.float32(np.float64(acc_sq) / denom)
+                    msu_f = np.float32(np.float64(acc_sum) / denom)
+                    var_f = np.float32(msq_f - np.float32(msu_f * msu_f))
+                    if var_f >= zero_f:
+                        sc = np.sqrt(var_f)
+                        if sc < best_sc:
+                            best_sc = sc
+                            best_k = k
+
+            if k + 1 < k_stop:
+                t0 += 1
+                if t0 == n0:
+                    t0 = 0
+                    t1 += 1
+                    if t1 == n1:
+                        t1 = 0
+                        t2 += 1
+                        if t2 == n2:
+                            t2 = 0
+                            t3 += 1
+                        p08_k = p08_tab[t3, t2]
+                        p18_k = p18_tab[t3, t2]
+                    cy_k = cy_tab[t1]
+                    for iy_i in range(nyy):
+                        dy_ = np.float32(ys[iy_i] - cy_k)
+                        v_dy_row[iy_i] = np.float32(dy_ * p18_k)
+                        u_dy_row[iy_i] = np.float32(dy_ * p08_k)
 
         out_best_k[slot] = best_k
         out_best_sc[slot] = best_sc

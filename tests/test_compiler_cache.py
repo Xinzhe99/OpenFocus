@@ -22,7 +22,7 @@ def test_fusion_survives_contended_and_corrupt_compiler_cache(tmp_path):
         rng = np.random.default_rng(177)
         frames = [rng.integers(0, 256, (40, 48, 3), dtype=np.uint8)
                   for _ in range(3)]
-        result = openfocus_b_impl(frames, thread_count=1)
+        result = openfocus_b_impl(frames, thread_count=1, use_gpu=False)
         digest = hashlib.sha256(result.tobytes()).hexdigest()
         print(json.dumps({'digest': digest}))
     ''')

@@ -73,7 +73,7 @@ def test_a_stops_mapping_background_for_sharp_bands(monkeypatch):
 
     monkeypatch.setattr(openfocus_a, 'frame_region', region)
     monkeypatch.setattr(openfocus_a, '_BACKGROUND_RAM_LIMIT_BYTES', 0)
-    result = openfocus_a.openfocus_a_impl([first, second, second], thread_count=1)
+    result = openfocus_a.openfocus_a_impl([first, second, second], thread_count=1, use_gpu=False)
 
     assert mapped == [(0, True), (128, True), (128, True), (128, True), (128, False)]
     np.testing.assert_array_equal(result, first.astype(np.float32) * np.float32(1 / 257))

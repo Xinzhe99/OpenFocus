@@ -734,6 +734,268 @@ _DEFAULT_OUTPUT_ROWS = _output_rows
 _DEFAULT_OUTPUT_ROWS_FLAT = _output_rows_flat
 
 
+@njit(nogil=True)
+def _down_horizontal_raw(source, output, factor, origin):
+    _, width, channels = source.shape
+    out_w = output.shape[1]
+    ix_stop = min(out_w, (width - 1) // 2) if width >= 3 else 0
+    for row in range(output.shape[0]):
+        y = row + origin
+        if channels == 3 and ix_stop > 1:
+            sx2 = min(width - 1, 1)
+            sx3 = min(width - 1, 2)
+            p0_0 = np.float32(source[y, 0, 0]) * factor
+            p0_1 = np.float32(source[y, 0, 1]) * factor
+            p0_2 = np.float32(source[y, 0, 2]) * factor
+            p2_0 = np.float32(source[y, sx2, 0]) * factor
+            p2_1 = np.float32(source[y, sx2, 1]) * factor
+            p2_2 = np.float32(source[y, sx2, 2]) * factor
+            p3_0 = np.float32(source[y, sx3, 0]) * factor
+            p3_1 = np.float32(source[y, sx3, 1]) * factor
+            p3_2 = np.float32(source[y, sx3, 2]) * factor
+
+            v0 = np.float32(np.float32(_ZERO + np.float32(p0_0 * _D0)) + np.float32(p0_0 * _D1))
+            v1 = np.float32(np.float32(_ZERO + np.float32(p0_1 * _D0)) + np.float32(p0_1 * _D1))
+            v2 = np.float32(np.float32(_ZERO + np.float32(p0_2 * _D0)) + np.float32(p0_2 * _D1))
+            output[row, 0, 0] = np.float32(np.float32(v0 + np.float32(p2_0 * _D1)) + np.float32(p3_0 * _D0))
+            output[row, 0, 1] = np.float32(np.float32(v1 + np.float32(p2_1 * _D1)) + np.float32(p3_1 * _D0))
+            output[row, 0, 2] = np.float32(np.float32(v2 + np.float32(p2_2 * _D1)) + np.float32(p3_2 * _D0))
+
+            prev0_0, prev0_1, prev0_2 = p2_0, p2_1, p2_2
+            prev1_0, prev1_1, prev1_2 = p3_0, p3_1, p3_2
+            for x in range(1, ix_stop):
+                sx = 2 * x - 1
+                q2_0 = np.float32(source[y, sx + 2, 0]) * factor
+                q2_1 = np.float32(source[y, sx + 2, 1]) * factor
+                q2_2 = np.float32(source[y, sx + 2, 2]) * factor
+                q3_0 = np.float32(source[y, sx + 3, 0]) * factor
+                q3_1 = np.float32(source[y, sx + 3, 1]) * factor
+                q3_2 = np.float32(source[y, sx + 3, 2]) * factor
+
+                v0 = np.float32(np.float32(_ZERO + np.float32(prev0_0 * _D0)) + np.float32(prev1_0 * _D1))
+                v1 = np.float32(np.float32(_ZERO + np.float32(prev0_1 * _D0)) + np.float32(prev1_1 * _D1))
+                v2 = np.float32(np.float32(_ZERO + np.float32(prev0_2 * _D0)) + np.float32(prev1_2 * _D1))
+                output[row, x, 0] = np.float32(np.float32(v0 + np.float32(q2_0 * _D1)) + np.float32(q3_0 * _D0))
+                output[row, x, 1] = np.float32(np.float32(v1 + np.float32(q2_1 * _D1)) + np.float32(q3_1 * _D0))
+                output[row, x, 2] = np.float32(np.float32(v2 + np.float32(q2_2 * _D1)) + np.float32(q3_2 * _D0))
+                prev0_0, prev0_1, prev0_2 = q2_0, q2_1, q2_2
+                prev1_0, prev1_1, prev1_2 = q3_0, q3_1, q3_2
+            for x in range(ix_stop, out_w):
+                b = 2 * x - 1
+                sx0 = min(width - 1, max(0, b))
+                sx1 = min(width - 1, max(0, b + 1))
+                sx2 = min(width - 1, max(0, b + 2))
+                sx3 = min(width - 1, max(0, b + 3))
+                for c in range(3):
+                    v = np.float32(_ZERO + np.float32(np.float32(np.float32(source[y, sx0, c]) * factor) * _D0))
+                    v = np.float32(v + np.float32(np.float32(np.float32(source[y, sx1, c]) * factor) * _D1))
+                    v = np.float32(v + np.float32(np.float32(np.float32(source[y, sx2, c]) * factor) * _D1))
+                    output[row, x, c] = np.float32(v + np.float32(np.float32(np.float32(source[y, sx3, c]) * factor) * _D0))
+        elif channels == 1 and ix_stop > 1:
+            sx2 = min(width - 1, 1)
+            sx3 = min(width - 1, 2)
+            s0 = np.float32(source[y, 0, 0]) * factor
+            p2 = np.float32(source[y, sx2, 0]) * factor
+            p3 = np.float32(source[y, sx3, 0]) * factor
+            v = np.float32(np.float32(_ZERO + np.float32(s0 * _D0)) + np.float32(s0 * _D1))
+            output[row, 0, 0] = np.float32(np.float32(v + np.float32(p2 * _D1)) + np.float32(p3 * _D0))
+            prev0, prev1 = p2, p3
+            for x in range(1, ix_stop):
+                sx = 2 * x - 1
+                q2 = np.float32(source[y, sx + 2, 0]) * factor
+                q3 = np.float32(source[y, sx + 3, 0]) * factor
+                v = np.float32(np.float32(_ZERO + np.float32(prev0 * _D0)) + np.float32(prev1 * _D1))
+                output[row, x, 0] = np.float32(np.float32(v + np.float32(q2 * _D1)) + np.float32(q3 * _D0))
+                prev0, prev1 = q2, q3
+            for x in range(ix_stop, out_w):
+                b = 2 * x - 1
+                sx0 = min(width - 1, max(0, b))
+                sx1 = min(width - 1, max(0, b + 1))
+                sx2 = min(width - 1, max(0, b + 2))
+                sx3 = min(width - 1, max(0, b + 3))
+                v = np.float32(_ZERO + np.float32(np.float32(np.float32(source[y, sx0, 0]) * factor) * _D0))
+                v = np.float32(v + np.float32(np.float32(np.float32(source[y, sx1, 0]) * factor) * _D1))
+                v = np.float32(v + np.float32(np.float32(np.float32(source[y, sx2, 0]) * factor) * _D1))
+                output[row, x, 0] = np.float32(v + np.float32(np.float32(np.float32(source[y, sx3, 0]) * factor) * _D0))
+        else:
+            for x in range(out_w):
+                b = 2 * x - 1
+                sx0 = min(width - 1, max(0, b))
+                sx1 = min(width - 1, max(0, b + 1))
+                sx2 = min(width - 1, max(0, b + 2))
+                sx3 = min(width - 1, max(0, b + 3))
+                for c in range(channels):
+                    v = np.float32(_ZERO + np.float32(np.float32(np.float32(source[y, sx0, c]) * factor) * _D0))
+                    v = np.float32(v + np.float32(np.float32(np.float32(source[y, sx1, c]) * factor) * _D1))
+                    v = np.float32(v + np.float32(np.float32(np.float32(source[y, sx2, c]) * factor) * _D1))
+                    output[row, x, c] = np.float32(v + np.float32(np.float32(np.float32(source[y, sx3, c]) * factor) * _D0))
+
+
+@njit(nogil=True)
+def _detail_weight_rows_raw(horizontal, source, weight, coarse_height, factor, origin, start, stop):
+    height, width, channels = source.shape
+    for y in range(start, stop):
+        top = y // 2 - 2
+        odd = y & 1
+        weights = _ODD if odd else _EVEN
+        first = max(0, -top)
+        last = min(5, coarse_height - top)
+        is_y_border = height > 2 and (y == 0 or y == height - 1)
+        if is_y_border:
+            for x in range(width):
+                weight[y, x] = 0
+        elif first == 0 and last == 5 and channels == 3 and width > 2:
+            r0 = top - origin
+            r1 = r0 + 1
+            r2 = r0 + 2
+            r3 = r0 + 3
+            r4 = r0 + 4
+            w0 = _ZERO if odd else _E0
+            w1 = _E3 if odd else _E1
+            w2 = _E2
+            w3 = _E1 if odd else _E3
+            w4 = _E0 if odd else _ZERO
+            weight[y, 0] = 0
+            for x in range(1, width - 1):
+                lo0 = np.float32(np.float32(_ZERO + np.float32(horizontal[r0, x, 0] * w0))
+                                 + np.float32(horizontal[r1, x, 0] * w1))
+                lo1 = np.float32(np.float32(_ZERO + np.float32(horizontal[r0, x, 1] * w0))
+                                 + np.float32(horizontal[r1, x, 1] * w1))
+                lo2 = np.float32(np.float32(_ZERO + np.float32(horizontal[r0, x, 2] * w0))
+                                 + np.float32(horizontal[r1, x, 2] * w1))
+                lo0 = np.float32(lo0 + np.float32(horizontal[r2, x, 0] * w2))
+                lo1 = np.float32(lo1 + np.float32(horizontal[r2, x, 1] * w2))
+                lo2 = np.float32(lo2 + np.float32(horizontal[r2, x, 2] * w2))
+                lo0 = np.float32(np.float32(lo0 + np.float32(horizontal[r3, x, 0] * w3))
+                                 + np.float32(horizontal[r4, x, 0] * w4))
+                lo1 = np.float32(np.float32(lo1 + np.float32(horizontal[r3, x, 1] * w3))
+                                 + np.float32(horizontal[r4, x, 1] * w4))
+                lo2 = np.float32(np.float32(lo2 + np.float32(horizontal[r3, x, 2] * w3))
+                                 + np.float32(horizontal[r4, x, 2] * w4))
+                v0 = np.float32(np.float32(np.float32(source[y, x, 0]) * factor - lo0) / np.float32(lo0 + _POINT_ONE))
+                v1 = np.float32(np.float32(np.float32(source[y, x, 1]) * factor - lo1) / np.float32(lo1 + _POINT_ONE))
+                v2 = np.float32(np.float32(np.float32(source[y, x, 2]) * factor - lo2) / np.float32(lo2 + _POINT_ONE))
+                strength = np.float32(np.float32(np.float32(_ZERO + abs(v0)) + abs(v1)) + abs(v2))
+                weight[y, x] = min(65535, int(np.float32(strength * _W_SCALE)))
+            weight[y, width - 1] = 0
+        elif first == 0 and last == 5 and channels == 1 and width > 2:
+            r0 = top - origin
+            r1 = r0 + 1
+            r2 = r0 + 2
+            r3 = r0 + 3
+            r4 = r0 + 4
+            w0 = _ZERO if odd else _E0
+            w1 = _E3 if odd else _E1
+            w2 = _E2
+            w3 = _E1 if odd else _E3
+            w4 = _E0 if odd else _ZERO
+            weight[y, 0] = 0
+            for x in range(1, width - 1):
+                lo = np.float32(np.float32(_ZERO + np.float32(horizontal[r0, x, 0] * w0))
+                                + np.float32(horizontal[r1, x, 0] * w1))
+                lo = np.float32(lo + np.float32(horizontal[r2, x, 0] * w2))
+                lo = np.float32(np.float32(lo + np.float32(horizontal[r3, x, 0] * w3))
+                                + np.float32(horizontal[r4, x, 0] * w4))
+                v = np.float32(np.float32(np.float32(source[y, x, 0]) * factor - lo) / np.float32(lo + _POINT_ONE))
+                weight[y, x] = min(65535, int(np.float32(np.float32(abs(v) * _THREE) * _W_SCALE)))
+            weight[y, width - 1] = 0
+        else:
+            total = np.float32(0)
+            for k in range(first, last):
+                total = np.float32(total + weights[k])
+            for x in range(width):
+                if width > 2 and (x == 0 or x == width - 1):
+                    weight[y, x] = 0
+                    continue
+                strength = np.float32(0)
+                for c in range(channels):
+                    lower = np.float32(0)
+                    for k in range(first, last):
+                        sample = horizontal[top + k - origin, x, c]
+                        lower = np.float32(lower + np.float32(sample * weights[k]))
+                    lower = np.float32(lower / total)
+                    denom = np.float32(lower + _POINT_ONE)
+                    value = np.float32(np.float32(np.float32(source[y, x, c]) * factor - lower) / denom)
+                    if c < 3:
+                        strength = np.float32(strength + abs(value))
+                if channels == 1:
+                    strength = np.float32(strength * _THREE)
+                elif channels == 2:
+                    strength = np.float32(strength * _ONE_HALF)
+                weight[y, x] = min(65535, int(np.float32(strength * _W_SCALE)))
+
+
+@njit(nogil=True)
+def _merge_rows_raw(horizontal, source, weight, accumulator, best, winner,
+                    coarse_height, factor, first, index, origin, start, stop):
+    _, width, channels = source.shape
+    for y in range(start, stop):
+        top = y // 2 - 2
+        odd = y & 1
+        weights = _ODD if odd else _EVEN
+        k_first = max(0, -top)
+        k_last = min(5, coarse_height - top)
+        fast5 = (k_first == 0 and k_last == 5)
+        if fast5:
+            r0 = top - origin
+            r1 = r0 + 1
+            r2 = r0 + 2
+            r3 = r0 + 3
+            r4 = r0 + 4
+            w0 = _ZERO if odd else _E0
+            w1 = _E3 if odd else _E1
+            w2 = _E2
+            w3 = _E1 if odd else _E3
+            w4 = _E0 if odd else _ZERO
+        else:
+            total = np.float32(0)
+            for k in range(k_first, k_last):
+                total = np.float32(total + weights[k])
+        for x in range(width):
+            w = weight[y, x]
+            if not first and w <= best[y, x]:
+                continue
+            best[y, x] = w
+            if winner is not None:
+                winner[y, x] = index
+            if fast5 and channels == 3:
+                lo0 = np.float32(np.float32(_ZERO + np.float32(horizontal[r0, x, 0] * w0))
+                                 + np.float32(horizontal[r1, x, 0] * w1))
+                lo1 = np.float32(np.float32(_ZERO + np.float32(horizontal[r0, x, 1] * w0))
+                                 + np.float32(horizontal[r1, x, 1] * w1))
+                lo2 = np.float32(np.float32(_ZERO + np.float32(horizontal[r0, x, 2] * w0))
+                                 + np.float32(horizontal[r1, x, 2] * w1))
+                lo0 = np.float32(lo0 + np.float32(horizontal[r2, x, 0] * w2))
+                lo1 = np.float32(lo1 + np.float32(horizontal[r2, x, 1] * w2))
+                lo2 = np.float32(lo2 + np.float32(horizontal[r2, x, 2] * w2))
+                lo0 = np.float32(np.float32(lo0 + np.float32(horizontal[r3, x, 0] * w3))
+                                 + np.float32(horizontal[r4, x, 0] * w4))
+                lo1 = np.float32(np.float32(lo1 + np.float32(horizontal[r3, x, 1] * w3))
+                                 + np.float32(horizontal[r4, x, 1] * w4))
+                lo2 = np.float32(np.float32(lo2 + np.float32(horizontal[r3, x, 2] * w3))
+                                 + np.float32(horizontal[r4, x, 2] * w4))
+                accumulator[y, x, 0] = np.float32(np.float32(np.float32(source[y, x, 0]) * factor - lo0) / np.float32(lo0 + _POINT_ONE))
+                accumulator[y, x, 1] = np.float32(np.float32(np.float32(source[y, x, 1]) * factor - lo1) / np.float32(lo1 + _POINT_ONE))
+                accumulator[y, x, 2] = np.float32(np.float32(np.float32(source[y, x, 2]) * factor - lo2) / np.float32(lo2 + _POINT_ONE))
+            elif fast5 and channels == 1:
+                lo = np.float32(np.float32(_ZERO + np.float32(horizontal[r0, x, 0] * w0))
+                                + np.float32(horizontal[r1, x, 0] * w1))
+                lo = np.float32(lo + np.float32(horizontal[r2, x, 0] * w2))
+                lo = np.float32(np.float32(lo + np.float32(horizontal[r3, x, 0] * w3))
+                                + np.float32(horizontal[r4, x, 0] * w4))
+                accumulator[y, x, 0] = np.float32(np.float32(np.float32(source[y, x, 0]) * factor - lo) / np.float32(lo + _POINT_ONE))
+            else:
+                for c in range(channels):
+                    lower = np.float32(0)
+                    for k in range(k_first, k_last):
+                        sample = horizontal[top + k - origin, x, c]
+                        lower = np.float32(lower + np.float32(sample * weights[k]))
+                    if not fast5:
+                        lower = np.float32(lower / total)
+                    accumulator[y, x, c] = np.float32(
+                        np.float32(np.float32(source[y, x, c]) * factor - lower) / np.float32(lower + _POINT_ONE))
+
+
 def _down_from_raw(native, source, output, factor, cancel):
     height, _, channels = source.shape
     out_height, out_width, _ = output.shape
@@ -743,12 +1005,33 @@ def _down_from_raw(native, source, output, factor, cancel):
     out_nd = _as_ndarray(output)
     factor_f = float(factor)
 
-    def band(start, stop, scratch):
-        cancel()
-        native.of_pyr_down_from_raw(src_nd, out_nd, _as_ndarray(scratch),
-                                    factor_f, int(start), int(stop))
+    if native is not None:
+        def band(start, stop, scratch):
+            cancel()
+            native.of_pyr_down_from_raw(src_nd, out_nd, _as_ndarray(scratch),
+                                        factor_f, int(start), int(stop))
 
-    run_bands(out_height, _PYRAMID_BAND, band,
+        run_bands(out_height, _PYRAMID_BAND, band,
+                  scratch_bytes=int(np.prod(scratch_shape)) * 4,
+                  workspace=lambda: np.empty(scratch_shape, np.float32))
+        return
+
+    factor32 = np.float32(factor)
+    out_flat = out_nd.reshape(out_height, out_width * channels) if out_nd.flags.c_contiguous else None
+
+    def band_nb(start, stop, scratch):
+        cancel()
+        origin = max(0, 2 * start - 1)
+        end = min(height, 2 * stop + 1)
+        horizontal = scratch[:end - origin]
+        _down_horizontal_raw(src_nd, horizontal, factor32, origin)
+        if out_flat is not None:
+            _down_vertical_flat(horizontal.reshape(end - origin, out_width * channels),
+                                out_flat, height, origin, start, stop)
+        else:
+            _down_vertical(horizontal, out_nd, height, origin, start, stop)
+
+    run_bands(out_height, _PYRAMID_BAND, band_nb,
               scratch_bytes=int(np.prod(scratch_shape)) * 4,
               workspace=lambda: np.empty(scratch_shape, np.float32))
 
@@ -763,13 +1046,29 @@ def _level0_weights_from_raw(native, coarse, source, weight, factor, cancel):
     weight_nd = _as_ndarray(weight)
     factor_f = float(factor)
 
-    def band(start, stop, scratch):
-        cancel()
-        native.of_pyr_level0_weights_from_raw(coarse_nd, src_nd, weight_nd,
-                                              _as_ndarray(scratch), factor_f,
-                                              int(start), int(stop))
+    if native is not None:
+        def band(start, stop, scratch):
+            cancel()
+            native.of_pyr_level0_weights_from_raw(coarse_nd, src_nd, weight_nd,
+                                                  _as_ndarray(scratch), factor_f,
+                                                  int(start), int(stop))
 
-    run_bands(height, _PYRAMID_BAND, band,
+        run_bands(height, _PYRAMID_BAND, band,
+                  scratch_bytes=int(np.prod(scratch_shape)) * 4,
+                  workspace=lambda: np.empty(scratch_shape, np.float32))
+        return
+
+    factor32 = np.float32(factor)
+
+    def band_nb(start, stop, scratch):
+        cancel()
+        origin = max(0, start // 2 - 2)
+        end = min(coarse_height, (stop - 1) // 2 + 3)
+        horizontal = scratch[:end - origin]
+        _up_horizontal(coarse_nd, horizontal, origin)
+        _detail_weight_rows_raw(horizontal, src_nd, weight_nd, coarse_height, factor32, origin, start, stop)
+
+    run_bands(height, _PYRAMID_BAND, band_nb,
               scratch_bytes=int(np.prod(scratch_shape)) * 4,
               workspace=lambda: np.empty(scratch_shape, np.float32))
 
@@ -790,13 +1089,30 @@ def _level0_merge_from_raw(native, coarse, source, weight, accumulator, best,
     first_b = bool(first)
     idx_u = int(index)
 
-    def band(start, stop, scratch):
-        cancel()
-        native.of_pyr_level0_merge_from_raw(
-            coarse_nd, src_nd, weight_nd, acc_nd, best_nd, win_nd,
-            _as_ndarray(scratch), factor_f, first_b, idx_u, int(start), int(stop))
+    if native is not None:
+        def band(start, stop, scratch):
+            cancel()
+            native.of_pyr_level0_merge_from_raw(
+                coarse_nd, src_nd, weight_nd, acc_nd, best_nd, win_nd,
+                _as_ndarray(scratch), factor_f, first_b, idx_u, int(start), int(stop))
 
-    run_bands(height, _PYRAMID_BAND, band,
+        run_bands(height, _PYRAMID_BAND, band,
+                  scratch_bytes=int(np.prod(scratch_shape)) * 4,
+                  workspace=lambda: np.empty(scratch_shape, np.float32))
+        return
+
+    factor32 = np.float32(factor)
+
+    def band_nb(start, stop, scratch):
+        cancel()
+        origin = max(0, start // 2 - 2)
+        end = min(coarse_height, (stop - 1) // 2 + 3)
+        horizontal = scratch[:end - origin]
+        _up_horizontal(coarse_nd, horizontal, origin)
+        _merge_rows_raw(horizontal, src_nd, weight_nd, acc_nd, best_nd, win_nd,
+                        coarse_height, factor32, first_b, idx_u, origin, start, stop)
+
+    run_bands(height, _PYRAMID_BAND, band_nb,
               scratch_bytes=int(np.prod(scratch_shape)) * 4,
               workspace=lambda: np.empty(scratch_shape, np.float32))
 
@@ -841,16 +1157,24 @@ def fuse_pyramid(frames, shape, img_resize, smoothing, should_cancel, progress_c
     winner = create_frame(shape[:2], np.uint16) if focus_callback is not None else None
 
     native = load_native()
+    hooks_default = (
+        _normalize is _DEFAULT_NORMALIZE
+        and _down is _DEFAULT_DOWN
+        and _down_horizontal is _DEFAULT_DOWN_HORIZONTAL
+        and _down_vertical is _DEFAULT_DOWN_VERTICAL
+        and _synthesize is _DEFAULT_SYNTHESIZE
+        and _up_horizontal is _DEFAULT_UP_HORIZONTAL
+        and _detail_weight_rows is _DEFAULT_DETAIL_WEIGHT_ROWS
+        and _merge_rows is _DEFAULT_MERGE_ROWS
+    )
     use_native_pyr = (
         native is not None
         and hasattr(native, 'of_pyr_down_from_raw')
-        and _normalize is _DEFAULT_NORMALIZE
-        and _down is _DEFAULT_DOWN
-        and _synthesize is _DEFAULT_SYNTHESIZE
-        and _merge_rows is _DEFAULT_MERGE_ROWS
+        and hooks_default
     )
+    use_raw_pyr = use_native_pyr or (native is None and hooks_default)
     if detail_levels:
-        if use_native_pyr:
+        if use_raw_pyr:
             rolling_even = (create_frame((levels[2][0] * levels[2][1] * channels,), np.float32)
                             if len(levels) >= 3 else None)
             rolling_odd = create_frame((levels[1][0] * levels[1][1] * channels,), np.float32)
@@ -909,20 +1233,21 @@ def fuse_pyramid(frames, shape, img_resize, smoothing, should_cancel, progress_c
         if detail_levels or index == 0:
             source = pixels[:, :, None] if is_gray else pixels
             factor = np.float32(scale / (65280.0 if is_u8 else 65535.0))
-            if (use_native_pyr and detail_levels
+            if (use_raw_pyr and detail_levels
                     and source.dtype in (np.uint8, np.uint16)):
                 (height0, width0), (ch0, cw0) = detail_levels[0]
                 coarse0 = (coarsest if (index == 0 and len(detail_levels) == 1)
                            else rolling[1][:ch0 * cw0 * channels].reshape(ch0, cw0, channels))
-                _down_from_raw(native, source, coarse0, factor, cancel)
+                raw_native = native if use_native_pyr else None
+                _down_from_raw(raw_native, source, coarse0, factor, cancel)
                 weights0 = weight_plane[:height0 * width0].reshape(height0, width0)
-                _level0_weights_from_raw(native, coarse0, source, weights0, factor, cancel)
+                _level0_weights_from_raw(raw_native, coarse0, source, weights0, factor, cancel)
                 if parameter > 0:
                     radius = np.float32(np.float32(max(height0, width0)) * parameter / np.float32(100))
                     _filter(weights0, radius, cancel, overwrite=True)
                 level_winner = winner
                 _level0_merge_from_raw(
-                    native, coarse0, source, weights0, accumulators[0],
+                    raw_native, coarse0, source, weights0, accumulators[0],
                     maxima[0], level_winner, factor, index == 0, index, cancel)
                 del source, pixels
                 fine = coarse0
