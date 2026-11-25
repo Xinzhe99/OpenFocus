@@ -248,10 +248,41 @@ _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 _FORBIDDEN_PRESIGNED_HEADERS = frozenset({
     "authorization",
     "cookie",
-    "x-openfocus-platform",
-    "x-openfocus-run",
-    "x-openfocus-run-started",
 })
+_FORBIDDEN_PRESIGNED_PREFIXES = ("x-openfocus-",)
+
+
+def _is_forbidden_presigned_header(name: str) -> bool:
+    low = name.lower()
+    return low in _FORBIDDEN_PRESIGNED_HEADERS or low.startswith(_FORBIDDEN_PRESIGNED_PREFIXES)
+
+
+def _merge_presigned_headers(
+    base: Mapping[str, str],
+    extra: Mapping[str, Any],
+    *,
+    protected_lower: frozenset[str] = frozenset(),
+) -> dict[str, str]:
+    merged: dict[str, str] = {}
+    key_by_lower: dict[str, str] = {}
+    for k, v in base.items():
+        merged[k] = v
+        key_by_lower[k.lower()] = k
+    for key, val in extra.items():
+        if not isinstance(key, str) or not isinstance(val, str):
+            continue
+        low = key.lower()
+        if _is_forbidden_presigned_header(key) or low in protected_lower:
+            continue
+        if "\r" in key or "\n" in key or "\r" in val or "\n" in val:
+            continue
+        existing = key_by_lower.get(low)
+        if existing is not None:
+            merged[existing] = val
+        else:
+            merged[key] = val
+            key_by_lower[low] = key
+    return merged
 
 
 # ---------------------------------------------------------------------------
@@ -722,21 +753,21 @@ def _extract_upload_target(
     if isinstance(entry, str):
         url = entry
     elif isinstance(entry, Mapping):
+        if "method" in entry and entry["method"] is not None:
+            method_val = entry["method"]
+            if not isinstance(method_val, str) or method_val.strip().upper() != "PUT":
+                raise GalleryClientError(
+                    "invalid_response",
+                    f"Unsupported presigned upload method for {kind}",
+                    stage="inspect",
+                    points_deducted=False,
+                )
         if isinstance(entry.get("url"), str):
             url = entry["url"]
         if isinstance(entry.get("headers"), Mapping):
             raw_headers = entry["headers"]
 
-    safe_headers: dict[str, str] = {"Content-Type": "image/webp"}
-    for key, val in raw_headers.items():
-        if not isinstance(key, str) or not isinstance(val, str):
-            continue
-        if key.lower() in _FORBIDDEN_PRESIGNED_HEADERS:
-            continue
-        if "\r" in key or "\n" in key or "\r" in val or "\n" in val:
-            continue
-        safe_headers[key] = val
-
+    safe_headers = _merge_presigned_headers({"Content-Type": "image/webp"}, raw_headers)
     return url, safe_headers
 
 
@@ -1054,11 +1085,32 @@ class GalleryClient:
         now_after = self._clock()
 
         with self._config_lock:
-            if response.status == 304 and self._config_cache is not None:
-                self._config_expires_at = now_after + ttl
-                if new_etag:
-                    self._config_etag = new_etag
-                return copy.deepcopy(self._config_cache)
+            if response.status == 304:
+                if self._config_cache is not None:
+                    self._config_expires_at = now_after + ttl
+                    if new_etag:
+                        self._config_etag = new_etag
+                    return copy.deepcopy(self._config_cache)
+                # Cache was cleared while If-None-Match was in flight; never cache {}
+                refetch_needed = True
+            else:
+                refetch_needed = False
+
+        if refetch_needed:
+            data, response = self._request_json(
+                "GET",
+                ROUTES["config"],
+                extra_headers=None,
+                auth_optional=True,
+                respect_backoff=not bypass_backoff,
+            )
+            if response.status == 304:
+                raise GalleryClientError("invalid_response", "Unexpected 304 without cached config", status=304)
+            ttl = _parse_cache_control_ttl(response.headers, default_ttl=DEFAULT_CONFIG_TTL_SEC)
+            new_etag = response.headers.get("etag")
+            now_after = self._clock()
+
+        with self._config_lock:
             if ttl > 0:
                 self._config_cache = copy.deepcopy(data)
                 self._config_expires_at = now_after + ttl
@@ -1456,19 +1508,14 @@ class GalleryClient:
                 points_deducted=False,
             )
         payload = bytes(webp_bytes)
-        put_headers: dict[str, str] = {
-            "Content-Type": "image/webp",
-            "Content-Length": str(len(payload)),
-        }
-        if headers:
-            for k, v in headers.items():
-                if not isinstance(k, str) or not isinstance(v, str):
-                    continue
-                if k.lower() in _FORBIDDEN_PRESIGNED_HEADERS:
-                    continue
-                if "\r" in k or "\n" in k or "\r" in v or "\n" in v:
-                    continue
-                put_headers[k] = v
+        put_headers = _merge_presigned_headers(
+            {
+                "Content-Type": "image/webp",
+                "Content-Length": str(len(payload)),
+            },
+            headers or {},
+            protected_lower=frozenset({"content-length"}),
+        )
 
         effective_timeout = self.timeout if timeout is None else float(timeout)
         try:

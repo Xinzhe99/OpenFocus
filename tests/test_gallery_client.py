@@ -702,3 +702,105 @@ def test_https_requests_use_openfocus_tls_handlers_and_short_timeout(monkeypatch
         ("https://account.openfocus.top/api/v1/config", 5.0),
         ("https://account.openfocus.top/api/v1/config", 5.0),
     ]
+
+
+def test_presigned_upload_strips_any_openfocus_header_dedupes_content_type_and_validates_method():
+    seen_put_headers: list[dict[str, str]] = []
+
+    def transport(method, url, headers, body, timeout):
+        if method == "PUT":
+            seen_put_headers.append(dict(headers))
+            return gc.HttpResponse(status=200, headers={}, body=b"")
+        return _json_response({
+            "upload_id": "upl_hdr",
+            "expires_at": "2026-11-26T10:00:00Z",
+            "ai_tags": ["other"],
+            "upload_urls": {
+                "full": {
+                    "url": "https://r2.example.com/full.webp",
+                    "method": "PUT",
+                    "headers": {
+                        "content-type": "image/webp",
+                        "X-OpenFocus-Custom-Secret": "leak",
+                        "Authorization": "Bearer leak",
+                        "Cookie": "sid=leak",
+                        "x-amz-checksum": "abc",
+                    },
+                },
+                "thumb": {
+                    "url": "https://r2.example.com/thumb.webp",
+                    "method": "PUT",
+                    "headers": {"CONTENT-TYPE": "image/webp"},
+                },
+            },
+        })
+
+    client = gc.GalleryClient(token="tok", transport=transport)
+    client.upload_work_atomic(b"WEBPt", b"WEBPm", {"width": 10, "height": 10})
+    assert len(seen_put_headers) == 2
+    for hdrs in seen_put_headers:
+        lower_keys = [k.lower() for k in hdrs]
+        assert lower_keys.count("content-type") == 1
+        assert not any(k.startswith("x-openfocus-") for k in lower_keys)
+        assert "authorization" not in lower_keys
+        assert "cookie" not in lower_keys
+    assert seen_put_headers[0]["x-amz-checksum"] == "abc"
+
+    # Non-PUT method in upload_urls must be rejected before any PUT or confirm
+    bad_calls: list[tuple[str, str]] = []
+
+    def bad_method_transport(method, url, headers, body, timeout):
+        bad_calls.append((method, url))
+        return _json_response({
+            "upload_id": "upl_bad_method",
+            "upload_urls": {
+                "full": {"url": "https://r2.example.com/full.webp", "method": "POST", "headers": {}},
+                "thumb": {"url": "https://r2.example.com/thumb.webp", "method": "PUT", "headers": {}},
+            },
+        })
+
+    bad_client = gc.GalleryClient(token="tok", transport=bad_method_transport)
+    with pytest.raises(gc.GalleryClientError) as exc:
+        bad_client.upload_work_atomic(b"WEBPt", b"WEBPm", {"width": 10, "height": 10})
+    assert exc.value.code == "invalid_response"
+    assert exc.value.stage == "inspect"
+    assert exc.value.points_deducted is False
+    assert len(bad_calls) == 1
+
+
+def test_get_config_304_after_concurrent_cache_clear_refetches_instead_of_caching_empty():
+    clock = _FakeClock(100.0)
+    calls: list[dict[str, str]] = []
+    client_holder: list[gc.GalleryClient] = []
+
+    def transport(method, url, headers, body, timeout):
+        calls.append(dict(headers))
+        if len(calls) == 1:
+            return _json_response(
+                {"gallery_enabled": True, "slide_interval_sec": 5},
+                status=200,
+                headers={"Cache-Control": "max-age=10", "ETag": '"v1"'},
+            )
+        if len(calls) == 2:
+            # Simulate another thread clearing config cache while If-None-Match is in flight
+            assert headers.get("If-None-Match") == '"v1"'
+            client_holder[0].clear_config_cache()
+            return gc.HttpResponse(status=304, headers={"Cache-Control": "max-age=60", "ETag": '"v1"'}, body=b"")
+        assert "If-None-Match" not in headers
+        return _json_response(
+            {"gallery_enabled": True, "slide_interval_sec": 8},
+            status=200,
+            headers={"Cache-Control": "max-age=60", "ETag": '"v2"'},
+        )
+
+    client = gc.GalleryClient(transport=transport, clock=clock)
+    client_holder.append(client)
+    assert client.get_config()["slide_interval_sec"] == 5
+    clock.advance(15.0)
+    refetched = client.get_config()
+    assert refetched == {"gallery_enabled": True, "slide_interval_sec": 8}
+    assert len(calls) == 3
+    # Subsequent cached read returns the refetched config, never {}
+    clock.advance(10.0)
+    assert client.get_config() == {"gallery_enabled": True, "slide_interval_sec": 8}
+    assert len(calls) == 3

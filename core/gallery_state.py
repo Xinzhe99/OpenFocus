@@ -764,6 +764,7 @@ class GalleryStateStore(QObject):
         self._feed_loaded.connect(self._apply_feed)
         self._notifications_loaded.connect(self._apply_notifications)
         self._operation_failed.connect(self._handle_operation_failed)
+        self.destroyed.connect(self.shutdown)
 
         # Low-frequency polling timer (no WebSocket)
         self._poll_timer = QTimer(self)
@@ -907,12 +908,23 @@ class GalleryStateStore(QObject):
             self._on_poll_tick()
 
     def stop_polling(self) -> None:
-        if self._poll_timer.isActive():
-            self._poll_timer.stop()
+        try:
+            if self._poll_timer.isActive():
+                self._poll_timer.stop()
+        except RuntimeError:
+            pass
 
     def shutdown(self) -> None:
         self._closed = True
         self.stop_polling()
+
+    def _safe_emit(self, signal: Any, *args: Any) -> None:
+        if self._closed:
+            return
+        try:
+            signal.emit(*args)
+        except RuntimeError:
+            pass
 
     def clear_account_state(self) -> None:
         """Clear signed-in account state on sign-out without touching config."""
@@ -967,15 +979,12 @@ class GalleryStateStore(QObject):
             try:
                 raw = self._client.get_config(force_refresh=force_refresh)
                 cfg = GalleryConfig.from_dict(raw)
-                if not self._closed:
-                    self._config_loaded.emit(cfg)
+                self._safe_emit(self._config_loaded, cfg)
             except GalleryClientError as exc:
-                if not self._closed:
-                    self._operation_failed.emit("config", exc.code)
+                self._safe_emit(self._operation_failed, "config", exc.code)
             except Exception:
                 _logger.debug("Unexpected gallery config refresh error", exc_info=True)
-                if not self._closed:
-                    self._operation_failed.emit("config", "internal_error")
+                self._safe_emit(self._operation_failed, "config", "internal_error")
 
         return self._submit("config", _work)
 
@@ -994,15 +1003,12 @@ class GalleryStateStore(QObject):
             try:
                 raw = self._client.get_me(bypass_backoff=bypass_backoff)
                 profile = AccountProfile.from_dict(raw)
-                if not self._closed:
-                    self._profile_loaded.emit(profile)
+                self._safe_emit(self._profile_loaded, profile)
             except GalleryClientError as exc:
-                if not self._closed:
-                    self._operation_failed.emit("account", exc.code)
+                self._safe_emit(self._operation_failed, "account", exc.code)
             except Exception:
                 _logger.debug("Unexpected gallery account refresh error", exc_info=True)
-                if not self._closed:
-                    self._operation_failed.emit("account", "internal_error")
+                self._safe_emit(self._operation_failed, "account", "internal_error")
 
         return self._submit("account", _work)
 
@@ -1040,15 +1046,12 @@ class GalleryStateStore(QObject):
                             work = GalleryWork.from_dict(item)
                             if work.work_id:
                                 works.append(work)
-                if not self._closed:
-                    self._feed_loaded.emit(works)
+                self._safe_emit(self._feed_loaded, works)
             except GalleryClientError as exc:
-                if not self._closed:
-                    self._operation_failed.emit("feed", exc.code)
+                self._safe_emit(self._operation_failed, "feed", exc.code)
             except Exception:
                 _logger.debug("Unexpected gallery feed refresh error", exc_info=True)
-                if not self._closed:
-                    self._operation_failed.emit("feed", "internal_error")
+                self._safe_emit(self._operation_failed, "feed", "internal_error")
 
         return self._submit("feed", _work)
 
@@ -1070,15 +1073,12 @@ class GalleryStateStore(QObject):
                             note = GalleryNotification.from_dict(item)
                             if note.notification_id:
                                 parsed.append(note)
-                if not self._closed:
-                    self._notifications_loaded.emit(parsed)
+                self._safe_emit(self._notifications_loaded, parsed)
             except GalleryClientError as exc:
-                if not self._closed:
-                    self._operation_failed.emit("notifications", exc.code)
+                self._safe_emit(self._operation_failed, "notifications", exc.code)
             except Exception:
                 _logger.debug("Unexpected gallery notifications refresh error", exc_info=True)
-                if not self._closed:
-                    self._operation_failed.emit("notifications", "internal_error")
+                self._safe_emit(self._operation_failed, "notifications", "internal_error")
 
         return self._submit("notifications", _work)
 

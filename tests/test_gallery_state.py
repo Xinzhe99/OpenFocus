@@ -358,3 +358,32 @@ def test_state_store_offline_builtin_fallback_and_silent_degradation(qapp):
     assert len(empty_fallback) == 1
     assert empty_fallback[0].is_builtin_fallback is True
     store.shutdown()
+
+
+def test_state_store_safe_emit_and_destroyed_lifecycle(qapp):
+    pending_tasks: list[Any] = []
+
+    def transport(method, url, headers, body, timeout):
+        return _json_response({"gallery_enabled": True, "slide_interval_sec": 5})
+
+    client = gc.GalleryClient(token="tok", transport=transport)
+    store = gs.GalleryStateStore(client=client, background_runner=pending_tasks.append)
+    store.start_polling()
+    assert store.refresh_config(force_refresh=True) is True
+    assert len(pending_tasks) == 1
+
+    # Simulate Qt C++ deletion while a worker is still in flight
+    store.deleteLater()
+    qapp.processEvents()
+
+    # Running the queued worker task after Qt destruction must not raise RuntimeError
+    pending_tasks[0]()
+
+    # Also verify _safe_emit explicitly swallows RuntimeError from deleted signals
+    class _DeletedSignal:
+        def emit(self, *args):
+            raise RuntimeError("wrapped C/C++ object of type GalleryStateStore has been deleted")
+
+    store2 = gs.GalleryStateStore(client=client, background_runner=lambda fn: fn())
+    store2._safe_emit(_DeletedSignal(), "payload")
+    store2.shutdown()
