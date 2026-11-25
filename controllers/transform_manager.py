@@ -303,6 +303,14 @@ class TransformManager:
         called on every stack mutation and on clear."""
         window = self.window
 
+        key = getattr(window, "_roi_display_key", None)
+        if key is not None:
+            release = getattr(window, "_release_roi_regions", None)
+            if callable(release):
+                release(key)
+            else:
+                window._roi_display_key = None
+
         window.roi_aligned_images = []
         window.roi_aligned_raw_count = 0
         window.roi_mode_active = False

@@ -933,8 +933,11 @@ class SourceManager(QObject):
 
         # 同一文件夹再次导入按"重新加载"处理：追加只会得到帧数翻倍的
         # 重复栈（恢复会话后再导入、拖同一文件夹两次都触发过）
-        same_folder = (os.path.normcase(os.path.abspath(folder_path)) == os.path.normcase(
-            os.path.abspath(getattr(window, "current_folder_path", "") or "")))
+        current_folder = getattr(window, "current_folder_path", "") or ""
+        same_folder = bool(current_folder) and (
+            os.path.normcase(os.path.abspath(folder_path))
+            == os.path.normcase(os.path.abspath(current_folder))
+        )
         if same_folder and getattr(window, "linear_dng_metadata", None) is not None:
             linear_raw = True
         else:

@@ -222,12 +222,19 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   control sockets up to the platform path limit.
 
 ### Fixed
+- Preserve saved result metadata and protect original stack files during
+  desktop exports. Release ROI previews and finish export and batch cleanup
+  safely when closing the window. Resolve Qt UI font fallback families and
+  find uppercase multi-page TIFF containers when reopening projects.
 - Bundle trusted CA roots with the desktop app so sign-in and other HTTPS
   requests can verify server certificates on macOS.
 - Keep desktop sign-in responsive when the browser opens an idle connection,
   handle unsupported system proxy schemes, and recover stale macOS Keychain
   sessions after a confirmed write mismatch.
 - Restore embedded TIFF thumbnail previews in Batch Image Converter.
+- Keep desktop updates recoverable across channel changes, failed delta
+  downloads and interrupted installation. Verify the Windows website
+  installer against the release's published size and SHA-256 digest.
 - Use the Darwin C ABI for system memory and CPU topology probes, including
   64-bit page sizes and validated system counter lengths.
 - Admit large JPEG stacks for ECC using reduced grayscale decodes, including
