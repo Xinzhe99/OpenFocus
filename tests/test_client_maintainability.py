@@ -14,7 +14,6 @@ from PyQt6.QtCore import QEvent, QObject, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import QListWidget, QListWidgetItem, QMessageBox, QSlider, QWidget
 
-from controllers.batch_manager import BatchManager, _ORPHAN_WORKERS
 from controllers.export_manager import ExportManager, _window_unavailable
 from controllers.output_manager import OutputManager, OutputRecord
 from controllers.source_manager import SourceManager
@@ -377,7 +376,7 @@ def test_output_manager_atomic_publish_rollback_and_multidelete_wipe_sync(qapp, 
     window.fusion_result = None
     window.wipe_active = True
     wipe_refreshes = []
-    window.refresh_wipe_controls = lambda: wipe_refreshes.append(True)
+    window.refresh_wipe_controls = lambda: wipe_refreshes.append(window.fusion_result)
 
     mgr = OutputManager(window)
     rec_a = OutputRecord.create(img_a, "First")
@@ -401,7 +400,7 @@ def test_output_manager_atomic_publish_rollback_and_multidelete_wipe_sync(qapp, 
     mgr.delete_selected_output_images()
     assert window.output_list.count() == 0
     assert window.fusion_result is None
-    assert wipe_refreshes == [True]
+    assert wipe_refreshes == [None]
 
     window.deleteLater()
     qapp.processEvents()
@@ -425,64 +424,6 @@ def test_output_manager_validate_export_path_preserves_one_arg_contract():
     rec_with_sources.source_paths = ("/tmp/src.png",)
     mgr._validate_export_path("/tmp/out.png", rec_with_sources)
     assert calls2 == [("/tmp/out.png", ("/tmp/src.png",))]
-
-
-# ---------------------------------------------------------------------------
-# 5. BatchManager teardown closes progress dialog & discards orphan safely
-# ---------------------------------------------------------------------------
-
-def test_batch_manager_teardown_closes_dialog_and_handles_orphans():
-    closed = []
-    cancelled = []
-    finished_slots = []
-
-    class FakeDialog:
-        def finish(self):
-            closed.append("finish")
-
-        def deleteLater(self):
-            closed.append("deleteLater")
-
-    class FakeSignal:
-        def connect(self, fn):
-            finished_slots.append(fn)
-
-    class FakeThread:
-        def __init__(self):
-            self.finished = FakeSignal()
-            self.quit_called = False
-
-        def quit(self):
-            self.quit_called = True
-
-        def isRunning(self):
-            return True
-
-    class FakeWorker:
-        def cancel(self):
-            cancelled.append(True)
-
-    mgr = BatchManager(SimpleNamespace(_shutting_down=False))
-    mgr._progress_dialog = FakeDialog()
-    mgr._worker = FakeWorker()
-    mgr._thread = FakeThread()
-
-    before = list(_ORPHAN_WORKERS)
-    try:
-        mgr._teardown_worker()
-        assert closed == ["finish", "deleteLater"]
-        assert mgr._progress_dialog is None
-        assert cancelled == [True]
-        assert mgr._thread.quit_called
-        assert len(finished_slots) == 1
-        assert (mgr._thread, mgr._worker) in _ORPHAN_WORKERS
-
-        # Firing discard twice must never raise ValueError.
-        finished_slots[0]()
-        finished_slots[0]()
-        assert (mgr._thread, mgr._worker) not in _ORPHAN_WORKERS
-    finally:
-        _ORPHAN_WORKERS[:] = before
 
 
 # ---------------------------------------------------------------------------

@@ -523,6 +523,56 @@ def test_child_diagnostics_distinguish_request_decode_from_result_encode(qapp, s
     assert fingerprints[0] != fingerprints[1]
 
 
+@pytest.mark.parametrize('persistent', [False, True])
+def test_invalidated_mapped_result_is_discarded_before_acceptance(qapp, scratch, monkeypatch, persistent):
+    from threading import Event
+    from core import render_process
+
+    render_process.shutdown_persistent_worker()
+    if persistent:
+        monkeypatch.delenv('OPENFOCUS_DISABLE_PERSISTENT_RENDER_WORKER', raising=False)
+    else:
+        monkeypatch.setenv('OPENFOCUS_DISABLE_PERSISTENT_RENDER_WORKER', '1')
+
+    image = np.arange(48 * 64 * 3, dtype=np.uint16).reshape(48, 64, 3)
+    options = dict(algorithm='openfocus_a', thread_count=1, use_gpu=False,
+                   tile_enabled=False, exposure_match=False)
+    stale = render_process.RenderProcessWorker([image, image], **options)
+    current = Event()
+    current.set()
+    stale.disk_cache = {'is_current': current.is_set}
+    receive = render_process._RenderExchange.receive
+    pending_files = []
+    adopted_packets = []
+
+    def invalidate_before_acceptance(exchange, packet, connection):
+        if exchange.worker is stale and packet[0] == 'completed':
+            pending_files.extend(Path(path) for path in packet[2] if Path(path).is_file())
+            current.clear()
+            receive(exchange, packet, connection)
+            if exchange.packet is not None:
+                adopted_packets.append(exchange.packet)
+        else:
+            receive(exchange, packet, connection)
+
+    monkeypatch.setattr(render_process._RenderExchange, 'receive', invalidate_before_acceptance)
+    try:
+        results, errors = _start(stale)
+        _wait(stale, qapp)
+        assert not results and len(errors) == 1 and errors[0].startswith('CANCELLED:')
+        assert pending_files and all(not path.exists() for path in pending_files)
+        assert not adopted_packets
+
+        fresh = render_process.RenderProcessWorker([image, image], **options)
+        results, errors = _start(fresh)
+        _wait(fresh, qapp)
+        assert len(results) == 1 and not errors
+        np.testing.assert_array_equal(results[0][1], image)
+        assert (render_process._PERSISTENT_HANDLE is not None) == persistent
+    finally:
+        render_process.shutdown_persistent_worker()
+
+
 def test_exchange_filters_malformed_child_details():
     from core.render_process import _RenderExchange
 

@@ -1522,6 +1522,113 @@ def test_batch_accept_validates_before_starting(server, monkeypatch):
         call(server, "dialog.close")
 
 
+@pytest.mark.parametrize('entry', ['desktop', 'control'])
+def test_batch_accept_drops_late_thumbnail_and_releases_finished_thread(
+        entry, server, control_window, stack_frames, monkeypatch):
+    from PyQt6.QtCore import QTimer
+    from PyQt6.QtWidgets import QDialog, QMessageBox
+    from controllers.batch_manager import _ORPHAN_WORKERS
+    from core.workers import BatchImportWorker, BatchWorker
+    from dialogs.batch import BatchProcessingDialog
+
+    manager = control_window.batch_manager
+    thumbnail_queued, release = threading.Event(), threading.Event()
+    launches, thumbnails, errors = [], [], []
+    run_batch = BatchWorker.run
+
+    def queue_thumbnail(worker):
+        worker.folder_loaded.emit(str(stack_frames), np.zeros((8, 8, 3), np.uint8))
+        thumbnail_queued.set()
+
+    def hold_batch(worker):
+        launches.append(worker)
+        if release.wait(10):
+            run_batch(worker)
+
+    def configure(dialog):
+        dialog.rb_multiple_folders.setChecked(True)
+        dialog.fusion_combo.setCurrentIndex(dialog.fusion_combo.findData('none'))
+        dialog.align_combo.setCurrentIndex(dialog.align_combo.findData('none'))
+        dialog.add_folders_to_list([str(stack_frames)])
+        assert thumbnail_queued.wait(5)
+
+    monkeypatch.setattr(BatchImportWorker, 'run', queue_thumbnail)
+    monkeypatch.setattr(BatchWorker, 'run', hold_batch)
+    monkeypatch.setattr(BatchProcessingDialog, '_apply_thumbnails',
+                        lambda _dialog, results: thumbnails.extend(results))
+    monkeypatch.setattr(QMessageBox, 'warning', lambda *args: errors.append(args))
+    monkeypatch.setattr(manager, '_show_message', lambda **_kwargs: None)
+
+    try:
+        if entry == 'desktop':
+            execute = BatchProcessingDialog.exec
+
+            def launch_modal(dialog):
+                def accept():
+                    try:
+                        configure(dialog)
+                        dialog.start_batch_processing()
+                    except Exception as exc:
+                        errors.append(exc)
+                    if dialog.result() != QDialog.DialogCode.Accepted:
+                        dialog.reject()
+
+                QTimer.singleShot(0, accept)
+                return execute(dialog)
+
+            monkeypatch.setattr(BatchProcessingDialog, 'exec', launch_modal)
+            control_window.show_batch_processing_dialog()
+        else:
+            assert call(server, 'dialog.open', name='batch')['ok']
+            configure(server._dialogs['batch'])
+            assert call(server, 'dialog.accept')['ok']
+
+        assert not errors
+        assert wait_until(lambda: bool(launches))
+        thread, worker = manager._thread, manager._worker
+        assert launches == [worker]
+        progress = manager._progress_dialog
+        assert progress.isVisible()
+        running = thread.isRunning
+
+        def finish_during_teardown():
+            was_running = running()
+            release.set()
+            assert thread.wait(5000)
+            return was_running
+
+        with monkeypatch.context() as teardown:
+            teardown.setattr(thread, 'isRunning', finish_during_teardown)
+            manager._teardown_worker()
+        assert not progress.isVisible()
+        assert wait_until(lambda: manager._thread is None)
+        assert (thread, worker) not in _ORPHAN_WORKERS
+        assert launches == [worker] and not thumbnails
+    finally:
+        release.set()
+        if manager._thread is not None:
+            manager._teardown_worker()
+            assert wait_until(lambda: manager._thread is None)
+
+
+def test_wipe_clears_after_deleting_last_fusion_result(control_window, monkeypatch):
+    from PyQt6.QtWidgets import QMessageBox
+    from controllers.output_manager import OutputRecord
+
+    image = np.full((8, 12, 3), 73, dtype=np.uint8)
+    manager = control_window.output_manager
+    record = OutputRecord.create(image, 'Wipe result')
+    manager._insert_output(image, record.label, record)
+    manager.display_specific_fusion_result(image)
+    control_window.set_wipe_mode(True)
+    assert control_window.wipe_widget._right_pixmap is not None
+
+    monkeypatch.setattr(QMessageBox, 'exec', lambda _box: QMessageBox.StandardButton.Yes)
+    manager.delete_selected_output_images()
+    assert control_window.output_list.count() == 0
+    assert control_window.wipe_widget._right_pixmap is None
+
+
 def test_dialog_accept_reports_pending_mask_inspection(server):
     assert call(server, "dialog.open", name="settings")["ok"]
     dialog = server._dialogs["settings"]

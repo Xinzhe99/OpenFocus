@@ -138,7 +138,7 @@ def test_batch_exports_to_entered_subfolder_with_leading_space(qapp, tmp_path, m
     worker.run()
     assert outcome['counts']['success'] == 1, outcome
     artifact = Path(outcome['aligned_stacks'][0]['path'])
-    assert artifact.parent == entered
+    assert artifact.parent == entered.resolve()
     assert sorted(path.name for path in artifact.iterdir()) == ['img1.png', 'img2.png']
     assert not list(trimmed.iterdir())
 

@@ -307,6 +307,9 @@ class BatchManager:
 
     def _thread_finished(self) -> None:
         thread, worker = self._thread, self._worker
+        pair = (thread, worker)
+        if pair in _ORPHAN_WORKERS:
+            _ORPHAN_WORKERS.remove(pair)
         self._thread = None
         self._worker = None
         if worker is not None:
@@ -326,7 +329,3 @@ class BatchManager:
                 pair = (self._thread, self._worker)
                 if pair not in _ORPHAN_WORKERS:
                     _ORPHAN_WORKERS.append(pair)
-                    def _discard_orphan(entry=pair):
-                        if entry in _ORPHAN_WORKERS:
-                            _ORPHAN_WORKERS.remove(entry)
-                    self._thread.finished.connect(_discard_orphan)

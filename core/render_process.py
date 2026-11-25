@@ -757,7 +757,7 @@ class _RenderExchange:
             if message[2] is not None:
                 self.restore_state(FrameDecoder().decode(message[2]), _ERROR_STATE_FIELDS)
         elif kind == 'completed':
-            if self.worker.is_cancelled:
+            if self.worker._check_current():
                 connection.send('cancelled')
             else:
                 self.decoder = FrameDecoder(owned_paths=message[2],

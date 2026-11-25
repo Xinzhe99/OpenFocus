@@ -253,6 +253,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   find uppercase multi-page TIFF containers when reopening projects.
 - Preserve spaces in batch output subfolder names and retain the failing
   decode or transfer location in isolated-render diagnostic reports.
+- Discard superseded render results before opening them, release batch workers
+  that finish during teardown, and refresh Wipe after removing an output.
+- Allow desktop control to start an eligible batch while folder thumbnails load.
 - Keep the guided tour usable through render completion and cancellation.
   Improve video and batch progress and prepare drag-out files off the UI thread.
 - Bundle trusted CA roots with the desktop app so sign-in and other HTTPS

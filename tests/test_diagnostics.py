@@ -165,7 +165,7 @@ runpy.run_path('main.py', run_name='__main__')
     assert result.returncode == 1
     text = next((tmp_path / "logs").glob("*.log")).read_text(encoding="utf-8")
     assert "ModuleNotFoundError: Qt startup failure marker" in text
-    assert 'from PyQt6.QtWidgets import' in text
+    assert "main window ready" not in text
     assert "Traceback (most recent call last)" in text
 
 

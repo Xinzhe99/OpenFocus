@@ -1696,9 +1696,6 @@ class OutputManager:
 
     def _sync_output_selection_after_removal(self, min_row: int) -> None:
         window = self.window
-        if getattr(window, "wipe_active", False) and hasattr(window, "refresh_wipe_controls"):
-            window.refresh_wipe_controls()
-
         if window.fusion_results:
             new_index = min(max(0, min_row), len(window.fusion_results) - 1)
             window.output_list.setCurrentRow(new_index)
@@ -1708,6 +1705,9 @@ class OutputManager:
             window.lbl_result_img.clear()
             window.lbl_result_img.setText(trans.t("result_hint"))
             window.result_control_bar.setVisible(False)
+        if getattr(window, "wipe_active", False) and hasattr(window, "refresh_wipe_controls"):
+            window.refresh_wipe_controls()
+
 
     def delete_output_image(self, item: QListWidgetItem) -> None:
         window = self.window
