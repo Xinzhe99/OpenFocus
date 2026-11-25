@@ -47,6 +47,8 @@ def filter_public_exif(metadata: Optional[Mapping]) -> dict:
         if isinstance(value, str) and (text := _clean_text(value)):
             summary[field] = text
     iso = metadata.get("iso")
+    if isinstance(iso, str):
+        iso = _clean_text(iso).upper().removeprefix("ISO ")
     if isinstance(iso, (str, numbers.Real)):
         value = _as_positive_int(iso)
         if value is not None:

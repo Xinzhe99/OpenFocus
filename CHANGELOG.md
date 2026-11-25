@@ -9,6 +9,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Add an interactive desktop tour from the welcome dialog and Help menu.
   Follow the highlighted controls to browse source frames, choose methods,
   render, and compare the result.
+- Add Gallery Hub, Account Center, and Honor Card dialogs in all supported
+  languages. Preserve public camera and exposure metadata in Gallery uploads.
 - Download smaller desktop updates for matching installations on Windows,
   Apple Silicon macOS, and Linux x86-64. Publish a patch helper for the
   official 2.0.0 desktop builds when the patch is smaller than the full package.

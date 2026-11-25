@@ -633,46 +633,6 @@ class _BoundedMediaLoader(QObject):
             pass
 
 
-_PUBLIC_EXIF_ALLOWLIST = frozenset({
-    "camera",
-    "make",
-    "model",
-    "lens",
-    "focal_length",
-    "aperture",
-    "shutter",
-    "iso",
-    "date_time",
-})
-
-
-def _filter_public_exif(mapping: Mapping[str, Any] | None) -> dict[str, str]:
-    """Filter EXIF strictly to the documented public camera/exposure/date allowlist.
-
-    Delegates lazily to ``core.gallery_media.filter_public_exif`` when available,
-    falling back to the exact allowlist so GPS/private tags never leave the client.
-    """
-    if not isinstance(mapping, Mapping):
-        return {}
-    try:
-        from core.gallery_media import filter_public_exif  # type: ignore[import-not-found]
-
-        filtered = filter_public_exif(mapping)
-        if isinstance(filtered, Mapping):
-            return {
-                str(k): str(v).strip()
-                for k, v in filtered.items()
-                if str(k) in _PUBLIC_EXIF_ALLOWLIST and v not in (None, "") and str(v).strip()
-            }
-    except Exception:
-        pass
-    return {
-        str(k): str(v).strip()
-        for k, v in mapping.items()
-        if str(k) in _PUBLIC_EXIF_ALLOWLIST and v not in (None, "") and str(v).strip()
-    }
-
-
 def _extract_exif_dict(source: Any, media_helper: Any = None) -> dict[str, str]:
     """Extract a clean EXIF summary dict without ever failing."""
     if media_helper is not None and hasattr(media_helper, "extract_exif_summary"):
@@ -3111,9 +3071,13 @@ class GalleryHubDialog(QDialog):
             _emit("failed", t_gallery("gallery_publish_zero_deducted", reason=reason), False)
             return None
 
+        from core.gallery_media import filter_public_exif
+
         merged_exif = dict(media_meta.get("exif") or {})
         merged_exif.update(exif)
-        public_exif = _filter_public_exif(merged_exif)
+        public_exif = filter_public_exif(merged_exif)
+        if "iso" in public_exif:
+            public_exif["iso"] = f"ISO {public_exif['iso']}"
         meta = {
             "title": title,
             "width": media_meta.get("width", 0),
