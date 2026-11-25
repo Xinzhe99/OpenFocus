@@ -374,3 +374,38 @@ def test_multipage_container_lookup_handles_uppercase_tiff_on_case_sensitive_fs(
         lambda path: path == expected_tif,
     )
     assert project_file._multipage_container_for("zstack_page_001.tiff", str(tmp_path)) == expected_tif
+
+
+def test_apply_appearance_parses_css_font_stack_into_qfont_families(qapp, monkeypatch):
+    import main as main_mod
+    from utils.design_tokens import UI_FONT_PRESETS
+
+    css_stack = '"Ubuntu", "DejaVu Sans", Arial, sans-serif'
+    mono_stack = '"Ubuntu Mono", "DejaVu Sans Mono", Consolas, monospace'
+    monkeypatch.setattr(main_mod, "get_ui_font_family", lambda: css_stack)
+    monkeypatch.setattr(main_mod, "get_monospace_font_family", lambda: mono_stack)
+
+    host = QtWidgets.QWidget()
+    host.font_size_mode = "standard"
+    host.custom_font_size = 10
+    host.ui_theme = "dark"
+    host._panel_widgets = []
+    host.update_banner = None
+    host._refresh_status_sponsor = lambda: None
+    host._enable_dark_title_bar = lambda dark=True: None
+    host._sync_appearance_actions = lambda: None
+
+    prev_font = qapp.font()
+    prev_sheet = qapp.styleSheet()
+    try:
+        main_mod.OpenFocus._apply_appearance(host, "dark")
+        applied = qapp.font()
+        assert applied.family() == "Ubuntu"
+        assert applied.families() == ["Ubuntu", "DejaVu Sans", "Arial"]
+        assert applied.pointSize() == UI_FONT_PRESETS.get(host.font_size_mode, host.custom_font_size)
+        assert css_stack in qapp.styleSheet()
+    finally:
+        qapp.setFont(prev_font)
+        qapp.setStyleSheet(prev_sheet)
+        host.close()
+
