@@ -525,17 +525,26 @@ def setup_menus(window: QMainWindow) -> None:
     
     lang_group = QActionGroup(window)
     lang_group.setExclusive(True)
-    
-    # Built from the packs that actually loaded, so adding locales_xx.py puts
-    # the language in this menu without touching it. Order comes from
-    # TranslationManager.PACK_ORDER.
+
+    def select_language(action):
+        code = action.data()
+        window.set_language(code)
+        if trans.current_lang != code:
+            # An installed pack can still fail when imported on first use.
+            lang_group.removeAction(action)
+            lang_menu.removeAction(action)
+            window.ui_objs.pop(f'action_lang_{code}')
+            action.deleteLater()
+            active_action = window.ui_objs.get(f'action_lang_{trans.current_lang}')
+            if active_action is not None:
+                active_action.setChecked(True)
+
+    lang_group.triggered.connect(select_language)
     for code, label in trans.menu_languages():
         act = QAction(label, window)
         act.setCheckable(True)
         act.setChecked(trans.current_lang == code)
         act.setData(code)
-        act.triggered.connect(
-            lambda _checked=False, c=code: window.set_language(c))
         lang_group.addAction(act)
         lang_menu.addAction(act)
         window.ui_objs[f'action_lang_{code}'] = act

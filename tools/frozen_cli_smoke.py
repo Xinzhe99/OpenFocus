@@ -130,7 +130,7 @@ def _check_language(executable: Path, environment: dict, code: str) -> None:
 
 def _exercise_languages(executable: Path, environment: dict) -> None:
     _language_actions(executable, environment)
-    for code in ("de", "ko", "pl"):
+    for code in ('zh', 'de', 'ko', 'pl'):
         _call(executable, environment, "ui.trigger", "--key", f"action_lang_{code}")
         _check_language(executable, environment, code)
     _call(executable, environment, "ui.trigger", "--key", "action_lang_en")

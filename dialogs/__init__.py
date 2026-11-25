@@ -12,64 +12,42 @@ OpenFocus Dialogs Package
 import importlib
 
 _LAZY_EXPORTS = {
-    'EnvironmentInfoDialog': 'dialogs.about',
-    'ContactInfoDialog': 'dialogs.about',
-    'HelpDialog': 'dialogs.help',
-    'RenderMethodHelpDialog': 'dialogs.help',
-    'RegistrationHelpDialog': 'dialogs.help',
-    'TileHelpDialog': 'dialogs.help',
-    'DurationDialog': 'dialogs.settings',
-    'DownsampleDialog': 'dialogs.settings',
-    'TileSettingsDialog': 'dialogs.settings',
-    'RegistrationSettingsDialog': 'dialogs.settings',
-    'ThreadSettingsDialog': 'dialogs.settings',
-    'AIBatchSettingsDialog': 'dialogs.settings',
-    'BatchProcessingDialog': 'dialogs.batch',
-    'FolderImportDialog': 'dialogs.batch',
-    'ROIRenderOptionsDialog': 'dialogs.roi',
-    'WelcomeDialog': 'dialogs.welcome',
-    'ScaleBarDialog': 'dialogs.scalebar',
+    'EnvironmentInfoDialog': 'about',
+    'ContactInfoDialog': 'about',
+    'HelpDialog': 'help',
+    'RenderMethodHelpDialog': 'help',
+    'RegistrationHelpDialog': 'help',
+    'TileHelpDialog': 'help',
+    'DurationDialog': 'settings',
+    'DownsampleDialog': 'settings',
+    'TileSettingsDialog': 'settings',
+    'RegistrationSettingsDialog': 'settings',
+    'ThreadSettingsDialog': 'settings',
+    'AIBatchSettingsDialog': 'settings',
+    'WelcomeDialog': 'welcome',
+    'ScaleBarDialog': 'scalebar',
+    'BatchProcessingDialog': 'batch',
+    'FolderImportDialog': 'batch',
+    'ROIRenderOptionsDialog': 'roi',
 }
 
 
 def __getattr__(name):
     """Lazily resolve top-level dialog exports so cold startup skips unused UI modules."""
     module_name = _LAZY_EXPORTS.get(name)
-    if module_name is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    module = importlib.import_module(module_name)
-    value = getattr(module, name)
-    globals()[name] = value
-    return value
+    if module_name is not None:
+        module = importlib.import_module(f'.{module_name}', __name__)
+        value = getattr(module, name)
+        globals()[name] = value
+        return value
+    if name in _LAZY_EXPORTS.values():
+        return importlib.import_module(f'.{name}', __name__)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def __dir__():
-    return sorted(set(globals()) | set(__all__))
+    return sorted(set(globals()) | _LAZY_EXPORTS.keys() | set(_LAZY_EXPORTS.values()))
 
-__all__ = [
-    # About dialogs
-    'EnvironmentInfoDialog',
-    'ContactInfoDialog',
-    # Help dialogs
-    'HelpDialog',
-    'RenderMethodHelpDialog',
-    'RegistrationHelpDialog',
-    'TileHelpDialog',
-    # Settings dialogs
-    'DurationDialog',
-    'DownsampleDialog',
-    'TileSettingsDialog',
-    'RegistrationSettingsDialog',
-    'ThreadSettingsDialog',
-    'AIBatchSettingsDialog',
-    'WelcomeDialog',
-    'ScaleBarDialog',
-    # Batch dialogs
-    'BatchProcessingDialog',
-    'FolderImportDialog',
-    # ROI dialogs
-    'ROIRenderOptionsDialog',
-    # dialogs.depthmap (DepthMapDialog) is imported lazily on purpose: it pulls
-    # in core.depth_map + utils.colormap, and keeping it out of this package
-    # import avoids an import cycle through ui.right_panel.
-]
+# Keep DepthMapDialog out of the package exports to avoid an import cycle
+# through ui.right_panel.
+__all__ = list(_LAZY_EXPORTS)

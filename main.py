@@ -4518,7 +4518,8 @@ class OpenFocus(QMainWindow):
     def set_language(self, lang_code: str) -> None:
         """Switch application language (update_ui_text runs via the signal)."""
         trans.set_language(lang_code)
-        self.persist_settings()
+        if trans.current_lang == lang_code:
+            self.persist_settings()
 
     # --- Settings persistence & recent files ---
 

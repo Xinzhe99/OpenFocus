@@ -1,10 +1,20 @@
 import datetime
 import importlib
 import os
+from importlib.util import find_spec
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from .en import EN
+
+
+def __getattr__(name):
+    """Keep the Chinese table available as a package attribute on demand."""
+    if name == 'ZH':
+        from .zh import ZH
+        return ZH
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 _MANUAL_TITLES = {
     'en': 'User Manual', 'zh': '用户手册', 'ja': 'ユーザーマニュアル',
@@ -294,10 +304,8 @@ class TranslationManager(QObject):
 
     def __init__(self):
         super().__init__()
-        self.current_lang = 'en'
 
-        # Auto-detect from the packs that actually loaded. Register shipped
-        # languages in PACK_ORDER; source installations may discover extras.
+        # Auto-detect from the shipped and source language packs.
         # The legacy UTC+8 fallback stays for hosts where QLocale reports an
         # unusable value (some stripped Linux images answer 'C').
         detected = None
@@ -314,20 +322,25 @@ class TranslationManager(QObject):
                     detected = 'zh'
             except Exception:
                 pass
-        self._pending_autodetect = detected
 
         # Defer non-English packs until requested so startup does not parse
         # and overlay all 12 translation tables up front.
         self._translations = {"en": _apply_pack_overlays("en", dict(EN))}
-        self._loaded_packs = {"en"}
+        self._unavailable_packs = set()
         self._extra_attempted = False
         self._all_loaded = False
 
-        if detected and detected != "en":
-            self._load_pack(detected, quiet_unknown=True)
-            if detected in self._translations:
-                self.current_lang = detected
-        self._pending_autodetect = None
+        self._current_lang = detected if self.has_language(detected) else 'en'
+
+    @property
+    def current_lang(self):
+        return self._current_lang
+
+    @current_lang.setter
+    def current_lang(self, lang_code):
+        # Render workers set the language without emitting a UI signal.
+        self.has_language(lang_code)
+        self._current_lang = lang_code
 
     @property
     def translations(self):
@@ -337,6 +350,7 @@ class TranslationManager(QObject):
     @translations.setter
     def translations(self, value):
         self._translations = value
+        self._all_loaded = True
 
     # -- language packs ------------------------------------------------------
 
@@ -382,7 +396,6 @@ class TranslationManager(QObject):
                 merged = self._translations.setdefault(lang_code, {})
                 merged.update(lang_dict)
                 _apply_pack_overlays(lang_code, merged)
-                self._loaded_packs.add(lang_code)
         except Exception as exc:  # noqa: BLE001 - report, never hide
             print(f"Warning: extra language pack failed to load: {exc}")
 
@@ -403,93 +416,81 @@ class TranslationManager(QObject):
                 extras.add(code)
         return extras
 
-    def _load_pack(self, code: str, *, quiet_unknown: bool = False) -> None:
-        if not code or code in self._loaded_packs:
+    def _load_pack(self, code: str) -> None:
+        if code in self._translations or code in self._unavailable_packs:
             return
-        if code in ("ja", "es"):
+        if code in ('ja', 'es'):
             self._load_extra_packs()
-            if code in self._loaded_packs:
+            if code in self._translations:
                 return
-        is_known = code in self.PACK_ORDER
-        if not is_known and quiet_unknown:
-            if code not in self._scan_extra_pack_codes(warn_on_error=False):
-                return
-        if code == "zh":
-            try:
-                module = importlib.import_module(".zh", __name__)
-                pack = getattr(module, "ZH", None) or getattr(module, "PACK", None)
-                if not isinstance(pack, dict) or not pack:
-                    raise ValueError("module has no non-empty ZH dict")
-                merged = self._translations.setdefault("zh", {})
-                merged.update(pack)
-                _apply_pack_overlays("zh", merged)
-                self._loaded_packs.add("zh")
-            except Exception as exc:  # noqa: BLE001 - report, never hide
-                print(f"Warning: language pack 'zh' failed to load: {exc}")
-            return
         try:
-            module = importlib.import_module(f".{code}", __name__)
-            pack = getattr(module, "PACK", None)
+            if code == 'zh':
+                # A static import keeps the Chinese pack in frozen builds.
+                from .zh import ZH
+                pack = ZH
+            else:
+                module = importlib.import_module(f'.{code}', __name__)
+                pack = getattr(module, 'PACK', None)
             if not isinstance(pack, dict) or not pack:
-                raise ValueError("module has no non-empty PACK dict")
-            merged = self._translations.setdefault(code, {})
-            merged.update(pack)
-            _apply_pack_overlays(code, merged)
-            self._loaded_packs.add(code)
+                raise ValueError('module has no non-empty language dictionary')
+            self._translations[code] = _apply_pack_overlays(code, dict(pack))
         except Exception as exc:  # noqa: BLE001 - report, never hide
+            self._unavailable_packs.add(code)
             print(f"Warning: language pack '{code}' failed to load: {exc}")
 
     def _ensure_all_packs_loaded(self) -> None:
         if self._all_loaded:
             return
+        self._load_pack('zh')
         self._load_extra_packs()
-        candidates = set(self.PACK_ORDER) - self._loaded_packs
-        for code in self._scan_extra_pack_codes(warn_on_error=True):
-            if code not in self._loaded_packs:
-                candidates.add(code)
+        candidates = set(self.PACK_ORDER) | self._scan_extra_pack_codes(warn_on_error=True)
         for code in sorted(candidates):
             self._load_pack(code)
         self._all_loaded = True
 
-    def _load_language_packs(self) -> None:
-        """Merge every community pack into self.translations.
+    def has_language(self, code):
+        """Check that a language can be used, loading its pack on demand."""
+        if code in self._translations:
+            return True
+        if not code or self._all_loaded or code in self._unavailable_packs:
+            return False
+        if code in self.PACK_ORDER or code in self._scan_extra_pack_codes():
+            self._load_pack(code)
+        return code in self._translations
 
-        Shipped packs are registered in PACK_ORDER and can be imported from
-        archives without source files on disk. Source installations may also
-        discover extra two-character modules with a PACK dict. Report broken
-        packs without preventing the remaining languages from loading.
-        """
-        self._ensure_all_packs_loaded()
-
-    def available_codes(self):
-        """Return known and discovered pack codes in menu order without importing them all."""
-        extras = sorted(self._scan_extra_pack_codes(warn_on_error=False) - set(self.PACK_ORDER))
-        return list(self.PACK_ORDER) + extras
+    def _language_labels(self, codes):
+        shipped = [code for code in self.PACK_ORDER if code == 'en' or code in codes]
+        extras = sorted(codes - set(self.PACK_ORDER))
+        return [(code, self.LANG_NAMES.get(code, code.upper()))
+                for code in (*shipped, *extras)]
 
     def menu_languages(self):
-        """[(code, display_name)] for menu setup without eagerly importing unused packs."""
-        order = {c: i for i, c in enumerate(self.PACK_ORDER)}
-        codes = [c for c in self.available_codes() if c != "en"]
-        codes.sort(key=lambda c: (order.get(c, 999), c))
-        return [("en", self.LANG_NAMES["en"])] + [
-            (c, self.LANG_NAMES.get(c, c.upper())) for c in codes]
+        """List installed languages without importing unused shipped packs."""
+        if self._all_loaded:
+            return self.available_languages()
+        codes = set(self._translations)
+        for code in self.PACK_ORDER:
+            if code in codes or code in self._unavailable_packs:
+                continue
+            if (code in ('ja', 'es') and not self._extra_attempted
+                    and find_spec('._extra', __name__) is not None):
+                codes.add(code)
+            elif find_spec(f'.{code}', __name__) is not None:
+                codes.add(code)
+        for code in sorted(self._scan_extra_pack_codes() - set(self.PACK_ORDER)):
+            self._load_pack(code)
+            if code in self._translations:
+                codes.add(code)
+        return self._language_labels(codes)
 
     def available_languages(self):
-        """[(code, display_name)] for every fully loaded pack, menu order."""
+        """Return the labels of the packs that loaded successfully, in menu order."""
         self._ensure_all_packs_loaded()
-        order = {c: i for i, c in enumerate(self.PACK_ORDER)}
-        codes = [c for c in self._translations if c not in ("en",)]
-        codes.sort(key=lambda c: (order.get(c, 999), c))
-        return [("en", self.LANG_NAMES["en"])] + [
-            (c, self.LANG_NAMES.get(c, c.upper())) for c in codes]
+        return self._language_labels(self._translations.keys())
 
     def set_language(self, lang_code):
-        if lang_code not in self._loaded_packs:
-            self._load_pack(lang_code, quiet_unknown=True)
-            if lang_code not in self._translations:
-                self._ensure_all_packs_loaded()
-        if lang_code in self._translations:
-            self.current_lang = lang_code
+        if self.has_language(lang_code):
+            self._current_lang = lang_code
             self.languageChanged.emit()
 
     def get(self, key, default=None):

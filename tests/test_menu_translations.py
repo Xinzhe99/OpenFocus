@@ -245,6 +245,33 @@ def test_every_menu_entry_resolves_to_a_translation(qapp):
             f"{key}: trans_key {t_key!r} is missing from the English table")
 
 
+def test_language_menu_recovers_when_a_pack_fails_to_import(qapp, monkeypatch):
+    import importlib
+    from locales import TranslationManager
+    from ui import menus
+
+    monkeypatch.setattr(TranslationManager, '_match_locale', staticmethod(lambda _: 'en'))
+    manager = TranslationManager()
+    monkeypatch.setattr(menus, 'trans', manager)
+    original_import = importlib.import_module
+
+    def import_pack(name, package=None):
+        if name == '.de' and package == 'locales':
+            raise ImportError('Failed to import the installed German pack')
+        return original_import(name, package)
+
+    monkeypatch.setattr(importlib, 'import_module', import_pack)
+    window = _menu_window(qapp)
+    window.set_language = manager.set_language
+    menus.setup_menus(window)
+    window.ui_objs['action_lang_de'].trigger()
+
+    assert manager.current_lang == 'en'
+    assert window.ui_objs['action_lang_en'].isChecked()
+    assert 'action_lang_de' not in window.ui_objs
+    assert 'de' not in [action.data() for action in window.ui_objs['menu_language'].actions()]
+
+
 def test_advanced_settings_entry_is_translated_in_every_language(qapp):
     """The reported bug: Chinese UI showed `action_advanced_settings`.
 
