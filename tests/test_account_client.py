@@ -115,10 +115,13 @@ class FakeServer:
     code = None
     error = None
 
+    def __init__(self):
+        self.result_lock = threading.Lock()
 
-def callback(path, host="127.0.0.1:41234", expected_state=None, language=None):
+
+def callback(path, host="127.0.0.1:41234", expected_state=None, language=None, *, server=None):
     sock = FakeSocket(("GET " + path + " HTTP/1.1\r\nHost: " + host + "\r\n\r\n").encode())
-    server = FakeServer()
+    server = FakeServer() if server is None else server
     server.language = language
     if expected_state is not None:
         server.expected_state = expected_state
@@ -133,6 +136,14 @@ def test_callback_only_accepts_exact_path_host_and_single_code(caplog):
         assert callback("/callback?code=a&code=b")[0] is None
         assert callback("/callback?code=a", "evil.example")[0] is None
     assert "exchange-secret" not in caplog.text
+
+
+def test_callback_keeps_first_result_when_browser_repeats_request():
+    server = FakeServer()
+    code, response, error = callback("/callback?code=first", server=server)
+    assert code == "first" and error is None and response.startswith(b"HTTP/1.0 200 ")
+    code, response, error = callback("/callback?error=sign_in_cancelled", server=server)
+    assert code == "first" and error is None and response.startswith(b"HTTP/1.0 409 ")
 
 
 def test_loopback_callback_does_not_require_reverse_dns(monkeypatch):

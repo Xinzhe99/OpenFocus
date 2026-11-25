@@ -64,6 +64,18 @@ class AlignResult:
     orientation: str                   # "H"(右邻)或 "V"(下邻)
 
 
+def _imread_unicode(path: str):
+    """Read an image file safely across non-ASCII Windows paths."""
+    path = os.fspath(path)
+    if os.name != 'nt' or path.isascii():
+        return cv2.imread(path, cv2.IMREAD_UNCHANGED)
+    try:
+        data = np.fromfile(path, dtype=np.uint8)
+    except OSError:
+        return None
+    return cv2.imdecode(data, cv2.IMREAD_UNCHANGED) if data.size else None
+
+
 class MosaicStitcher:
     """网格拼接器:输入图像路径列表(网格顺序),输出无缝大图。"""
 
@@ -168,12 +180,15 @@ class MosaicStitcher:
         self._progress(stage, total, "decoding frames")
         imgs = []
         for p in self.paths:
-            im = cv2.imread(p, cv2.IMREAD_UNCHANGED)
+            im = _imread_unicode(p)
             if im is None:
                 raise ValueError(f"cannot decode: {p}")
-            im = cv2.cvtColor(im, cv2.COLOR_BGR2RGB)
             if im.ndim == 2:                       # 灰度输入提升 3 通道
-                im = np.stack([im] * 3, axis=-1)
+                im = cv2.cvtColor(im, cv2.COLOR_GRAY2RGB)
+            elif im.ndim == 3 and im.shape[2] == 4:
+                im = cv2.cvtColor(im, cv2.COLOR_BGRA2RGB)
+            else:
+                im = cv2.cvtColor(im, cv2.COLOR_BGR2RGB)
             imgs.append(im.astype(np.float32))     # 原生标度(u8/u16)
         self._progress(stage, total, f"decoded {len(imgs)} frames")
         return imgs
@@ -459,7 +474,11 @@ class MosaicStitcher:
         if _IMWRITE_AUTO:
             imwrite_auto(path, rgb)
         else:
-            cv2.imwrite(path, rgb)
+            ext = os.path.splitext(path)[1] or '.png'
+            ok, encoded = cv2.imencode(ext, rgb)
+            if not ok:
+                raise OSError(f"cannot encode output: {path}")
+            encoded.tofile(path)
 
 
 def stitch_folder(folder: str, rows: int, cols: int,

@@ -35,6 +35,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 from constants import app_display_version
 from utils.app_paths import is_portable_mode, portable_data_dir, user_data_dir
 from utils.logging_setup import get_logger
+from utils.tls import https_handlers
 
 _CORE = Path(__file__).resolve().parent
 _WORKER = _CORE / 'inference_worker.py'
@@ -282,7 +283,7 @@ class _HTTPSRedirect(HTTPRedirectHandler):
 
 @lru_cache(maxsize=1)
 def _opener():
-    return build_opener(_HTTPSRedirect())
+    return build_opener(_HTTPSRedirect(), *https_handlers())
 
 
 def _network_failure(exc):

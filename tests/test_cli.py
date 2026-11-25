@@ -220,6 +220,46 @@ def test_batch_output_dir(tmp_path):
     assert sorted(os.listdir(out)) == ["stackA.png", "stackB.png"]
 
 
+@pytest.mark.parametrize("cancel_during", ["watermark", "encode"])
+def test_cli_batch_cancels_watermarked_export(tmp_path, monkeypatch, capsys, cancel_during):
+    import json
+    from core import cli
+    from utils import image_utils, watermark
+
+    folders = [tmp_path / "first", tmp_path / "second"]
+    for folder in folders:
+        folder.mkdir()
+        _write_stack(folder, n=2)
+    output = tmp_path / "out"
+    cancelled = False
+    run_admitted = cli._run_cli_admitted
+
+    def run_with_cancellation(args):
+        args._should_cancel = lambda: cancelled
+        return run_admitted(args)
+
+    module, function = ((watermark, "burn") if cancel_during == "watermark"
+                        else (image_utils, "imwrite_auto"))
+    original = getattr(module, function)
+
+    def cancel_on_export(*args, **kwargs):
+        nonlocal cancelled
+        cancelled = True
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(cli, "_run_cli_admitted", run_with_cancellation)
+    monkeypatch.setattr(module, function, cancel_on_export)
+    result = cli.run_cli(["-i", *(str(folder) for folder in folders), "-d", str(output),
+                          "--watermark", "OpenFocus", "--watermark-size", "7",
+                          "--cpu", "--threads", "1", "--json-progress"])
+    assert result == cli.EXIT_ERROR
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert [event["name"] for event in events if event["event"] == "folder"] == ["first"]
+    assert events[-1]["event"] == "done"
+    assert events[-1]["cancelled"] is True
+    assert not list(output.iterdir())
+
+
 def test_grouped_cli_preserves_16_bit_and_reports_progress(tmp_path):
     import json
 

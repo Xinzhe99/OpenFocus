@@ -146,6 +146,7 @@ class AlgorithmParameterPanel(QWidget):
                         step=spec.step, decimals=spec.decimals, value=resolved[spec.key])
                     editor.valueChanged.connect(self._edited)
                 editor.setMinimumWidth(110)
+                editor.setMaximumWidth(180)
                 label.setBuddy(editor.lineEdit())
                 editor.lineEdit().setAccessibleName(label.text())
             editor.setAccessibleName(label.text())

@@ -100,7 +100,13 @@ class BatchConverterDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle(trans.t('converter_title'))
-        self.resize(760, 580)
+        screen = self.screen()
+        if screen is not None:
+            available = screen.availableGeometry()
+            self.resize(min(760, max(480, available.width() - 48)),
+                        min(580, max(360, available.height() - 64)))
+        else:
+            self.resize(760, 580)
         self.setAcceptDrops(True)
         self._busy = False
         self.worker = None
@@ -210,12 +216,15 @@ class BatchConverterDialog(QDialog):
         self.format_warning.setObjectName('mutedLabel')
         layout.addWidget(self.format_warning)
         self.progress = QProgressBar()
+        self.progress.hide()
         layout.addWidget(self.progress)
         self.summary = QLabel('')
         self.summary.setWordWrap(True)
         layout.addWidget(self.summary)
         row = QHBoxLayout()
+        row.addStretch(1)
         self.start = QPushButton(trans.t('converter_start'))
+        self.start.setObjectName('primaryButton')
         self.cancel = QPushButton(trans.t('btn_cancel'))
         self.cancel.setEnabled(False)
         close = QPushButton(trans.t('btn_close'))
@@ -518,6 +527,7 @@ class BatchConverterDialog(QDialog):
         self.cancel.setEnabled(True)
         self.progress.setRange(0, len(self.sources))
         self.progress.setValue(0)
+        self.progress.show()
         self.summary.setText('')
         max_edge, scale = self._resize_options()
         self.worker = ConverterWorker(tuple(self.sources), self._directory_value(),

@@ -1006,7 +1006,8 @@ class Merge:
         _device_lock.release()
 
     def full_depth(self, frames, shape, img_resize, kernel_size, smoothing,
-                   feather, should_cancel, progress_callback, *, live_preview=None):
+                   feather, should_cancel, progress_callback, *, live_preview=None,
+                   preserve_detail: bool = True):
         """Run the PR depth stages only when all resident planes fit the job."""
         from core import resource_policy
         from core.multi_focus_fusion import memory_budget_bytes
@@ -1063,7 +1064,8 @@ class Merge:
         # bincount casts the half-resolution uint16 confidence plane to native ints.
         final_staging = max(pixels * 2 + oh * ow * 2, oh * ow * (2 + np.dtype(np.intp).itemsize))
         host_staging = max(source_peak, final_staging + axes_bytes) + 16 * 1024 * 1024
-        vram_need = pixels * 24 + max_src_bytes + axes_bytes + 16 * 1024 * 1024
+        # The guided path retains both filter workspaces through expansion.
+        vram_need = pixels * (24 if preserve_detail else 17) + max_src_bytes + axes_bytes + 16 * 1024 * 1024
         largest_alloc = max(pixels * 8, max_src_bytes, max(height, width) * 8 * 8)
         if host_staging > host_budget or largest_alloc > int(self.device.max_mem_alloc_size):
             logging.getLogger(__name__).info('OpenFocus full GPU depth exceeds the job memory budget')
@@ -1123,10 +1125,15 @@ class Merge:
                 )
                 engine._prefetch_slots = prefetch_slots
                 engine._ping_pong = ping_pong
+                depth_kwargs = {
+                    'prefetch': prefetch_slots > 0,
+                    'live_preview': live_preview,
+                }
+                if not preserve_detail:
+                    depth_kwargs['preserve_detail'] = False
                 return engine.depth(
                     frames, kernel_size, smoothing, feather, shape, len(frames),
-                    should_cancel, progress, prefetch=prefetch_slots > 0,
-                    live_preview=live_preview,
+                    should_cancel, progress, **depth_kwargs,
                 )
             except CallbackFailure as exc:
                 self._drain_queue()
@@ -2010,7 +2017,8 @@ class _GpuB:
 
     # -- depth_map equivalent ---------------------------------------------
     def depth(self, frames, kernel_size, smoothing, feather, shape, count,
-              should_cancel, progress_callback=None, *, prefetch=False, live_preview=None):
+              should_cancel, progress_callback=None, *, prefetch=False, live_preview=None,
+              preserve_detail: bool = True):
         prefetch_slots = getattr(self, '_prefetch_slots', 1 if prefetch else 0)
         ping_pong = bool(getattr(self, '_ping_pong', False))
         from fusion_methods.openfocus_depth import _snap_lut
@@ -2031,6 +2039,9 @@ class _GpuB:
         extent = np.float32(max(oh, ow))
         fine_r = float(np.float32(extent * fine_p / np.float32(100)))
         coarse_r = float(np.float32(extent * coarse_p / np.float32(100)))
+        smooth = np.float32(np.float32(smoothing) * np.float32(0.75) * np.float32(0.03125))
+        scale = float(np.float32(extent * smooth / np.float32(100)))
+        low = float(np.float32(extent * np.float32(smooth * np.float32(64)) / np.float32(100)))
         step = 65535 // (count - 1)
 
         completed = False
@@ -2038,16 +2049,22 @@ class _GpuB:
         reader = None
         allocated = []
         try:
+            cancel()
             def _alloc(buf):
                 allocated.append(buf)
                 return buf
 
             gray_buf = _alloc(self.cl.Buffer(self.ctx, self.mf.READ_WRITE, height * width * 2))
-            pb = _alloc(self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes))
-            sb = _alloc(self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes))
-            d_best_buf = _alloc(self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes))
-            d_second_buf = _alloc(self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes))
-            d_winner_buf = _alloc(self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes))
+            pb = (_alloc(self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes))
+                  if (preserve_detail or scale != 0.0) else None)
+            sb = (_alloc(self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes))
+                  if (preserve_detail or scale != 0.0) else None)
+            if preserve_detail:
+                d_best_buf = _alloc(self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes))
+                d_second_buf = _alloc(self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes))
+                d_winner_buf = _alloc(self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes))
+            else:
+                d_best_buf = d_second_buf = d_winner_buf = None
             half_buf = _alloc(self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes))
             fine_buf = _alloc(self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes))
             act_raw_buf = _alloc(self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes))
@@ -2079,11 +2096,12 @@ class _GpuB:
                 cancel()
                 upload = self._gray_into(prepared, gray_buf, height, width, slot=slot)
                 cancel()
-                self.kernels['detail_pool'](self.q, (ow, oh), None, gray_buf, pb,
-                                            np.int32(height), np.int32(width),
-                                            np.int32(oh), np.int32(ow))
-                self.kernels['detail_smooth'](self.q, (ow, oh), None, pb, sb,
-                                              np.int32(oh), np.int32(ow))
+                if preserve_detail:
+                    self.kernels['detail_pool'](self.q, (ow, oh), None, gray_buf, pb,
+                                                np.int32(height), np.int32(width),
+                                                np.int32(oh), np.int32(ow))
+                    self.kernels['detail_smooth'](self.q, (ow, oh), None, pb, sb,
+                                                  np.int32(oh), np.int32(ow))
                 self.gpu.used = True
                 cancel()
                 self.half.run_buf(gray_buf, half_buf, height, width)
@@ -2096,20 +2114,22 @@ class _GpuB:
                 code = idx * step
                 if idx == 0:
                     self.cl.enqueue_copy(self.q, best_buf, act_buf)
-                    self.kernels['init_activity'](self.q, (m,), None, act_buf, depth_buf,
-                                                  votes_buf, np.uint32(count), np.int32(m))
-                    self.cl.enqueue_copy(self.q, d_best_buf, sb)
-                    last_event = self.kernels['init_detail'](
-                        self.q, (m,), None, d_second_buf, d_winner_buf, np.int32(m),
-                    )
+                    last_event = self.kernels['init_activity'](self.q, (m,), None, act_buf, depth_buf,
+                                                               votes_buf, np.uint32(count), np.int32(m))
+                    if preserve_detail:
+                        self.cl.enqueue_copy(self.q, d_best_buf, sb)
+                        last_event = self.kernels['init_detail'](
+                            self.q, (m,), None, d_second_buf, d_winner_buf, np.int32(m),
+                        )
                 else:
-                    self.kernels['select_activity'](self.q, (m,), None, act_buf, best_buf,
-                                                    depth_buf, votes_buf, np.uint16(code),
-                                                    np.uint32(count), np.int32(m))
-                    last_event = self.kernels['detail_select'](
-                        self.q, (m,), None, sb, d_best_buf, d_second_buf, d_winner_buf,
-                        np.uint16(code), np.int32(m),
-                    )
+                    last_event = self.kernels['select_activity'](self.q, (m,), None, act_buf, best_buf,
+                                                                 depth_buf, votes_buf, np.uint16(code),
+                                                                 np.uint32(count), np.int32(m))
+                    if preserve_detail:
+                        last_event = self.kernels['detail_select'](
+                            self.q, (m,), None, sb, d_best_buf, d_second_buf, d_winner_buf,
+                            np.uint16(code), np.int32(m),
+                        )
                 if ping_pong and last_event is not None and hasattr(last_event, 'wait'):
                     slot_events[slot] = last_event
                     slot_hosts[slot] = (prepared, upload)
@@ -2129,7 +2149,7 @@ class _GpuB:
                         if sample is not None:
                             live_preview.show_positions(sample, idx, count, step * (count - 1),
                                                         sampled=True)
-                    del upload, prepared
+                del upload, prepared
                 if progress_callback is not None:
                     progress_callback(idx, count)
 
@@ -2142,40 +2162,37 @@ class _GpuB:
                 self.q.finish()
 
             cancel()
-            self.kernels['detail_confidence'](self.q, (m,), None, best_buf, d_best_buf,
-                                              d_second_buf, np.int32(m))
-            self.kernels['confidence'](self.q, (m,), None, best_buf, votes_buf, np.int32(m))
-            best = np.empty((oh, ow), dtype=np.uint16)
-            self.cl.enqueue_copy(self.q, best, best_buf, is_blocking=True)
+            if preserve_detail:
+                self.kernels['detail_confidence'](self.q, (m,), None, best_buf, d_best_buf,
+                                                  d_second_buf, np.int32(m))
+            if scale != 0.0:
+                self.kernels['confidence'](self.q, (m,), None, best_buf, votes_buf, np.int32(m))
+                best = np.empty((oh, ow), dtype=np.uint16)
+                self.cl.enqueue_copy(self.q, best, best_buf, is_blocking=True)
 
-            hist = np.bincount(best.ravel(), minlength=65536)
-            threshold = int(np.float32(np.float32(best.size)
-                                       * np.float32(0.009999999776482582)))
-            lo = int(np.searchsorted(np.cumsum(hist), threshold)) if threshold else 0
-            hi = (65535 - int(np.searchsorted(np.cumsum(hist[::-1]), threshold))
-                  if threshold else 65535)
-            positions = np.arange(4096, dtype=np.float64) * 65535.0 / 4095.0
-            span = max(hi - lo, 1)
-            lut = (65535.0 * np.sqrt(np.clip((positions - lo) / span, 0, 1))
-                   ).astype(np.float32)
+                hist = np.bincount(best.ravel(), minlength=65536)
+                threshold = int(np.float32(np.float32(best.size)
+                                           * np.float32(0.009999999776482582)))
+                lo = int(np.searchsorted(np.cumsum(hist), threshold)) if threshold else 0
+                hi = (65535 - int(np.searchsorted(np.cumsum(hist[::-1]), threshold))
+                      if threshold else 65535)
+                positions = np.arange(4096, dtype=np.float64) * 65535.0 / 4095.0
+                span = max(hi - lo, 1)
+                lut = (65535.0 * np.sqrt(np.clip((positions - lo) / span, 0, 1))
+                       ).astype(np.float32)
 
-            lb = _alloc(self.cl.Buffer(self.ctx, self.mf.READ_ONLY | self.mf.COPY_HOST_PTR,
-                                       hostbuf=lut))
-            guide_buf = pb
-            self.kernels['guide'](self.q, (m,), None, best_buf, lb, guide_buf, np.int32(m))
-            smooth = np.float32(np.float32(smoothing) * np.float32(0.75)
-                                * np.float32(0.03125))
-            scale = float(np.float32(extent * smooth / np.float32(100)))
-            low = float(np.float32(extent * np.float32(smooth * np.float32(64))
-                                   / np.float32(100)))
-            tmp_depth_buf = sb
-            for _ in range(2):
-                cancel()
-                self.filt.axis_guided_buf(depth_buf, guide_buf, tmp_depth_buf, oh, ow,
-                                          scale, low, axis=1)
-                cancel()
-                self.filt.axis_guided_buf(tmp_depth_buf, guide_buf, depth_buf, oh, ow,
-                                          scale, low, axis=0)
+                lb = _alloc(self.cl.Buffer(self.ctx, self.mf.READ_ONLY | self.mf.COPY_HOST_PTR,
+                                           hostbuf=lut))
+                guide_buf = pb
+                self.kernels['guide'](self.q, (m,), None, best_buf, lb, guide_buf, np.int32(m))
+                tmp_depth_buf = sb
+                for _ in range(2):
+                    cancel()
+                    self.filt.axis_guided_buf(depth_buf, guide_buf, tmp_depth_buf, oh, ow,
+                                              scale, low, axis=1)
+                    cancel()
+                    self.filt.axis_guided_buf(tmp_depth_buf, guide_buf, depth_buf, oh, ow,
+                                              scale, low, axis=0)
             half_step = step >> 1
             if half_step:
                 sl = _snap_lut(feather).astype(np.int64)
@@ -2183,8 +2200,10 @@ class _GpuB:
                                                hostbuf=sl))
                 self.kernels['snap'](self.q, (m,), None, depth_buf, sb_lut,
                                      np.int32(step), np.int32(m))
-            self.kernels['apply_detail'](self.q, (m,), None, depth_buf, d_second_buf,
-                                         d_winner_buf, np.int32(m))
+            if preserve_detail:
+                self.kernels['apply_detail'](self.q, (m,), None, depth_buf, d_second_buf,
+                                             d_winner_buf, np.int32(m))
+            cancel()
             out = self.expand.run_buf(depth_buf, (oh, ow), shape)
             completed = True
             return out

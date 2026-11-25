@@ -101,7 +101,26 @@ def test_native_batch_produces_dng_and_tiff(native_stack, tmp_path):
     assert run_cli(common) == 0
     assert (output / f"{folder.name}.dng").exists()
     assert run_cli(common + ["--native-batch-format", "tiff"]) == 0
-    assert tifffile.imread(output / f"{folder.name}.tiff").dtype == np.uint16
+    original = tifffile.imread(output / f"{folder.name}.tiff")
+    assert original.dtype == np.uint16
+
+    import json
+    from utils.image_utils import srgb_icc_profile
+
+    config = tmp_path / "batch.json"
+    config.write_text(json.dumps({folder.name: {
+        "watermark": "OpenFocus", "watermark_size": 10, "watermark_opacity": 0.6,
+    }}), encoding="utf-8")
+    assert run_cli(common + ["--config", str(config), "--dry-run"]) == 2
+    ignored = tmp_path / "ignored.dng"
+    assert run_cli(common + ["--native-batch-format", "tiff", "--config", str(config),
+                             "--output", str(ignored)]) == 0
+    assert not ignored.exists()
+    with tifffile.TiffFile(output / f"{folder.name}.tiff") as marked:
+        assert marked.pages[0].tags[34675].value == srgb_icc_profile()
+        pixels = marked.pages[0].asarray()
+    assert pixels.dtype == np.uint16
+    assert not np.array_equal(pixels, original)
 
 
 def test_native_cli_rejects_unsafe_options_and_summary_overwrite(native_stack, tmp_path):

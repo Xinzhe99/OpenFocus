@@ -380,14 +380,17 @@ def depth_map(frames, img_resize, kernel_size, smoothing, should_cancel,
                 callback(index, total)
                 reported = index
 
-    if gpu is not None and half_resolution and preserve_detail:
+    if gpu is not None and half_resolution:
         from fusion_methods._openfocus_gpu import GpuError, log_fallback, device_status
         shape = (frames[0].shape[:2] if img_resize is None
                  else (int(img_resize[1]), int(img_resize[0])))
         try:
+            full_depth_kwargs = {'live_preview': _live_preview}
+            if not preserve_detail:
+                full_depth_kwargs['preserve_detail'] = False
             accelerated = gpu.full_depth(frames, shape, img_resize, kernel_size,
                                          smoothing, feather, should_cancel,
-                                         progress_callback, live_preview=_live_preview)
+                                         progress_callback, **full_depth_kwargs)
         except GpuError as exc:
             gpu.failed = True
             log_fallback(exc)

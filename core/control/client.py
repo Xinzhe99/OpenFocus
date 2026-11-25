@@ -197,8 +197,11 @@ def launch_gui(socket_name=None, timeout=45.0, paths=(), *, env=None, process_fa
         creation = 0x00000008 | 0x00000200  # DETACHED_PROCESS | NEW_GROUP
     if override:
         child_env["OPENFOCUS_CONTROL_FILE"] = str(path)
+    launch_cwd = (str(Path(sys.executable).resolve().parent)
+                  if getattr(sys, "frozen", False)
+                  else str(Path(__file__).resolve().parents[2]))
     process = (subprocess.Popen if process_factory is None else process_factory)(
-        _launch_command(socket_name, paths), cwd=str(Path(__file__).resolve().parents[2]), env=child_env,
+        _launch_command(socket_name, paths), cwd=launch_cwd, env=child_env,
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         creationflags=creation,
         start_new_session=sys.platform != "win32",

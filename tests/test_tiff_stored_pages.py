@@ -161,11 +161,14 @@ def test_negative_page_index_keeps_decoder_error(tmp_path, libtiff_decodes):
     assert libtiff_decodes == [(-1, 0)]
 
 
-def test_truncated_page_is_reported_by_the_decoder(tmp_path, libtiff_decodes):
+@pytest.mark.parametrize('compression,shape', [(None, (23, 9, 3)), ('deflate', (1025, 1001, 3))])
+def test_truncated_page_is_reported_by_the_decoder(tmp_path, libtiff_decodes, compression, shape):
     path = tmp_path / 'truncated.tif'
-    tifffile.imwrite(path, _samples((23, 9, 3), np.uint16, 7), photometric='rgb')
-    content = path.read_bytes()
-    path.write_bytes(content[:-30])
+    tifffile.imwrite(path, _samples(shape, np.uint16, 7), photometric='rgb',
+                     compression=compression, rowsperstrip=128)
+    with path.open('r+b') as stream:
+        stream.seek(-30, 2)
+        stream.truncate()
     with pytest.raises(ValueError, match='Could not decode TIFF page'):
         decode_tiff_page(str(path))
     assert len(libtiff_decodes) == 1

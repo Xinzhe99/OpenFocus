@@ -310,6 +310,27 @@ def test_scoring_refine_and_perspective_parity(monkeypatch):
     assert edge_c == edge_n
 
 
+def test_grid_scoring_rounds_wide_coordinates_before_mapping(monkeypatch):
+    _disable_native(monkeypatch)
+    origin = 1 << 24
+    xs = np.array([origin + 1, origin + 3, origin + 5], dtype=np.int64)
+    ys = np.array([origin + 1], dtype=np.int64)
+    cx = np.array([origin], dtype=np.float32)
+    cy = np.array([origin - 4, origin], dtype=np.float32)
+    image = np.array([[100, 300, 200, 700, 500, 900]], dtype=np.uint16)
+    # The f32 coordinates map to columns 0, 4, 4 on the single row.
+    ref = image[:, [0, 4, 4]]
+    out_k = np.empty(1, dtype=np.int64)
+    out_sc = np.empty(1, dtype=np.float32)
+    ak.score_grid_4d_slice(
+        ref, image, xs, ys, np.float32(0), np.float32(0), cx, cy,
+        np.zeros((1, 1), np.float32), np.ones((1, 1), np.float32),
+        1, 2, 1, 1, 0, 2, out_k, out_sc, 0,
+    )
+    assert out_k[0] == 1
+    assert out_sc[0] == 0.0
+
+
 def test_end_to_end_alignment_and_memmap_parity(monkeypatch, tmp_path):
     _mock_resources(monkeypatch)
     rng = np.random.default_rng(7)

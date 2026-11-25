@@ -266,7 +266,7 @@ class _NumberRow(QWidget):
         row.addWidget(self.spin)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(2)
+        layout.setSpacing(1)
         layout.addWidget(self._label)
         layout.addLayout(row)
         self.setValue(value)
@@ -1227,8 +1227,8 @@ class RetouchDialog(QDialog):
         from ui.right_panel import ElidingButton
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(8, 8, 8, 4)
-        outer.setSpacing(4)
+        outer.setContentsMargins(8, 6, 8, 4)
+        outer.setSpacing(3)
 
         top = QHBoxLayout()
         top.setSpacing(8)
@@ -1249,6 +1249,8 @@ class RetouchDialog(QDialog):
         title_column = QVBoxLayout()
         title_column.setContentsMargins(0, 0, 0, 0)
         title_column.setSpacing(0)
+        title_column.addWidget(self.lbl_title)
+        title_column.addWidget(self.lbl_source_summary)
         top.addLayout(title_column, 1)
         top.addWidget(self.lbl_unsaved)
 
@@ -1331,7 +1333,7 @@ class RetouchDialog(QDialog):
         # the scrollbar hidden until needed, a cramped window used to clip
         # the right edge of every numeric input.
         side.setContentsMargins(8, 0, 18, 0)
-        side.setSpacing(6)
+        side.setSpacing(3)
 
 
         lbl_tools = QLabel(trans.t("retouch_tools"))
@@ -1935,6 +1937,7 @@ class RetouchDialog(QDialog):
         super().showEvent(event)
         if not self._ui_ready:
             return
+        QTimer.singleShot(0, self._elide_title)
         QTimer.singleShot(0, self._fit)
 
     # -------------------------------------------------------------- cursor

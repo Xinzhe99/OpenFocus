@@ -70,10 +70,13 @@ the named-pipe client's computer with `GetComputerNameW` and rejects a remote
 or unidentifiable client; `ERROR_PIPE_LOCAL` is treated as local.
 On POSIX, a socket-name conflict does not remove the existing endpoint. Choose
 another name or manually clean it only after confirming it has no owner.
-The server publishes an owner-only Unix socket with an exclusive hard link;
-the filesystem containing the requested socket path must support hard links to
-Unix sockets. Publication fails safely when it does not. On shutdown the server
-removes its published path if it still identifies the socket it created.
+Unix socket paths can use up to 107 encoded bytes on Linux and 103 on macOS.
+The server normally publishes the owner-only socket with an exclusive hard
+link, which requires a filesystem that supports hard links to Unix sockets.
+If the requested path fits but the staging path is too long, it binds
+directly in a user-owned directory with group and other writes disabled.
+On shutdown the server removes its path if it still identifies the socket it
+created.
 
 ## 4. Framing
 
@@ -114,7 +117,8 @@ load, stack decode) return immediately; poll `app.state`/`render.state`/
 | `app.quit` | `force?` | `{quitting:true, force}`; `force:true` discards prompts/work |
 
 `app.info.methods` mirrors the registry (id, label, category, neural,
-order_sensitive, depth_map, weights, parameters). `capabilities` reports torch,
+order_sensitive, depth_map, weights, parameters, experimental, available,
+unavailable_reason). `capabilities` reports torch,
 gpu, heic, raw, dtcwt and pyqt without importing the optional packages. `gpu`
 is `null` until a background device probe or OS hardware query has completed.
 
@@ -149,6 +153,9 @@ returns `busy` while the stack is loading.
 | `align.set` | `id`, `parameters?` | current alignment + parameters |
 | `option.set` | `name`, `value` | `{name, value}` |
 
+For alignment-only mode (`id: "none"`), `method.parameters` returns empty
+`parameters` and `specs` with `depth: false`.
+
 `method.set` and `align.set` validate the selector and all parameters before
 mutating state. `option.set` requires `value`: boolean options accept JSON
 booleans, and integer options accept integers or integer-valued floats. Thread
@@ -157,9 +164,11 @@ than block size, tile threshold and AI batch size at least 1, and registration
 downscale width at least 64. Invalid values leave the option unchanged.
 
 `option.set` names: `base_correct`, `exposure_match`, `reverse_order`,
-`thread_count`, `use_gpu`, `tile_enabled`, `tile_block_size`, `tile_overlap`,
-`tile_threshold`, `preview`, `ai_batch_size`, `resource_preference`,
-`reg_downscale_width`, `profile_performance`, `debug_logging`, `storage_directory`.
+`sharpen_output`, `sharpen_strength`, `thread_count`, `use_gpu`, `tile_enabled`,
+`tile_block_size`, `tile_overlap`, `tile_threshold`, `preview`, `ai_batch_size`,
+`resource_preference`, `reg_downscale_width`, `profile_performance`,
+`debug_logging`, `storage_directory`. `sharpen_output` is a boolean and
+`sharpen_strength` accepts an integer percentage from `0` to `200` (default `100`).
 `thread_count`, `ai_batch_size`, `profile_performance` and `debug_logging` are
 typed control options outside the Advanced Settings dialog. The two diagnostics
 options require JSON booleans and apply to the current session.
@@ -267,8 +276,9 @@ blank path is invalid.
 | `dialog.color` | `color`, `index?` | answers a `QColorDialog` with `#rrggbb` |
 
 Names: `settings`, `batch`, `compare`, `depth`, `feedback`, `scalebar`,
-`dust`, `retouch`, `welcome`, `method_help`, `registration_help`,
-`environment`, `contact`.
+`watermark`, `converter`, `retouch`, `welcome`, `method_help`, `registration_help`,
+`environment`, `contact`. (`dust` and `mosaic` are disabled in development and
+return `invalid_argument`.)
 
 `dialog.list` is not limited to these named dialogs: it includes **every
 visible Qt top-level window**, including file pickers, message boxes,
@@ -291,6 +301,12 @@ Managed dialogs and `dialog.open` are modeless so commands continue to flow.
 Dialogs opened by a menu action with `exec()` are reachable in the same way:
 `ui.trigger` returns, then `dialog.list`, `ui.find`, `ui.click` and
 `dialog.accept` operate their widgets from inside the nested Qt loop.
+
+Start a conversion by clicking Convert with `ui.click`, then poll `dialog.list`
+for `busy`. The converter returns `unsupported` for `dialog.accept`. Close
+it with `dialog.close` or `dialog.reject`, which can return `false` while its
+workers stop. In the watermark dialog, `dialog.accept` applies the draft,
+and preview cleanup may delay closure.
 
 Closing or rejecting a dirty Retouch dialog returns `closed: false` or
 `rejected: false` while its confirmation is open. Discover the confirmation

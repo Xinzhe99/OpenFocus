@@ -331,21 +331,32 @@ def test_image_sort_key_compares_all_numeric_parts_before_case():
     assert sorted(equal_keys, key=_image_sort_key) == sorted(reversed(equal_keys), key=_image_sort_key)
 
 
-def test_stabilisation_folder_with_mixed_filenames(tmp_path):
+def test_stabilisation_folder_with_mixed_filenames(tmp_path, monkeypatch):
     """The stabilisation path sorted with int(findall(...)[-1]) outright, so a
     digit-free name raised IndexError before any frame was read.
     """
     from core.registration import _stabilisation_impl
+    from PIL import Image
+    from utils import image_utils
 
-    folder = tmp_path / "stab"
+    folder = tmp_path / "样本"
     folder.mkdir()
     rng = np.random.default_rng(4)
     base = rng.integers(0, 255, (64, 64, 3), dtype=np.uint8)
     for i, name in enumerate(("frame1.png", "frame2.png", "cover.png")):
-        assert cv2.imwrite(str(folder / name), np.roll(base, 3 * i, axis=1))
+        ok, encoded = cv2.imencode('.png', np.roll(base, 3 * i, axis=1))
+        assert ok
+        encoded.tofile(folder / name)
 
-    stabilized = _stabilisation_impl(str(folder))
+    exif = Image.Exif()
+    exif[271] = 'Another source'
+    monkeypatch.setattr(image_utils, 'SOURCE_EXIF', exif.tobytes())
+    destination = tmp_path / "对齐"
+    stabilized = _stabilisation_impl(str(folder), output_path=str(destination))
     assert len(stabilized) == 3
+    for name in ("frame1.png", "frame2.png", "cover.png"):
+        with Image.open(destination / name) as saved:
+            assert not saved.getexif()
 
 
 def test_shift_limit_argument_stays_method_scoped():
@@ -397,6 +408,42 @@ def test_openfocus_report_orders_frames_and_records_applied_fallback(monkeypatch
     assert 'at least two pixels' in report[0]['reason']
     np.testing.assert_array_equal(report[0]['transform'], np.eye(3))
     assert all(image.dtype == np.uint16 for image in aligned)
+
+
+def test_homography_falls_back_to_exact_matching_on_flann_error(monkeypatch):
+    import core.registration as registration
+
+    frames, _ = _shifted_stack()
+    keypoints = tuple(cv2.KeyPoint(float(x), float(y), 1.0)
+                      for y in (12, 30) for x in (8, 20, 32, 44))
+    descriptors = np.broadcast_to(np.zeros(128, np.float32), (20_001, 128))
+
+    class Sift:
+        def detectAndCompute(self, image, mask):
+            assert image.ndim == 2 and image.dtype == np.uint8
+            return keypoints, descriptors
+
+    calls = []
+
+    class Matcher:
+        def __init__(self, approximate):
+            self.approximate = approximate
+
+        def knnMatch(self, query, train, k):
+            assert query is train is descriptors and k == 2
+            calls.append(self.approximate)
+            if self.approximate:
+                raise cv2.error('injected FLANN index error')
+            return [(cv2.DMatch(i, i, 1.0), cv2.DMatch(i, (i + 1) % len(keypoints), 2.0))
+                    for i in range(len(keypoints))]
+
+    monkeypatch.setattr(cv2, 'SIFT_create', Sift)
+    monkeypatch.setattr(cv2, 'FlannBasedMatcher', lambda *_: Matcher(True))
+    monkeypatch.setattr(cv2, 'BFMatcher', lambda *_: Matcher(False))
+    result = registration._align_homography_impl(
+        frames, failure_policy='fail', thread_count=1, defer_warps=True)
+    assert len(result) == 2
+    assert calls == [True, False]
 
 
 @pytest.mark.parametrize('method', ['homography', 'ecc', 'both'])

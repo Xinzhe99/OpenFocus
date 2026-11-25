@@ -14,6 +14,7 @@ from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
 from constants import app_display_version
 from utils.settings_store import get_settings
+from utils.tls import open_url
 
 ENABLED_KEY = "usage/enabled"
 ID_KEY = "usage/installation_id"
@@ -38,7 +39,7 @@ def _send(payload):
         ENDPOINT, data=json.dumps(payload).encode("utf-8"),
         headers={"Content-Type": "application/json", "User-Agent": f"OpenFocus/{app_display_version()}"},
         method="POST")
-    with urllib.request.urlopen(request, timeout=5) as response:
+    with open_url(urllib.request.urlopen, request, timeout=5) as response:
         return response.status == 204
 
 

@@ -210,21 +210,40 @@ def openfocus_b_impl(input_source, img_resize=None, kernel_size: int = 17,
     merge_progress = activity_steps
     def merge_sources(resident_flag):
         nonlocal gpu, merge_progress
-        if resident_flag:
-            from math import prod
-            from core import resource_policy
-            from core.multi_focus_fusion import memory_budget_bytes
-            from fusion_methods._openfocus_gpu import _iter_prefetched, _prefetch_window
+        from math import prod
+        from core import resource_policy
+        from core.multi_focus_fusion import memory_budget_bytes
+        from fusion_methods._openfocus_gpu import _iter_prefetched, _prefetch_window
 
-            host_budget = min(memory_budget_bytes(),
-                              resource_policy.ram_ceiling(resource_policy.probe_memory()))
-            samples = prod(shape)
-            per_slot = max(
-                source_frames.frame_resolution_bytes(frame, metadata_only=True)
-                + (2 * frame.nbytes if img_resize is None and frame.dtype in (np.uint8, np.uint16)
-                   else 8 * (frame.size + samples))
-                for frame in frames
-            )
+        host_budget = min(memory_budget_bytes(),
+                          resource_policy.ram_ceiling(resource_policy.probe_memory()))
+        samples = prod(shape)
+        per_slot = max(
+            source_frames.frame_resolution_bytes(frame, metadata_only=True)
+            + (2 * frame.nbytes if img_resize is None and frame.dtype in (np.uint8, np.uint16)
+               else 8 * (frame.size + samples))
+            for frame in frames
+        )
+
+        def prepare_merge_source(index, source, cancelled):
+            _check_cancel(cancelled)
+            if img_resize is None and source.shape != shape:
+                raise ValueError('OpenFocus B requires frames with matching shapes')
+            if not active[index]:
+                if depth_override is not None and (
+                        isinstance(source, source_frames.ProcessedFrame)
+                        or (source.ndim == 3 and source.shape[2] == 4)):
+                    source_frames.resolve_frame(source, should_cancel=cancelled)
+                else:
+                    source_frames.validate_frame_source(source)
+                return None
+            with source_frames.without_source_cache_growth():
+                frame, source_scale = _source_codes(source, img_resize, cancelled)
+            if frame.shape != shape:
+                raise ValueError('OpenFocus B requires frames with matching shapes')
+            return frame, source_scale
+
+        if resident_flag:
             # Charge the current decode and any other upload still holding its host buffer.
             fixed_host = per_slot * (2 if getattr(gpu, '_merge_ping_pong', False) else 1)
             if result is not None:
@@ -232,25 +251,6 @@ def openfocus_b_impl(input_source, img_resize=None, kernel_size: int = 17,
             slots = _prefetch_window(
                 host_budget, fixed_host, per_slot, count, thread_count=thread_count,
             )
-
-            def prepare_merge_source(index, source, cancelled):
-                _check_cancel(cancelled)
-                if img_resize is None and source.shape != shape:
-                    raise ValueError('OpenFocus B requires frames with matching shapes')
-                if not active[index]:
-                    if depth_override is not None and (
-                            isinstance(source, source_frames.ProcessedFrame)
-                            or (source.ndim == 3 and source.shape[2] == 4)):
-                        source_frames.resolve_frame(source, should_cancel=cancelled)
-                    else:
-                        source_frames.validate_frame_source(source)
-                    return None
-                with source_frames.without_source_cache_growth():
-                    frame, source_scale = _source_codes(source, img_resize, cancelled)
-                if frame.shape != shape:
-                    raise ValueError('OpenFocus B requires frames with matching shapes')
-                return frame, source_scale
-
             prepared_iter = _iter_prefetched(
                 frames, prepare_merge_source, enabled=slots > 0,
                 should_cancel=should_cancel, max_in_flight=max(1, slots),
@@ -276,33 +276,41 @@ def openfocus_b_impl(input_source, img_resize=None, kernel_size: int = 17,
                 prepared_iter.close()
             return None
 
-        for index, source in enumerate(frames):
-            _check_cancel(should_cancel)
-            if img_resize is None and source.shape != shape:
-                raise ValueError('OpenFocus B requires frames with matching shapes')
-            if not active[index]:
-                if depth_override is not None and (
-                        isinstance(source, source_frames.ProcessedFrame)
-                        or (source.ndim == 3 and source.shape[2] == 4)):
-                    source_frames.resolve_frame(source, should_cancel=should_cancel)
-                else:
-                    source_frames.validate_frame_source(source)
-            else:
-                with source_frames.without_source_cache_growth():
-                    frame, source_scale = _source_codes(source, img_resize, should_cancel)
-                if frame.shape != shape:
-                    raise ValueError('OpenFocus B requires frames with matching shapes')
-                with frame_region(frame) as pixels:
-                    gpu = _merge_codes(result, pixels, depth, index, count, should_cancel,
-                                       source_scale=source_scale, gpu=gpu,
-                                       tiles=None if tiles is None else tiles[:, :, index])
-                del frame
-            if live_preview is not None:
-                live_preview.show_blend(depth, index, count)
-            current = activity_steps + index + 1
-            if progress_callback is not None and current > merge_progress:
-                progress_callback(current, total)
-                merge_progress = current
+        fixed_host = per_slot
+        if result is not None:
+            fixed_host += result.nbytes
+        if depth is not None:
+            fixed_host += depth.nbytes
+        if tiles is not None:
+            fixed_host += tiles.nbytes
+        slots = _prefetch_window(
+            host_budget, fixed_host, per_slot, count,
+            max_slots=2, thread_count=thread_count,
+        )
+        prepared_iter = _iter_prefetched(
+            frames, prepare_merge_source, enabled=slots > 0,
+            should_cancel=should_cancel, max_in_flight=max(1, slots),
+        )
+        try:
+            for index, prepared in prepared_iter:
+                _check_cancel(should_cancel)
+                if prepared is not None:
+                    frame, source_scale = prepared
+                    try:
+                        with frame_region(frame) as pixels:
+                            gpu = _merge_codes(result, pixels, depth, index, count, should_cancel,
+                                               source_scale=source_scale, gpu=gpu,
+                                               tiles=None if tiles is None else tiles[:, :, index])
+                    finally:
+                        del frame, prepared
+                if live_preview is not None:
+                    live_preview.show_blend(depth, index, count)
+                current = activity_steps + index + 1
+                if progress_callback is not None and current > merge_progress:
+                    progress_callback(current, total)
+                    merge_progress = current
+        finally:
+            prepared_iter.close()
         return None
 
     resident = False

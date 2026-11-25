@@ -17,7 +17,13 @@ $release = Invoke-RestMethod -Uri "$site/api/latest"
 $asset = $release.assets.'windows-setup'
 if (-not $asset) { throw "No Windows installer found in $($release.tag)" }
 
-$size = [math]::Round($asset.size / 1e6)
+$expectedSize = 0L
+if (-not [long]::TryParse([string]$asset.size, [ref]$expectedSize) -or $expectedSize -le 0 -or
+    $asset.digest -notmatch '^sha256:([0-9a-fA-F]{64})$') {
+    throw "The release is missing valid OpenFocus installer integrity metadata."
+}
+$expectedHash = $Matches[1]
+$size = [math]::Round($expectedSize / 1e6)
 Write-Host "Latest release: $($release.tag)"
 Write-Host "Download: $($asset.name) ($size MB)"
 $url = "$site/download/latest/windows-setup"
@@ -28,10 +34,20 @@ if ($dryRun) {
     exit 0
 }
 
-$out = Join-Path $env:TEMP "OpenFocus-$($release.tag -replace '[^A-Za-z0-9._-]', '_')-setup.exe"
-Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing
-Write-Host "Starting the installer..."
-$process = Start-Process -FilePath $out -Wait -PassThru
-if ($process.ExitCode -ne 0) {
-    throw "The OpenFocus installer exited with code $($process.ExitCode)."
+$out = Join-Path $env:TEMP "OpenFocus-$($release.tag -replace '[^A-Za-z0-9._-]', '_')-$([Guid]::NewGuid().ToString('N'))-setup.exe"
+try {
+    Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing
+    if ((Get-Item -LiteralPath $out).Length -ne $expectedSize) {
+        throw "The downloaded OpenFocus installer is incomplete."
+    }
+    if ((Get-FileHash -LiteralPath $out -Algorithm SHA256).Hash -ine $expectedHash) {
+        throw "The downloaded OpenFocus installer failed SHA-256 verification."
+    }
+    Write-Host "Starting the installer..."
+    $process = Start-Process -FilePath $out -Wait -PassThru
+    if ($process.ExitCode -ne 0) {
+        throw "The OpenFocus installer exited with code $($process.ExitCode)."
+    }
+} finally {
+    Remove-Item -LiteralPath $out -Force -ErrorAction SilentlyContinue
 }

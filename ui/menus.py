@@ -513,6 +513,7 @@ def setup_menus(window: QMainWindow) -> None:
         action.setCheckable(True)
         action.setChecked(getattr(window, 'font_size_mode', 'medium') == mode)
         action.setData(mode)
+        action.setProperty("trans_key", key)
         action.triggered.connect(lambda _checked, choice=mode: window.set_ui_font_size(choice))
         font_group.addAction(action)
         window.ui_objs[key] = action
