@@ -9,7 +9,7 @@ from unicodedata import category
 from urllib.parse import urlencode, urlsplit
 
 from PyQt6.QtCore import QEvent, QRect, QRectF, QTimer, Qt, QUrl
-from PyQt6.QtGui import QColor, QFont, QFontDatabase, QImage
+from PyQt6.QtGui import QColor, QFont, QFontDatabase, QFontInfo, QImage
 from PyQt6.QtWidgets import (
     QDialog,
     QVBoxLayout,
@@ -60,9 +60,12 @@ class EnvironmentInfoDialog(QDialog):
         self.text_edit = QTextEdit()
         self.text_edit.setToolTip(trans.t('env_subtitle'))
         self.text_edit.setReadOnly(True)
-        mono_font = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
-        mono_font.setPointSize(10)
-        self.text_edit.setFont(mono_font)
+        fixed_font = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
+        family = fixed_font.family()
+        if not QFontInfo(fixed_font).fixedPitch():
+            family = next((name for name in QFontDatabase.families()
+                           if QFontDatabase.isFixedPitch(name)), family)
+        self.text_edit.setStyleSheet(f'font-family: "{family}";')
         layout.addWidget(self.text_edit)
 
         self._probe = _EnvironmentProbe()
