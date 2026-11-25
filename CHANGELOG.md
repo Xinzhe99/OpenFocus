@@ -243,6 +243,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   control sockets up to the platform path limit.
 
 ### Fixed
+- Preserve available camera, exposure, and other export-safe EXIF when
+  exporting camera RAW sources, including supported RAF and RW2 previews.
 - Preserve saved result metadata and protect original stack files during
   desktop exports. Release ROI previews and finish export and batch cleanup
   safely when closing the window. Resolve Qt UI font fallback families and

@@ -743,8 +743,11 @@ def decode_image(path: str, *, allow_transparent_png: bool = False,
     return img
 
 
-# TIFF-structured RAW variants: byte-order mark + magic other than 42.
-_RAW_TIFF_MAGICS = {b"II*\x00", b"MM\x00*", b"IIRO", b"IIRS", b"MMOR", b"IIU\x00"}
+# TIFF-structured RAW variants: byte-order mark + magic other than 42 (plus BigTIFF).
+_RAW_TIFF_MAGICS = {
+    b"II*\x00", b"MM\x00*", b"IIRO", b"IIRS", b"MMOR", b"IIU\x00",
+    b"II+\x00", b"MM\x00+",
+}
 
 
 _EXIF_SNAPSHOT_LIMIT = 16 * 1024 * 1024
@@ -781,26 +784,22 @@ class _BoundedExifReader:
 
 
 def _read_raw_exif_bytes(path: str) -> bytes:
-    """Read export-safe EXIF from a TIFF-based RAW without reading its pixels."""
+    """Read export-safe EXIF from a camera RAW without reading its pixels."""
+    from utils.raw_exif import read_container_raw_exif, read_tiff_raw_exif_from_stream
+
     with open(path, "rb") as fh:
         magic = fh.read(4)
-        if magic not in _RAW_TIFF_MAGICS:
-            return b""
-        offset = fh.read(4)
-        if len(offset) != 4:
-            return b""
+        if magic in _RAW_TIFF_MAGICS:
+            try:
+                return read_tiff_raw_exif_from_stream(fh, magic)
+            except Exception:
+                return b""
+    if len(magic) == 4 and os.path.isfile(path):
         try:
-            # Olympus and Panasonic replace the TIFF magic but retain the
-            # standard byte order and IFD offsets. Supplying the offset lets
-            # Pillow use a standard header without copying or changing the file.
-            src = PILImage.Exif()
-            src.endian = "<" if magic[:2] == b"II" else ">"
-            src.load_from_fp(_BoundedExifReader(fh), int.from_bytes(
-                offset, "little" if src.endian == "<" else "big"))
-            exif = _sanitize_exif(src)
-            return exif.tobytes() if exif is not None else b""
+            return read_container_raw_exif(path, magic)
         except Exception:
             return b""
+    return b""
 
 
 def _exif_bytes_from_image(image, *, pre_exif=None) -> bytes:
