@@ -314,8 +314,9 @@ class _DialogTaskRunner(QObject):
     _task_done = pyqtSignal(int, object, object)
     _progress_event = pyqtSignal(int, object)
 
-    def __init__(self, owner: QObject):
+    def __init__(self, owner: QObject, client: Any):
         super().__init__(owner)
+        self._bind_operation = getattr(client, "bind_account_operation", None)
         self._lock = threading.Lock()
         self._seq = 0
         self._inflight = 0
@@ -374,6 +375,8 @@ class _DialogTaskRunner(QObject):
             if key is not None:
                 self._latest_by_key[key] = req_id
             self._callbacks[req_id] = (key, on_success, on_error, on_finally, on_progress)
+        if self._bind_operation is not None:
+            fn = self._bind_operation(fn)
 
         def _emit_progress(payload: Any) -> None:
             with self._lock:
@@ -1269,7 +1272,7 @@ class AuthorShowcaseDialog(QDialog):
         self._privacy_restricted = False
         self._works: list[Any] = []
         self._next_cursor: str | None = None
-        self._runner = _DialogTaskRunner(self)
+        self._runner = _DialogTaskRunner(self, client)
         self._media_loader = _BoundedMediaLoader(self, fetcher=media_fetcher)
 
         self.setWindowTitle(
@@ -1568,7 +1571,7 @@ class WorkDetailDialog(QDialog):
         )
         self._reply_parent_id: str | None = None
         self._comments: list[Any] = []
-        self._runner = _DialogTaskRunner(self)
+        self._runner = _DialogTaskRunner(self, client)
         self._media_loader = _BoundedMediaLoader(self, fetcher=media_fetcher)
 
         self.setWindowTitle(t_gallery("gallery_work_detail_title"))
@@ -1731,18 +1734,7 @@ class WorkDetailDialog(QDialog):
         if not bool(_get(self.work, "allow_download", True)):
             self.status_label.setText(t_gallery("gallery_download_disabled_tip"))
             return
-        if self._client is None or not hasattr(self._client, "record_download"):
-            self.download_requested.emit(self.work)
-            return
-
-        self._runner.submit(
-            lambda: self._client.record_download(self.work_id),
-            key="work_download",
-            on_success=lambda _res: self.download_requested.emit(self.work),
-            on_error=lambda exc: self.status_label.setText(
-                translate_error(_error_code_from_exc(exc))
-            ),
-        )
+        self.download_requested.emit(self.work)
 
     def _on_report(self) -> None:
         dlg = ReportContentDialog(self, theme=self._theme)
@@ -1887,6 +1879,7 @@ class GalleryHubDialog(QDialog):
 
     download_work_requested = pyqtSignal(object)
     work_published = pyqtSignal(object)
+    publication_finished = pyqtSignal()
 
     def __init__(
         self,
@@ -1910,7 +1903,7 @@ class GalleryHubDialog(QDialog):
         self._media_fetcher = media_fetcher
         self._theme = theme
         self._did_initial_refresh = False
-        self._runner = _DialogTaskRunner(self)
+        self._runner = _DialogTaskRunner(self, client)
         self._media_loader = _BoundedMediaLoader(
             self, fetcher=media_fetcher, disk_cache=disk_cache
         )
@@ -1964,6 +1957,10 @@ class GalleryHubDialog(QDialog):
 
         if 0 <= initial_tab < self.tabs.count():
             self.tabs.setCurrentIndex(initial_tab)
+
+    @property
+    def is_publishing(self) -> bool:
+        return self._publishing
 
     def closeEvent(self, event: QEvent) -> None:
         if self._publishing:
@@ -2983,6 +2980,7 @@ class GalleryHubDialog(QDialog):
             self._publishing = False
             self._update_publish_button_state()
             self._refresh_publish_queue_ui()
+            self.publication_finished.emit()
 
         request = self._runner.submit(
             _worker,

@@ -287,6 +287,106 @@ _UPPER_BOUNDS = {
     'nl': 'maximaal {size}', 'pl': 'co najwyżej {size}',
 }
 
+_GALLERY_EXTRA_KEYS = (
+    'menu_account',
+    'menu_my_downloads',
+    'gallery_hide_fusion_result',
+    'gallery_settings_tab',
+    'gallery_settings_storage_section',
+    'gallery_settings_cache_limit',
+    'gallery_settings_cache_usage',
+    'gallery_download_reveal',
+    'gallery_download_failed',
+)
+
+_GALLERY_EXTRA_TEXT = {
+    'en': (
+        'Account', 'My Downloads', 'Hide Fusion Result', 'Gallery & Danmaku',
+        'Gallery Storage & Cache', 'Cache size limit (MB)',
+        'Current usage: {used_mb} MB / {limit_mb} MB',
+        'Show in Folder', 'Download failed: {reason}',
+    ),
+    'zh': (
+        '账户', '我的下载', '隐藏融合结果', '画廊与弹幕',
+        '画廊存储与缓存', '缓存上限（MB）',
+        '当前占用：{used_mb} MB / {limit_mb} MB',
+        '在文件夹中显示', '下载失败：{reason}',
+    ),
+    'ja': (
+        'アカウント', 'ダウンロード一覧', '合成結果を隠す', 'ギャラリーと弾幕',
+        'ギャラリー保存先とキャッシュ', 'キャッシュ上限（MB）',
+        '現在の使用量：{used_mb} MB / {limit_mb} MB',
+        'フォルダーで表示', 'ダウンロードに失敗しました：{reason}',
+    ),
+    'es': (
+        'Cuenta', 'Mis descargas', 'Ocultar resultado de fusión', 'Galería y comentarios',
+        'Almacenamiento y caché de la galería', 'Límite de caché (MB)',
+        'Uso actual: {used_mb} MB / {limit_mb} MB',
+        'Mostrar en carpeta', 'Error de descarga: {reason}',
+    ),
+    'de': (
+        'Konto', 'Meine Downloads', 'Fusionsergebnis ausblenden', 'Galerie & Danmaku',
+        'Galerie-Speicher & Cache', 'Cache-Limit (MB)',
+        'Aktuelle Belegung: {used_mb} MB / {limit_mb} MB',
+        'Im Ordner anzeigen', 'Download fehlgeschlagen: {reason}',
+    ),
+    'fr': (
+        'Compte', 'Mes téléchargements', 'Masquer le résultat de fusion', 'Galerie et commentaires',
+        'Stockage et cache de la galerie', 'Limite du cache (Mo)',
+        'Utilisation actuelle : {used_mb} Mo / {limit_mb} Mo',
+        'Afficher dans le dossier', 'Échec du téléchargement : {reason}',
+    ),
+    'ru': (
+        'Аккаунт', 'Мои загрузки', 'Скрыть результат слияния', 'Галерея и комментарии',
+        'Хранилище и кэш галереи', 'Лимит кэша (МБ)',
+        'Использовано: {used_mb} МБ / {limit_mb} МБ',
+        'Показать в папке', 'Ошибка загрузки: {reason}',
+    ),
+    'ko': (
+        '계정', '내 다운로드', '융합 결과 숨기기', '갤러리 및 탄막',
+        '갤러리 저장소 및 캐시', '캐시 용량 제한(MB)',
+        '현재 사용량: {used_mb} MB / {limit_mb} MB',
+        '폴더에서 보기', '다운로드 실패: {reason}',
+    ),
+    'pt': (
+        'Conta', 'Meus downloads', 'Ocultar resultado da fusão', 'Galeria e comentários',
+        'Armazenamento e cache da galeria', 'Limite de cache (MB)',
+        'Uso atual: {used_mb} MB / {limit_mb} MB',
+        'Mostrar na pasta', 'Falha no download: {reason}',
+    ),
+    'it': (
+        'Account', 'I miei download', 'Nascondi risultato di fusione', 'Galleria e commenti',
+        'Archiviazione e cache della galleria', 'Limite cache (MB)',
+        'Utilizzo attuale: {used_mb} MB / {limit_mb} MB',
+        'Mostra nella cartella', 'Download non riuscito: {reason}',
+    ),
+    'nl': (
+        'Account', 'Mijn downloads', 'Fusieresultaat verbergen', 'Galerij & opmerkingen',
+        'Galerijopslag en cache', 'Cachelimiet (MB)',
+        'Huidig gebruik: {used_mb} MB / {limit_mb} MB',
+        'Tonen in map', 'Downloaden mislukt: {reason}',
+    ),
+    'pl': (
+        'Konto', 'Moje pobrania', 'Ukryj wynik łączenia', 'Galeria i komentarze',
+        'Pamięć i pamięć podręczna galerii', 'Limit pamięci podręcznej (MB)',
+        'Bieżące użycie: {used_mb} MB / {limit_mb} MB',
+        'Pokaż w folderze', 'Pobieranie nie powiodło się: {reason}',
+    ),
+}
+
+_GALLERY_PACKS_CACHE = None
+
+
+def _gallery_pack(code: str):
+    global _GALLERY_PACKS_CACHE
+    if _GALLERY_PACKS_CACHE is None:
+        try:
+            from .gallery_i18n import GALLERY_TRANSLATIONS
+            _GALLERY_PACKS_CACHE = GALLERY_TRANSLATIONS
+        except Exception:
+            _GALLERY_PACKS_CACHE = {}
+    return _GALLERY_PACKS_CACHE.get(code)
+
 
 def _apply_pack_overlays(code: str, table: dict) -> dict:
     """Apply runtime overrides to a loaded pack without touching other packs."""
@@ -314,6 +414,12 @@ def _apply_pack_overlays(code: str, table: dict) -> dict:
     bound = _UPPER_BOUNDS.get(code)
     if bound is not None:
         table['storage_available_upper_bound'] = bound
+    gallery = _gallery_pack(code)
+    if gallery:
+        table.update(gallery)
+    gallery_extra = _GALLERY_EXTRA_TEXT.get(code)
+    if gallery_extra is not None:
+        table.update(zip(_GALLERY_EXTRA_KEYS, gallery_extra))
     return table
 
 

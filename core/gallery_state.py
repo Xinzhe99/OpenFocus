@@ -976,7 +976,8 @@ class GalleryStateStore(QObject):
                 with self._inflight_lock:
                     self._inflight_ops.discard(key)
 
-        self._background_runner(_wrapped)
+        bind = getattr(self._client, "bind_account_operation", None)
+        self._background_runner(bind(_wrapped) if bind is not None else _wrapped)
         return True
 
     def _on_poll_tick(self) -> None:

@@ -11,6 +11,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   render, and compare the result.
 - Add Gallery Hub, Account Center, and Honor Card dialogs in all supported
   languages. Preserve public camera and exposure metadata in Gallery uploads.
+- Open Gallery and Account Center from the main window. Browse bundled
+  showcase images when the Gallery service is unavailable, and finish active
+  Gallery publishing before the application closes.
 - Download smaller desktop updates for matching installations on Windows,
   Apple Silicon macOS, and Linux x86-64. Publish a patch helper for the
   official 2.0.0 desktop builds when the patch is smaller than the full package.

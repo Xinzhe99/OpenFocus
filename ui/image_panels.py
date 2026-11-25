@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
 )
 
+from widgets.gallery_showcase import GalleryShowcaseWidget
 from widgets.magnifier_label import MagnifierLabel
 from widgets.sharpness_curve import SharpnessCurveWidget
 from widgets.wipe_compare import WipeCompareWidget
@@ -116,6 +117,7 @@ class ResultPanel:
     chk_wipe_follow_right: QCheckBox
     slider_wipe_right: QSlider
     lbl_wipe_right_index: QLabel
+    gallery_showcase_page: GalleryShowcaseWidget = None
 
 
 class _LiveFusionPreviewPage(QWidget):
@@ -466,7 +468,9 @@ def create_result_panel() -> ResultPanel:
     view_stack.addWidget(result_page)  # index 0: normal result view
     view_stack.addWidget(wipe_page)    # index 1: wipe compare view
     live_preview_page = _LiveFusionPreviewPage()
-    view_stack.addWidget(live_preview_page)
+    view_stack.addWidget(live_preview_page)  # index 2: legacy live preview page
+    gallery_showcase_page = GalleryShowcaseWidget()
+    view_stack.addWidget(gallery_showcase_page)  # index 3: OpenFocus Gallery showcase
 
     layout.addWidget(title_bar)
     layout.addWidget(view_stack, 1)
@@ -490,4 +494,5 @@ def create_result_panel() -> ResultPanel:
         chk_wipe_follow_right=chk_follow_right,
         slider_wipe_right=slider_wipe_right,
         lbl_wipe_right_index=lbl_right_idx,
+        gallery_showcase_page=gallery_showcase_page,
     )

@@ -864,6 +864,11 @@ class GalleryClient:
                 return False
         return self._token_provider is not None
 
+    def bind_account_operation(self, operation):
+        """Capture the desktop account before handing a request to a worker."""
+        bind = getattr(self._account_client, "bind_operation", None)
+        return bind(operation) if bind is not None else operation
+
     def _resolve_token(self, *, required: bool, deadline: Optional[float]) -> Optional[str]:
         token = self._static_token
         try:

@@ -257,6 +257,11 @@ def test_settings_pages_expose_translated_controls_and_privacy_defaults(settings
         ('advanced_tab_registration', [dialog.spin_reg_width, dialog.registration_options_disclosure]),
         ('advanced_tab_other', [dialog.chk_restore, dialog.chk_ask_scale,
                                 dialog.chk_auto_update, dialog.chk_include_beta]),
+        ('gallery_settings_tab', [dialog.chk_danmaku_enabled, dialog.combo_danmaku_position,
+                                  dialog.spin_danmaku_font_size, dialog.spin_danmaku_opacity,
+                                  dialog.combo_danmaku_density, dialog.gallery_download_dir,
+                                  dialog.gallery_cache_dir, dialog.spin_gallery_cache_limit,
+                                  dialog.btn_clear_gallery_cache]),
     )
     dialog.show()
     try:

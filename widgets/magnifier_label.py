@@ -1,7 +1,7 @@
 from typing import Optional
 
-from PyQt6.QtCore import QPointF, QRectF, QSizeF, Qt, QTimer, QPropertyAnimation, QEasingCurve, pyqtProperty, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QInputDevice, QPainter, QPixmap, QPen, QRegion
+from PyQt6.QtCore import QEvent, QPointF, QRectF, QSizeF, Qt, QTimer, QPropertyAnimation, QEasingCurve, pyqtProperty, pyqtSignal
+from PyQt6.QtGui import QColor, QContextMenuEvent, QFont, QInputDevice, QPainter, QPixmap, QPen, QRegion
 from PyQt6.QtWidgets import QLabel
 
 from locales import trans
@@ -60,6 +60,7 @@ class MagnifierLabel(QLabel):
     sourceRegionRequested = pyqtSignal(object, object)  # generation key, bounded region request
     sourceRegionsReleased = pyqtSignal(object)
     viewStateChanged = pyqtSignal()
+    displayPixmapChanged = pyqtSignal(bool)
 
     def __init__(self, text: Optional[str] = "", parent=None):
         super().__init__(parent)
@@ -74,6 +75,9 @@ class MagnifierLabel(QLabel):
         self._pan_button = Qt.MouseButton.NoButton
         self._pan_offset = QPointF(0, 0)
         self._last_mouse_pos = QPointF()
+        self._right_press_pos: Optional[QPointF] = None
+        self._right_drag_moved = False
+        self._suppress_mouse_context_menu = False
         self.setToolTip(trans.t("magnifier_hint"))
         trans.languageChanged.connect(self._update_magnifier_hint)
         self.setMouseTracking(True)
@@ -314,6 +318,7 @@ class MagnifierLabel(QLabel):
             self._zoom_indicator_visible = False
             self._zoom_indicator_opacity = 0.0
             self.viewStateChanged.emit()
+            self.displayPixmapChanged.emit(False)
             self.update()
             return
         self._source_size = QSizeF(*source_size) if source_size is not None else QSizeF(pixmap.size())
@@ -325,6 +330,7 @@ class MagnifierLabel(QLabel):
             self._ensure_native_loupe()
         self._update_scaled_pixmap()
         self.viewStateChanged.emit()
+        self.displayPixmapChanged.emit(True)
 
     def pixmap(self) -> QPixmap:
         if self._base_pixmap is not None and not self._base_pixmap.isNull():
@@ -475,6 +481,7 @@ class MagnifierLabel(QLabel):
         self.unsetCursor()
         super().clear()
         self.viewStateChanged.emit()
+        self.displayPixmapChanged.emit(False)
 
     def wheelEvent(self, event):
         if self._is_panning:
@@ -710,6 +717,7 @@ class MagnifierLabel(QLabel):
                 
                 if not is_inside_roi:
                     # 右键点击非ROI区域，请求退出ROI模式
+                    self._suppress_mouse_context_menu = True
                     self._roi_rect = None
                     self._reset_interaction()
                     self.roiModeExitRequested.emit()
@@ -721,9 +729,13 @@ class MagnifierLabel(QLabel):
                 self._is_panning = True
                 self._pan_button = Qt.MouseButton.RightButton
                 self._last_mouse_pos = event.position()
+                self._right_press_pos = event.position()
+                self._right_drag_moved = False
+                self._suppress_mouse_context_menu = True
                 self.setCursor(Qt.CursorShape.ClosedHandCursor)
                 event.accept()
                 return
+            self._suppress_mouse_context_menu = False
 
         if (
             event.button() == Qt.MouseButton.LeftButton
@@ -747,6 +759,12 @@ class MagnifierLabel(QLabel):
                         self._update_cursor()
                         self.update()
 
+                if (
+                    self._pan_button == Qt.MouseButton.RightButton
+                    and self._right_press_pos is not None
+                    and (event.position() - self._right_press_pos).manhattanLength() > 4.0
+                ):
+                    self._right_drag_moved = True
                 if self._pan_to(event.position()):
                     self._begin_interactive_transform()
                     self.update()
@@ -827,12 +845,25 @@ class MagnifierLabel(QLabel):
 
     def mouseReleaseEvent(self, event):
         if self._is_panning and event.button() == self._pan_button:
+            was_right_click = (
+                self._pan_button == Qt.MouseButton.RightButton
+                and not self._right_drag_moved
+                and self._right_press_pos is not None
+                and (event.position() - self._right_press_pos).manhattanLength() <= 4.0
+            )
+            self._right_press_pos = None
+            self._right_drag_moved = False
             self._pan_to(event.position())
             self._reset_interaction()
             self._update_cursor()
             if self._base_pixmap is not None and not self._base_pixmap.isNull():
                 self._update_scaled_pixmap(clamp=False)
             event.accept()
+            if (
+                was_right_click
+                and self.contextMenuPolicy() == Qt.ContextMenuPolicy.CustomContextMenu
+            ):
+                self.customContextMenuRequested.emit(event.position().toPoint())
             return
         if self._roi_mode:
             if event.button() == Qt.MouseButton.LeftButton and self._roi_state != "none":
@@ -857,6 +888,18 @@ class MagnifierLabel(QLabel):
                 self.update()
 
         super().mouseReleaseEvent(event)
+
+    def event(self, event):
+        if event.type() == QEvent.Type.ContextMenu:
+            if (
+                self._suppress_mouse_context_menu
+                and event.reason() == QContextMenuEvent.Reason.Mouse
+            ):
+                self._suppress_mouse_context_menu = False
+                event.accept()
+                return True
+            self._suppress_mouse_context_menu = False
+        return super().event(event)
 
     def enterEvent(self, event):
         self.enterPreview.emit()

@@ -562,6 +562,64 @@ def setup_menus(window: QMainWindow) -> None:
     settings_menu.addAction(restore_action)
     window.ui_objs['action_restore_defaults'] = restore_action
 
+    # --- Account Menu (top-level alongside Edit/Tools/Settings/Help) ---
+    account_menu = menubar.addMenu(trans.t('menu_account'))
+    account_menu.setObjectName('menu_account')
+    account_menu.setProperty('controlId', 'menu_account')
+    account_menu.setProperty('trans_key', 'menu_account')
+    window.ui_objs['menu_account'] = account_menu
+
+    my_account_action = QAction(trans.t('menu_account_center'), window)
+    my_account_action.setObjectName('action_my_account')
+    my_account_action.setProperty('trans_key', 'menu_account_center')
+    my_account_action.triggered.connect(
+        lambda: getattr(window, 'open_account_center', lambda *_a, **_k: None)(0)
+    )
+    account_menu.addAction(my_account_action)
+    window.ui_objs['action_my_account'] = my_account_action
+
+    message_box_action = QAction(trans.t('menu_message_box'), window)
+    message_box_action.setObjectName('action_message_box')
+    message_box_action.setProperty('trans_key', 'menu_message_box')
+    message_box_action.triggered.connect(
+        lambda: getattr(window, 'open_account_center', lambda *_a, **_k: None)(1)
+    )
+    account_menu.addAction(message_box_action)
+    window.ui_objs['action_message_box'] = message_box_action
+
+    my_downloads_action = QAction(trans.t('menu_my_downloads'), window)
+    my_downloads_action.setObjectName('action_my_downloads')
+    my_downloads_action.setProperty('trans_key', 'menu_my_downloads')
+    my_downloads_action.triggered.connect(
+        lambda: getattr(window, 'open_gallery_downloads', lambda *_a, **_k: None)()
+    )
+    account_menu.addAction(my_downloads_action)
+    window.ui_objs['action_my_downloads'] = my_downloads_action
+
+    # --- Gallery Menu (top-level alongside Account/Help; NEVER red dot) ---
+    gallery_menu = menubar.addMenu(trans.t('menu_gallery'))
+    gallery_menu.setObjectName('menu_gallery')
+    gallery_menu.setProperty('controlId', 'menu_gallery')
+    gallery_menu.setProperty('trans_key', 'menu_gallery')
+    window.ui_objs['menu_gallery'] = gallery_menu
+
+    open_gallery_action = QAction(trans.t('menu_gallery_hub'), window)
+    open_gallery_action.setObjectName('action_open_gallery')
+    open_gallery_action.setProperty('trans_key', 'menu_gallery_hub')
+    open_gallery_action.triggered.connect(
+        lambda: getattr(window, 'open_gallery_hub', lambda *_a, **_k: None)(0)
+    )
+    gallery_menu.addAction(open_gallery_action)
+    window.ui_objs['action_open_gallery'] = open_gallery_action
+
+    screensaver_action = QAction(trans.t('menu_gallery_screensaver'), window)
+    screensaver_action.setObjectName('action_gallery_screensaver')
+    screensaver_action.setProperty('trans_key', 'menu_gallery_screensaver')
+    screensaver_action.triggered.connect(
+        lambda: getattr(window, 'open_gallery_screensaver', lambda *_a, **_k: None)()
+    )
+    gallery_menu.addAction(screensaver_action)
+    window.ui_objs['action_gallery_screensaver'] = screensaver_action
 
     # --- Help Menu ---
     help_menu = menubar.addMenu(trans.t('menu_help'))

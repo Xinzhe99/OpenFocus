@@ -192,7 +192,7 @@ class AccountCenterDialog(QDialog):
         self._on_open_url = on_open_url
         self._did_initial_refresh = False
         self._manual_refresh_pending = False
-        self._runner = _DialogTaskRunner(self)
+        self._runner = _DialogTaskRunner(self, client)
         self._media_loader = _BoundedMediaLoader(
             self, fetcher=media_fetcher, disk_cache=disk_cache
         )

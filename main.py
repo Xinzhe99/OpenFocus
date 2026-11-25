@@ -204,6 +204,7 @@ from controllers.label_manager import LabelManager
 from controllers.export_manager import ExportManager
 from controllers.transform_manager import TransformManager
 from controllers.batch_manager import BatchManager
+from controllers.gallery_controller import GalleryController
 from controllers.update_manager import (
     UpdateManager,
     STATE_DOWNLOADING,
@@ -545,10 +546,12 @@ class OpenFocus(QMainWindow):
         self.transform_manager = TransformManager(self)
         self.batch_manager = BatchManager(self)
         self.update_manager = UpdateManager(self)
+        self.gallery_controller = GalleryController(self)
         from utils.usage_analytics import UsageAnalytics
         from PyQt6.QtCore import QTimer as _QTimer
         self.usage_analytics = UsageAnalytics(self)
         _QTimer.singleShot(0, self.usage_analytics.start)
+        _QTimer.singleShot(0, self.gallery_controller.start)
 
         # 初始化图像加载器
         self.image_loader = ImageStackLoader()
@@ -682,6 +685,7 @@ class OpenFocus(QMainWindow):
         self.result_control_bar = result_panel.control_bar
         self.result_slider = result_panel.slider
         self.live_preview_page = result_panel.live_preview_page
+        self.gallery_showcase_page = result_panel.gallery_showcase_page
         self.result_slider.actionTriggered.connect(self.render_manager.inspect_previous_output)
         # 连接右侧面板的ROI模式退出请求信号
         self.lbl_result_img.roiModeExitRequested.connect(self._on_roi_mode_exit_requested)
@@ -768,6 +772,7 @@ class OpenFocus(QMainWindow):
         for _attribute, _control in ((
                 "lbl_source_img", "view_source"),
                 ("lbl_result_img", "view_result"),
+                ("gallery_showcase_page", "gallery_showcase"),
                 ("wipe_widget", "wipe_compare"),
                 ("wipe_bar", "wipe_bar"),
                 ("view_stack", "result_view_stack"),
@@ -786,6 +791,8 @@ class OpenFocus(QMainWindow):
         self.output_list.currentRowChanged.connect(self.render_manager.inspect_previous_output)
         self.output_list.itemClicked.connect(self.render_manager.inspect_previous_output)
         bind_right_panel(self, right_panel_components)
+        if hasattr(self, "gallery_controller"):
+            self.gallery_controller.attach_ui()
         # Selecting a method through the combo box is a project edit even
         # though it does not go through set_fusion_method()/set_alignment_method().
         for combo in (self.combo_fusion, self.combo_align):
@@ -3779,6 +3786,9 @@ class OpenFocus(QMainWindow):
         if action is None:
             return
         client = getattr(self, '_account_client', None)
+        gallery = getattr(self, 'gallery_controller', None)
+        if gallery is not None:
+            gallery.sync_account_session(client)
         if client is not None and getattr(client, 'logout_cleanup_pending', False):
             text = trans.t('account_cleanup_pending')
         elif client is not None and client.is_signed_in():
@@ -3808,11 +3818,44 @@ class OpenFocus(QMainWindow):
         """Manage the account and require another sign-in after sign-out."""
         from dialogs.account import AccountDialog
         AccountDialog(self).exec()
+        gallery = getattr(self, 'gallery_controller', None)
+        if gallery is not None:
+            gallery.sync_account_session(getattr(self, '_account_client', None))
         while not getattr(self, '_shutting_down', False):
             if self._require_account():
+                if gallery is not None:
+                    gallery.sync_account_session(getattr(self, '_account_client', None))
                 return
             if self.close():
                 return
+
+    def open_account_center(self, initial_tab: int = 0):
+        """Open the Account Center dialog (0: My Account, 1: Message Box)."""
+        gallery = getattr(self, 'gallery_controller', None)
+        if gallery is not None:
+            return gallery.open_account_center(initial_tab=initial_tab)
+        return None
+
+    def open_gallery_hub(self, initial_tab: int = 0):
+        """Open the 4-Tab OpenFocus Gallery Hub dialog."""
+        gallery = getattr(self, 'gallery_controller', None)
+        if gallery is not None:
+            return gallery.open_gallery_hub(initial_tab=initial_tab)
+        return None
+
+    def open_gallery_downloads(self):
+        """Open the local Gallery downloads directory in the OS file manager."""
+        gallery = getattr(self, 'gallery_controller', None)
+        if gallery is not None:
+            return gallery.open_downloads_folder()
+        return None
+
+    def open_gallery_screensaver(self):
+        """Launch the Fullscreen Always-on-Top Gallery Screensaver."""
+        gallery = getattr(self, 'gallery_controller', None)
+        if gallery is not None:
+            return gallery.open_screensaver()
+        return None
 
     def show_feedback_dialog(self) -> None:
         """Report a bug or suggestion, with the session log attached."""
@@ -4225,6 +4268,10 @@ class OpenFocus(QMainWindow):
         if tour is not None and tour.is_active:
             tour.reapply_theme()
 
+        gallery = getattr(self, "gallery_controller", None)
+        if gallery is not None:
+            gallery.apply_theme(theme)
+
         self._enable_dark_title_bar(dark=(theme != "light"))
         self._sync_appearance_actions()
 
@@ -4492,6 +4539,9 @@ class OpenFocus(QMainWindow):
         from dialogs.account import AccountDialog, cancel_account_jobs
         from dialogs.retouch import RetouchDialog, _SHARPNESS_WORKERS
         shutdown_running = cancel_account_jobs(self)
+        gallery = getattr(self, 'gallery_controller', None)
+        if gallery is not None:
+            shutdown_running = gallery.publication_in_progress or shutdown_running
         accelerator = getattr(self, 'accelerator_banner', None)
         if accelerator is not None:
             shutdown_running = accelerator.shutdown_running() or shutdown_running
@@ -4588,6 +4638,9 @@ class OpenFocus(QMainWindow):
         from utils.logging_setup import log_action, get_logger
         shutdown_started = perf_counter()
         log_action("shutdown.started", restart=bool(getattr(self, '_restart_for_update', False)))
+        gallery = getattr(self, "gallery_controller", None)
+        if gallery is not None:
+            gallery.shutdown()
         self.usage_analytics.shutdown()
 
         # Persist user preferences, layout and recent files for next time
@@ -5028,6 +5081,9 @@ class OpenFocus(QMainWindow):
         tour = getattr(self, "_onboarding_tour", None)
         if tour is not None and tour.is_active:
             tour.retranslate()
+        gallery = getattr(self, "gallery_controller", None)
+        if gallery is not None:
+            gallery.retranslate()
 
 
 if __name__ == "__main__":
