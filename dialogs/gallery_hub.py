@@ -10,7 +10,6 @@ from __future__ import annotations
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-import io
 import os
 import threading
 import time
@@ -40,6 +39,7 @@ from PyQt6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLayout,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
@@ -53,6 +53,12 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from core.gallery_media import (
+    extract_exif_summary,
+    filter_public_exif,
+    format_exif_summary,
+    prepare_gallery_upload,
+)
 from locales.gallery_i18n import (
     AI_TAG_KEYS,
     LEADERBOARD_PERIOD_KEYS,
@@ -67,6 +73,8 @@ from locales.gallery_i18n import (
 )
 from utils.design_tokens import RADIUS, SPACE, palette
 from utils.file_dialogs import FileDialog
+from utils.frame_pixels import block_signals, is_qobject_alive, safe_disconnect
+from utils.gallery_client import _extract_upload_target
 
 MAX_BATCH_UPLOAD = 10
 DEFAULT_UPLOAD_COST_POINTS = 100
@@ -99,6 +107,16 @@ def _set_cid(widget: QWidget, cid: str, *, object_name: str | None = None) -> No
     """Assign stable ``controlId`` and ``objectName`` for ``openfocus ctl``."""
     widget.setProperty("controlId", cid)
     widget.setObjectName(object_name or cid)
+
+
+def _clear_layout(layout: QLayout) -> None:
+    """Remove and schedule deletion of all child widgets in a Qt layout."""
+    while layout.count():
+        item = layout.takeAt(0)
+        widget = item.widget()
+        if widget is not None:
+            widget.setParent(None)
+            widget.deleteLater()
 
 
 def _get(obj: Any, key: str, default: Any = None) -> Any:
@@ -638,73 +656,21 @@ class _BoundedMediaLoader(QObject):
 
 def _extract_exif_dict(source: Any, media_helper: Any = None) -> dict[str, str]:
     """Extract a clean EXIF summary dict without ever failing."""
-    if media_helper is not None and hasattr(media_helper, "extract_exif_summary"):
-        try:
-            res = media_helper.extract_exif_summary(source)
-            if isinstance(res, Mapping):
-                return {str(k): str(v) for k, v in res.items() if v not in (None, "")}
-        except Exception:
-            pass
+    extractor = (
+        media_helper.extract_exif_summary
+        if media_helper is not None and hasattr(media_helper, "extract_exif_summary")
+        else extract_exif_summary
+    )
     try:
-        from core.gallery_media import extract_exif_summary  # type: ignore[import-not-found]
-
-        res = extract_exif_summary(source)
+        res = extractor(source)
         if isinstance(res, Mapping):
             return {str(k): str(v) for k, v in res.items() if v not in (None, "")}
     except Exception:
         pass
-
-    if not isinstance(source, (str, os.PathLike)):
-        return {}
-    path = os.fspath(source)
-    if not os.path.isfile(path):
-        return {}
-    try:
-        from PIL import Image
-
-        with Image.open(path) as img:
-            exif = img.getexif()
-            if not exif:
-                return {}
-            make = str(exif.get(271, "") or "").strip()
-            model = str(exif.get(272, "") or "").strip()
-            camera = model if model and make.lower() in model.lower() else f"{make} {model}".strip()
-            exif_ifd = exif.get_ifd(0x8769) if hasattr(exif, "get_ifd") else {}
-            lens = str(exif_ifd.get(42036, "") or "").strip()
-            focal = exif_ifd.get(37386)
-            fnum = exif_ifd.get(33437)
-            exp = exif_ifd.get(33434)
-            iso = exif_ifd.get(34855)
-            out: dict[str, str] = {}
-            if camera:
-                out["camera"] = camera
-            if lens:
-                out["lens"] = lens
-            if focal:
-                out["focal_length"] = f"{float(focal):g}mm"
-            if fnum:
-                out["aperture"] = f"f/{float(fnum):g}"
-            if exp:
-                exp_f = float(exp)
-                out["shutter"] = (
-                    f"1/{round(1.0 / exp_f)}s" if 0 < exp_f < 1 else f"{exp_f:g}s"
-                )
-            if iso:
-                out["iso"] = f"ISO {iso}"
-            return out
-    except Exception:
-        return {}
+    return {}
 
 
-def format_exif_line(exif: Mapping[str, Any] | None) -> str:
-    """Format an EXIF mapping into a compact human-readable line."""
-    if not isinstance(exif, Mapping):
-        return ""
-    parts = [
-        str(exif.get(k) or "").strip()
-        for k in ("camera", "lens", "focal_length", "aperture", "shutter", "iso")
-    ]
-    return " · ".join(p for p in parts if p)
+format_exif_line = format_exif_summary
 
 
 def _draw_watermark_on_qimage(
@@ -791,81 +757,41 @@ def _encode_webp_pair(
     media_helper: Any = None,
 ) -> tuple[bytes, bytes, dict[str, Any]]:
     """Prepare ``(thumb_webp, full_webp, meta)`` off the GUI thread."""
-    if media_helper is not None and hasattr(media_helper, "prepare_gallery_upload"):
-        prepared = media_helper.prepare_gallery_upload(
-            source,
-            attribution=attribution,
-            watermark_enabled=watermark_enabled,
-        )
-        return (
-            bytes(_get(prepared, "thumb_webp", b"")),
-            bytes(_get(prepared, "main_webp", b"") or _get(prepared, "full_webp", b"")),
-            {
-                "width": int(_get(prepared, "width", 0) or 0),
-                "height": int(_get(prepared, "height", 0) or 0),
-                "exif": dict(_get(prepared, "exif", {}) or {}),
-            },
-        )
-    try:
-        from core.gallery_media import prepare_gallery_upload  # type: ignore[import-not-found]
+    prepare_fn = (
+        media_helper.prepare_gallery_upload
+        if media_helper is not None and hasattr(media_helper, "prepare_gallery_upload")
+        else prepare_gallery_upload
+    )
+    upload_source = source
+    if prepare_fn is prepare_gallery_upload and isinstance(source, (QImage, QPixmap)):
+        qimg = source.toImage() if isinstance(source, QPixmap) else source
+        if qimg.isNull():
+            raise ValueError("invalid_media")
+        from PIL import Image
 
-        prepared = prepare_gallery_upload(
-            source,
-            attribution=attribution,
-            watermark_enabled=watermark_enabled,
-        )
-        return (
-            bytes(_get(prepared, "thumb_webp", b"")),
-            bytes(_get(prepared, "main_webp", b"") or _get(prepared, "full_webp", b"")),
-            {
-                "width": int(_get(prepared, "width", 0) or 0),
-                "height": int(_get(prepared, "height", 0) or 0),
-                "exif": dict(_get(prepared, "exif", {}) or {}),
-            },
-        )
-    except ImportError:
-        pass
-
-    # Standalone thread-safe QImage/Pillow fallback (never touches QPixmap on worker thread)
-    img = _image_from_any(source)
-    if img.isNull():
-        raise ValueError("invalid_media")
-    img = _draw_watermark_on_qimage(img, attribution, enabled=watermark_enabled)
-    w, h = img.width(), img.height()
-    from PIL import Image
-
-    qimg = img.convertToFormat(QImage.Format.Format_RGBA8888)
-    raw = qimg.constBits().asarray(qimg.sizeInBytes())
-    pil_img = Image.frombytes("RGBA", (qimg.width(), qimg.height()), bytes(raw)).convert("RGB")
-    full_buf = io.BytesIO()
-    pil_img.save(full_buf, format="WEBP", quality=86)
-    thumb = pil_img.copy()
-    thumb.thumbnail((512, 512))
-    thumb_buf = io.BytesIO()
-    thumb.save(thumb_buf, format="WEBP", quality=80)
-    return thumb_buf.getvalue(), full_buf.getvalue(), {"width": w, "height": h, "exif": {}}
+        rgba = qimg.convertToFormat(QImage.Format.Format_RGBA8888)
+        raw = rgba.constBits().asarray(rgba.sizeInBytes())
+        upload_source = Image.frombytes("RGBA", (rgba.width(), rgba.height()), bytes(raw)).convert("RGB")
+    prepared = prepare_fn(
+        upload_source,
+        attribution=attribution,
+        watermark_enabled=watermark_enabled,
+    )
+    return (
+        bytes(_get(prepared, "thumb_webp", b"")),
+        bytes(_get(prepared, "main_webp", b"") or _get(prepared, "full_webp", b"")),
+        {
+            "width": int(_get(prepared, "width", 0) or 0),
+            "height": int(_get(prepared, "height", 0) or 0),
+            "exif": dict(_get(prepared, "exif", {}) or {}),
+        },
+    )
 
 
 def _extract_upload_urls(inspect_resp: Mapping[str, Any]) -> tuple[str, dict[str, str], str, dict[str, str]]:
-    """Parse canonical PR #264 / server upload_urls.{full,thumb} or flat fallbacks."""
-    urls = _get(inspect_resp, "upload_urls", None) or {}
-    full_entry = _get(urls, "full", None) or _get(inspect_resp, "full", None)
-    thumb_entry = _get(urls, "thumb", None) or _get(inspect_resp, "thumb", None)
-
-    if isinstance(full_entry, Mapping):
-        full_url = str(full_entry.get("url") or "")
-        full_headers = dict(full_entry.get("headers") or {})
-    else:
-        full_url = str(full_entry or _get(inspect_resp, "full_upload_url", "") or "")
-        full_headers = {"Content-Type": "image/webp"}
-
-    if isinstance(thumb_entry, Mapping):
-        thumb_url = str(thumb_entry.get("url") or "")
-        thumb_headers = dict(thumb_entry.get("headers") or {})
-    else:
-        thumb_url = str(thumb_entry or _get(inspect_resp, "thumb_upload_url", "") or "")
-        thumb_headers = {"Content-Type": "image/webp"}
-
+    """Parse canonical upload_urls.{full,thumb} or flat fallbacks via gallery_client."""
+    full_url, full_headers = _extract_upload_target(inspect_resp, "full")
+    thumb_url, thumb_headers = _extract_upload_target(inspect_resp, "thumb")
     return full_url, full_headers, thumb_url, thumb_headers
 
 
@@ -1352,9 +1278,16 @@ class AuthorShowcaseDialog(QDialog):
         elif self._client is not None:
             self.load_author_works()
 
-    def closeEvent(self, event: QEvent) -> None:
+    def _shutdown_dialog(self) -> None:
         self._runner.shutdown()
         self._media_loader.shutdown()
+
+    def done(self, result: int) -> None:
+        self._shutdown_dialog()
+        super().done(result)
+
+    def closeEvent(self, event: QEvent) -> None:
+        self._shutdown_dialog()
         super().closeEvent(event)
 
     def wait_for_idle(self, timeout: float = 5.0) -> bool:
@@ -1497,12 +1430,7 @@ class AuthorShowcaseDialog(QDialog):
         )
 
     def _clear_grid(self) -> None:
-        while self._works_grid.count():
-            item = self._works_grid.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.setParent(None)
-                widget.deleteLater()
+        _clear_layout(self._works_grid)
 
     def _render_works(self) -> None:
         self._clear_grid()
@@ -1525,8 +1453,9 @@ class AuthorShowcaseDialog(QDialog):
             col_lay.addWidget(thumb_lbl)
 
             def _apply_thumb(pix: QPixmap, lbl: QLabel = thumb_lbl) -> None:
-                lbl.setPixmap(pix)
-                lbl.setVisible(True)
+                if is_qobject_alive(lbl):
+                    lbl.setPixmap(pix)
+                    lbl.setVisible(True)
 
             self._media_loader.load_for_work(
                 work, size=QSize(240, 130), on_ready=_apply_thumb
@@ -1685,9 +1614,16 @@ class WorkDetailDialog(QDialog):
 
         self.load_comments()
 
-    def closeEvent(self, event: QEvent) -> None:
+    def _shutdown_dialog(self) -> None:
         self._runner.shutdown()
         self._media_loader.shutdown()
+
+    def done(self, result: int) -> None:
+        self._shutdown_dialog()
+        super().done(result)
+
+    def closeEvent(self, event: QEvent) -> None:
+        self._shutdown_dialog()
         super().closeEvent(event)
 
     def wait_for_idle(self, timeout: float = 5.0) -> bool:
@@ -1962,19 +1898,22 @@ class GalleryHubDialog(QDialog):
     def is_publishing(self) -> bool:
         return self._publishing
 
+    def _shutdown_dialog(self) -> None:
+        self._disconnect_state_store()
+        self._runner.shutdown()
+        self._media_loader.shutdown()
+
     def closeEvent(self, event: QEvent) -> None:
         if self._publishing:
             event.ignore()
             return
-        self._runner.shutdown()
-        self._media_loader.shutdown()
+        self._shutdown_dialog()
         super().closeEvent(event)
 
     def done(self, result: int) -> None:
         if self._publishing:
             return
-        self._runner.shutdown()
-        self._media_loader.shutdown()
+        self._shutdown_dialog()
         super().done(result)
 
     def wait_for_idle(self, timeout: float = 5.0) -> bool:
@@ -1990,6 +1929,12 @@ class GalleryHubDialog(QDialog):
         cfg_sig = getattr(self._state_store, "config_changed", None)
         if cfg_sig is not None and hasattr(cfg_sig, "connect"):
             cfg_sig.connect(self._on_store_config_changed)
+
+    def _disconnect_state_store(self) -> None:
+        if self._state_store is None:
+            return
+        safe_disconnect(getattr(self._state_store, "profile_changed", None), self._on_store_profile_changed)
+        safe_disconnect(getattr(self._state_store, "config_changed", None), self._on_store_config_changed)
 
     def _on_store_profile_changed(self, profile: Any) -> None:
         self._cached_profile = profile or {}
@@ -2201,12 +2146,7 @@ class GalleryHubDialog(QDialog):
 
     def set_square_works(self, works: Sequence[Any]) -> None:
         self._square_works = list(works)
-        while self._square_grid.count():
-            item = self._square_grid.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.setParent(None)
-                widget.deleteLater()
+        _clear_layout(self._square_grid)
 
         self.load_more_btn.setVisible(bool(self._square_next_cursor))
 
@@ -2251,9 +2191,10 @@ class GalleryHubDialog(QDialog):
         lay.addWidget(thumb_btn)
 
         def _apply_icon(pix: QPixmap, btn: QPushButton = thumb_btn) -> None:
-            btn.setText("")
-            btn.setIconSize(pix.size())
-            btn.setIcon(QIcon(pix))
+            if is_qobject_alive(btn):
+                btn.setText("")
+                btn.setIconSize(pix.size())
+                btn.setIcon(QIcon(pix))
 
         self._media_loader.load_for_work(work, size=QSize(260, 140), on_ready=_apply_icon)
 
@@ -2770,14 +2711,13 @@ class GalleryHubDialog(QDialog):
 
     def _refresh_publish_queue_ui(self) -> None:
         current = self.publish_queue_list.currentRow()
-        self.publish_queue_list.blockSignals(True)
-        self.publish_queue_list.clear()
-        for item in self._publish_queue:
-            row_text = f"{item.label}  —  {self._stage_label(item)}"
-            self.publish_queue_list.addItem(row_text)
-        if 0 <= current < len(self._publish_queue):
-            self.publish_queue_list.setCurrentRow(current)
-        self.publish_queue_list.blockSignals(False)
+        with block_signals(self.publish_queue_list):
+            self.publish_queue_list.clear()
+            for item in self._publish_queue:
+                row_text = f"{item.label}  —  {self._stage_label(item)}"
+                self.publish_queue_list.addItem(row_text)
+            if 0 <= current < len(self._publish_queue):
+                self.publish_queue_list.setCurrentRow(current)
 
         self.selected_count_label.setText(
             t_gallery(
@@ -2807,17 +2747,15 @@ class GalleryHubDialog(QDialog):
             else:
                 self.auto_exif_label.setText(t_gallery("gallery_publish_exif_none"))
             for key, edit in self.manual_exif_edits.items():
-                edit.blockSignals(True)
-                edit.setText(str(merged.get(key, "")))
-                edit.setModified(False)
-                edit.blockSignals(False)
+                with block_signals(edit):
+                    edit.setText(str(merged.get(key, "")))
+                    edit.setModified(False)
         else:
             self.auto_exif_label.setText(t_gallery("gallery_publish_exif_none"))
             for edit in self.manual_exif_edits.values():
-                edit.blockSignals(True)
-                edit.clear()
-                edit.setModified(False)
-                edit.blockSignals(False)
+                with block_signals(edit):
+                    edit.clear()
+                    edit.setModified(False)
         self._update_watermark_preview()
 
     def _fill_watermark_with_nickname(self) -> None:
@@ -3069,8 +3007,6 @@ class GalleryHubDialog(QDialog):
             _emit("failed", t_gallery("gallery_publish_zero_deducted", reason=reason), False)
             return None
 
-        from core.gallery_media import filter_public_exif
-
         merged_exif = dict(media_meta.get("exif") or {})
         merged_exif.update(exif)
         public_exif = filter_public_exif(merged_exif)
@@ -3248,12 +3184,7 @@ class GalleryHubDialog(QDialog):
     def set_my_works(self, works: Sequence[Any]) -> None:
         self._my_works = list(works)
         self._my_work_checkboxes.clear()
-        while self._my_showcase_layout.count():
-            item = self._my_showcase_layout.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.setParent(None)
-                widget.deleteLater()
+        _clear_layout(self._my_showcase_layout)
 
         if not self._my_works:
             empty = QLabel(t_gallery("gallery_my_works_empty"))
@@ -3275,8 +3206,9 @@ class GalleryHubDialog(QDialog):
             row.addWidget(thumb_lbl)
 
             def _apply_thumb(pix: QPixmap, lbl: QLabel = thumb_lbl) -> None:
-                lbl.setPixmap(pix)
-                lbl.setVisible(True)
+                if is_qobject_alive(lbl):
+                    lbl.setPixmap(pix)
+                    lbl.setVisible(True)
 
             self._media_loader.load_for_work(
                 work, size=QSize(56, 56), on_ready=_apply_thumb
@@ -3341,10 +3273,9 @@ class GalleryHubDialog(QDialog):
 
         def _rollback(exc: Exception) -> None:
             cb = self._my_work_checkboxes.get(work_id)
-            if cb is not None:
-                cb.blockSignals(True)
-                cb.setChecked(prev_state)
-                cb.blockSignals(False)
+            if is_qobject_alive(cb):
+                with block_signals(cb):
+                    cb.setChecked(prev_state)
             _commit_local(prev_state)
             self.my_showcase_status.setText(translate_error(_error_code_from_exc(exc)))
 

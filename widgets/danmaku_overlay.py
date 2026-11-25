@@ -35,19 +35,13 @@ from PyQt6.QtWidgets import (
 )
 
 from locales import trans
+from locales.gallery_i18n import (
+    REPORT_REASON_KEYS as REPORT_REASONS,
+    t_gallery,
+    translate_report_reason,
+)
 from utils.design_tokens import FONT, RADIUS, SPACE, WEIGHT, palette, rgba
 
-
-# Canonical snake_case English keys aligned with the Gallery & Community API.
-REPORT_REASONS: tuple[str, ...] = (
-    "nsfw_explicit",
-    "spam_advertising",
-    "harassment_hate",
-    "copyright_plagiarism",
-    "off_topic_low_quality",
-    "privacy_violation",
-    "other",
-)
 
 DANMAKU_POSITIONS: tuple[str, ...] = ("top", "middle", "bottom", "full")
 DANMAKU_DENSITIES: tuple[str, ...] = ("low", "medium", "high")
@@ -62,68 +56,18 @@ _DENSITY_PARAMS: dict[str, tuple[int, float, float]] = {
     "high": (7, 0.55, 112.0),
 }
 
-_FALLBACK_STRINGS: dict[str, str] = {
-    "gallery_danmaku_placeholder": "Send a danmaku...",
-    "gallery_danmaku_send": "Send",
-    "gallery_danmaku_cancel": "Cancel",
-    "gallery_danmaku_cooldown": "{seconds}s",
-    "gallery_danmaku_upvote": "Upvote",
-    "gallery_danmaku_downvote": "Downvote",
-    "gallery_danmaku_report": "Report",
-    "gallery_danmaku_reported": "Reported",
-    "gallery_danmaku_all_comments": "Comments ({count})",
-    "gallery_report_title": "Report reason",
-    "gallery_close": "Close",
-    "gallery_report_reason_nsfw_explicit": "NSFW / Explicit",
-    "gallery_report_reason_spam_advertising": "Spam / Advertising",
-    "gallery_report_reason_harassment_hate": "Harassment / Hate",
-    "gallery_report_reason_copyright_plagiarism": "Copyright / Plagiarism",
-    "gallery_report_reason_off_topic_low_quality": "Off-topic / Low quality",
-    "gallery_report_reason_privacy_violation": "Privacy violation",
-    "gallery_report_reason_other": "Other",
-}
-
 
 def gallery_tr(key: str, **kwargs: Any) -> str:
-    """Resolve a Gallery UI translation key via ``trans.t`` with safe fallback.
-
-    Checks ``locales.gallery_i18n.t_gallery`` when available, then ``trans.t``,
-    and finally falls back to the built-in English table so widgets stay clean
-    before and after all 12 locale packs are wired in.
-    """
-    text: str | None = None
-    try:
-        from locales import gallery_i18n  # type: ignore[import-not-found]
-
-        t_fn = getattr(gallery_i18n, "t_gallery", None)
-        if callable(t_fn):
-            candidate = t_fn(key, **kwargs)
-            if isinstance(candidate, str) and candidate and candidate != key:
-                return candidate
-    except Exception:
-        pass
-
-    translated = trans.t(key)
-    if isinstance(translated, str) and translated and translated != key:
-        text = translated
-    else:
-        text = _FALLBACK_STRINGS.get(key, key)
-
-    if kwargs:
-        try:
-            return text.format(**kwargs)
-        except Exception:
-            return text
-    return text
+    """Resolve a Gallery UI translation key via ``locales.gallery_i18n``."""
+    return t_gallery(key, **kwargs)
 
 
 def report_reason_label(reason_key: str) -> str:
     """Translate a canonical report reason key."""
-    for prefix in ("gallery_report_reason_", "report_reason_"):
-        key = f"{prefix}{reason_key}"
-        val = gallery_tr(key)
-        if val != key:
-            return val
+    expected_key = f"gallery_report_reason_{reason_key}"
+    translated = translate_report_reason(reason_key)
+    if translated != expected_key:
+        return translated
     return reason_key.replace("_", " ").title()
 
 
@@ -935,6 +879,7 @@ class DanmakuOverlay(QWidget):
         self.popover.apply_theme(theme)
         self.composer.apply_theme(theme)
 
+    @pyqtSlot()
     def retranslate(self) -> None:
         self.popover.retranslate()
         self.composer.retranslate()

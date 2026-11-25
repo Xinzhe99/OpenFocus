@@ -44,6 +44,10 @@ from dialogs.gallery_hub import (
     AuthorShowcaseDialog,
     _BoundedMediaLoader,
     _DialogTaskRunner,
+    _clear_layout,
+    _error_code_from_exc,
+    _get,
+    _set_cid,
 )
 from locales.gallery_i18n import (
     INTEREST_KEYS,
@@ -54,6 +58,7 @@ from locales.gallery_i18n import (
     translate_tag,
 )
 from utils.design_tokens import RADIUS, SPACE, palette
+from utils.frame_pixels import block_signals, is_qobject_alive, safe_disconnect
 
 DEFAULT_NICKNAME_MAX_CHARS = 32
 
@@ -80,25 +85,6 @@ RECHARGE_TIERS: tuple[dict[str, Any], ...] = (
         "recommended": False,
     },
 )
-
-
-def _set_cid(widget: QWidget, cid: str, *, object_name: str | None = None) -> None:
-    widget.setProperty("controlId", cid)
-    widget.setObjectName(object_name or cid)
-
-
-def _get(obj: Any, key: str, default: Any = None) -> Any:
-    if isinstance(obj, Mapping):
-        return obj.get(key, default)
-    return getattr(obj, key, default)
-
-
-def _error_code_from_exc(exc: Exception) -> str:
-    for attr in ("error", "code", "error_code", "category"):
-        val = getattr(exc, attr, None)
-        if isinstance(val, str) and val:
-            return val
-    return "internal_error"
 
 
 def _account_stylesheet(theme: str = "dark") -> str:
@@ -242,9 +228,17 @@ class AccountCenterDialog(QDialog):
         if 0 <= initial_tab < self.tabs.count():
             self.tabs.setCurrentIndex(initial_tab)
 
-    def closeEvent(self, event: QEvent) -> None:
+    def _shutdown_dialog(self) -> None:
+        self._disconnect_state_store()
         self._runner.shutdown()
         self._media_loader.shutdown()
+
+    def done(self, result: int) -> None:
+        self._shutdown_dialog()
+        super().done(result)
+
+    def closeEvent(self, event: QEvent) -> None:
+        self._shutdown_dialog()
         super().closeEvent(event)
 
     def wait_for_idle(self, timeout: float = 5.0) -> bool:
@@ -266,6 +260,14 @@ class AccountCenterDialog(QDialog):
         err_sig = getattr(self._state_store, "sync_error", None)
         if err_sig is not None and hasattr(err_sig, "connect"):
             err_sig.connect(self._on_store_sync_error)
+
+    def _disconnect_state_store(self) -> None:
+        if self._state_store is None:
+            return
+        safe_disconnect(getattr(self._state_store, "profile_changed", None), self._on_store_profile_changed)
+        safe_disconnect(getattr(self._state_store, "config_changed", None), self._on_store_config_changed)
+        safe_disconnect(getattr(self._state_store, "notifications_changed", None), self._on_store_notifications_changed)
+        safe_disconnect(getattr(self._state_store, "sync_error", None), self._on_store_sync_error)
 
     def _on_store_profile_changed(self, profile: Any) -> None:
         self.apply_profile(profile)
@@ -736,9 +738,8 @@ class AccountCenterDialog(QDialog):
             (self.show_followers_check, "show_followers"),
         ):
             val = settings.get(key, True)
-            cb.blockSignals(True)
-            cb.setChecked(bool(True if val is None else val))
-            cb.blockSignals(False)
+            with block_signals(cb):
+                cb.setChecked(bool(True if val is None else val))
 
     def apply_profile(self, profile: Any) -> None:
         """Populate My Account widgets from profile data (never exposing can_hide_gallery)."""
@@ -953,12 +954,7 @@ class AccountCenterDialog(QDialog):
     # ---------------------------------------------------- Activity sub-tabs
     @staticmethod
     def _clear_layout(lay: QVBoxLayout) -> None:
-        while lay.count():
-            item = lay.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.setParent(None)
-                widget.deleteLater()
+        _clear_layout(lay)
 
     def set_my_likes(self, works: Sequence[Any]) -> None:
         self._likes = list(works)
@@ -1233,8 +1229,9 @@ class AccountCenterDialog(QDialog):
             row.addWidget(thumb_lbl)
 
             def _apply_thumb(pix: QPixmap, lbl: QLabel = thumb_lbl) -> None:
-                lbl.setPixmap(pix)
-                lbl.setVisible(True)
+                if is_qobject_alive(lbl):
+                    lbl.setPixmap(pix)
+                    lbl.setVisible(True)
 
             self._media_loader.load_for_work(
                 notif, size=QSize(44, 44), on_ready=_apply_thumb
