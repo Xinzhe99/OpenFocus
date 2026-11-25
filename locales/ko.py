@@ -1732,4 +1732,8 @@ PACK = {
     "source_exif_snapshot_too_large": "원본 이미지의 EXIF 데이터가 너무 커서 안전하게 불러올 수 없습니다. 먼저 해당 파일의 EXIF를 제거하거나 줄이세요: {path}",
     "image_write_icc_too_large": "JPEG의 ICC 프로필이 너무 큽니다. PNG/TIFF를 사용하거나 프로필을 제거하세요.",
     "image_write_tiff_too_large": "TIFF가 4GiB를 초과합니다. BigTIFF를 사용하세요.",
+    "batch_loading_thumbnails": "미리보기 불러오는 중… ({done}/{total})",
+    "msg_load_frames_failed": "{loaded}개 프레임을 불러왔습니다. 읽을 수 없는 파일 {failed}개를 건너뛰었습니다.",
+    "msg_load_frames_skipped_derived": "{loaded}개 프레임을 불러왔습니다. 정렬된 복사본 파일 {skipped}개를 건너뛰었습니다.",
+    "msg_load_frames_partial": "{loaded}개 프레임을 불러왔습니다. 읽을 수 없는 파일 {failed}개와 정렬된 복사본 {skipped}개를 건너뛰었습니다.",
 }

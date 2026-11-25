@@ -1733,4 +1733,8 @@ ZH = {
     "render_memory_tiling_guidance": "若所选算法支持分块，可在高级设置中启用分块，并调小分块大小或阈值。",
     "render_memory_fallback_warning": "本次渲染预计使用 CPU，可能需要更长时间。",
     "render_memory_gpu_guidance": "如需尝试 GPU 加速，可关闭其他占用显卡资源的应用并减小分块大小。",
+    "batch_loading_thumbnails": "正在加载预览… ({done}/{total})",
+    "msg_load_frames_failed": "已加载 {loaded} 帧；已跳过 {failed} 个无法读取的文件。",
+    "msg_load_frames_skipped_derived": "已加载 {loaded} 帧；已跳过 {skipped} 个已对齐副本文件。",
+    "msg_load_frames_partial": "已加载 {loaded} 帧；已跳过 {failed} 个无法读取文件和 {skipped} 个已对齐副本文件。",
 }

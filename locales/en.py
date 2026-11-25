@@ -1737,4 +1737,8 @@ EN = {
     "render_memory_tiling_guidance": "Where supported, allow spatial tiles and lower the tile size or threshold in Advanced settings.",
     "render_memory_fallback_warning": "This render is expected to use the CPU and may take longer.",
     "render_memory_gpu_guidance": "To try GPU acceleration, close other GPU-intensive applications and reduce the tile size.",
+    "batch_loading_thumbnails": "Loading previews… ({done}/{total})",
+    "msg_load_frames_failed": "Loaded {loaded} frame(s); {failed} unreadable file(s) were skipped.",
+    "msg_load_frames_skipped_derived": "Loaded {loaded} frame(s); {skipped} aligned copy file(s) were skipped.",
+    "msg_load_frames_partial": "Loaded {loaded} frame(s); {failed} unreadable and {skipped} aligned copy file(s) were skipped.",
 }

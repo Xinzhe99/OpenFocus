@@ -185,8 +185,11 @@ class BatchManager:
                 shown = self.window.output_manager.add_batch_outputs(
                     outputs, watermark_baked=bool(results.get("watermark_outputs", False)))
                 if shown:
-                    self.window.statusBar().showMessage(
-                        trans.t("batch_added_to_outputs").format(n=shown), 8000)
+                    from utils.output_share import show_status_path_message
+                    show_status_path_message(
+                        self.window,
+                        trans.t("batch_added_to_outputs").format(n=shown),
+                        outputs[0], 8000)
             stacks = results.get('aligned_stacks') or []
             # The output panel answers "what can I inspect and export from this
             # run". A fused stack already has its result there, so listing its
@@ -213,6 +216,11 @@ class BatchManager:
                 info_lines.extend(failed_folders)
             self._close_progress_dialog()
             problems = (counts.get("partial", 0) + counts.get("failed", 0))
+            reveal_path = ""
+            if outputs:
+                reveal_path = outputs[0]
+            elif stacks and isinstance(stacks[0], dict):
+                reveal_path = stacks[0].get("path", "") or ""
             self._show_message(
                 title=(trans.t('compare_cancelled') if was_cancelled else
                        trans.t('batch_partial_title') if problems else trans.t('batch_done_title')),
@@ -221,6 +229,7 @@ class BatchManager:
                 info="\n".join(info_lines),
                 icon=(QMessageBox.Icon.Warning if problems
                       else QMessageBox.Icon.Information),
+                reveal_path=reveal_path,
             )
         finally:
             if self._progress_dialog is progress_dialog:
@@ -273,6 +282,7 @@ class BatchManager:
         text: str,
         info: str,
         icon: QMessageBox.Icon,
+        reveal_path: str = "",
     ) -> None:
         msg_box = QMessageBox(self.window)
         msg_box.setWindowTitle(title)
@@ -280,7 +290,18 @@ class BatchManager:
         msg_box.setInformativeText(info)
         msg_box.setIcon(icon)
         msg_box.setStyleSheet(ui_styles.MESSAGE_BOX_STYLE)
+        open_btn = None
+        if reveal_path and os.path.exists(reveal_path):
+            msg_box.setStandardButtons(QMessageBox.StandardButton.Ok)
+            open_btn = msg_box.addButton(
+                trans.t("action_open_folder"),
+                QMessageBox.ButtonRole.ActionRole,
+            )
         msg_box.exec()
+        if open_btn is not None and msg_box.clickedButton() is open_btn:
+            from utils.file_manager import select_in_file_manager
+            select_in_file_manager(
+                reveal_path, parent=self.window, on_finished=lambda _ok: None)
 
     def _cancel_running_batch(self) -> None:
         if self._worker:

@@ -1400,8 +1400,49 @@ class BatchImportWorker(QThread):
                 else:
                     self.folders_loaded.emit([])
 
-    def _load_thumbnails(self):
+    def _decode_bounded_thumbnail(self, path: str):
+        """Extract a bounded preview (reusing embedded RAW/TIFF previews when present)."""
         from core.image_loader import decode_image
+        from core.source_frames import ensure_preview, scan_source
+
+        cancelled = lambda: self.is_cancelled
+        first = None
+        try:
+            frames = scan_source(path, page_index=0, should_cancel=cancelled)
+            if frames:
+                frame = frames[0]
+                if getattr(frame, 'preview_is_available', True):
+                    first = ensure_preview(frame, should_cancel=cancelled)
+        except InterruptedError:
+            return None
+        except Exception:
+            first = None
+        if first is None and not self.is_cancelled:
+            from PIL import Image
+            try:
+                with Image.open(path) as header:
+                    width, height = header.size
+                require_memory(width * height * 16 + os.path.getsize(path))
+            except (OSError, ValueError):
+                # Match the existing serial loader for formats whose
+                # dimensions cannot be inspected without decoding (RAW,
+                # for example). Only one source is decoded at a time.
+                pass
+            try:
+                first = decode_image(path)
+            except Exception:
+                logger.exception('batch thumbnail decode failed: %s', path)
+        if first is None:
+            return None
+        height, width = first.shape[:2]
+        ratio = min(1.0, 60.0 / max(height, width))
+        if ratio < 1.0:
+            first = cv2.resize(
+                first, (max(1, round(width * ratio)), max(1, round(height * ratio))),
+                interpolation=cv2.INTER_AREA)
+        return first
+
+    def _load_thumbnails(self):
         from utils.sorting import natural_sort_key
         loader = self._loader()
         results = []
@@ -1421,36 +1462,19 @@ class BatchImportWorker(QThread):
                 for _, path in files:
                     if self.is_cancelled:
                         break
-                    from PIL import Image
-                    try:
-                        with Image.open(path) as header:
-                            width, height = header.size
-                        require_memory(width * height * 16 + os.path.getsize(path))
-                    except (OSError, ValueError):
-                        # Match the existing serial loader for formats whose
-                        # dimensions cannot be inspected without decoding (RAW,
-                        # for example). Only one source is decoded at a time.
-                        pass
-                    try:
-                        first = decode_image(path)
-                    except Exception:
-                        logger.exception('batch thumbnail decode failed: %s', path)
+                    first = self._decode_bounded_thumbnail(path)
                     if first is not None:
-                        if 0 < self.scale_factor < 1.0:
-                            first = cv2.resize(first, None, fx=self.scale_factor, fy=self.scale_factor,
-                                               interpolation=cv2.INTER_AREA)
-                        height, width = first.shape[:2]
-                        ratio = min(1.0, 60.0 / max(height, width))
-                        if ratio < 1.0:
-                            first = cv2.resize(first, (max(1, round(width * ratio)), max(1, round(height * ratio))),
-                                               interpolation=cv2.INTER_AREA)
                         break
                 results.append((folder, first))
                 failed |= first is None
+                if not self.is_cancelled:
+                    self.folder_loaded.emit(folder, first)
             except Exception:
                 logger.exception('batch folder thumbnail failed: %s', folder)
                 results.append((folder, None))
                 failed = True
+                if not self.is_cancelled:
+                    self.folder_loaded.emit(folder, None)
         if not self.is_cancelled:
             self.folders_loaded.emit(results)
         return not failed

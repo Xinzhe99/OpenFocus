@@ -1746,6 +1746,10 @@ EXTRA_TRANSLATIONS = {
         "source_exif_snapshot_too_large": "元画像の EXIF データが大きすぎて安全に読み込めません。先にこのファイルの EXIF を削除するか縮小してください: {path}",
         "image_write_icc_too_large": "JPEG の ICC プロファイルが大きすぎます。PNG/TIFF に変更するか、プロファイルを削除してください。",
         "image_write_tiff_too_large": "TIFF が 4 GiB を超えています。BigTIFF を使用してください。",
+        "batch_loading_thumbnails": "プレビューを読み込み中… ({done}/{total})",
+        "msg_load_frames_failed": "{loaded} 枚のフレームを読み込みました（読み込めない {failed} 件のファイルをスキップ）。",
+        "msg_load_frames_skipped_derived": "{loaded} 枚のフレームを読み込みました（位置合わせ済みコピー {skipped} 件をスキップ）。",
+        "msg_load_frames_partial": "{loaded} 枚のフレームを読み込みました（読み込み不可 {failed} 件、位置合わせ済みコピー {skipped} 件をスキップ）。",
     },
     "es": {
         "menu_extensions": "Extensiones (en desarrollo)",
@@ -3482,5 +3486,9 @@ EXTRA_TRANSLATIONS = {
         "source_exif_snapshot_too_large": "Los datos EXIF de la imagen de origen son demasiado grandes para cargarla de forma segura. Elimina o reduce primero el EXIF de ese archivo: {path}",
         "image_write_icc_too_large": "El perfil ICC del JPEG es demasiado grande; usa PNG/TIFF o elimina el perfil.",
         "image_write_tiff_too_large": "El TIFF supera 4 GiB; usa BigTIFF.",
+        "batch_loading_thumbnails": "Cargando vistas previas… ({done}/{total})",
+        "msg_load_frames_failed": "Se cargaron {loaded} fotograma(s); se omitieron {failed} archivo(s) ilegible(s).",
+        "msg_load_frames_skipped_derived": "Se cargaron {loaded} fotograma(s); se omitieron {skipped} copia(s) alineada(s).",
+        "msg_load_frames_partial": "Se cargaron {loaded} fotograma(s); se omitieron {failed} archivo(s) ilegible(s) y {skipped} copia(s) alineada(s).",
     },
 }

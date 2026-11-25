@@ -601,14 +601,20 @@ def test_grouped_batch_rejects_split_and_aligned_export(qapp, tmp_path):
 
 def test_batch_thumbnail_decodes_only_first_readable_image(qapp, tmp_path, monkeypatch):
     import core.image_loader as loader
+    import core.source_frames as source_frames
     from core.workers import BatchImportWorker
 
     source = make_stack(tmp_path / 'stack', ('img1.png', 'img2.png', 'img3.png'), np.uint8)
     decoded = []
-    original = loader.decode_image
+    original_scan = source_frames.scan_source
+    original_decode = loader.decode_image
+    def scan(path, *args, **kwargs):
+        decoded.append(Path(path).name)
+        return original_scan(path, *args, **kwargs)
     def decode(path):
         decoded.append(Path(path).name)
-        return original(path)
+        return original_decode(path)
+    monkeypatch.setattr(source_frames, 'scan_source', scan)
     monkeypatch.setattr(loader, 'decode_image', decode)
     monkeypatch.setattr(ImageStackLoader, 'load_from_folder', lambda *a, **kw: pytest.fail('preloaded stack'))
     worker = BatchImportWorker('thumbnails', folder_paths=[str(source)])
