@@ -356,3 +356,35 @@ def test_resilient_sanitization_keeps_camera_exif_when_one_tag_is_unserializable
     assert parsed[271] == "SONY"
     assert parsed[272] == "ILCE-7RM5"
     assert parsed.get_ifd(0x8769)[0xA434] == "FE 90mm F2.8 Macro G OSS"
+
+
+def test_bounded_reader_aborts_pillow_ifd_walk_immediately_on_limit():
+    """Pillow swallows OSError per tag; _BoundedReader must raise _ExifReadLimit."""
+    from utils.raw_exif import _BoundedReader, _ExifReadLimit
+
+    ex = Image.Exif()
+    ex.endian = "<"
+    ex[270] = "A" * 2048  # ImageDescription exceeds our tight 256-byte read budget
+    ex[271] = "Canon"
+    ex[272] = "Canon EOS R5"
+    tiff_bytes = ex.tobytes()[6:]
+    ifd_offset = struct.unpack("<I", tiff_bytes[4:8])[0]
+
+    reads = []
+
+    class TrackedBytesIO(io.BytesIO):
+        def read(self, size=-1):
+            reads.append(size)
+            return super().read(size)
+
+    stream = TrackedBytesIO(tiff_bytes)
+    reader = _BoundedReader(stream, limit=256)
+    target = Image.Exif()
+    target.endian = "<"
+    with pytest.raises(_ExifReadLimit) as caught:
+        target.load_from_fp(reader, ifd_offset)
+
+    assert caught.value.size > 256
+    # Must abort immediately on the oversized tag without continuing to read subsequent tags.
+    assert sum(sz for sz in reads if sz > 0) <= 256
+    assert 272 not in target

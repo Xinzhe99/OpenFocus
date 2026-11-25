@@ -57,16 +57,27 @@ _TIFF_TYPE_SIZES = {
 }
 
 
+class _ExifReadLimit(Exception):
+    """Stop Pillow's IFD parser immediately (Pillow catches OSError per tag)."""
+
+    def __init__(self, size: int):
+        self.size = int(size)
+        super().__init__(f"Bounded RAW EXIF read limit exceeded ({self.size} bytes)")
+
+
 class _BoundedReader:
     """Bound total bytes read while Pillow or IFD parsers walk metadata."""
 
     def __init__(self, stream, limit: int = _MAX_EXIF_BYTES):
         self.stream = stream
+        self.limit = int(limit)
         self.remaining = int(limit)
 
     def read(self, size: int = -1) -> bytes:
-        if size < 0 or size > self.remaining:
-            raise OSError("Bounded RAW EXIF read limit exceeded")
+        if size < 0:
+            raise _ExifReadLimit(self.limit - self.remaining)
+        if size > self.remaining:
+            raise _ExifReadLimit(self.limit - self.remaining + size)
         data = self.stream.read(size)
         self.remaining -= len(data)
         return data
