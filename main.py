@@ -177,6 +177,7 @@ from utils import (
 )
 from utils.image_utils import cv2_to_pixmap
 from utils.output_sharpen import DEFAULT_SHARPEN_STRENGTH, validate_sharpen_strength
+from utils.platform_utils import get_ui_font_families
 from utils.settings_store import (
     load_window_settings,
     save_window_settings,
@@ -404,26 +405,6 @@ def _apply_font_family(qss: str, ui_font: str, mono_font: str) -> str:
     for stack in ('Consolas, "Segoe UI", monospace',):
         qss = qss.replace(stack, mono_font)
     return qss
-
-
-def _ui_qfont(ui_font: str, point_size: int) -> QFont:
-    """Resolve a CSS font stack string into an ordered QFont family list."""
-    generic = {"sans-serif", "serif", "monospace", "system-ui", "ui-sans-serif"}
-    families = []
-    for entry in str(ui_font or "").split(","):
-        name = entry.strip().strip("\"'")
-        if name and name.lower() not in generic and name not in families:
-            families.append(name)
-    if not families:
-        fallback = get_default_font()
-        if fallback:
-            families.append(fallback)
-    font = QFont(families[0], point_size) if families else QFont()
-    if families:
-        font.setFamilies(families)
-    else:
-        font.setPointSize(point_size)
-    return font
 
 
 def update_manager_for(window) -> UpdateManager:
@@ -4073,7 +4054,10 @@ class OpenFocus(QMainWindow):
         if app is not None:
             app.setStyleSheet("")
             app.setPalette(app.style().standardPalette())
-            app.setFont(_ui_qfont(ui_font, points))
+            font = QFont()
+            font.setFamilies(list(get_ui_font_families()))
+            font.setPointSize(points)
+            app.setFont(font)
             app.setStyleSheet(_apply_font_family(get_theme_style(theme, font_size=points),
                                                  ui_font, mono_font))
 
