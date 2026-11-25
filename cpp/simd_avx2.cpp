@@ -898,6 +898,48 @@ void down2_row_u16_to_i32_avx2(
     }
 }
 
+namespace {
+
+// r + g + b of eight packed uint8 pixels (24 bytes) as eight uint32 lanes.
+// Both 16-byte loads stay inside the 24 bytes.
+inline __m256i rgb_sum_u8x8(const uint8_t* p) {
+    const __m256i src = _mm256_inserti128_si256(
+        _mm256_castsi128_si256(_mm_loadu_si128(reinterpret_cast<const __m128i*>(p))),
+        _mm_loadu_si128(reinterpret_cast<const __m128i*>(p + 8)), 1);
+    const __m256i quads = _mm256_shuffle_epi8(src, _mm256_setr_epi8(
+        0, 1, 2, -1, 3, 4, 5, -1, 6, 7, 8, -1, 9, 10, 11, -1,
+        4, 5, 6, -1, 7, 8, 9, -1, 10, 11, 12, -1, 13, 14, 15, -1));
+    const __m256i pairs = _mm256_maddubs_epi16(quads, _mm256_set1_epi8(1));
+    return _mm256_madd_epi16(pairs, _mm256_set1_epi16(1));
+}
+
+// r + g + b of eight packed uint16 pixels (24 samples) as eight uint32 lanes.
+// Lane 0 of each load covers samples 0..7 / 8..15, lane 1 samples 8..15 / 16..23.
+inline __m256i rgb_sum_u16x8(const uint16_t* p) {
+    const __m256i lo = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(p));
+    const __m256i hi = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(p + 8));
+    // One uint32 lane per pixel: red in the low half, green in the high half.
+    const __m256i rg = _mm256_or_si256(
+        _mm256_shuffle_epi8(lo, _mm256_setr_epi8(
+            0, 1, 2, 3, 6, 7, 8, 9, 12, 13, 14, 15, -1, -1, -1, -1,
+            8, 9, 10, 11, 14, 15, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1)),
+        _mm256_shuffle_epi8(hi, _mm256_setr_epi8(
+            -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 2, 3, 4, 5,
+            -1, -1, -1, -1, -1, -1, 0, 1, 4, 5, 6, 7, 10, 11, 12, 13)));
+    const __m256i blue = _mm256_or_si256(
+        _mm256_shuffle_epi8(lo, _mm256_setr_epi8(
+            4, 5, -1, -1, 10, 11, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+            12, 13, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1)),
+        _mm256_shuffle_epi8(hi, _mm256_setr_epi8(
+            -1, -1, -1, -1, -1, -1, -1, -1, 0, 1, -1, -1, 6, 7, -1, -1,
+            -1, -1, -1, -1, 2, 3, -1, -1, 8, 9, -1, -1, 14, 15, -1, -1)));
+    const __m256i red_green = _mm256_add_epi32(
+        _mm256_and_si256(rg, _mm256_set1_epi32(0xFFFF)), _mm256_srli_epi32(rg, 16));
+    return _mm256_add_epi32(red_green, blue);
+}
+
+}  // namespace
+
 void gray_rgb_u8_row_avx2(
     const uint8_t* sr, uint16_t* dst16, int32_t* dst32, int64_t width,
     int32_t scale, bool depth_color, bool dst_is_u16
@@ -907,17 +949,7 @@ void gray_rgb_u8_row_avx2(
     const __m256i v_s32 = _mm256_set1_epi32(scale * 85);
     int64_t x = 0;
     for (; x + 8 <= width; x += 8) {
-        const uint8_t* p = sr + x * 3;
-        const __m256i t = _mm256_setr_epi32(
-            static_cast<int32_t>(p[0]) + p[1] + p[2],
-            static_cast<int32_t>(p[3]) + p[4] + p[5],
-            static_cast<int32_t>(p[6]) + p[7] + p[8],
-            static_cast<int32_t>(p[9]) + p[10] + p[11],
-            static_cast<int32_t>(p[12]) + p[13] + p[14],
-            static_cast<int32_t>(p[15]) + p[16] + p[17],
-            static_cast<int32_t>(p[18]) + p[19] + p[20],
-            static_cast<int32_t>(p[21]) + p[22] + p[23]
-        );
+        const __m256i t = rgb_sum_u8x8(sr + x * 3);
         __m256i res;
         if (depth_color) {
             res = _mm256_srli_epi32(_mm256_mullo_epi32(t, v_s32), 8);
@@ -958,17 +990,7 @@ void gray_rgb_u16_row_avx2(
     const __m256i v_s32 = _mm256_set1_epi32(scale * 85);
     int64_t x = 0;
     for (; x + 8 <= width; x += 8) {
-        const uint16_t* p = sr + x * 3;
-        const __m256i t = _mm256_setr_epi32(
-            static_cast<int32_t>(p[0]) + p[1] + p[2],
-            static_cast<int32_t>(p[3]) + p[4] + p[5],
-            static_cast<int32_t>(p[6]) + p[7] + p[8],
-            static_cast<int32_t>(p[9]) + p[10] + p[11],
-            static_cast<int32_t>(p[12]) + p[13] + p[14],
-            static_cast<int32_t>(p[15]) + p[16] + p[17],
-            static_cast<int32_t>(p[18]) + p[19] + p[20],
-            static_cast<int32_t>(p[21]) + p[22] + p[23]
-        );
+        const __m256i t = rgb_sum_u16x8(sr + x * 3);
         __m256i res;
         if (depth_color) {
             res = _mm256_srli_epi32(_mm256_mullo_epi32(t, v_s32), 8);
@@ -2456,22 +2478,25 @@ constexpr std::array<uint32_t, 101> make_activity_recip_u32() {
 
 constexpr std::array<uint32_t, 101> kActivityRecipU32 = make_activity_recip_u32();
 
+// min(65535, 110 * |v - m| / (10 + 100 * max(v, m) / 65535)), integer division.
+// The scalar kernel multiplies by a rounded-up 2^32 reciprocal from a table,
+// which equals the floor quotient for these operand ranges (numerator below
+// 2^23, divisor 10..110). A float division is at most one above that quotient,
+// so a single exact compare restores it without a table gather, which is slow
+// on processors that mitigate gather data sampling.
 inline __m256i normalized_diff_8_avx2(__m256i v_val, __m256i v_mean) {
     const __m256i vmax = _mm256_max_epu32(v_val, v_mean);
     const __m256i v100 = _mm256_mullo_epi32(vmax, _mm256_set1_epi32(100));
-    const __m256i vm = _mm256_set1_epi32(static_cast<int32_t>(0x80008001u));
-    const __m256i m_even = _mm256_mul_epu32(v100, vm);
-    const __m256i m_odd = _mm256_mul_epu32(_mm256_srli_epi64(v100, 32), vm);
-    const __m256i denom = _mm256_blend_epi32(
-        _mm256_srli_epi64(m_even, 47), _mm256_srli_epi64(m_odd, 15), 0xAA);
-    const __m256i recip = _mm256_i32gather_epi32(
-        reinterpret_cast<const int32_t*>(kActivityRecipU32.data()), denom, 4);
+    // v100 / 65535 for v100 <= 6553500.
+    const __m256i denom = _mm256_srli_epi32(
+        _mm256_add_epi32(_mm256_add_epi32(v100, _mm256_set1_epi32(1)), _mm256_srli_epi32(v100, 16)), 16);
+    const __m256 vd = _mm256_cvtepi32_ps(_mm256_add_epi32(denom, _mm256_set1_epi32(10)));
     const __m256i vdiff = _mm256_abs_epi32(_mm256_sub_epi32(v_val, v_mean));
-    const __m256i vnum = _mm256_mullo_epi32(vdiff, _mm256_set1_epi32(110));
-    const __m256i q_even = _mm256_srli_epi64(_mm256_mul_epu32(vnum, recip), 32);
-    const __m256i q_odd = _mm256_mul_epu32(
-        _mm256_srli_epi64(vnum, 32), _mm256_srli_epi64(recip, 32));
-    const __m256i res = _mm256_blend_epi32(q_even, q_odd, 0xAA);
+    const __m256 vn = _mm256_cvtepi32_ps(_mm256_mullo_epi32(vdiff, _mm256_set1_epi32(110)));
+    const __m256 q = _mm256_floor_ps(_mm256_div_ps(vn, vd));
+    // q * vd is an integer below 2^24, so the product and the compare are exact.
+    const __m256i over = _mm256_castps_si256(_mm256_cmp_ps(_mm256_mul_ps(q, vd), vn, _CMP_GT_OQ));
+    const __m256i res = _mm256_add_epi32(_mm256_cvttps_epi32(q), over);
     return _mm256_min_epu32(res, _mm256_set1_epi32(65535));
 }
 
