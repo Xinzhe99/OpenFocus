@@ -1150,6 +1150,62 @@ def _write_streamed_jpeg(handle, image, params, exif, profile, should_cancel):
                     mapped.close()
 
 
+def _write_encoded_png(handle, encoded, exif, profile, should_cancel):
+    """Stream one encoded PNG plus optional eXIf/iCCP chunks without full-buffer copies."""
+    import struct
+    import zlib
+    pixels = memoryview(encoded).cast('B')
+    ihdr_end = 33
+    if (len(pixels) < ihdr_end or bytes(pixels[:8]) != b'\x89PNG\r\n\x1a\n'
+            or bytes(pixels[12:16]) != b'IHDR'):
+        raise ValueError('Invalid encoded PNG')
+    _check_write_cancelled(should_cancel)
+    handle.write(pixels[:ihdr_end])
+    if exif is not None:
+        tiff_exif = exif.tobytes()[6:]
+        handle.write(struct.pack('>I', len(tiff_exif)) + b'eXIf' + tiff_exif
+                     + struct.pack('>I', zlib.crc32(b'eXIf' + tiff_exif)))
+    if profile:
+        data = b'ICC\x00\x00' + zlib.compress(profile)
+        handle.write(struct.pack('>I', len(data)) + b'iCCP' + data
+                     + struct.pack('>I', zlib.crc32(b'iCCP' + data)))
+    chunk_bytes = 4 * 1024 * 1024
+    for offset in range(ihdr_end, len(pixels), chunk_bytes):
+        _check_write_cancelled(should_cancel)
+        handle.write(pixels[offset:offset + chunk_bytes])
+
+
+def _try_fast_png_encode(handle, image, params, meta, profile, should_cancel) -> bool:
+    """Encode contiguous uint8 PNG (up to 48 MiB) via libspng when RAM comfortably fits it."""
+    if (image.dtype != np.uint8 or image.nbytes > 48 * 1024 * 1024
+            or not image.flags.c_contiguous
+            or not (image.ndim == 2 or (image.ndim == 3 and image.shape[2] in (3, 4)))):
+        return False
+    options = dict(zip((params or [])[::2], (params or [])[1::2]))
+    if options.keys() - {cv2.IMWRITE_PNG_COMPRESSION}:
+        return False
+    try:
+        import imagecodecs
+    except ImportError:
+        return False
+    encoder = getattr(imagecodecs, 'spng_encode', None)
+    if encoder is None:
+        return False
+    from core.resource_policy import probe_memory, ram_budget
+    if ram_budget(probe_memory()) < image.nbytes * 2 + 16 * 1024 ** 2:
+        return False
+    _check_write_cancelled(should_cancel)
+    level = max(0, min(9, int(options.get(cv2.IMWRITE_PNG_COMPRESSION, 3))))
+    try:
+        src = (image if image.ndim == 2 else
+               cv2.cvtColor(image, cv2.COLOR_BGR2RGB if image.shape[2] == 3 else cv2.COLOR_BGRA2RGBA))
+        encoded = encoder(src, level=level)
+    except Exception:
+        return False
+    _write_encoded_png(handle, encoded, meta, profile, should_cancel)
+    return True
+
+
 def _try_fast_jpeg_encode(handle, image, params, meta, profile, should_cancel) -> bool:
     """Encode packed uint8 JPEG directly in memory when RAM comfortably fits it."""
     if (image.dtype != np.uint8 or not image.flags.c_contiguous
@@ -1295,7 +1351,9 @@ def imwrite_auto(path: str, image: Optional[np.ndarray] = None, params: Optional
         webp_written = False
         fd, part = tempfile.mkstemp(suffix=ext, dir=os.path.dirname(os.path.abspath(path)))
         with os.fdopen(fd, 'wb') as handle:
-            if bounded and ext == '.png':
+            if ext == '.png' and _try_fast_png_encode(handle, image, params or [], meta, profile, should_cancel):
+                pass
+            elif bounded and ext == '.png':
                 _write_streamed_png(handle, image, params or [], meta, profile, should_cancel)
             elif ext in jpeg_exts and _try_fast_jpeg_encode(handle, image, params or [], meta, profile, should_cancel):
                 pass
@@ -1315,11 +1373,9 @@ def imwrite_auto(path: str, image: Optional[np.ndarray] = None, params: Optional
                 ok, encoded = cv2.imencode(encode_ext, image, params or [])
                 if not ok:
                     return False
-                if meta is not None and ext == '.png':
-                    encoded = _png_insert_exif(bytes(encoded), meta.tobytes()[6:])
-                if profile and ext == '.png':
-                    encoded = _png_insert_icc(bytes(encoded), profile)
-                if ext in jpeg_exts:
+                if ext == '.png':
+                    _write_encoded_png(handle, encoded, meta, profile, should_cancel)
+                elif ext in jpeg_exts:
                     _write_encoded_jpeg(handle, encoded, meta, profile, should_cancel)
                 else:
                     handle.write(encoded)

@@ -342,6 +342,8 @@ _DEFAULT_GET_CONTEXT = multiprocessing.get_context
 _DEFAULT_RENDER_CHILD = _render_child
 _PERSISTENT_LOCK = threading.Lock()
 _PERSISTENT_HANDLE = None
+_PERSISTENT_GENERATION = 0
+_PREWARM_IN_FLIGHT = False
 
 
 class _PersistentWorkerHandle:
@@ -402,12 +404,99 @@ class _PersistentWorkerHandle:
 
 def shutdown_persistent_worker():
     """Shut down the cached isolated render worker process if running."""
-    global _PERSISTENT_HANDLE
+    global _PERSISTENT_HANDLE, _PERSISTENT_GENERATION
     with _PERSISTENT_LOCK:
+        _PERSISTENT_GENERATION += 1
         handle = _PERSISTENT_HANDLE
         _PERSISTENT_HANDLE = None
     if handle is not None:
         handle.close()
+
+
+def prewarm_persistent_worker(directory=None, *, min_ram_bytes=512 * 1024**2, block: bool = False) -> bool:
+    """Spawn and warm a persistent render child in the background when idle.
+
+    First GUI renders then reuse the already-imported child process instead of
+    paying cold spawn and module-import latency after clicking Render.
+    """
+    global _PREWARM_IN_FLIGHT
+    if not _persistent_worker_enabled():
+        return False
+    source_revision = None
+    if _windows_source_run():
+        source_revision = _LOADED_SOURCE_REVISION
+        if source_revision is None or _render_source_revision() != source_revision:
+            return False
+    from core.resource_policy import probe_memory, ram_budget
+    if ram_budget(probe_memory()) < int(min_ram_bytes):
+        return False
+    with _PERSISTENT_LOCK:
+        if _PERSISTENT_HANDLE is not None or _PREWARM_IN_FLIGHT:
+            return False
+        _PREWARM_IN_FLIGHT = True
+        generation = _PERSISTENT_GENERATION
+
+    def _run_prewarm():
+        global _PREWARM_IN_FLIGHT, _PERSISTENT_HANDLE
+        handle = None
+        child = None
+        warmed = False
+        try:
+            scratch = storage.capture_scratch()
+            target_dir = directory if directory is not None else (scratch.explicit_directory if scratch is not None else None)
+            context = multiprocessing.get_context('spawn')
+            cancel_event = context.Event()
+            parent, child = context.Pipe()
+            mailbox = _LivePreviewMailbox.create(context)
+            process = context.Process(
+                target=_persistent_render_child,
+                args=(child, cancel_event, target_dir, mailbox.shared),
+                name='OpenFocus render',
+                daemon=True,
+            )
+            handle = _PersistentWorkerHandle(process, parent, cancel_event, target_dir, source_revision, mailbox)
+            process.start()
+            child.close()
+            child = None
+            parent.send('warmup')
+            deadline = time.monotonic() + 15.0
+            while time.monotonic() < deadline:
+                with _PERSISTENT_LOCK:
+                    if generation != _PERSISTENT_GENERATION or _PERSISTENT_HANDLE is not None:
+                        break
+                if parent.poll(0.1):
+                    msg = parent.recv()
+                    if msg and msg[0] == 'idle' and process.is_alive():
+                        warmed = True
+                    break
+                if not process.is_alive():
+                    break
+            if warmed:
+                with _PERSISTENT_LOCK:
+                    if (generation == _PERSISTENT_GENERATION
+                            and _PERSISTENT_HANDLE is None
+                            and process.is_alive()):
+                        _PERSISTENT_HANDLE = handle
+                        handle = None
+                        return True
+            return False
+        except Exception:
+            return False
+        finally:
+            if child is not None:
+                try:
+                    child.close()
+                except OSError:
+                    pass
+            if handle is not None:
+                handle.close()
+            with _PERSISTENT_LOCK:
+                _PREWARM_IN_FLIGHT = False
+
+    if block:
+        return bool(_run_prewarm())
+    threading.Thread(target=_run_prewarm, name='openfocus-render-prewarm', daemon=True).start()
+    return True
 
 
 atexit.register(shutdown_persistent_worker)
@@ -538,6 +627,18 @@ def _persistent_render_child(connection, cancel_event, directory, mailbox_shared
                 break
             if command is None or command == 'shutdown':
                 break
+            if command == 'warmup' or (isinstance(command, tuple) and command[0] == 'warmup'):
+                try:
+                    import core.multi_focus_fusion  # noqa: F401
+                    import core.openfocus_alignment  # noqa: F401
+                    import fusion_methods.openfocus_bc  # noqa: F401
+                except Exception:
+                    pass
+                try:
+                    connection.send(('idle',))
+                except (EOFError, OSError):
+                    break
+                continue
             _, request, budget, job_directory, language, live_preview_requested = command
             _run_one_persistent_job(
                 connection, cancel_event, request, budget, job_directory,

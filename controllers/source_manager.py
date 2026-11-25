@@ -694,6 +694,16 @@ class SourceManager(QObject):
         self._show_load_status()
         worker.start()
 
+    def _schedule_render_prewarm(self) -> None:
+        if (os.environ.get("QT_QPA_PLATFORM") == "offscreen"
+                or os.environ.get("OPENFOCUS_DISABLE_PERSISTENT_RENDER_WORKER")):
+            return
+        render = getattr(self.window, "render_manager", None)
+        if render is not None and getattr(render, "_closing", False):
+            return
+        from core.render_process import prewarm_persistent_worker
+        prewarm_persistent_worker()
+
     def _finish_load_worker(self, worker) -> None:
         if self._load_worker is worker:
             self._load_worker = None
@@ -702,6 +712,11 @@ class SourceManager(QObject):
                 if widget is not None:
                     widget.hide()
             self._start_queued_render(worker)
+            if (getattr(worker, "_load_applied", False)
+                    and os.environ.get("QT_QPA_PLATFORM") != "offscreen"
+                    and not os.environ.get("OPENFOCUS_DISABLE_PERSISTENT_RENDER_WORKER")):
+                from PyQt6.QtCore import QTimer
+                QTimer.singleShot(400, self._schedule_render_prewarm)
         worker.deleteLater()
 
     def _start_queued_render(self, worker) -> None:
