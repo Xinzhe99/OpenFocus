@@ -734,3 +734,81 @@ def test_http_404_config_and_me_degrade_silently_and_preserve_local_account(
     assert gc.state_store.profile is None
     assert gc.state_store.unread_notifications_count == 0
     assert QApplication.activeModalWidget() is None
+
+
+# ---------------------------------------------------------------------------
+# 9. MagnifierLabel right-click context menu: single emit, no double-fire,
+#    and suppressed after right-drag pan or ROI right-click exit
+# ---------------------------------------------------------------------------
+
+def test_magnifier_label_context_menu_single_emit_and_pan_roi_suppression(qapp):
+    from PyQt6.QtCore import QEvent, QPointF
+    from PyQt6.QtGui import QContextMenuEvent, QMouseEvent
+    from widgets.magnifier_label import MagnifierLabel
+
+    label = MagnifierLabel()
+    label.resize(200, 150)
+    label.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+    label.set_display_pixmap(_make_pixmap(size=(200, 150)))
+    label.show()
+    qapp.processEvents()
+
+    emitted = []
+    label.customContextMenuRequested.connect(lambda pt: emitted.append((pt.x(), pt.y())))
+
+    def _mouse_ev(ev_type, pos):
+        pt = QPointF(float(pos.x()), float(pos.y()))
+        return QMouseEvent(
+            ev_type,
+            pt,
+            QPointF(label.mapToGlobal(pos)),
+            Qt.MouseButton.RightButton,
+            Qt.MouseButton.RightButton if ev_type != QEvent.Type.MouseButtonRelease else Qt.MouseButton.NoButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+
+    def _send_mouse_ctx(pos):
+        ctx = QContextMenuEvent(
+            QContextMenuEvent.Reason.Mouse,
+            pos,
+            label.mapToGlobal(pos),
+        )
+        QApplication.sendEvent(label, ctx)
+
+    try:
+        # 1. Plain right-click + trailing platform QContextMenuEvent(Reason.Mouse): emits ONCE.
+        p0 = QPoint(60, 60)
+        label.mousePressEvent(_mouse_ev(QEvent.Type.MouseButtonPress, p0))
+        label.mouseReleaseEvent(_mouse_ev(QEvent.Type.MouseButtonRelease, p0))
+        _send_mouse_ctx(p0)
+        assert len(emitted) == 1
+
+        # 2. Right-drag pan (>4px) + trailing QContextMenuEvent(Reason.Mouse): emits ZERO times.
+        emitted.clear()
+        p1 = QPoint(90, 80)
+        label.mousePressEvent(_mouse_ev(QEvent.Type.MouseButtonPress, p0))
+        label.mouseMoveEvent(_mouse_ev(QEvent.Type.MouseMove, p1))
+        label.mouseReleaseEvent(_mouse_ev(QEvent.Type.MouseButtonRelease, p1))
+        _send_mouse_ctx(p1)
+        assert emitted == []
+
+        # 3. ROI mode right-click exit + trailing QContextMenuEvent(Reason.Mouse): emits ZERO times.
+        emitted.clear()
+        roi_exited = []
+        label.roiModeExitRequested.connect(lambda: roi_exited.append(True))
+        label.roi_mode = True
+        label.mousePressEvent(_mouse_ev(QEvent.Type.MouseButtonPress, p0))
+        label.mouseReleaseEvent(_mouse_ev(QEvent.Type.MouseButtonRelease, p0))
+        _send_mouse_ctx(p0)
+        assert roi_exited == [True]
+        assert emitted == []
+
+        # 4. Direct synthetic QContextMenuEvent (openfocus ctl path): emits ONCE.
+        label.roi_mode = False
+        emitted.clear()
+        _send_mouse_ctx(p0)
+        assert len(emitted) == 1
+    finally:
+        label.close()
+        label.deleteLater()
+        qapp.processEvents()

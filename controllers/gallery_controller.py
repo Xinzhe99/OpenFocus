@@ -554,7 +554,10 @@ class GalleryController(QObject):
             return None
         menu = self.build_result_context_menu(lbl_result)
         global_pos = lbl_result.mapToGlobal(pos)
-        menu.exec(global_pos)
+        try:
+            menu.exec(global_pos)
+        finally:
+            menu.deleteLater()
         return menu
 
     # ------------------------------------------------------- compute avoidance
@@ -896,6 +899,8 @@ class GalleryController(QObject):
         local_path = getattr(work, "local_path", "") or ""
         image_url = getattr(work, "image_url", "") or getattr(work, "full_url", "") or ""
         is_builtin = bool(getattr(work, "is_builtin_fallback", False))
+        # Resolve QSettings-backed download directory on the Qt UI thread before dispatching.
+        download_dir = resolve_gallery_download_dir(settings=get_settings(), create=True)
 
         def _task() -> None:
             try:
@@ -911,7 +916,6 @@ class GalleryController(QObject):
                 if source_data is None:
                     raise ValueError("Image data unavailable")
 
-                download_dir = resolve_gallery_download_dir(settings=get_settings(), create=True)
                 stem = _safe_filename_stem(title, fallback=f"gallery_{_safe_filename_stem(work_id, 'work')}")
                 dest_path = Path(unique_path(str(download_dir / f"{stem}.jpg")))
                 saved = convert_webp_to_jpeg(source_data, dest_path)
