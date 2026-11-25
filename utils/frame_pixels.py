@@ -1,10 +1,12 @@
 """Bounded preview geometry and background pixel work for lazy consumers."""
+import threading
 from copy import copy
 
 import numpy as np
-
-from PyQt6.QtCore import QEventLoop, QThread, QTimer, Qt, pyqtSlot
-from PyQt6.QtWidgets import QApplication, QDialog, QLabel, QVBoxLayout, QWidget
+from PyQt6 import sip
+from PyQt6.QtCore import QEvent, QEventLoop, QObject, QThread, QTimer, Qt, pyqtSlot
+from PyQt6.QtGui import QShortcut
+from PyQt6.QtWidgets import QApplication, QProgressBar, QProgressDialog, QPushButton, QWidget
 
 from utils.platform_utils import configure_native_worker_stack
 
@@ -149,47 +151,211 @@ class _PixelWorker(QThread):
             self.operation = None
 
 
-class _PixelProgress(QDialog):
+PIXEL_PROGRESS_DELAY_MS = 250
+_INPUT_EVENTS = frozenset((
+    QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonRelease,
+    QEvent.Type.MouseButtonDblClick, QEvent.Type.Wheel,
+    QEvent.Type.KeyPress, QEvent.Type.KeyRelease, QEvent.Type.Shortcut,
+    QEvent.Type.ShortcutOverride, QEvent.Type.ContextMenu, QEvent.Type.Drop,
+))
+
+
+class PixelProgress:
+    """Thread-safe progress handle shared by a pixel operation and its dialog.
+
+    ``total`` of zero keeps the dialog indeterminate. Operations may poll
+    ``cancelled`` between frames when the caller offered a Cancel button.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._done = 0
+        self._total = 0
+        self._cancel = threading.Event()
+
+    def update(self, done, total=None):
+        with self._lock:
+            self._done = int(done)
+            if total is not None:
+                self._total = int(total)
+
+    def snapshot(self):
+        with self._lock:
+            return self._done, self._total
+
+    def cancel(self):
+        self._cancel.set()
+
+    @property
+    def cancelled(self):
+        return self._cancel.is_set()
+
+
+class _InputBlocker(QObject):
+    """Swallow user input during the short window before the dialog appears."""
+
+    def eventFilter(self, watched, event):
+        return event.type() in _INPUT_EVENTS
+
+
+class _PixelProgress(QProgressDialog):
+    """Styled, indeterminate-by-default progress dialog for pixel workers."""
+
+    def __init__(self, parent, title, *, cancellable=False):
+        super().__init__(parent)
+        from locales import trans
+        from ui import styles as ui_styles
+        self._base_title = title
+        self._cancellable = bool(cancellable)
+        self._cancelling = False
+        self._finished = False
+        self._cancel_btn = None
+        self.setStyleSheet(ui_styles.PROGRESS_DIALOG_STYLE)
+        self.setWindowTitle(title)
+        self.setLabelText(title)
+        self._bar = QProgressBar(self)
+        self.setBar(self._bar)
+        self.setRange(0, 0)
+        self.setMinimumWidth(320)
+        self.setMinimumDuration(2 ** 31 - 1)
+        self.setAutoClose(False)
+        self.setAutoReset(False)
+        self.setWindowModality(Qt.WindowModality.ApplicationModal)
+        self.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, False)
+        self.setCancelButton(None)
+        if self._cancellable:
+            self._cancel_btn = QPushButton(trans.t("btn_cancel"))
+            self.setCancelButton(self._cancel_btn)
+            # Qt's default canceled() slot hides and resets the dialog even
+            # with auto-close disabled. Keep ownership until the worker exits.
+            self.canceled.disconnect()
+            self.canceled.connect(self.mark_cancelling)
+        self._cancel_shortcut = self.findChild(QShortcut)
+
+    def mark_cancelling(self):
+        if self._cancelling:
+            return
+        self._cancelling = True
+        from locales import trans
+        self.setLabelText(trans.t("depth_cancelling"))
+        if self._cancel_btn is not None:
+            self._cancel_btn.setEnabled(False)
+        if self._cancel_shortcut is not None:
+            self._cancel_shortcut.setEnabled(False)
+
+    def finish(self):
+        self._finished = True
+        self.hide()
+
     def reject(self):
         # The caller owns its transaction until the worker completes.
-        pass
+        if self._cancellable and not self._cancelling and not self._finished:
+            self.canceled.emit()
 
     def closeEvent(self, event):
-        event.ignore()
+        event.ignore() if not self._finished else event.accept()
+
+    def set_progress(self, done, total, message=None):
+        if total > 0:
+            total = max(done, total)
+            if self.maximum() != total:
+                self.setRange(0, total)
+            self._bar.setValue(max(0, done))
+        elif self.maximum() != 0:
+            self.setRange(0, 0)
+        if not self._cancelling:
+            if message is None:
+                message = f"{self._base_title} ({done}/{total})" if total > 0 else self._base_title
+            self.setLabelText(message)
 
 
-def run_pixel_worker(parent, title, operation, *, show_progress=True):
+def run_pixel_worker(parent, title, operation, *, show_progress=True,
+                     progress=None, cancellable=False,
+                     delay_ms=PIXEL_PROGRESS_DELAY_MS):
     """Keep Qt responsive while a synchronous caller awaits pixel I/O.
 
-    Operations never access Qt widgets. The default modal dialog keeps source
-    state stable. Windowless callers must guard reentry and reject stale results
-    because their own widgets remain interactive during the nested event loop.
+    Operations never access Qt widgets. The progress dialog keeps source state
+    stable but appears only after ``delay_ms`` so quick saves never flash; user
+    input is withheld until then. Pass a ``PixelProgress`` to show determinate
+    progress, and ``cancellable=True`` to offer Cancel (the operation must poll
+    ``progress.cancelled``). Windowless callers must guard reentry and reject
+    stale results because their own widgets remain interactive during the
+    nested event loop.
     """
     application = QApplication.instance()
     if application is None or QThread.currentThread() is not application.thread():
         return operation()
+    if cancellable and progress is None:
+        progress = PixelProgress()
     dialog = None
-    if show_progress:
-        dialog = _PixelProgress(parent if isinstance(parent, QWidget) else None)
-        dialog.setWindowTitle(title)
-        dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
-        layout = QVBoxLayout(dialog)
-        layout.addWidget(QLabel(title))
-        waiter = dialog
-    else:
-        waiter = QEventLoop()
+    blocker = None
+    reveal_timer = None
+    poll = None
+    completed = False
+    waiter = QEventLoop()
     worker = _PixelWorker(operation)
-    worker.finished.connect(dialog.accept if dialog is not None else waiter.quit)
-    QTimer.singleShot(0, worker.start)
+    if show_progress:
+        dialog = _PixelProgress(parent if isinstance(parent, QWidget) else None,
+                                title, cancellable=cancellable)
+        if cancellable:
+            dialog.canceled.connect(progress.cancel)
+        blocker = _InputBlocker()
+        application.installEventFilter(blocker)
+
+        def reveal():
+            if completed:
+                return
+            if not worker.isFinished() and not sip.isdeleted(dialog):
+                dialog.show()
+            application.removeEventFilter(blocker)
+
+        reveal_timer = QTimer()
+        reveal_timer.setSingleShot(True)
+        reveal_timer.setInterval(max(0, int(delay_ms)))
+        reveal_timer.timeout.connect(reveal)
+        reveal_timer.start()
+        if progress is not None:
+            poll = QTimer()
+            poll.setInterval(100)
+            def update_dialog():
+                if not sip.isdeleted(dialog):
+                    dialog.set_progress(*progress.snapshot())
+
+            poll.timeout.connect(update_dialog)
+            poll.start()
+    worker.finished.connect(waiter.quit)
+    worker.start()
     waiter.exec()
+    completed = True
     worker.wait()
+    if reveal_timer is not None:
+        reveal_timer.stop()
+        reveal_timer.deleteLater()
+    if poll is not None:
+        poll.stop()
+        poll.deleteLater()
+    if blocker is not None:
+        application.removeEventFilter(blocker)
+    if dialog is not None and not sip.isdeleted(dialog):
+        dialog.finish()
+        dialog.deleteLater()
     result, error = worker.result, worker.error
     worker.deleteLater()
     waiter.deleteLater()
+    if blocker is not None:
+        blocker.deleteLater()
     if error is not None:
         raise error
     return result
 
+
+def invoke_pixel_worker(worker_fn, parent, title, operation, *, progress=None,
+                        cancellable=False, show_progress=True):
+    """Call ``worker_fn`` passing progress kwargs only when supported."""
+    if worker_fn is run_pixel_worker:
+        return worker_fn(parent, title, operation, show_progress=show_progress,
+                         progress=progress, cancellable=cancellable)
+    return worker_fn(parent, title, operation)
 
 def preview_pixels(frame, parent=None):
     """Return bounded display pixels, generating missing previews off Qt."""

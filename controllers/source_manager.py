@@ -384,6 +384,30 @@ class SourceManager(QObject):
                              trans.t("linear_raw_profile_hint"), "",
                              QMessageBox.Icon.Information)
 
+    def _show_load_issues_notice(self, worker, loaded_count: int) -> None:
+        if getattr(worker, "video", None):
+            return
+        loader = getattr(self.window, "image_loader", None)
+        if loader is None:
+            return
+        failed = int(getattr(loader, "failed_count", 0) or 0)
+        skipped = int(getattr(loader, "skipped_derived_count", 0) or 0)
+        if failed <= 0 and skipped <= 0:
+            return
+        if failed > 0 and skipped > 0:
+            message = trans.t("msg_load_frames_partial").format(
+                loaded=loaded_count, failed=failed, skipped=skipped)
+        elif failed > 0:
+            message = trans.t("msg_load_frames_failed").format(
+                loaded=loaded_count, failed=failed)
+        else:
+            message = trans.t("msg_load_frames_skipped_derived").format(
+                loaded=loaded_count, skipped=skipped)
+        status_bar = getattr(self.window, "statusBar", None)
+        bar = status_bar() if callable(status_bar) else None
+        if bar is not None:
+            bar.showMessage(message, 9000)
+
     def _start_load_worker(self, folder=None, video=None, filepaths=None,
                            scale=1.0, append=False, on_success=None,
                            accept_event=None, prepare_options=None, on_error=None,
@@ -666,6 +690,8 @@ class SourceManager(QObject):
                     from utils import recovery
                     recovery.write_snapshot(window)
                 self._show_linear_profile_notice(getattr(window, "linear_dng_metadata", None))
+                if load_is_current():
+                    self._show_load_issues_notice(worker, len(images))
                 worker._load_applied = load_is_current()
             except Exception as exc:  # pylint: disable=broad-except
                 result_error = str(exc) or "Load failed"
@@ -854,10 +880,11 @@ class SourceManager(QObject):
     def _on_load_progress(self, done: int, total: int) -> None:
         worker = self.sender()
         if (worker is None or worker is not getattr(self, "_load_worker", None)
-                or worker.is_cancelled or worker.video):
+                or worker.is_cancelled):
             return
         text = trans.t("msg_loading_stack")
         if total > 0:
+            total = max(total, done)
             self._load_progress_bar.setRange(0, total)
             self._load_progress_bar.setValue(done)
             text = f"{text} ({done}/{total})"
@@ -1430,13 +1457,17 @@ class SourceManager(QObject):
             self._source_hover = SourceHover(self, self.window.file_list)
         self._source_hover.invalidate()
         window = self.window
-        window.file_list.blockSignals(True)
-        window.file_list.clear()
-
+        file_list = window.file_list
+        pause_updates = (hasattr(file_list, 'setUpdatesEnabled')
+                         and getattr(file_list, 'updatesEnabled', lambda: True)())
+        if pause_updates:
+            file_list.setUpdatesEnabled(False)
+        signals_blocked = bool(file_list.blockSignals(True))
         try:
+            file_list.clear()
             for filename, thumbnail in zip(filenames, thumbnails):
                 item = QListWidgetItem(QIcon(thumbnail), filename)
-                window.file_list.addItem(item)
+                file_list.addItem(item)
         except Exception as exc:  # pylint: disable=broad-exception-caught
             show_message_box(
                 window,
@@ -1446,8 +1477,12 @@ class SourceManager(QObject):
                 QMessageBox.Icon.Critical,
             )
         finally:
-            self.decorate_source_items()
-            window.file_list.blockSignals(False)
+            try:
+                self.decorate_source_items()
+            finally:
+                file_list.blockSignals(signals_blocked)
+                if pause_updates:
+                    file_list.setUpdatesEnabled(True)
 
         self.update_source_images_count()
 

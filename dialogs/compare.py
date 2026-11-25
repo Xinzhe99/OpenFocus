@@ -707,7 +707,8 @@ class CompareDialog(QDialog):
         size = (frame.shape[1], frame.shape[0])
         with QSignalBlocker(self.ref_canvas):
             self.ref_canvas.set_pixmap(cv2_to_pixmap(image) if image is not None else None,
-                                       source_size=size, preview_only=isinstance(frame, (SourceFrame, ProcessedFrame)))
+                                       source_size=size, preview_only=isinstance(frame, (SourceFrame, ProcessedFrame)),
+                                       preserve_tiles=True)
         self._refresh_reference_viewport()
 
     def _source_preview_ready(self, request, index, identity, _thumbnail):
@@ -755,7 +756,10 @@ class CompareDialog(QDialog):
         self._viewport_tiles = tiles
         self._viewport_next = 0
         self._viewport_request = None
-        self.ref_canvas.clear_tiles()
+        if tiles:
+            self.ref_canvas.stash_tiles()
+        else:
+            self.ref_canvas.clear_tiles()
         self.ref_canvas.set_native_status(trans.t('native_detail_loading') if tiles else '')
         self.ref_canvas.setToolTip(trans.t('compare_hint'))
         if tiles:
@@ -765,6 +769,7 @@ class CompareDialog(QDialog):
 
     def _submit_reference_tile(self):
         if self._viewport_next >= len(self._viewport_tiles):
+            self.ref_canvas.clear_retained_tiles()
             self.ref_canvas.set_native_status('')
             return
         worker = self._reference_worker
@@ -800,6 +805,7 @@ class CompareDialog(QDialog):
         if (self._closing or generation != self._source_preview_generation
                 or self._reference_worker is None or self._reference_worker.cancelled):
             return
+        self.ref_canvas.clear_retained_tiles()
         self.ref_canvas.set_native_status(trans.t('msg_display_error_title'))
         self.ref_canvas.setToolTip(message)
         self._viewport_next = len(self._viewport_tiles)

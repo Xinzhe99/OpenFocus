@@ -96,7 +96,7 @@ def _downscale_for_preview(img):
 
 _LOADER_STATE_FIELDS = ('images', 'image_paths', 'px_size_um', 'source_exif',
                         'source_exifs', 'source_icc_profile', 'source_icc_profiles',
-                        'linear_dng_metadata', 'failed_count')
+                        'linear_dng_metadata', 'failed_count', 'skipped_derived_count')
 _MISSING_LOADER_FIELD = object()
 
 
@@ -212,6 +212,8 @@ class StackLoadWorker(QThread):
                         return
                     options = dict(thread_count=self.thread_count,
                                    resource_preference=self.resource_preference)
+                    if not self.folder or self.linear_raw:
+                        self.loader.skipped_derived_count = 0
                     if self.linear_raw:
                         from core.image_loader import is_raw_source
                         from utils.path_identity import same_path
@@ -241,7 +243,9 @@ class StackLoadWorker(QThread):
                             self.folder, scale_factor=self.scale, exclude_paths=self.exclude_paths, **options)
                     elif self.video:
                         from core.video_import import load_video
-                        ok, msg, imgs = load_video(self.video, self.scale, self.loader.should_cancel)
+                        ok, msg, imgs = load_video(
+                            self.video, self.scale, self.loader.should_cancel,
+                            progress_callback=self.progress.emit)
                         names = self.loader._set_video_frames(self.video, imgs) if ok else []
                     else:
                         from utils.path_identity import same_path
@@ -1128,7 +1132,8 @@ class RenderWorker(QThread):
         try:
             images = _registration_process(registration, images, self._reverse_registration,
                 thread_count=self.thread_count, resource_preference=self.resource_preference,
-                should_cancel=should_cancel)
+                should_cancel=should_cancel,
+                progress_callback=self.progress_signal.emit)
         except RejectedAlignmentFrame as error:
             if self.alignment_report is None:
                 self.alignment_report = [{'method': error.method.lower(), 'status': 'failed',
@@ -1279,7 +1284,8 @@ class RenderWorker(QThread):
         if self.sharpen_output and result is not None:
             from utils.output_sharpen import sharpen_output
             with profile.stage('sharpen'):
-                result = sharpen_output(result, should_cancel, strength=self.sharpen_strength)
+                result = sharpen_output(result, should_cancel, strength=self.sharpen_strength,
+                                        thread_count=self.thread_count)
         device = fusion.get_info()['device'] if (get_fusion(self.algorithm).neural or self.algorithm in OPENCL_FUSION_ALGORITHMS) else 'CPU'
         with profile.stage('finalize_output'):
             quantized = quantize_fuse_output(result, is_16bit)
@@ -1384,8 +1390,55 @@ class BatchImportWorker(QThread):
                 else:
                     self.folders_loaded.emit([])
 
-    def _load_thumbnails(self):
+    def _decode_bounded_thumbnail(self, path: str):
+        """Extract a bounded preview (reusing embedded RAW/TIFF previews when present)."""
         from core.image_loader import decode_image
+        from core.source_frames import ensure_preview, scan_source
+
+        cancelled = lambda: self.is_cancelled
+        first = None
+        full_edge = None
+        try:
+            frames = scan_source(path, page_index=0, should_cancel=cancelled)
+            if frames:
+                frame = frames[0]
+                full_edge = max(frame.shape[:2])
+                if getattr(frame, 'preview_is_available', True):
+                    first = ensure_preview(frame, should_cancel=cancelled)
+        except InterruptedError:
+            return None
+        except Exception:
+            first = None
+        if first is None and not self.is_cancelled:
+            from PIL import Image
+            try:
+                with Image.open(path) as header:
+                    width, height = header.size
+                require_memory(width * height * 16 + os.path.getsize(path))
+            except (OSError, ValueError):
+                # Match the existing serial loader for formats whose
+                # dimensions cannot be inspected without decoding (RAW,
+                # for example). Only one source is decoded at a time.
+                pass
+            try:
+                first = decode_image(path)
+            except Exception:
+                logger.exception('batch thumbnail decode failed: %s', path)
+        if first is None:
+            return None
+        height, width = first.shape[:2]
+        full_edge = full_edge or max(height, width)
+        factor = self.scale_factor if 0 < self.scale_factor < 1.0 else 1.0
+        edge = min(60, max(1, round(full_edge * factor)))
+        ratio = min(1.0, edge / max(height, width))
+        if ratio < 1.0:
+            first = cv2.resize(
+                first, (max(1, round(width * ratio)), max(1, round(height * ratio))),
+                interpolation=cv2.INTER_AREA)
+        return first
+
+    def _load_thumbnails(self):
+        from utils.path_identity import same_path
         from utils.sorting import natural_sort_key
         loader = self._loader()
         results = []
@@ -1396,45 +1449,27 @@ class BatchImportWorker(QThread):
             try:
                 files = [(name, os.path.join(folder, name)) for name in os.listdir(folder)
                          if os.path.splitext(name)[1].lower() in loader.SUPPORTED_FORMATS]
-                files = loader._drop_derived_aligned_copies(files)
-                from utils.path_identity import same_path
                 files = [(name, path) for name, path in files if not any(
                     same_path(path, excluded) for excluded in self.exclude_paths)]
+                files = loader._drop_derived_aligned_copies(files)
                 files.sort(key=lambda item: natural_sort_key(item[0]))
                 first = None
                 for _, path in files:
                     if self.is_cancelled:
                         break
-                    from PIL import Image
-                    try:
-                        with Image.open(path) as header:
-                            width, height = header.size
-                        require_memory(width * height * 16 + os.path.getsize(path))
-                    except (OSError, ValueError):
-                        # Match the existing serial loader for formats whose
-                        # dimensions cannot be inspected without decoding (RAW,
-                        # for example). Only one source is decoded at a time.
-                        pass
-                    try:
-                        first = decode_image(path)
-                    except Exception:
-                        logger.exception('batch thumbnail decode failed: %s', path)
+                    first = self._decode_bounded_thumbnail(path)
                     if first is not None:
-                        if 0 < self.scale_factor < 1.0:
-                            first = cv2.resize(first, None, fx=self.scale_factor, fy=self.scale_factor,
-                                               interpolation=cv2.INTER_AREA)
-                        height, width = first.shape[:2]
-                        ratio = min(1.0, 60.0 / max(height, width))
-                        if ratio < 1.0:
-                            first = cv2.resize(first, (max(1, round(width * ratio)), max(1, round(height * ratio))),
-                                               interpolation=cv2.INTER_AREA)
                         break
                 results.append((folder, first))
                 failed |= first is None
+                if not self.is_cancelled:
+                    self.folder_loaded.emit(folder, first)
             except Exception:
                 logger.exception('batch folder thumbnail failed: %s', folder)
                 results.append((folder, None))
                 failed = True
+                if not self.is_cancelled:
+                    self.folder_loaded.emit(folder, None)
         if not self.is_cancelled:
             self.folders_loaded.emit(results)
         return not failed
@@ -1914,7 +1949,7 @@ class BatchWorker(QThread):
                     if runtime.get('sharpen_output', False) and result is not None:
                         from utils.output_sharpen import sharpen_output
                         result = sharpen_output(result, lambda: self.is_cancelled,
-                                                strength=self.sharpen_strength)
+                                                strength=self.sharpen_strength, thread_count=self.thread_count)
                     result = quantize_fuse_output(result, is_16bit)
                     result = restore_transparent_canvas(result, transparent)
                 else:
@@ -2129,7 +2164,8 @@ class BatchWorker(QThread):
             from utils.output_sharpen import sharpen_output
             frames, is_16bit = normalize_fuse_input([result])
             result = quantize_fuse_output(sharpen_output(
-                frames[0], lambda: self.is_cancelled, strength=self.sharpen_strength), is_16bit)
+                frames[0], lambda: self.is_cancelled, strength=self.sharpen_strength,
+                thread_count=self.thread_count), is_16bit)
         output_format = settings.get('format', 'png').lstrip('.').lower()
         name = os.path.basename(os.path.normpath(folder_path))
         output = os.path.join(self._get_output_path_for_single_folder(folder_path), f'{name}.{output_format}')
