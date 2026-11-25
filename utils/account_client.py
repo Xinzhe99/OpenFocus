@@ -33,7 +33,7 @@ from constants import app_display_version
 from utils.app_paths import legacy_windows_account_dirs, shared_account_device_dir, user_data_dir
 from utils.logging_setup import get_logger, log_action
 from utils.report_client import ReportError, _file_lock
-from utils.tls import classify_network_error, https_handler
+from utils.tls import classify_network_error, https_handlers
 
 _logger = get_logger(__name__)
 
@@ -368,15 +368,29 @@ class TokenStore:
         if self._keychain:
             encoded = base64.b64encode(raw).decode("ascii")
             command = 'add-generic-password -U -s "OpenFocus Account" -a ' + self._keychain_account + ' -w ' + encoded + '\n'
-            try:
-                result = subprocess.run(["/usr/bin/security", "-i"], input=command.encode(), capture_output=True, timeout=10, check=True)
-                if result.returncode:
-                    raise OSError("Keychain write failed")
-            except (OSError, subprocess.SubprocessError):
-                raise AccountError("storage") from None
-            if self.load() != session:
-                raise AccountError("storage")
-            return
+            for attempt in range(2):
+                try:
+                    result = subprocess.run(
+                        ["/usr/bin/security", "-i"],
+                        input=command.encode(),
+                        capture_output=True,
+                        timeout=10,
+                        check=True,
+                    )
+                    if result.returncode == 0 and self.load() == session:
+                        return
+                except (OSError, subprocess.SubprocessError):
+                    pass
+                if attempt == 0:
+                    try:
+                        subprocess.run(
+                            ["/usr/bin/security", "delete-generic-password", "-s", "OpenFocus Account", "-a", self._keychain_account],
+                            capture_output=True,
+                            timeout=10,
+                        )
+                    except (OSError, subprocess.SubprocessError):
+                        pass
+            raise AccountError("storage")
         try:
             if os.name == "nt":
                 raw = _dpapi(raw)
@@ -425,7 +439,7 @@ def _http(method, url, body=None, token=None, timeout=15):
         headers["Authorization"] = "Bearer " + token
     request = urllib.request.Request(url, data=body, headers=headers, method=method)
     try:
-        with urllib.request.build_opener(_NoRedirect(), https_handler()).open(request, timeout=timeout) as response:
+        with urllib.request.build_opener(_NoRedirect(), *https_handlers()).open(request, timeout=timeout) as response:
             raw = response.read(_MAX_RESPONSE + 1)
         if len(raw) > _MAX_RESPONSE:
             raise AccountError("invalid_response")
@@ -458,8 +472,10 @@ def _http(method, url, body=None, token=None, timeout=15):
         raise AccountError("invalid_response") from None
 
 
-class _CallbackServer(http.server.HTTPServer):
+class _CallbackServer(http.server.ThreadingHTTPServer):
     allow_reuse_address = False
+    daemon_threads = True
+    block_on_close = False
 
     def server_bind(self):
         # HTTPServer resolves the bound IP through getfqdn(), which can block
@@ -863,9 +879,14 @@ class AccountClient:
             self._check_login(generation, cancel)
             _sign_in_stage.set("browser_launch")
             query = urllib.parse.urlencode(parameters)
-            if not webbrowser.open(self.base_url + "/v1/auth/" + provider + "/start?" + query):
-                raise AccountError("browser")
+            try:
+                opened = webbrowser.open(self.base_url + "/v1/auth/" + provider + "/start?" + query)
+            except (OSError, webbrowser.Error):
+                self._check_login(generation, cancel)
+                raise AccountError("browser") from None
             self._check_login(generation, cancel)
+            if not opened:
+                raise AccountError("browser")
             if on_started:
                 on_started()
             deadline = time.monotonic() + timeout
@@ -1134,13 +1155,17 @@ class AccountClient:
 
     def terms(self):
         """Fetch and validate the official terms metadata; call from a worker."""
-        try:
-            result = self._call("GET", "/v1/terms")
-        except AccountError as exc:
-            if exc.status in (404, 405):
-                raise AccountError("terms_unavailable", exc.status,
-                                   edge_request_id=exc.edge_request_id) from None
-            raise
+        for attempt in range(2):
+            try:
+                result = self._call("GET", "/v1/terms")
+                break
+            except AccountError as exc:
+                if exc.status in (404, 405):
+                    raise AccountError("terms_unavailable", exc.status,
+                                       edge_request_id=exc.edge_request_id) from None
+                if attempt == 0 and _retryable_login_request(exc):
+                    continue
+                raise
         version = result.get("version")
         url = result.get("url")
         if (not isinstance(version, str) or not 1 <= len(version) <= 128

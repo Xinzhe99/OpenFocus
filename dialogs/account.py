@@ -289,7 +289,7 @@ class AccountDialog(QDialog):
     def _open_account_center(self):
         if self._job is None and self.client is not None:
             self._start('web_center', lambda _started: self.client.open_web_handoff(
-                cancel=self._cancel, timeout=8))
+                cancel=self._cancel, timeout=30))
 
     def _open_account_devices(self):
         url = QUrl(BASE_URL + '/account/devices')
