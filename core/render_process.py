@@ -247,6 +247,9 @@ class _Relay:
                 self.last_progress = None
                 self.send(('stage', stage))
 
+    def shared_memory(self, name):
+        self.send(('shm', name))
+
     def temporary_file(self, path):
         state = storage.capture_scratch()
         directory = state.directory if state is not None and state.owned else None
@@ -275,6 +278,7 @@ def _render_child(connection, cancel_event, request, budget, directory, language
     install_exception_hooks()
     trans.current_lang = language
     relay = _Relay(connection, cancel_event)
+    encoder = None
     try:
         if _windows_source_run() and multiprocessing.parent_process() is not None:
             request = unwrap_source_request(request, _LOADED_SOURCE_REVISION)
@@ -301,7 +305,8 @@ def _render_child(connection, cancel_event, request, budget, directory, language
             worker.run()
             if errors:
                 state = {name: getattr(worker, name) for name in _ERROR_STATE_FIELDS}
-                encoder = FrameEncoder()
+                # Error packets have no receiver acknowledgement.
+                encoder = FrameEncoder(allow_shared_memory=False)
                 metadata = ((worker._render_error_category, 'child_worker', relay.last_stage)
                             if worker._render_error_category is not None else None)
                 message = ('error', errors[-1], encoder.encode(state), metadata)
@@ -314,7 +319,7 @@ def _render_child(connection, cancel_event, request, budget, directory, language
                 raise RuntimeError('Render worker produced neither a result nor an error')
             relay.stage('publish')
             state = {name: getattr(worker, name) for name in _SUCCESS_STATE_FIELDS}
-            encoder = FrameEncoder(cancel_event.is_set)
+            encoder = FrameEncoder(cancel_event.is_set, on_shared_memory=relay.shared_memory)
             payload = encoder.encode({'result': results[-1], 'state': state})
             paths = encoder.owned_paths
             if not relay.send(('completed', payload, paths, relay.directories)):
@@ -335,6 +340,9 @@ def _render_child(connection, cancel_event, request, budget, directory, language
                     (_render_error_category(exc), 'child_setup_or_transfer', relay.last_stage),
                     _capture_error_details(exc)))
     finally:
+        if encoder is not None:
+            encoder.close(unlink=True)
+            encoder = None
         connection.close()
 
 
@@ -582,6 +590,7 @@ def _run_one_persistent_job(connection, cancel_event, request, budget, job_direc
     relay = _Relay(connection, cancel_event)
     worker = None
     inputs = None
+    encoder = None
     results, errors = [], []
     try:
         if _windows_source_run() and multiprocessing.parent_process() is not None:
@@ -604,7 +613,8 @@ def _run_one_persistent_job(connection, cancel_event, request, budget, job_direc
             worker.run()
             if errors:
                 state = {name: getattr(worker, name) for name in _ERROR_STATE_FIELDS}
-                encoder = FrameEncoder()
+                # Error packets have no receiver acknowledgement.
+                encoder = FrameEncoder(allow_shared_memory=False)
                 metadata = ((worker._render_error_category, 'child_worker', relay.last_stage)
                             if worker._render_error_category is not None else None)
                 message = ('error', errors[-1], encoder.encode(state), metadata)
@@ -616,7 +626,7 @@ def _run_one_persistent_job(connection, cancel_event, request, budget, job_direc
             else:
                 relay.stage('publish')
                 state = {name: getattr(worker, name) for name in _SUCCESS_STATE_FIELDS}
-                encoder = FrameEncoder(cancel_event.is_set)
+                encoder = FrameEncoder(cancel_event.is_set, on_shared_memory=relay.shared_memory)
                 payload = encoder.encode({'result': results[-1], 'state': state})
                 paths = encoder.owned_paths
                 if relay.send(('completed', payload, paths, relay.directories)):
@@ -635,6 +645,9 @@ def _run_one_persistent_job(connection, cancel_event, request, budget, job_direc
                     (_render_error_category(exc), 'child_setup_or_transfer', relay.last_stage),
                     _capture_error_details(exc)))
     finally:
+        if encoder is not None:
+            encoder.close(unlink=True)
+            encoder = None
         if worker is not None:
             for sig in (worker.progress_signal, worker.stage_signal,
                         worker.finished_signal, worker.error_signal):
@@ -719,6 +732,7 @@ class _RenderExchange:
         self.worker = worker
         self.files = set()
         self.directories = set()
+        self.shared_memory = set()
         self.packet = None
         self.decoder = None
         self.error = None
@@ -728,6 +742,16 @@ class _RenderExchange:
     def restore_state(self, state, fields=_SUCCESS_STATE_FIELDS):
         for name in fields:
             setattr(self.worker, name, state[name])
+
+    def discard_shared_memory(self):
+        from core.frame_transport import discard_shared_memory
+
+        for name in self.shared_memory:
+            try:
+                discard_shared_memory(name)
+            except OSError:
+                logger.warning('could not release render shared memory', exc_info=True)
+        self.shared_memory.clear()
 
     def receive(self, message, connection):
         kind = message[0]
@@ -739,6 +763,8 @@ class _RenderExchange:
             self.files.add(message[1])
             if message[2] is not None:
                 self.directories.add(message[2])
+        elif kind == 'shm':
+            self.shared_memory.add(message[1])
         elif kind == 'progress':
             self.worker.progress_signal.emit(*message[1:])
         elif kind == 'stage':
@@ -969,7 +995,10 @@ class RenderProcessWorker(RenderWorker):
             # Tracebacks retained by logging may outlive this worker.  The input
             # encoder owns borrowed arrays until the child exits, but must not
             # keep them alive through a retained _run_process frame afterwards.
+            if encoder is not None:
+                encoder.close(unlink=True)
             encoder = None
+            exchange.discard_shared_memory()
             _cleanup_files(exchange.files - adopted, exchange.directories)
             if process is not None:
                 process.close()
@@ -1082,11 +1111,14 @@ class RenderProcessWorker(RenderWorker):
                     pass
             if not adopted:
                 exchange.packet = exchange.decoder = None
-            encoder = None
-            _cleanup_files(exchange.files - adopted, exchange.directories)
             if reusable:
                 _checkin_persistent_worker(handle)
             else:
                 handle.close()
+            if encoder is not None:
+                encoder.close(unlink=True)
+            encoder = None
+            exchange.discard_shared_memory()
+            _cleanup_files(exchange.files - adopted, exchange.directories)
             self._process = None
             self._cancel_event = None

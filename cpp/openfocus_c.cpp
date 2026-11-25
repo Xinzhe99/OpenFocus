@@ -106,26 +106,34 @@ void down_horizontal_impl(
                 }
             } else if (source.itemsize == 1) {
                 const uint8_t* sr = static_cast<const uint8_t*>(source.data) + y * source.stride[0];
-                for (int64_t x = 1; x < ix_stop; ++x) {
-                    const uint8_t* p = sr + (2 * x - 1) * 3;
-                    float* dst = h_row + x * 3;
-                    for (int64_t c = 0; c < 3; ++c) {
-                        float v = (static_cast<float>(p[c]) * factor) * kD0;
-                        v += (static_cast<float>(p[3 + c]) * factor) * kD1;
-                        v += (static_cast<float>(p[6 + c]) * factor) * kD1;
-                        dst[c] = v + (static_cast<float>(p[9 + c]) * factor) * kD0;
+                if (simd::use_avx2() && ix_stop >= 4) {
+                    simd::pyr_down_horiz_raw_3c_row_avx2(sr, true, h_row, ix_stop, factor, kD0, kD1);
+                } else {
+                    for (int64_t x = 1; x < ix_stop; ++x) {
+                        const uint8_t* p = sr + (2 * x - 1) * 3;
+                        float* dst = h_row + x * 3;
+                        for (int64_t c = 0; c < 3; ++c) {
+                            float v = (static_cast<float>(p[c]) * factor) * kD0;
+                            v += (static_cast<float>(p[3 + c]) * factor) * kD1;
+                            v += (static_cast<float>(p[6 + c]) * factor) * kD1;
+                            dst[c] = v + (static_cast<float>(p[9 + c]) * factor) * kD0;
+                        }
                     }
                 }
             } else {
                 const uint16_t* sr = static_cast<const uint16_t*>(source.data) + y * source.stride[0];
-                for (int64_t x = 1; x < ix_stop; ++x) {
-                    const uint16_t* p = sr + (2 * x - 1) * 3;
-                    float* dst = h_row + x * 3;
-                    for (int64_t c = 0; c < 3; ++c) {
-                        float v = (static_cast<float>(p[c]) * factor) * kD0;
-                        v += (static_cast<float>(p[3 + c]) * factor) * kD1;
-                        v += (static_cast<float>(p[6 + c]) * factor) * kD1;
-                        dst[c] = v + (static_cast<float>(p[9 + c]) * factor) * kD0;
+                if (simd::use_avx2() && ix_stop >= 4) {
+                    simd::pyr_down_horiz_raw_3c_row_avx2(sr, false, h_row, ix_stop, factor, kD0, kD1);
+                } else {
+                    for (int64_t x = 1; x < ix_stop; ++x) {
+                        const uint16_t* p = sr + (2 * x - 1) * 3;
+                        float* dst = h_row + x * 3;
+                        for (int64_t c = 0; c < 3; ++c) {
+                            float v = (static_cast<float>(p[c]) * factor) * kD0;
+                            v += (static_cast<float>(p[3 + c]) * factor) * kD1;
+                            v += (static_cast<float>(p[6 + c]) * factor) * kD1;
+                            dst[c] = v + (static_cast<float>(p[9 + c]) * factor) * kD0;
+                        }
                     }
                 }
             }

@@ -30,6 +30,7 @@
     "docs/GPU_SUPPORT.md",
     "docs/WEBSITE_OPERATIONS.md",
     "LICENSE",
+    "NOTICE",
     "packaging/runtime_resources.json",
     "core/accelerator_*.json",
     "core/inference_worker.py",

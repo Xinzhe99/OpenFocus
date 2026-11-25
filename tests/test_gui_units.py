@@ -128,7 +128,10 @@ def test_wipe_widget_paint_and_interactions(qapp):
                        Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton,
                        Qt.KeyboardModifier.NoModifier)
     widget.mouseMoveEvent(move)
-    widget.mouseReleaseEvent(press)
+    release = QMouseEvent(QEvent.Type.MouseButtonRelease, QPointF(500, 50),
+                          Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton,
+                          Qt.KeyboardModifier.NoModifier)
+    widget.mouseReleaseEvent(release)
     assert widget._divider_ratio == pytest.approx(0.98)
 
     widget.reset_view()
@@ -565,6 +568,8 @@ def test_reused_alignment_preview_displays_and_owns_draft(qapp, monkeypatch):
     window.set_fusion_method("none")
     window.set_alignment_method("ecc")
     manager, _ = _patched_render_manager(monkeypatch, window)
+    finished = []
+    manager.signals.render_finished.connect(finished.append)
     assert manager.start_render() == "started"
     dispatch = (RegistrationDispatch('ecc', 'CPU', 'CPU'),)
     manager.worker.registration_details = RegistrationDetails(dispatch)
@@ -577,6 +582,7 @@ def test_reused_alignment_preview_displays_and_owns_draft(qapp, monkeypatch):
     assert manager.worker.kwargs["alignment"] == "none"
     draft = [image[::2, ::2].copy() for image in aligned]
     manager.on_render_finished(draft, None, False, 0.0, 0.0, "CPU")
+    assert finished == [True, False]
     assert manager.last_state == "done"
     assert manager.last_result["preview"] and manager.last_result["registration_performed"]
     assert window.preview_result["kind"] == "registration"
@@ -615,6 +621,9 @@ def test_context_copy_delays_publication_and_honors_cancel(qapp, monkeypatch, st
         window.source_revision = getattr(window, "source_revision", 0) + 1
     else:
         context_worker.cancel()
+        manager.refresh_action_labels()
+        assert not window.btn_render.isEnabled()
+        assert window.btn_render.text() == trans.t('depth_cancelling')
     context_worker.ready.slot(object())
     assert manager.last_state == ("discarded" if stale else "cancelled")
     assert window.output_list.count() == 0
@@ -675,12 +684,17 @@ def test_render_started_while_a_render_runs_cancels_it(qapp, monkeypatch):
     rm, _saved = _patched_render_manager(monkeypatch, w)
     rm.start_render()
     first = rm.worker
+    # The thread may already have exited while its terminal signal is queued.
+    monkeypatch.setattr(first, 'isRunning', lambda: False)
 
     rm.start_render()  # a second click while the first is running cancels it
 
     assert first.is_cancelled is True
     assert rm.worker is first          # and starts no second thread
     assert w.btn_render.text() == trans.t("depth_cancelling")
+    rm.refresh_action_labels()
+    assert not w.btn_render.isEnabled()
+    assert w.btn_render.text() == trans.t('depth_cancelling')
 
 
 def test_cancelled_render_clears_preview_mode(qapp, monkeypatch):
@@ -748,7 +762,9 @@ def test_compare_all_cancel_between_renders_unlocks_the_ui(qapp, monkeypatch):
     w = _render_window(frames)
     rm, _saved = _patched_render_manager(monkeypatch, w)
     rm.start_compare_all()
-    rm.worker._running = False  # between two queued renders nothing runs
+    rm.worker._running = False
+    rm.on_render_error('This comparison method is unavailable')
+    assert rm.worker is None and rm._compare_chain_timer.isActive()
 
     rm.start_compare_all()
 
@@ -1902,10 +1918,10 @@ def test_stack_load_progress_status_and_cancel(qapp, monkeypatch):
     assert manager._load_cancel_button.isEnabled()
     assert manager._load_status_label.text() == trans.t('msg_loading_stack')
     video_worker.progress.emit(1, 10)
-    assert (bar.minimum(), bar.maximum()) == (0, 0)
-    assert manager._load_status_label.text() == trans.t('msg_loading_stack')
+    assert (bar.maximum(), bar.value()) == (10, 1)
+    assert manager._load_status_label.text() == f"{trans.t('msg_loading_stack')} (1/10)"
     worker.progress.emit(3, 3)
-    assert (bar.minimum(), bar.maximum()) == (0, 0)
+    assert (bar.maximum(), bar.value()) == (10, 1)
     QTest.mouseClick(manager._load_cancel_button, Qt.MouseButton.LeftButton)
     video_worker.finished_load.emit(False, 'CANCELLED', [], [])
     video_worker.finished.emit()
