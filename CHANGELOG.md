@@ -41,6 +41,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Load dialogs and language packs on demand. Generate eligible 4K PNG previews
   and prepare alignment frames in parallel within CPU and memory budgets.
   Read TIFF calibration during the stack metadata scan.
+- Accelerate eligible mapped alignment warps, TIFF decoding, and 16-bit display
+  conversion. Use shared memory for eligible render process transfers.
 - Use OpenCL for eligible large integer ECC reductions, including 8×8 area
   downsizing. Apply exact Lanczos4 warps for large 8-bit and 16-bit frames
   during ECC and homography registration and whenever a GPU render resolves
@@ -220,6 +222,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and prepare the first display preview while remaining headers are scanned.
   Reuse display buffers when panning or zooming and accelerate eligible 8-bit
   PNG exports with the existing color and metadata handling.
+- Coalesce canvas, Wipe, and method comparison updates during interaction.
+  Refresh only affected retouch tiles during undo and redo.
 - Speed up packed OpenFocus A, B, and C fusion, exposure adjustment, tile
   reduction, and alignment with AVX2 on supported CPUs. Preserve scalar pixel
   arithmetic for strided views, wide integer sums, and float rounding.

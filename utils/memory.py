@@ -9,6 +9,7 @@ was killed by the OS — the "it freezes on big stacks" report.
 Everything here uses the standard library and platform APIs. Unknown readings
 remain zero so admission can refuse work rather than inventing spare RAM.
 """
+from contextlib import contextmanager
 import os
 import sys
 
@@ -380,3 +381,44 @@ def configure_opencv_memory() -> None:
         cv2.setNumThreads(0)
     except Exception:
         pass
+
+
+@contextmanager
+def scoped_opencv_threads(threads: int | None = None):
+    """Temporarily enable bounded OpenCV parallelism for a single-shot full-frame op.
+
+    No-op if called inside an active row/tile fusion scope, if OpenCV's backend
+    does not bound thread counts, or if the requested budget is <= 1.
+    """
+    try:
+        import cv2
+        from core.registration import _active_backend_bounds_threads, _warp_threads_lock
+    except Exception:
+        yield
+        return
+
+    exec_mod = sys.modules.get("fusion_methods._openfocus_execution")
+    if exec_mod is not None and getattr(exec_mod, "_current", None) is not None:
+        if exec_mod._current.get() is not None:
+            yield
+            return
+
+    if threads == 1 or not _active_backend_bounds_threads():
+        yield
+        return
+
+    from utils.platform_utils import physical_core_count
+
+    cap = min(16, physical_core_count())
+    target = min(cap, int(threads)) if threads else cap
+    if target <= 1:
+        yield
+        return
+
+    with _warp_threads_lock:
+        previous = cv2.getNumThreads()
+        cv2.setNumThreads(target)
+        try:
+            yield
+        finally:
+            cv2.setNumThreads(0 if previous == 1 else previous)
