@@ -115,7 +115,7 @@ def _hard_pyramid(gray, radius, should_cancel, check_cancel):
         def reduce_rows(start, stop):
             check_cancel(should_cancel)
             down2_rows(current, reduced, start, stop)
-        run_bands(shape[0], 128, reduce_rows)
+        run_bands(shape[0], 128, reduce_rows, width=shape[1])
         if level == 0:
             half_gray = reduced
         else:
@@ -124,7 +124,7 @@ def _hard_pyramid(gray, radius, should_cancel, check_cancel):
             def laplacian_rows(start, stop):
                 check_cancel(should_cancel)
                 burt_laplacian_rows(current, reduced, laplacian, start, stop)
-            run_bands(current.shape[0], 128, laplacian_rows)
+            run_bands(current.shape[0], 128, laplacian_rows, width=current.shape[1])
             offset = end
         current = reduced
     return half_gray, laplacians, len(shapes) - 1
@@ -170,6 +170,41 @@ def _soft_log_cache(response, frames, img_resize, workers):
         return np.empty((len(frames), height, width), dtype=response.dtype)
     except MemoryError:
         return None
+
+
+def _background_plane(shape, nbytes, frames, workers):
+    """Allocate the low-response accumulators in RAM whenever they fit.
+
+    Small planes share the transient frame cap. A larger plane is admitted
+    against half the comfortable RAM budget after reserving every in-flight
+    decode, because a disk-backed plane is read and rewritten for every
+    source. Otherwise it is mapped to disk, as before.
+    """
+    from core import resource_policy as policy
+    from core.frame_storage import ram_snapshot_bytes
+
+    limit = _BACKGROUND_RAM_LIMIT_BYTES
+    if limit != _DEFAULT_BACKGROUND_RAM_LIMIT:
+        allocate = create_frame if nbytes <= limit else create_disk_frame
+        return allocate(shape, np.float32)
+    snapshot = policy.probe_memory()
+    frame_budget = policy.frame_ram_budget(snapshot)
+    reserve = 0
+    if nbytes > _DEFAULT_BACKGROUND_RAM_LIMIT and len(frames) > 1:
+        from core.source_frames import frame_resolution_bytes
+
+        decode_peak = max(frame_resolution_bytes(frames[i]) for i in range(1, len(frames)))
+        reserve = workers * decode_peak
+        frame_budget = min(frame_budget, policy.ram_ceiling(snapshot) - reserve)
+    if nbytes <= frame_budget - ram_snapshot_bytes():
+        return create_frame(shape, np.float32)
+    if nbytes + reserve <= policy.ram_budget(snapshot) // 2:
+        try:
+            policy.require_memory(nbytes + reserve, snapshot)
+            return np.empty(shape, np.float32)
+        except MemoryError:
+            pass
+    return create_disk_frame(shape, np.float32)
 
 
 @execution_job
@@ -444,19 +479,8 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
                     # and packed response statistics for each live band.
                     background_shape = (height, width, channels + 2)
                     background_bytes = height * width * (channels + 2) * 4
-                    from core import resource_policy as policy
-                    bg_ram_limit = _BACKGROUND_RAM_LIMIT_BYTES
-                    if bg_ram_limit == _DEFAULT_BACKGROUND_RAM_LIMIT:
-                        snapshot = policy.probe_memory()
-                        bg_ram_limit = policy.frame_ram_budget(snapshot)
-                        if _DEFAULT_BACKGROUND_RAM_LIMIT < background_bytes <= bg_ram_limit and len(frames) > 1:
-                            from core.source_frames import frame_resolution_bytes
-
-                            decode_peak = max(frame_resolution_bytes(frames[i]) for i in range(1, len(frames)))
-                            bg_ram_limit = min(bg_ram_limit, policy.ram_ceiling(snapshot) - workers * decode_peak)
-                    allocate = (create_frame if background_bytes <= bg_ram_limit
-                                else create_disk_frame)
-                    background = allocate(background_shape, np.float32)
+                    background = _background_plane(background_shape, background_bytes,
+                                                   frames, workers)
                     no_background = background[:0]
                     band_state = [A_BACKGROUND] * ((height + band - 1) // band)
                     mapped_band_bytes = min(band, height) * width * (channels + 2) * 4

@@ -3,7 +3,7 @@
 # OpenCL port of fusion_methods._openfocus_pyramid.fuse_pyramid. The kernels
 # keep multiply and add separate and request correctly rounded FP32 division
 # and square root on devices that advertise support.
-# The per-level weight filter reuses the proven filt4 IIR kernel from
+# The per-level weight filter reuses the proven filt IIR kernel from
 # _openfocus_gpu via device-side transposes, replicating
 # openfocus_depth._filter's axis order (1 then 0) and per-axis counts.
 from __future__ import annotations
@@ -21,7 +21,7 @@ _WORKSPACE_RESERVE_BYTES = 16 * 1024 * 1024
 _KERNEL_NAMES = (
     'c_norm', 'c_down_h_packed', 'c_down_h', 'c_down_v', 'c_up_h',
     'c_weight_packed', 'c_merge_packed', 'c_detail_w', 'c_collapse', 'c_merge',
-    'c_out_u8', 'c_out_f32', 'transpose_u16', 'filt4',
+    'c_out_u8', 'c_out_f32', 'transpose_u16', 'filt',
     'sample_focus_plane',
 )
 
@@ -341,7 +341,9 @@ class GpuC:
     """Device-resident C pyramid fusion with bounded, in-order scratch reuse."""
 
     def __init__(self):
-        from fusion_methods._openfocus_gpu import GpuError, _device, opencl_device_name
+        from fusion_methods._openfocus_gpu import (
+            GpuError, _device, _get_transfer_queue, opencl_device_name,
+        )
         try:
             import pyopencl as cl
             device = _device(cl)
@@ -352,6 +354,7 @@ class GpuC:
             self.device_name = opencl_device_name(device)
             self.mf = cl.mem_flags
             self.ctx, self.q, self.k, self._tiled_transpose = _get_or_build_program(cl, device)
+            self.tq = _get_transfer_queue(cl, device, self.ctx)
         except GpuError:
             raise
         except Exception as exc:
@@ -363,14 +366,18 @@ class GpuC:
     def _u16(self, pixels):
         return self.cl.Buffer(self.ctx, self.mf.READ_WRITE, pixels * 2)
 
-    def _run(self, kernel, gsize, *args):
-        return kernel(self.q, gsize if isinstance(gsize, tuple) else (gsize,), None, *args)
+    def _run(self, kernel, gsize, *args, wait_for=None):
+        from fusion_methods._openfocus_gpu import _enqueue_kernel
+        return _enqueue_kernel(
+            kernel, self.q, gsize if isinstance(gsize, tuple) else (gsize,), None,
+            *args, wait_for=wait_for,
+        )
 
-    def _filt4(self, src, dst, first, h, w, count, q, t):
-        step = (w + 3) // 4
-        self.k['filt4'](self.q, (step,), None, src, dst, first,
-                        np.int32(h), np.int32(w), np.int32(count),
-                        np.uint32(q), np.uint32(t), np.int32(step))
+    def _filt(self, src, dst, first, h, w, count, q, t):
+        # One work-item per column: each column runs the same ordered recurrence.
+        self.k['filt'](self.q, (w,), None, src, dst, first,
+                       np.int32(h), np.int32(w), np.int32(count),
+                       np.uint32(q), np.uint32(t))
 
     def _transpose(self, src, dst, w, h):
         if self._tiled_transpose:
@@ -385,11 +392,11 @@ class GpuC:
         """Device-side openfocus_depth._filter: axis 1 (horizontal) then 0."""
         a, first = scratch
         count_h, count_v, q, t = config
-        # filt4 reads src[y,x] before writing that cell, so src==dst is safe.
+        # filt reads src[y,x] before writing that cell, so src==dst is safe.
         self._transpose(weight, a, w, h)
-        self._filt4(a, a, first, w, h, count_h, q, t)
+        self._filt(a, a, first, w, h, count_h, q, t)
         self._transpose(a, weight, h, w)
-        self._filt4(weight, weight, first, h, w, count_v, q, t)
+        self._filt(weight, weight, first, h, w, count_v, q, t)
 
     def _up_horizontal(self, coarse, horizontal, sh, sw, dw, c):
         self._run(self.k['c_up_h'], (dw, sh), coarse, horizontal,
@@ -402,12 +409,12 @@ class GpuC:
                   np.int32(dw), np.int32(dh), np.int32(sh), np.int32(c))
 
     def _drain_queue(self):
-        q = getattr(self, 'q', None)
-        if q is not None:
-            try:
-                q.finish()
-            except Exception:
-                _invalidate_program_cache(getattr(self, 'ctx', None))
+        for q in (getattr(self, 'tq', None), getattr(self, 'q', None)):
+            if q is not None:
+                try:
+                    q.finish()
+                except Exception:
+                    _invalidate_program_cache(getattr(self, 'ctx', None))
 
     def fuse(self, frames, shape, img_resize, smoothing,
              should_cancel=None, progress_callback=None, focus_callback=None,
@@ -452,7 +459,7 @@ class GpuC:
                 self._drain_queue()
                 raise
         finally:
-            self.k = self.q = self.ctx = None
+            self.k = self.tq = self.q = self.ctx = None
             _device_lock.release()
 
     def _fuse_locked(self, frames, shape, img_resize, smoothing,
@@ -576,10 +583,12 @@ class GpuC:
 
         accumulators = maxima = coarsest = rolling = horizontal = weight = winner = filter_scratch = dst = None
         srcs = ()
-        reader = prepared_iter = None
+        reader = prepared_iter = uploader = None
         in_flight = False
         try:
-            from fusion_methods._openfocus_gpu import _prefetch_window, _wait_event
+            from fusion_methods._openfocus_gpu import (
+                _PinnedUploader, _event_wait_list, _prefetch_window, _wait_event,
+            )
 
             accumulators = [self._f32(size, channels) for size in detail_sizes]
             maxima = [self._u16(size) for size in detail_sizes]
@@ -614,6 +623,11 @@ class GpuC:
                 self.cl.Buffer(self.ctx, self.mf.READ_ONLY, upload_bytes)
                 for _ in range(2 if ping_pong else 1)
             )
+            if ping_pong:
+                uploader = _PinnedUploader(
+                    self.cl, self.ctx, self.q, getattr(self, 'tq', None),
+                    2, upload_bytes,
+                )
             if live_preview is not None and detail_levels:
                 reader = _PreviewPlaneReader(self.cl, self.ctx, self.q, self.k['sample_focus_plane'],
                                              (height, width), np.uint16)
@@ -638,6 +652,7 @@ class GpuC:
             )
             slot_events = [None, None]
             slot_hosts = [None, None]
+            cancel_fn = lambda: _check_cancel(should_cancel)
             for index, item in prepared_iter:
                 _check_cancel(should_cancel)
                 if item is None:
@@ -645,20 +660,32 @@ class GpuC:
                         progress_callback(index + 1, total)
                     continue
                 slot = index & 1 if ping_pong else 0
-                if slot_events[slot] is not None:
-                    _wait_event(slot_events[slot], lambda: _check_cancel(should_cancel))
+                prev_slot_ev = slot_events[slot]
+                if prev_slot_ev is not None and (uploader is None or not uploader.separate_queue):
+                    _wait_event(prev_slot_ev, cancel_fn)
                     slot_events[slot] = None
                     slot_hosts[slot] = None
+                    prev_slot_ev = None
                 src = srcs[slot]
                 codes, scale, pix_u8, bgr_rev = item
                 packing = (np.float32(scale / (65280.0 if is_u8 else 65535.0)),
                            np.int32(pix_u8), np.int32(bgr_rev))
                 in_flight = True
-                upload = self.cl.enqueue_copy(self.q, src, codes, is_blocking=False)
+                if uploader is not None:
+                    upload = uploader.upload(
+                        slot, src, codes,
+                        wait_for=_event_wait_list(prev_slot_ev), cancel=cancel_fn,
+                    )
+                    wait_upload = _event_wait_list(upload) if uploader.separate_queue else None
+                else:
+                    upload = self.cl.enqueue_copy(self.q, src, codes, is_blocking=False)
+                    wait_upload = None
                 last_event = None
+                src_done_event = None
                 if not detail_levels:
                     last_event = self._run(self.k['c_norm'], full_size, src, coarsest,
-                                           *packing, np.int32(channels))
+                                           *packing, np.int32(channels), wait_for=wait_upload)
+                    src_done_event = last_event
 
                 for level, ((h, w), (ch, cw)) in enumerate(detail_levels):
                     _check_cancel(should_cancel)
@@ -669,7 +696,7 @@ class GpuC:
                     w_arg, h_arg, cw_arg, ch_arg, c_arg = map(np.int32, (w, h, cw, ch, channels))
                     if level == 0:
                         self._run(self.k['c_down_h_packed'], (cw, h), src, horizontal,
-                                  *packing, w_arg, h_arg, cw_arg, c_arg)
+                                  *packing, w_arg, h_arg, cw_arg, c_arg, wait_for=wait_upload)
                     else:
                         fine = rolling[(level - 1) % 2]
                         self._run(self.k['c_down_h'], (cw, h), fine, horizontal,
@@ -692,6 +719,7 @@ class GpuC:
                             filtered_weight, accumulators[0], maxima[0], winner,
                             np.int32(index), *packing, *up_dims,
                         )
+                        src_done_event = last_event
                     else:
                         self._synthesize(self.k['c_detail_w'], coarse, horizontal, fine,
                                          ch, cw, h, w, channels, weight)
@@ -701,11 +729,16 @@ class GpuC:
                             self.k['c_merge'], (w, h), fine, weight, accumulators[level],
                             maxima[level], np.int32(index == 0), w_arg, h_arg, c_arg,
                         )
-                if ping_pong and last_event is not None and hasattr(last_event, 'wait'):
-                    slot_events[slot] = last_event
-                    slot_hosts[slot] = (codes, item, upload)
+                slot_ev = src_done_event if src_done_event is not None else last_event
+                if ping_pong and slot_ev is not None and hasattr(slot_ev, 'wait'):
+                    if hasattr(self.q, 'flush'):
+                        self.q.flush()
+                    slot_events[slot] = slot_ev
+                    slot_hosts[slot] = (
+                        (upload,) if (uploader is not None and uploader.pinned) else (codes, item, upload)
+                    )
                     if reader is not None and live_preview.tracks():
-                        _wait_event(last_event, lambda: _check_cancel(should_cancel))
+                        _wait_event(slot_ev, cancel_fn)
                         slot_events[slot] = None
                         slot_hosts[slot] = None
                         sample = reader.read(maxima[0], live_preview)
@@ -726,13 +759,18 @@ class GpuC:
                     progress_callback(index + 1, total)
 
             if ping_pong:
+                if uploader is not None:
+                    uploader.finish(cancel_fn)
                 for slot in (0, 1):
                     if slot_events[slot] is not None:
-                        _wait_event(slot_events[slot], lambda: _check_cancel(should_cancel))
+                        _wait_event(slot_events[slot], cancel_fn)
                         slot_events[slot] = None
                     slot_hosts[slot] = None
                 self.q.finish()
                 in_flight = False
+            if uploader is not None:
+                uploader.close()
+                uploader = None
 
             _release_buffers(srcs)
             srcs = None
@@ -773,6 +811,8 @@ class GpuC:
                 self._drain_queue()
             raise
         finally:
+            if uploader is not None:
+                uploader.close()
             if prepared_iter is not None:
                 prepared_iter.close()
             if reader is not None:

@@ -88,6 +88,18 @@ void burt_laplacian_row_impl(const ArrayView& gray, const ArrayView& reduced,
     const int64_t wy0 = (y % 2 == 0) ? 1 : 3;
     const int64_t wy1 = 4 - wy0;
 
+    if (gray.itemsize == 4 && reduced.itemsize == 4 && output.itemsize == 4
+            && gray.stride[1] == 1 && reduced.stride[1] == 1 && output.stride[1] == 1
+            && simd::use_avx2() && width >= 10) {
+        const int32_t* g_row = static_cast<const int32_t*>(gray.data) + y * gray.stride[0];
+        const int32_t* r0 = static_cast<const int32_t*>(reduced.data) + y0 * reduced.stride[0];
+        const int32_t* r1 = static_cast<const int32_t*>(reduced.data) + y1 * reduced.stride[0];
+        int32_t* o_row = static_cast<int32_t*>(output.data) + y * output.stride[0];
+        simd::burt_laplacian_row_i32_avx2(g_row, r0, r1, o_row, width, fine_width,
+                                          static_cast<int32_t>(wy0), static_cast<int32_t>(wy1));
+        return;
+    }
+
     int64_t left = read_2d(reduced, y0, 0) * wy0 + read_2d(reduced, y1, 0) * wy1;
     write_2d(output, y, 0, std::abs(read_2d(gray, y, 0) * 16 - left * 4));
     for (int64_t x = 1; x < width; ++x) {
@@ -631,7 +643,17 @@ int of_select_rows_a_cpp(
     const int64_t full_pairs = width / 2;
     const bool odd_width = (width & 1) == 1;
 
-    std::vector<int32_t> response(static_cast<size_t>(width));
+    struct SelectAScratch {
+        std::vector<int32_t> response;
+        std::vector<uint32_t> m0, m1, m2, m3, m4, m5;
+        std::vector<uint32_t> da2, db2, da3, db3, da4, db4, da5, db5, tmp0, tmp1;
+    };
+    thread_local SelectAScratch scratch;
+
+    auto& response = scratch.response;
+    if (response.size() < static_cast<size_t>(width)) {
+        response.resize(static_cast<size_t>(width));
+    }
 
     const bool use_fast_pyramid = (levels >= 6 && h0 >= 1 && w0 >= 1 && half_gray.itemsize == 4
                                    && gray.stride[1] == 1 && half_gray.stride[1] == 1);
@@ -643,28 +665,48 @@ int of_select_rows_a_cpp(
     const bool has_bg = background.shape[0] > 0;
     const bool no_bg = (!first) && !has_bg;
 
-    std::vector<uint32_t> m0, m1, m2, m3, m4, m5, da2, db2, da3, db3, da4, db4, da5, db5, tmp0, tmp1;
+    auto& m0 = scratch.m0;
+    auto& m1 = scratch.m1;
+    auto& m2 = scratch.m2;
+    auto& m3 = scratch.m3;
+    auto& m4 = scratch.m4;
+    auto& m5 = scratch.m5;
+    auto& da2 = scratch.da2;
+    auto& db2 = scratch.db2;
+    auto& da3 = scratch.da3;
+    auto& db3 = scratch.db3;
+    auto& da4 = scratch.da4;
+    auto& db4 = scratch.db4;
+    auto& da5 = scratch.da5;
+    auto& db5 = scratch.db5;
+    auto& tmp0 = scratch.tmp0;
+    auto& tmp1 = scratch.tmp1;
     int64_t off1 = 0, off2 = 0, off3 = 0, off4 = 0, off5 = 0, off6 = 0;
     int64_t h2 = 0, w2 = 0, h3 = 0, w3 = 0, h4 = 0, w4 = 0, h5 = 0, w5 = 0, h6 = 0, w6 = 0;
     int64_t cya2 = -1, cyb2 = -1, cya3 = -1, cyb3 = -1, cya4 = -1, cyb4 = -1, cya5 = -1, cyb5 = -1;
 
     if (use_fast_pyramid) {
-        m0.resize(static_cast<size_t>(w0 + 2));
-        m1.resize(static_cast<size_t>(w0 + 2));
-        m2.resize(static_cast<size_t>(n_out));
-        m3.resize(static_cast<size_t>(n_out));
-        m4.resize(static_cast<size_t>(n_out));
-        m5.resize(static_cast<size_t>(n_out));
-        da2.resize(static_cast<size_t>(n_out));
-        db2.resize(static_cast<size_t>(n_out));
-        da3.resize(static_cast<size_t>(n_out));
-        db3.resize(static_cast<size_t>(n_out));
-        da4.resize(static_cast<size_t>(n_out));
-        db4.resize(static_cast<size_t>(n_out));
-        da5.resize(static_cast<size_t>(n_out));
-        db5.resize(static_cast<size_t>(n_out));
-        tmp0.resize(static_cast<size_t>(n_out + 4));
-        tmp1.resize(static_cast<size_t>(n_out + 4));
+        auto ensure = [](std::vector<uint32_t>& v, size_t n) {
+            if (v.size() < n) {
+                v.resize(n);
+            }
+        };
+        ensure(m0, static_cast<size_t>(w0 + 2));
+        ensure(m1, static_cast<size_t>(w0 + 2));
+        ensure(m2, static_cast<size_t>(n_out));
+        ensure(m3, static_cast<size_t>(n_out));
+        ensure(m4, static_cast<size_t>(n_out));
+        ensure(m5, static_cast<size_t>(n_out));
+        ensure(da2, static_cast<size_t>(n_out));
+        ensure(db2, static_cast<size_t>(n_out));
+        ensure(da3, static_cast<size_t>(n_out));
+        ensure(db3, static_cast<size_t>(n_out));
+        ensure(da4, static_cast<size_t>(n_out));
+        ensure(db4, static_cast<size_t>(n_out));
+        ensure(da5, static_cast<size_t>(n_out));
+        ensure(db5, static_cast<size_t>(n_out));
+        ensure(tmp0, static_cast<size_t>(n_out + 4));
+        ensure(tmp1, static_cast<size_t>(n_out + 4));
 
         off1 = 0;
         h2 = (h0 + 1) / 2; w2 = (w0 + 1) / 2;
@@ -694,8 +736,12 @@ int of_select_rows_a_cpp(
             const uint32_t wy1 = 4u - wy0;
             const int32_t* r0 = static_cast<const int32_t*>(half_gray.data) + y0 * half_gray.stride[0];
             const int32_t* r1 = static_cast<const int32_t*>(half_gray.data) + y1 * half_gray.stride[0];
-            for (int64_t x = 0; x < w0; ++x) {
-                m0[x + 1] = static_cast<uint32_t>(r0[x]) * wy0 + static_cast<uint32_t>(r1[x]) * wy1;
+            if (simd::use_avx2() && w0 >= 8) {
+                simd::select_a_blend_pair_i32_avx2(r0, r1, m0.data() + 1, w0, wy0, wy1);
+            } else {
+                for (int64_t x = 0; x < w0; ++x) {
+                    m0[x + 1] = static_cast<uint32_t>(r0[x]) * wy0 + static_cast<uint32_t>(r1[x]) * wy1;
+                }
             }
             m0[0] = m0[1];
             m0[w0 + 1] = m0[w0];
@@ -709,8 +755,12 @@ int of_select_rows_a_cpp(
                 const int64_t yb = std::clamp<int64_t>(cy0 + 1, 0, h0 - 1);
                 const int32_t* ra = laps + off1 + ya * w0;
                 const int32_t* rb = laps + off1 + yb * w0;
-                for (int64_t x = 0; x < w0; ++x) {
-                    m1[x + 1] = static_cast<uint32_t>(ra[x]) * wy_1 + static_cast<uint32_t>(rb[x]) * fy1;
+                if (simd::use_avx2() && w0 >= 8) {
+                    simd::select_a_blend_pair_i32_avx2(ra, rb, m1.data() + 1, w0, wy_1, fy1);
+                } else {
+                    for (int64_t x = 0; x < w0; ++x) {
+                        m1[x + 1] = static_cast<uint32_t>(ra[x]) * wy_1 + static_cast<uint32_t>(rb[x]) * fy1;
+                    }
                 }
                 m1[0] = m1[1];
                 m1[w0 + 1] = m1[w0];
@@ -922,6 +972,25 @@ int of_select_rows_a_cpp(
             uint32_t* st_row = bg_u32 + local_y * background.stride[0];
             const int64_t bsx = background.stride[1];
             const int64_t bsc = background.stride[2];
+            if (channels == 3 && image.ndim == 3 && output.ndim == 3
+                    && !image.is_float && !output.is_float
+                    && (image.itemsize == 1 || image.itemsize == 2)
+                    && (output.itemsize == 2 || output.itemsize == 4)
+                    && bsx == 5 && bsc == 1
+                    && simd::use_avx2() && width >= 8) {
+                const void* irow = (image.itemsize == 1)
+                    ? static_cast<const void*>(static_cast<const uint8_t*>(image.data) + y * image.stride[0])
+                    : static_cast<const void*>(static_cast<const uint16_t*>(image.data) + y * image.stride[0]);
+                void* orow = (output.itemsize == 2)
+                    ? static_cast<void*>(static_cast<uint16_t*>(output.data) + y * output.stride[0])
+                    : static_cast<void*>(static_cast<int32_t*>(output.data) + y * output.stride[0]);
+                state = simd::select_a_with_bg_packed_row_avx2(
+                    b_row, response.data(), width,
+                    irow, image.itemsize == 1, orow, output.itemsize == 2,
+                    image.stride[1], image.stride[2], output.stride[1], output.stride[2],
+                    bg_row, st_row, scale, first, state);
+                continue;
+            }
             for (int64_t x = 0; x < width; ++x) {
                 const int64_t prev = first ? 0 : static_cast<int64_t>(b_row[x]);
                 if (!first && prev == kAMaxResponse) {
@@ -1093,7 +1162,7 @@ void of_depth_axis_iir_cpp(
 
     if (axis == 0) {
         const int64_t band = 64;
-        const int threads = (h * w >= 65536) ? num_threads : 1;
+        const int threads = (h * w >= 131072) ? num_threads : 1;
         openfocus::parallel_bands(w, band, threads, [&](int64_t left, int64_t right) {
             const int64_t cols = right - left;
             if (guide == nullptr) {
@@ -1102,8 +1171,13 @@ void of_depth_axis_iir_cpp(
                     return;
                 }
                 const uint32_t t16 = t * 16u;
-                std::vector<uint16_t> first(static_cast<size_t>(h) * cols);
-                std::vector<uint32_t> acc(static_cast<size_t>(cols), 0u);
+                thread_local std::vector<uint16_t> first;
+                thread_local std::vector<uint32_t> acc;
+                const size_t first_sz = static_cast<size_t>(h) * cols;
+                if (first.size() < first_sz) {
+                    first.resize(first_sz);
+                }
+                acc.assign(static_cast<size_t>(cols), 0u);
                 for (int64_t y = 0; y < cnt; ++y) {
                     const uint16_t* sr = src + y * src_sy + left;
                     for (int64_t c = 0; c < cols; ++c) {
@@ -1227,14 +1301,21 @@ void of_depth_axis_iir_cpp(
         return;
     }
 
-    // Horizontal (axis == 1): each row is independent -> keep row history in L1-sized per-thread buffer, zero transpose.
+    // Horizontal (axis == 1): each row is independent -> keep row history in L1/L2 per-thread buffer, zero full-plane transpose.
     const int64_t row_band = 16;
-    const int threads = (h * w >= 65536) ? num_threads : 1;
+    const int threads = (h * w >= 131072) ? num_threads : 1;
     openfocus::parallel_bands(h, row_band, threads, [&](int64_t start, int64_t stop) {
         if (guide == nullptr) {
+            if (simd::use_avx2() && w >= 8 && (stop - start) >= 8) {
+                simd::depth_axis_iir_x_unguided_avx2(src, src_sy, out, out_sy, start, stop, w, cnt, q, t);
+                return;
+            }
             const uint32_t t16 = t * 16u;
             const uint32_t t_plus_q = t + q;
-            std::vector<uint16_t> first(static_cast<size_t>(w));
+            thread_local std::vector<uint16_t> first;
+            if (first.size() < static_cast<size_t>(w)) {
+                first.resize(static_cast<size_t>(w));
+            }
             for (int64_t y = start; y < stop; ++y) {
                 const uint16_t* sr = src + y * src_sy;
                 uint16_t* orow = out + y * out_sy;
@@ -1258,7 +1339,14 @@ void of_depth_axis_iir_cpp(
                 }
             }
         } else {
-            std::vector<uint32_t> first(static_cast<size_t>(w));
+            if (simd::use_avx2() && w >= 8 && (stop - start) >= 8) {
+                simd::depth_axis_iir_x_guided_avx2(src, src_sy, guide, guide_sy, out, out_sy, start, stop, w, cnt, tm, tl);
+                return;
+            }
+            thread_local std::vector<uint32_t> first;
+            if (first.size() < static_cast<size_t>(w)) {
+                first.resize(static_cast<size_t>(w));
+            }
             for (int64_t y = start; y < stop; ++y) {
                 const uint16_t* sr = src + y * src_sy;
                 const uint16_t* gr = guide + y * guide_sy;
@@ -1388,7 +1476,10 @@ void of_smooth_detail_rows_cpp(const ArrayView& detail, const ArrayView& output,
     }
     const int64_t height = detail.shape[0];
     const int64_t width = detail.shape[1];
-    std::vector<int32_t> columns(static_cast<size_t>(width));
+    thread_local std::vector<int32_t> columns;
+    if (columns.size() < static_cast<size_t>(width)) {
+        columns.resize(static_cast<size_t>(width));
+    }
     const int64_t y0 = reflect_idx(start - 2, height);
     const int64_t y1 = reflect_idx(start - 1, height);
     const int64_t y2 = start;
@@ -1725,12 +1816,19 @@ void of_resample_rows_u16_cpp(
         }
     }
 
-    std::vector<float> row_buf(static_cast<size_t>(sw));
-    std::vector<float> sums_buf(static_cast<size_t>(std::max<int64_t>(0, last - first)));
+    thread_local std::vector<float> row_buf;
+    thread_local std::vector<float> sums_buf;
+    if (row_buf.size() < static_cast<size_t>(sw)) {
+        row_buf.resize(static_cast<size_t>(sw));
+    }
+    const size_t nrep_sz = static_cast<size_t>(std::max<int64_t>(0, last - first));
+    if (sums_buf.size() < nrep_sz) {
+        sums_buf.resize(nrep_sz);
+    }
     const bool use_fma = simd::use_avx2_fma();
 
     for (int64_t y = start; y < stop; ++y) {
-        std::fill(row_buf.begin(), row_buf.end(), 0.0f);
+        std::fill_n(row_buf.data(), static_cast<size_t>(sw), 0.0f);
         const int32_t vc = v_cnt[y];
         const int32_t* vi_row = v_idx + y * vi_sy;
         const float* vw_row = v_w + y * vw_sy;
@@ -1773,7 +1871,7 @@ void of_resample_rows_u16_cpp(
                     row_buf.data(), sums_buf.data(), orow, first, nrep,
                     h_idx + first * hi_sy, h_w + first * hw_sy, h_taps, hi_sy, hw_sy);
             } else {
-                std::fill(sums_buf.begin(), sums_buf.end(), 0.0f);
+                std::fill_n(sums_buf.data(), static_cast<size_t>(nrep), 0.0f);
                 for (int64_t tap = 0; tap < h_taps; tap += 2) {
                     const float even = h_w[first * hw_sy + tap];
                     const float odd = h_w[first * hw_sy + tap + 1];

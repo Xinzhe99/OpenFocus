@@ -141,12 +141,15 @@ def cancellation_check(cancel):
     return check
 
 
-def run_bands(length, band, function, *, scratch_bytes=1, workspace=None):
+def run_bands(length, band, function, *, scratch_bytes=1, workspace=None, width=None):
     """Barrier after disjoint bands; optionally allocate scratch once per worker.
 
     The callback takes (start, stop), or (start, stop, workspace) when a factory
     is supplied. Every submitted worker finishes before this call returns or
     raises, so callers may immediately release source planes after the barrier.
+    ``width`` is the row width of the plane being processed. Planes smaller
+    than the row-parallel threshold run serially, where scheduling would cost
+    more than the rows themselves (coarse pyramid levels, for example).
     """
     job = _current.get()
     if job is None:
@@ -157,7 +160,7 @@ def run_bands(length, band, function, *, scratch_bytes=1, workspace=None):
             else:
                 function(start, min(length, start + band), local)
         return
-    job.run(length, band, function, scratch_bytes, workspace)
+    job.run(length, band, function, scratch_bytes, workspace, width)
 
 
 class _Execution:
@@ -170,6 +173,7 @@ class _Execution:
         self.height = self.width = 0
         self.algorithm = ''
         self.thread_count = 1
+        self._resources = None
 
     def check(self):
         from fusion_methods.openfocus_ab import _check_cancel
@@ -177,21 +181,50 @@ class _Execution:
             self.should_cancel is not None and self.should_cancel()))
 
     def plan(self, tasks, scratch_bytes, fixed=0):
+        from core import multi_focus_fusion as mff
         from core import resource_policy as policy
-        from core.multi_focus_fusion import memory_budget_bytes
+        snapshot = self._snapshot()
+        budget_fn = mff.memory_budget_bytes
+        if (getattr(budget_fn, '__module__', None) == 'core.multi_focus_fusion'
+                and getattr(budget_fn, '__qualname__', None) == 'memory_budget_bytes'):
+            ram_override = policy.ram_ceiling(snapshot)
+        else:
+            ram_override = budget_fn()
         return policy.plan_execution(policy.Workload(
             algorithm=self.algorithm, height=self.height, width=self.width,
             fixed_bytes=fixed, per_worker_bytes=max(1, int(scratch_bytes)),
             outer_tasks=tasks),
+            snapshot=snapshot,
             preference='maximum' if self.thread_count is not None else 'balanced',
             user_threads=self.thread_count,
-            ram_budget_override=memory_budget_bytes())
+            ram_budget_override=ram_override)
 
-    def run(self, length, band, function, scratch_bytes, workspace):
+    def _snapshot(self):
+        """Live memory with the CPU topology read once for this job.
+
+        Every row pass still admits its scratch against current free RAM; only
+        the core count and CPU limit, which cannot change mid-job, are reused.
+        """
+        from dataclasses import replace
+        from core import resource_policy as policy
+        if self._resources is None:
+            self._resources = policy.probe_resources()
+            return self._resources
+        memory = policy.probe_memory()
+        return replace(self._resources, available_ram=memory.available_ram,
+                       total_ram=memory.total_ram, process_rss=memory.process_rss,
+                       commit_headroom=memory.commit_headroom,
+                       process_commit_headroom=memory.process_commit_headroom)
+
+    def run(self, length, band, function, scratch_bytes, workspace, width=None):
         self.check()
         tasks = (length + band - 1) // band
         workers = 1
-        if self.row_mode and tasks > 1 and length * self.width >= 256 * 256:
+        if width is None:
+            parallel = length * self.width >= 256 * 256
+        else:
+            parallel = length * width >= _ROW_PARALLEL_PIXELS
+        if self.row_mode and tasks > 1 and parallel:
             # Current free RAM, including all already resident planes, governs
             # each pass. Admission never happens inside frame release locks.
             workers = min(self.workers, self.plan(tasks, scratch_bytes).workers)
