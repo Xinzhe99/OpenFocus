@@ -1,11 +1,11 @@
-﻿"""Bounded preview geometry and background pixel work for lazy consumers."""
+"""Bounded preview geometry and background pixel work for lazy consumers."""
 import threading
 from copy import copy
 
 import numpy as np
 
 from PyQt6.QtCore import QEvent, QEventLoop, QObject, QThread, QTimer, Qt, pyqtSlot
-from PyQt6.QtWidgets import QApplication, QProgressDialog, QWidget
+from PyQt6.QtWidgets import QApplication, QProgressDialog, QPushButton, QWidget
 
 from utils.platform_utils import configure_native_worker_stack
 
@@ -206,7 +206,9 @@ class _PixelProgress(QProgressDialog):
         from ui import styles as ui_styles
         self._base_title = title
         self._cancellable = bool(cancellable)
+        self._cancelling = False
         self._finished = False
+        self._cancel_btn = None
         self.setStyleSheet(ui_styles.PROGRESS_DIALOG_STYLE)
         self.setWindowTitle(title)
         self.setLabelText(title)
@@ -218,14 +220,19 @@ class _PixelProgress(QProgressDialog):
         self.setWindowModality(Qt.WindowModality.ApplicationModal)
         self.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, False)
         if self._cancellable:
-            self.setCancelButtonText(trans.t("btn_cancel"))
+            self._cancel_btn = QPushButton(trans.t("btn_cancel"))
+            self.setCancelButton(self._cancel_btn)
         else:
             self.setCancelButton(None)
 
     def mark_cancelling(self):
+        if self._cancelling:
+            return
+        self._cancelling = True
         from locales import trans
         self.setLabelText(trans.t("depth_cancelling"))
-        self.setCancelButton(None)
+        if self._cancel_btn is not None:
+            self._cancel_btn.setEnabled(False)
 
     def finish(self):
         self._finished = True
@@ -233,7 +240,7 @@ class _PixelProgress(QProgressDialog):
 
     def reject(self):
         # The caller owns its transaction until the worker completes.
-        if self._cancellable:
+        if self._cancellable and not self._cancelling:
             self.canceled.emit()
 
     def closeEvent(self, event):
@@ -244,7 +251,8 @@ class _PixelProgress(QProgressDialog):
             if self.maximum() != total:
                 self.setRange(0, total)
             self.setValue(min(done, total))
-            self.setLabelText(f"{self._base_title} ({min(done, total)}/{total})")
+            if not self._cancelling:
+                self.setLabelText(f"{self._base_title} ({min(done, total)}/{total})")
         elif self.maximum() != 0:
             self.setRange(0, 0)
 

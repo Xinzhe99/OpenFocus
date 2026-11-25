@@ -340,3 +340,38 @@ def test_file_list_uniform_item_sizes_and_updates_batching(qapp):
     manager.update_file_list(["a.png", "b.png"], [thumb, thumb])
     assert file_list.count() == 2
     assert file_list.update_states == [False, True]
+
+
+def test_pixel_progress_cancel_disables_button_and_blocks_repeated_reject(qapp):
+    from PyQt6 import sip
+    from locales import trans
+    from utils.frame_pixels import _PixelProgress
+
+    dialog = _PixelProgress(None, "Exporting", cancellable=True)
+    canceled_count = []
+
+    def _on_canceled():
+        canceled_count.append(True)
+        dialog.mark_cancelling()
+
+    dialog.canceled.connect(_on_canceled)
+    try:
+        btn = dialog._cancel_btn
+        assert btn is not None and btn.isEnabled()
+        btn.click()
+        qapp.processEvents()
+        # Cancel button stays alive (no mid-signal deletion) and is disabled.
+        assert not sip.isdeleted(btn)
+        assert not btn.isEnabled()
+        assert dialog.labelText() == trans.t("depth_cancelling")
+        assert len(canceled_count) == 1
+
+        # Repeated reject() calls do not re-emit canceled, and progress updates preserve the label.
+        dialog.reject()
+        dialog.set_progress(2, 5)
+        assert len(canceled_count) == 1
+        assert dialog.labelText() == trans.t("depth_cancelling")
+    finally:
+        dialog.finish()
+        dialog.deleteLater()
+        qapp.processEvents()
