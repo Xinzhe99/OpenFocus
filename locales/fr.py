@@ -1732,4 +1732,8 @@ PACK = {
     "source_exif_snapshot_too_large": "Les données EXIF de l'image source sont trop volumineuses pour être chargées en toute sécurité. Supprimez ou réduisez d'abord l'EXIF de ce fichier : {path}",
     "image_write_icc_too_large": "Le profil ICC du JPEG est trop volumineux ; utilisez PNG/TIFF ou supprimez le profil.",
     "image_write_tiff_too_large": "Le TIFF dépasse 4 Gio ; utilisez BigTIFF.",
+    "batch_loading_thumbnails": "Chargement des aperçus… ({done}/{total})",
+    "msg_load_frames_failed": "{loaded} image(s) chargée(s) ; {failed} fichier(s) illisible(s) ignoré(s).",
+    "msg_load_frames_skipped_derived": "{loaded} image(s) chargée(s) ; {skipped} copie(s) alignée(s) ignorée(s).",
+    "msg_load_frames_partial": "{loaded} image(s) chargée(s) ; {failed} fichier(s) illisible(s) et {skipped} copie(s) alignée(s) ignorée(s).",
 }

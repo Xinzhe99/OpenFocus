@@ -730,17 +730,28 @@ class ExportManager:
                 stored_source_exif = stored_frame_exif[0]
         metadata = (getattr(record, 'linear_dng_metadata', None) if record is not None
                     else getattr(window, 'linear_dng_metadata', None))
+        from utils.frame_pixels import PixelProgress, invoke_pixel_worker
+        progress = PixelProgress() if len(frames) > 1 else None
+        cancellable = len(frames) > 1
+
         def write_frames():
             saved = 0
+            total = len(frames)
             for index, frame in enumerate(frames):
+                if progress is not None and progress.cancelled:
+                    break
                 name = frame_export_name(filenames[index] if index < len(filenames) else '', index, extension)
                 from utils.export_paths import publish_unique
                 path = os.path.join(directory, name)
                 try:
                     if baked and not extension:
                         import shutil
-                        path = publish_unique(path, lambda staging: shutil.copy2(frame, staging))
+                        path = publish_unique(
+                            path, lambda staging: shutil.copy2(frame, staging),
+                            should_cancel=(lambda: progress.cancelled) if progress is not None else None)
                         saved += 1
+                        if progress is not None:
+                            progress.update(index + 1, total)
                         continue
                     image = _read_image_any(frame) if baked else resolve_frame(frame)
                     if image is None:
@@ -768,20 +779,36 @@ class ExportManager:
                         frame_exif = stored_frame_exif[index]
                     elif index == 0:
                         frame_exif = stored_source_exif
-                    path = publish_unique(path, lambda staging: imwrite_auto(
-                        staging, image, get_imwrite_params('.' + extension.lower()),
-                        exif=frame_exif, icc_profile=frame_profile))
+                    path = publish_unique(
+                        path, lambda staging: imwrite_auto(
+                            staging, image, get_imwrite_params('.' + extension.lower()),
+                            exif=frame_exif, icc_profile=frame_profile),
+                        should_cancel=(lambda: progress.cancelled) if progress is not None else None)
                     saved += 1
                 except Exception as exc:
-                    failures.append(f'{path}: {image_write_error_text(exc)}')
+                    if progress is None or not progress.cancelled:
+                        failures.append(f'{path}: {image_write_error_text(exc)}')
+                if progress is not None:
+                    progress.update(index + 1, total)
             return saved
-        saved = run_pixel_worker(window, trans.t('action_save'), write_frames)
+        saved = invoke_pixel_worker(
+            run_pixel_worker, window, trans.t('action_save'), write_frames,
+            progress=progress, cancellable=cancellable)
+        if progress is not None and progress.cancelled:
+            status_bar = getattr(window, 'statusBar', None)
+            if callable(status_bar) and status_bar() is not None:
+                status_bar().showMessage(trans.t('compare_cancelled'), 8000)
+            return None
         if failures:
             show_message_box(window, trans.t('msg_save_failed_title'),
                              trans.t('msg_stack_saved_info').format(saved=saved, total=len(frames), folder=directory),
                              '\n'.join(failures), QMessageBox.Icon.Warning)
         else:
-            window.statusBar().showMessage(trans.t('output_save_aligned_done').format(n=saved, path=directory), 9000)
+            from utils.output_share import show_status_path_message
+            show_status_path_message(
+                window,
+                trans.t('output_save_aligned_done').format(n=saved, path=directory),
+                directory, 9000)
         return directory if saved == len(frames) and saved else None
 
     def _registered_record(self):
@@ -911,11 +938,12 @@ class ExportManager:
             return
 
         if success:
-            show_success_box(
+            _show_saved_box_with_open_folder(
                 window,
                 trans.t("msg_success"),
                 trans.t("msg_gif_saved_text"),
                 trans.t("msg_gif_saved_info").format(message=message, duration=duration_ms),
+                message if os.path.exists(str(message or '')) else "",
             )
         else:
             show_message_box(
@@ -972,16 +1000,23 @@ class ExportManager:
             self._safe_export_path(
                 file_path, record.source_paths if record is not None else ())
             from utils.image_utils import srgb_icc_profile
+            from utils.frame_pixels import PixelProgress, invoke_pixel_worker
             profile = srgb_icc_profile() if metadata is not None else b''
-            if run_pixel_worker(window, trans.t('action_save_multipage_tiff'),
-                                lambda: _write_lazy_multipage_tiff(
-                                    file_path, images, labels, label_target, cfg, metadata, profile,
-                                    wm_cfg)):
-                show_success_box(
+            progress = PixelProgress() if len(images) > 1 else None
+            if invoke_pixel_worker(
+                run_pixel_worker, window, trans.t('action_save_multipage_tiff'),
+                lambda: _write_lazy_multipage_tiff(
+                    file_path, images, labels, label_target, cfg, metadata, profile,
+                    wm_cfg, progress=progress),
+                progress=progress,
+            ):
+                _show_saved_box_with_open_folder(
                     window, trans.t("msg_success"),
                     trans.t("msg_multipage_saved_text"),
                     trans.t("msg_multipage_saved_info").format(
-                        count=len(images), path=file_path))
+                        count=len(images), path=file_path),
+                    file_path,
+                )
             else:
                 show_error_box(window, trans.t("msg_save_failed_title"),
                                trans.t("msg_save_failed_text"),
@@ -998,8 +1033,32 @@ class ExportManager:
         self._save_frames_as(window.raw_images, window.image_filenames, 'input')
 
 
+def _show_saved_box_with_open_folder(window, title: str, text: str, info: str,
+                                     reveal_path: str) -> None:
+    """Show a completion box with an optional Open Folder button."""
+    from utils.ui_utils import show_success_box as _default_show_success_box
+    if show_success_box is not _default_show_success_box or not reveal_path or not os.path.exists(reveal_path):
+        show_success_box(window, title, text, info)
+        return
+    msg_box = QMessageBox(window)
+    msg_box.setWindowTitle(title)
+    msg_box.setText(text)
+    if info:
+        msg_box.setInformativeText(info)
+    msg_box.setIcon(QMessageBox.Icon.Information)
+    msg_box.setStyleSheet(ui_styles.MESSAGE_BOX_STYLE)
+    msg_box.setStandardButtons(QMessageBox.StandardButton.Ok)
+    open_btn = msg_box.addButton(
+        trans.t("action_open_folder"), QMessageBox.ButtonRole.ActionRole)
+    msg_box.exec()
+    if msg_box.clickedButton() is open_btn:
+        from utils.file_manager import select_in_file_manager
+        select_in_file_manager(
+            reveal_path, parent=window, on_finished=lambda _ok: None)
+
+
 def _write_lazy_multipage_tiff(path, frames, labels, target, cfg, metadata=None, profile=b'',
-                               watermark_cfg=None):
+                               watermark_cfg=None, progress=None):
     """Resolve one source at a time; the unified TIFF writer converts bands."""
     from core.image_loader import _has_transparency
 
@@ -1017,6 +1076,8 @@ def _write_lazy_multipage_tiff(path, frames, labels, target, cfg, metadata=None,
         else:
             page_specs = known
 
+    total = len(frames) if isinstance(frames, (list, tuple)) else 0
+
     def pages():
         for index, frame in enumerate(frames):
             image = resolve_frame(frame)
@@ -1031,6 +1092,8 @@ def _write_lazy_multipage_tiff(path, frames, labels, target, cfg, metadata=None,
                 from utils import watermark
                 image = watermark.burn(image, watermark_cfg)
             yield image
+            if progress is not None and total > 0:
+                progress.update(index + 1, total)
             del image
 
     # This desktop workflow historically used TiffWriter's uncompressed

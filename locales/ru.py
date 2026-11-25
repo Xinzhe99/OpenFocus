@@ -1732,4 +1732,8 @@ PACK = {
     "source_exif_snapshot_too_large": "Данные EXIF исходного изображения слишком велики для безопасной загрузки. Сначала удалите или уменьшите EXIF этого файла: {path}",
     "image_write_icc_too_large": "Профиль ICC JPEG слишком велик; используйте PNG/TIFF или удалите профиль.",
     "image_write_tiff_too_large": "Файл TIFF превышает 4 ГиБ; используйте BigTIFF.",
+    "batch_loading_thumbnails": "Загрузка миниатюр… ({done}/{total})",
+    "msg_load_frames_failed": "Загружено кадров: {loaded}; пропущено нечитаемых файлов: {failed}.",
+    "msg_load_frames_skipped_derived": "Загружено кадров: {loaded}; пропущено выровненных копий: {skipped}.",
+    "msg_load_frames_partial": "Загружено кадров: {loaded}; пропущено нечитаемых: {failed}, выровненных копий: {skipped}.",
 }

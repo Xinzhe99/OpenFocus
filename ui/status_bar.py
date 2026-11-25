@@ -1,14 +1,15 @@
 """Left-aligned task indicators and a separate sponsor entry."""
 from html import escape
 import json
+import os
 from unicodedata import category
 
 from PyQt6.QtCore import QEvent, QSize, Qt, QTimer, QUrl
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PyQt6.QtWidgets import (
-    QHBoxLayout, QLabel, QSizePolicy, QStatusBar, QStyle, QStyleOption,
-    QStylePainter, QWidget,
+    QHBoxLayout, QLabel, QPushButton, QSizePolicy, QStatusBar, QStyle,
+    QStyleOption, QStylePainter, QWidget,
 )
 
 from locales import trans
@@ -173,6 +174,17 @@ class WorkspaceStatusBar(QStatusBar):
         self._message_label.setSizePolicy(QSizePolicy.Policy.Ignored,
                                           QSizePolicy.Policy.Preferred)
         self._row.addWidget(self._message_label, 1)
+        self._reveal_path = ''
+        self._pending_reveal_path = ''
+        self._reveal_button = QPushButton(trans.t('share_reveal'), content)
+        self._reveal_button.setObjectName('statusRevealButton')
+        self._reveal_button.setFlat(True)
+        self._reveal_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._reveal_button.setSizePolicy(QSizePolicy.Policy.Maximum,
+                                          QSizePolicy.Policy.Fixed)
+        self._reveal_button.clicked.connect(self._reveal_active_path)
+        self._reveal_button.hide()
+        self._row.addWidget(self._reveal_button, 0)
         self.addPermanentWidget(content, 1)
         self._review_text = ''
         self.messageChanged.connect(self._update_message_label)
@@ -193,18 +205,60 @@ class WorkspaceStatusBar(QStatusBar):
         self._size_sponsor(event.size().width())
 
     def add_activity(self, widget):
-        self._row.insertWidget(self._row.count() - 1, widget)
+        idx = self._row.indexOf(self._message_label)
+        self._row.insertWidget(idx if idx >= 0 else 0, widget)
 
     def set_review_status(self, text):
         self._review_text = text
         if not self.currentMessage():
             self._update_message_label('')
 
+    def show_path_message(self, message: str, path: str, timeout: int = 8000) -> None:
+        """Show a transient message paired with an inline Show in Folder button."""
+        reveal = os.fspath(path) if path else ''
+        self._pending_reveal_path = reveal
+        self.showMessage(message, timeout)
+        if self._pending_reveal_path and self.currentMessage() == message:
+            self._bind_reveal_path(self._pending_reveal_path)
+            self._pending_reveal_path = ''
+
+    def _bind_reveal_path(self, path: str) -> None:
+        self._reveal_path = path
+        if path:
+            self._reveal_button.setText(trans.t('share_reveal'))
+            self._reveal_button.setToolTip(path)
+            self._reveal_button.show()
+        else:
+            self._reveal_button.hide()
+
+    def _reveal_active_path(self) -> None:
+        path = self._reveal_path
+        if not path:
+            return
+        from utils.file_manager import select_in_file_manager
+        from utils.ui_utils import show_error_box
+
+        def finished(opened, error=None):
+            if not opened:
+                show_error_box(self.window(), trans.t('msg_share_failed_title'),
+                               trans.t('msg_share_reveal_failed'), error or path)
+
+        try:
+            select_in_file_manager(path, parent=self.window(), on_finished=finished)
+        except Exception as exc:
+            finished(False, str(exc))
+
     def _update_message_label(self, message):
         text = message or self._review_text
         self._message_label.setText(text)
         self._message_label.setToolTip(text)
         self._message_label.setAccessibleName(text)
+        if message and self._pending_reveal_path:
+            self._bind_reveal_path(self._pending_reveal_path)
+            self._pending_reveal_path = ''
+        else:
+            self._pending_reveal_path = ''
+            self._bind_reveal_path('')
 
     def paintEvent(self, event):
         # Qt's timed messages use our label. Only paint the background here

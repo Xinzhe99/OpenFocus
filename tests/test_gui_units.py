@@ -1902,10 +1902,10 @@ def test_stack_load_progress_status_and_cancel(qapp, monkeypatch):
     assert manager._load_cancel_button.isEnabled()
     assert manager._load_status_label.text() == trans.t('msg_loading_stack')
     video_worker.progress.emit(1, 10)
-    assert (bar.minimum(), bar.maximum()) == (0, 0)
-    assert manager._load_status_label.text() == trans.t('msg_loading_stack')
+    assert (bar.maximum(), bar.value()) == (10, 1)
+    assert manager._load_status_label.text() == f"{trans.t('msg_loading_stack')} (1/10)"
     worker.progress.emit(3, 3)
-    assert (bar.minimum(), bar.maximum()) == (0, 0)
+    assert (bar.maximum(), bar.value()) == (10, 1)
     QTest.mouseClick(manager._load_cancel_button, Qt.MouseButton.LeftButton)
     video_worker.finished_load.emit(False, 'CANCELLED', [], [])
     video_worker.finished.emit()

@@ -81,12 +81,41 @@ class OutputListWidget(QListWidget):
             shutil.rmtree(path, ignore_errors=True)
         self._temp_dirs = []
 
+    @staticmethod
+    def _drag_format_matches(path: str, fmt: str) -> bool:
+        ext = os.path.splitext(path)[1].lower()
+        target = (fmt or ".jpg").lower()
+        if target in (".jpg", ".jpeg"):
+            return ext in (".jpg", ".jpeg")
+        if target in (".tif", ".tiff"):
+            return ext in (".tif", ".tiff")
+        return ext == target
+
+    def _reusable_drag_path(self, record, fmt: str) -> str:
+        """Return an up-to-date exported file matching ``fmt``, or ``""``."""
+        if record is None or self._window is None:
+            return ""
+        manager = getattr(self._window, "output_manager", None)
+        persistent_fn = getattr(manager, "_share_persistent_path", None)
+        if not callable(persistent_fn):
+            return ""
+        path = persistent_fn(record)
+        if not path or not self._drag_format_matches(path, fmt):
+            return ""
+        from utils import watermark
+        wm_cfg = watermark.export_cfg(self._window, target='output', record=record)
+        if wm_cfg and not getattr(record, "watermark_baked", False):
+            exported_annotations = getattr(record, "exported_annotations", None)
+            if exported_annotations is None:
+                return ""
+        return path
+
     def _aligned_drag_folder(self, item, record):
-        """Folder URL for an aligned record, staging a watermarked copy."""
+        """Folder URL for an aligned record, staging unexported/watermarked copies."""
         from utils import watermark
         from locales import trans
         from controllers.output_manager import ALIGNED_DIR_ROLE
-        folder = item.data(ALIGNED_DIR_ROLE)
+        folder = item.data(ALIGNED_DIR_ROLE) or getattr(record, "export_path", None)
         wm_cfg = watermark.record_export_cfg(record)
         if wm_cfg and not getattr(record, "watermark_baked", False):
             # A watermark that is not in the pixels must be rendered into a
@@ -111,10 +140,57 @@ class OutputListWidget(QListWidget):
             return folder
         if not getattr(record, "aligned_frames", ()):
             return folder if folder and os.path.isdir(folder) else None
+        if (folder and os.path.isdir(folder) and getattr(record, "exported", False)
+                and not (callable(getattr(record, "changed_since_export", None))
+                         and record.changed_since_export())):
+            return folder
+        stage = tempfile.mkdtemp(prefix="openfocus-aligned-drag-")
+        self._temp_dirs.append(stage)
         folder = self._window.export_manager.save_aligned_frames_as(
             record.aligned_frames, record.aligned_names, record.label,
-            record=record)
+            destination=stage, extension='png', record=record)
         return folder if folder and os.path.isdir(folder) else None
+
+    def _snapshot_drag_task(self, row: int, base_name: str, record, fmt: str):
+        window = self._window
+        if window is None:
+            return None
+        if 0 <= row < len(window.fusion_results):
+            raw_image = window.fusion_results[row]
+        elif window.fusion_result is not None and row == 0:
+            raw_image = window.fusion_result
+        else:
+            return None
+        if raw_image is None:
+            return None
+        labels = None
+        scale_cfg = None
+        if record is None or not record.annotations_baked:
+            from utils import scalebar
+            labels = window.label_manager.snapshot()
+            scale_cfg = scalebar.export_cfg(window, target='output', record=record)
+        from utils import watermark
+        wm_cfg = watermark.export_cfg(window, target='output', record=record)
+        return (raw_image, base_name, record, labels, scale_cfg, wm_cfg, fmt)
+
+    @staticmethod
+    def _prepare_drag_image(raw_image, record, labels, scale_cfg, wm_cfg):
+        from core.source_frames import resolve_frame
+        image = resolve_frame(raw_image)
+        if image is None:
+            return None
+        if record is not None and record.linear_dng_metadata is not None:
+            from utils.linear_dng import develop_linear
+            image = develop_linear(image, record.linear_dng_metadata)
+        if record is None or not record.annotations_baked:
+            from utils import scalebar
+            if labels is not None:
+                image = labels.prepare_bgr_image(
+                    'output', image, 0,
+                    output_id=record.output_id if record else None)
+            image = scalebar.burn(image, scale_cfg)
+        from utils import watermark
+        return watermark.burn(image, wm_cfg)
 
     def startDrag(self, supportedActions: Qt.DropAction) -> None:  # noqa: N802
         if self._window is None:
@@ -126,7 +202,10 @@ class OutputListWidget(QListWidget):
 
         self.cleanup_temp_files()
 
-        urls: list[QUrl] = []
+        fmt = getattr(self._window, "drag_export_format", ".jpg") or ".jpg"
+        entries: list[tuple[str, Any]] = []
+        encode_tasks: list[tuple[int, tuple]] = []
+
         for item in selected_items:
             row = self.row(item)
             if row < 0:
@@ -143,23 +222,66 @@ class OutputListWidget(QListWidget):
                                    trans.t('msg_save_failed_text'), str(exc))
                     continue
                 if folder:
-                    urls.append(QUrl.fromLocalFile(folder))
+                    entries.append(("url", QUrl.fromLocalFile(folder)))
                 continue
+
+            reusable = self._reusable_drag_path(record, fmt)
+            if reusable:
+                entries.append(("url", QUrl.fromLocalFile(reusable)))
+                continue
+
             try:
-                image = self._get_output_image_for_row(row)
-                if image is None:
-                    continue
-                file_path = self._write_temp_jpg(image, item.text(), record)
+                task = self._snapshot_drag_task(row, item.text(), record, fmt)
             except Exception as exc:
                 from utils import show_error_box
                 from locales import trans
                 show_error_box(self._window, trans.t('msg_save_failed_title'),
                                trans.t('msg_save_failed_text'), str(exc))
                 continue
-            if file_path:
-                self._temp_files.append(file_path)
-                urls.append(QUrl.fromLocalFile(file_path))
+            if task is not None:
+                slot = len(entries)
+                entries.append(("pending", None))
+                encode_tasks.append((slot, task))
 
+        if encode_tasks:
+            from locales import trans
+            from utils import show_error_box
+            from utils.frame_pixels import PixelProgress, invoke_pixel_worker, run_pixel_worker
+
+            progress = PixelProgress() if len(encode_tasks) > 1 else None
+
+            def encode_all():
+                results = []
+                total = len(encode_tasks)
+                for idx, (slot, task) in enumerate(encode_tasks):
+                    raw_image, base_name, rec, labels, scale_cfg, wm_cfg, task_fmt = task
+                    try:
+                        image = self._prepare_drag_image(
+                            raw_image, rec, labels, scale_cfg, wm_cfg)
+                        if image is None:
+                            results.append((slot, None, None))
+                        else:
+                            file_path = self._write_temp_jpg(
+                                image, base_name, rec, fmt=task_fmt)
+                            results.append((slot, file_path, None))
+                    except Exception as exc:
+                        results.append((slot, None, exc))
+                    if progress is not None:
+                        progress.update(idx + 1, total)
+                return results
+
+            encoded = invoke_pixel_worker(
+                run_pixel_worker, self._window, trans.t('action_save'),
+                encode_all, progress=progress)
+            for slot, file_path, error in encoded:
+                if error is not None:
+                    show_error_box(self._window, trans.t('msg_save_failed_title'),
+                                   trans.t('msg_save_failed_text'), str(error))
+                elif file_path:
+                    self._temp_files.append(file_path)
+                    entries[slot] = ("url", QUrl.fromLocalFile(file_path))
+
+        urls = [value for kind, value in entries if kind == "url" and value is not None]
         if not urls:
             self.cleanup_temp_files()
             return
@@ -184,24 +306,22 @@ class OutputListWidget(QListWidget):
             return None
 
         record = window.output_manager.record_for_row(row)
-        if record is not None and record.linear_dng_metadata is not None:
-            from utils.linear_dng import develop_linear
-            image = develop_linear(image, record.linear_dng_metadata)
+        labels = None
+        scale_cfg = None
         if record is None or not record.annotations_baked:
             from utils import scalebar
             labels = window.label_manager.snapshot()
-            image = labels.prepare_bgr_image('output', image, 0,
-                                            output_id=record.output_id if record else None)
-            image = scalebar.burn(image, scalebar.export_cfg(window, target='output', record=record))
+            scale_cfg = scalebar.export_cfg(window, target='output', record=record)
         from utils import watermark
-        return watermark.burn(
-            image, watermark.export_cfg(window, target='output', record=record))
+        wm_cfg = watermark.export_cfg(window, target='output', record=record)
+        return self._prepare_drag_image(image, record, labels, scale_cfg, wm_cfg)
 
-    def _write_temp_jpg(self, image, base_name: str, record=None) -> str | None:
+    def _write_temp_jpg(self, image, base_name: str, record=None, *, fmt: str | None = None) -> str | None:
         window = self._window
-        fmt = ".jpg"
-        if window is not None and hasattr(window, "drag_export_format"):
-            fmt = window.drag_export_format
+        if fmt is None:
+            fmt = ".jpg"
+            if window is not None and hasattr(window, "drag_export_format"):
+                fmt = window.drag_export_format
         if image.ndim == 3 and image.shape[2] == 4 and fmt.lower() != '.png':
             from locales import trans
             raise ValueError(trans.t('transparent_desktop_unsupported').format(path=''))

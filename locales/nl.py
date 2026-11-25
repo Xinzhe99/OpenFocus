@@ -1732,4 +1732,8 @@ PACK = {
     "source_exif_snapshot_too_large": "De EXIF-gegevens van de bronafbeelding zijn te groot om veilig te laden. Verwijder of verklein eerst de EXIF van dat bestand: {path}",
     "image_write_icc_too_large": "Het ICC-profiel van de JPEG is te groot; gebruik PNG/TIFF of verwijder het profiel.",
     "image_write_tiff_too_large": "De TIFF is groter dan 4 GiB; gebruik BigTIFF.",
+    "batch_loading_thumbnails": "Voorbeelden laden… ({done}/{total})",
+    "msg_load_frames_failed": "{loaded} frame(s) geladen; {failed} onleesbare bestand(en) overgeslagen.",
+    "msg_load_frames_skipped_derived": "{loaded} frame(s) geladen; {skipped} uitgelijnde kopie(ën) overgeslagen.",
+    "msg_load_frames_partial": "{loaded} frame(s) geladen; {failed} onleesbare bestand(en) en {skipped} uitgelijnde kopie(ën) overgeslagen.",
 }

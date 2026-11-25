@@ -597,6 +597,7 @@ def create_right_panel() -> RightPanelComponents:
 
     file_list = _SourceListWidget()
     file_list.setIconSize(QSize(40, 40))
+    file_list.setUniformItemSizes(True)
     file_list.setMinimumHeight(file_list.iconSize().height() + 8)
     file_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
     file_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)

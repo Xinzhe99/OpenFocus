@@ -1732,4 +1732,8 @@ PACK = {
     "source_exif_snapshot_too_large": "Die EXIF-Daten des Quellbilds sind zu groß, um sie sicher zu laden. Entfernen oder reduzieren Sie zuerst die EXIF-Daten dieser Datei: {path}",
     "image_write_icc_too_large": "Das JPEG-ICC-Profil ist zu groß; verwenden Sie PNG/TIFF oder entfernen Sie das Profil.",
     "image_write_tiff_too_large": "Die TIFF-Datei überschreitet 4 GiB; verwenden Sie BigTIFF.",
+    "batch_loading_thumbnails": "Vorschauen werden geladen… ({done}/{total})",
+    "msg_load_frames_failed": "{loaded} Bild(er) geladen; {failed} unlesbare Datei(en) übersprungen.",
+    "msg_load_frames_skipped_derived": "{loaded} Bild(er) geladen; {skipped} ausgerichtete Kopie(n) übersprungen.",
+    "msg_load_frames_partial": "{loaded} Bild(er) geladen; {failed} unlesbare Datei(en) und {skipped} ausgerichtete Kopie(n) übersprungen.",
 }

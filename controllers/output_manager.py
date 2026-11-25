@@ -819,16 +819,39 @@ class OutputManager:
         """
         import os
 
-
         window = self.window
-        added = 0
+        valid_paths = []
         for path in paths:
             try:
-                if not os.path.isfile(path):
-                    continue
-                from core.source_frames import scan_source
-                image = run_pixel_worker(window, trans.t('action_save'),
-                                         lambda path=path: scan_source(path)[0])
+                if os.path.isfile(path):
+                    valid_paths.append(path)
+            except Exception:
+                continue
+        if not valid_paths:
+            return 0
+
+        from utils.frame_pixels import PixelProgress, invoke_pixel_worker
+        progress = PixelProgress() if len(valid_paths) > 1 else None
+
+        def scan_all():
+            from core.source_frames import scan_source
+            loaded = []
+            total = len(valid_paths)
+            for idx, path in enumerate(valid_paths):
+                try:
+                    loaded.append((path, scan_source(path)[0]))
+                except Exception:
+                    pass
+                if progress is not None:
+                    progress.update(idx + 1, total)
+            return loaded
+
+        scanned = invoke_pixel_worker(
+            run_pixel_worker, window, trans.t('msg_loading_stack'),
+            scan_all, progress=progress)
+        added = 0
+        for path, image in scanned:
+            try:
                 label = os.path.basename(path)
                 # Batch files are already on disk and have no in-memory
                 # provenance; mark them as such instead of guessing frames.
@@ -1079,20 +1102,76 @@ class OutputManager:
             return False
         set_last_dialog_dir(folder)
         written, failed = [], []
+        prepared_images = []
+        aligned_entries = []
         for original, record in snapshots:
             name = window.export_manager.filename_from_label(record.label)
             path = os.path.join(folder, os.path.splitext(name)[0] + '.png')
+            annotation_state = self._annotation_state(record, labels)
+            if record.kind == 'aligned':
+                aligned_entries.append((original, record, path, annotation_state))
+                continue
             try:
-                annotation_state = self._annotation_state(record, labels)
-                if record.kind == 'aligned':
-                    path = self._export_aligned_record(record, destination=folder, labels_snapshot=labels)
-                    if not path:
-                        raise OSError(trans.t('msg_save_failed_info_write'))
+                source_paths = record.source_paths
+                if source_paths:
+                    window.export_manager._safe_export_path(path, source_paths)
                 else:
-                    from utils.export_paths import publish_unique
-                    path = publish_unique(path, lambda staged: self._write_record(record, staged, labels))
-                self._mark_record_exported(original, record.image, path, annotation_state)
-                written.append(path)
+                    window.export_manager._safe_export_path(path)
+                cfg = scalebar.export_cfg(window, record=record)
+                calibration = scalebar.calibration_px_um(window, record)
+                prepared_images.append(
+                    (original, record, path, cfg, calibration, annotation_state))
+            except Exception as exc:
+                failed.append((path or record.label, image_write_error_text(exc)))
+
+        if prepared_images:
+            from utils.export_paths import publish_unique
+            from utils.frame_pixels import PixelProgress, invoke_pixel_worker
+
+            progress = PixelProgress()
+            cancellable = len(prepared_images) > 1
+
+            def write_all_images():
+                outcomes = []
+                total = len(prepared_images)
+                for idx, (original, record, path, cfg, calibration, state) in enumerate(prepared_images):
+                    if progress.cancelled:
+                        break
+                    try:
+                        saved_path = publish_unique(
+                            path,
+                            lambda staged, r=record, c=cfg, cal=calibration, s=state:
+                                self._write_record_pixels(r, staged, labels, c, cal, s),
+                            should_cancel=lambda: progress.cancelled,
+                        )
+                        outcomes.append((original, record, saved_path, state, None))
+                    except Exception as exc:
+                        outcomes.append((original, record, path, state, exc))
+                    progress.update(idx + 1, total)
+                return outcomes
+
+            outcomes = invoke_pixel_worker(
+                run_pixel_worker, window, trans.t('action_save'),
+                write_all_images, progress=progress, cancellable=cancellable)
+            for original, record, saved_path, state, error in outcomes:
+                if error is not None:
+                    failed.append((saved_path or record.label, image_write_error_text(error)))
+                else:
+                    self._mark_record_exported(original, record.image, saved_path, state)
+                    written.append(saved_path)
+            if progress.cancelled:
+                window.statusBar().showMessage(trans.t('compare_cancelled'), 8000)
+                return False
+
+        for original, record, path, annotation_state in aligned_entries:
+            try:
+                exported_path = self._export_aligned_record(
+                    record, destination=folder, labels_snapshot=labels)
+                if not exported_path:
+                    raise OSError(trans.t('msg_save_failed_info_write'))
+                self._mark_record_exported(
+                    original, record.image, exported_path, annotation_state)
+                written.append(exported_path)
             except Exception as exc:
                 failed.append((path or record.label, image_write_error_text(exc)))
         self._report_export_result(written, failed, folder)
@@ -1186,9 +1265,15 @@ class OutputManager:
         """One summary for a multi-file export, with the failing paths."""
         window = self.window
         if not failed:
-            window.statusBar().showMessage(
+            from utils.output_share import show_status_path_message
+            reveal_target = written[0] if len(written) == 1 else folder
+            show_status_path_message(
+                window,
                 trans.t("msg_export_count_done").format(
-                    n=len(written), path=folder).replace("\n", " "), 8000)
+                    n=len(written), path=folder),
+                reveal_target,
+                8000,
+            )
             return
         detail = "\n".join(
             f"{path}: {image_write_error_text(error) if isinstance(error, ImageWriteError) else (error or trans.t('msg_save_failed_info_write'))}"
@@ -1469,15 +1554,35 @@ class OutputManager:
             trans.t("msg_share_files_copied").format(n=len(paths)).replace(
                 "\n", " "), 5000)
 
+    @staticmethod
+    def _aligned_reveal_path(record) -> str:
+        """Exported directory for an aligned-stack record when present on disk."""
+        if record is None or record.kind != "aligned":
+            return ""
+        path = getattr(record, "export_path", "") or ""
+        if record.exported and path and os.path.isdir(path):
+            return path
+        return ""
+
+    def _share_reveal_item_supported(self, item) -> bool:
+        if self._share_item_supported(item):
+            return True
+        record = self.record_for_item(item) if item is not None else None
+        return bool(self._aligned_reveal_path(record))
+
     def share_reveal(self, target_item) -> None:
         record = self._share_record_for_item(target_item, attach=True)
-        if not self._share_record_supported(record):
+        aligned_path = self._aligned_reveal_path(record)
+        if aligned_path:
+            path = aligned_path
+        elif self._share_record_supported(record):
+            paths, failures = self._share_files_for_records([record])
+            if failures:
+                self._report_share_failure(paths, failures)
+                return
+            path = str(paths[0])
+        else:
             return
-        paths, failures = self._share_files_for_records([record])
-        if failures:
-            self._report_share_failure(paths, failures)
-            return
-        path = str(paths[0])
 
         def finished(opened, error=None):
             if not opened:
@@ -1552,7 +1657,7 @@ class OutputManager:
         reveal_action = QAction(trans.t("share_reveal"), window)
         reveal_action.triggered.connect(
             lambda: self.share_reveal(target_item))
-        reveal_action.setEnabled(self._share_item_supported(target_item))
+        reveal_action.setEnabled(self._share_reveal_item_supported(target_item))
         share_menu.addAction(reveal_action)
 
         private_action = QAction(trans.t("share_private_link"), window)
@@ -1837,7 +1942,7 @@ class OutputManager:
                     def read_stack():
                         return [scan_source(os.path.join(record.export_path, name))[0]
                                 for name in record.aligned_names]
-                    images = run_pixel_worker(window, trans.t('retouch_title'), read_stack)
+                    images = run_pixel_worker(window, trans.t('msg_loading_stack'), read_stack)
                 if window.output_list.currentItem() is not item:
                     return
                 window.registration_results = list(images)
