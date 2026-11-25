@@ -48,11 +48,12 @@ def _get_or_build_program(cl, device):
         _build_cached_program, _device_cache_key, _get_shared_context,
     )
 
-    context, queue = _get_shared_context(cl, device)
     key = _device_cache_key(device)
     with _cache_lock:
+        context = _get_shared_context(cl, device)
         if _PROGRAM_CACHE is not None and _PROGRAM_CACHE[0] == key and _PROGRAM_CACHE[1] is context:
             return _PROGRAM_CACHE[1:]
+        queue = cl.CommandQueue(context, device=device)
         program = _build_cached_program(cl, device, context, _KERNEL)
         kernels = {(size, rev, block): cl.Kernel(program, name)
                    for size, rev, block, name in _KERNEL_NAMES}
@@ -60,13 +61,13 @@ def _get_or_build_program(cl, device):
         return context, queue, kernels
 
 
-def _invalidate_program_cache():
+def _invalidate_program_cache(context=None):
     global _PROGRAM_CACHE
     from fusion_methods._openfocus_gpu import _invalidate_shared_context
 
     with _cache_lock:
         _PROGRAM_CACHE = None
-    _invalidate_shared_context()
+        _invalidate_shared_context(context)
 
 _KERNEL = f'#define AREA_TAPS {_TAPS}\n' + r'''
 #pragma OPENCL FP_CONTRACT OFF
@@ -337,7 +338,7 @@ class ExactAreaGpu:
                     if isinstance(t, type)
                 )
                 if drain_failed or (err_types and isinstance(exc, err_types)):
-                    _invalidate_program_cache()
+                    _invalidate_program_cache(self._context)
                 self._disabled = True
                 self.fell_back = True
                 self.close()

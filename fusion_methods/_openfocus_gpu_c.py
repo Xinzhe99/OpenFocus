@@ -36,11 +36,12 @@ def _get_or_build_program(cl, device):
         _PREVIEW_KERNEL, _build_filter_program, _device_cache_key, _get_shared_context,
     )
 
-    ctx, queue = _get_shared_context(cl, device)
     key = _device_cache_key(device)
     with _cache_lock:
+        ctx = _get_shared_context(cl, device)
         if _PROGRAM_CACHE is not None and _PROGRAM_CACHE[0] == key and _PROGRAM_CACHE[1] is ctx:
             return _PROGRAM_CACHE[1:]
+        queue = cl.CommandQueue(ctx, device=device)
         program, tiled_transpose = _build_filter_program(
             cl, device, ctx, _C_K + _PREVIEW_KERNEL.format(type='ushort'),
             options=['-cl-fp32-correctly-rounded-divide-sqrt'],
@@ -50,13 +51,13 @@ def _get_or_build_program(cl, device):
         return ctx, queue, kernels, tiled_transpose
 
 
-def _invalidate_program_cache():
+def _invalidate_program_cache(context=None):
     global _PROGRAM_CACHE
     from fusion_methods._openfocus_gpu import _invalidate_shared_context
 
     with _cache_lock:
         _PROGRAM_CACHE = None
-    _invalidate_shared_context()
+        _invalidate_shared_context(context)
 
 _C_K = r'''
 #pragma OPENCL FP_CONTRACT OFF
@@ -376,7 +377,7 @@ class GpuC:
             try:
                 q.finish()
             except Exception:
-                _invalidate_program_cache()
+                _invalidate_program_cache(getattr(self, 'ctx', None))
 
     def fuse(self, frames, shape, img_resize, smoothing,
              should_cancel=None, progress_callback=None, focus_callback=None,
@@ -414,7 +415,7 @@ class GpuC:
                 self._drain_queue()
                 raise exc.__cause__
             except (self.cl.Error, MemoryError) as exc:
-                _invalidate_program_cache()
+                _invalidate_program_cache(getattr(self, 'ctx', None))
                 self._drain_queue()
                 raise GpuError('OpenCL GPU C execution failed') from exc
             except BaseException:

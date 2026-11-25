@@ -1030,11 +1030,12 @@ def _get_or_build_program(cl, device):
     global _PROGRAM_CACHE
     from fusion_methods._openfocus_gpu import _build_cached_program, _get_shared_context
 
-    ctx, queue = _get_shared_context(cl, device)
     key = getattr(device, 'int_ptr', None)
     with _cache_lock:
+        ctx = _get_shared_context(cl, device)
         if _PROGRAM_CACHE is not None and _PROGRAM_CACHE[0] == key and _PROGRAM_CACHE[1] is ctx:
             return _PROGRAM_CACHE[1:]
+        queue = cl.CommandQueue(ctx, device=device)
         # OpenCL 1.2 makes correctly rounded FP32 divide/sqrt optional.
         rounded = cl.device_fp_config.CORRECTLY_ROUNDED_DIVIDE_SQRT
         options = ['-cl-fp32-correctly-rounded-divide-sqrt'] if device.single_fp_config & rounded else []
@@ -1044,13 +1045,13 @@ def _get_or_build_program(cl, device):
         return ctx, queue, kernels
 
 
-def _invalidate_program_cache():
+def _invalidate_program_cache(context=None):
     global _PROGRAM_CACHE
     from fusion_methods._openfocus_gpu import _invalidate_shared_context
 
     with _cache_lock:
         _PROGRAM_CACHE = None
-    _invalidate_shared_context()
+        _invalidate_shared_context(context)
 
 
 @dataclass(frozen=True)
@@ -1166,7 +1167,7 @@ class GpuDtcwt:
                 self._drain_queue()
                 raise exc.__cause__
             except (self.cl.Error, MemoryError) as exc:
-                _invalidate_program_cache()
+                _invalidate_program_cache(getattr(self, 'ctx', None))
                 self._drain_queue()
                 raise GpuError('OpenCL GPU DTCWT execution failed') from exc
             except BaseException:
@@ -1185,7 +1186,7 @@ class GpuDtcwt:
             try:
                 self.q.finish()
             except self.cl.Error:
-                _invalidate_program_cache()
+                _invalidate_program_cache(getattr(self, 'ctx', None))
 
     def _forward_plane(self, plane_buf, specs: list[_LevelSpec], max_lvl: int,
                        hp_bufs: list, scratch: dict):

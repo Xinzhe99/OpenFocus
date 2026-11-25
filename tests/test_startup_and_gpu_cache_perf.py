@@ -142,6 +142,7 @@ def _make_fake_opencl():
 
 def test_shared_opencl_context_reused_and_invalidated_across_gpu_modules(monkeypatch, tmp_path):
     monkeypatch.setenv("OPENFOCUS_OPENCL_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(ogpu, '_SHARED_CONTEXT', None)
     monkeypatch.setattr(persp_gpu, "_self_check", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(persp_gpu, "_program", None)
     monkeypatch.setattr(bg_gpu, "_PROGRAM_CACHE", {})
@@ -163,41 +164,31 @@ def test_shared_opencl_context_reused_and_invalidated_across_gpu_modules(monkeyp
         res_persp = persp_gpu._verified_program(cl, device)
 
         assert stats["contexts"] == 1
-        for result in (res_a, res_c, res_dct, res_dtcwt, res_gff, res_gfg, res_bg, res_ecc, res_persp):
-            assert result[0] is merge_ctx
-            assert result[1] is merge_q
+        stages = (res_a, res_c, res_dct, res_dtcwt, res_gff, res_gfg, res_bg, res_ecc, res_persp)
+        assert all(result[0] is merge_ctx for result in stages)
+        # Finishing an ECC or warp queue must never wait on the fusion queue.
+        assert len({id(merge_q), *(id(result[1]) for result in stages)}) == len(stages) + 1
 
         # Disk binaries were written on cold build for every module (including DCT/DTCWT/GFF/GFG/BG).
         cached_files = list(tmp_path.glob("*.clbin"))
-        assert len(cached_files) >= 5
+        assert len(cached_files) == stats['source_builds']
 
-        # Invalidating any cache clears the shared context cleanly and forces fresh rebuilds from disk binaries.
-        ogpu_dct._invalidate_program_cache()
-        assert ogpu_dct._PROGRAM_CACHE is None
-        assert ogpu._SHARED_CONTEXT is None
-
-        cl2, device2, stats2 = _make_fake_opencl()
-        device2.int_ptr = 0xDEADBEEF
-        new_ctx_dct, _, _ = ogpu_dct._get_or_build_program(cl2, device2)
+        # Rotate the context on the same device and rebuild from its disk binaries.
+        cold_builds = stats['source_builds']
+        ogpu_dct._invalidate_program_cache(merge_ctx)
+        new_ctx_dct, _, _ = ogpu_dct._get_or_build_program(cl, device)
         assert new_ctx_dct is not merge_ctx
-        assert stats2["contexts"] == 1
-        assert stats2["binary_builds"] == 1
-        assert stats2["source_builds"] == 0
+        assert stats['contexts'] == 2
+        assert stats['binary_builds'] == 1
 
-        # Stale module caches also rebuild against the new shared context instead of returning dead ctx.
-        new_ctx_a, _, _ = ogpu_a._get_or_build_program(cl2, device2)
-        new_ctx_gff, _, _ = ogpu_gff._get_or_build_program(cl2, device2)
-        new_ctx_gfg, _, _ = ogpu_gfg._get_or_build_program(cl2, device2)
-        new_ctx_dtcwt, _, _ = ogpu_dtcwt._get_or_build_program(cl2, device2)
-        new_ctx_bg, _, _ = bg_gpu._get_or_build_kernel(cl2, device2)
-        assert new_ctx_a is new_ctx_dct
-        assert new_ctx_gff is new_ctx_dct
-        assert new_ctx_gfg is new_ctx_dct
-        assert new_ctx_dtcwt is new_ctx_dct
-        assert new_ctx_bg is new_ctx_dct
-        assert stats2["contexts"] == 1
-        assert stats2["source_builds"] == 0
+        # An old job may finish failing after another stage has already recovered.
+        ogpu_a._invalidate_program_cache(merge_ctx)
+        new_ctx_a, _, _ = ogpu_a._get_or_build_program(cl, device)
+        new_ctx_persp = persp_gpu._verified_program(cl, device)[0]
+        assert new_ctx_a is new_ctx_persp is new_ctx_dct
+        assert stats['contexts'] == 2
+        assert stats['source_builds'] == cold_builds
+        assert stats['binary_builds'] == 3
     finally:
-        monkeypatch.setattr(persp_gpu, "_program", None)
         for mod in (ogpu, ogpu_a, ogpu_c, ogpu_dct, ogpu_dtcwt, ogpu_gff, ogpu_gfg, ecc_gpu):
             mod._invalidate_program_cache()

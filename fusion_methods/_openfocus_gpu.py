@@ -9,11 +9,11 @@ import os
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from threading import Event, Lock
-import weakref
 
 import numpy as np
 
 _device_lock = Lock()
+_context_lock = Lock()
 _cache_lock = Lock()
 _SHARED_CONTEXT = None
 _PROGRAM_CACHE = None
@@ -327,55 +327,41 @@ def _device_cache_key(device):
     )
 
 
-def _weak_ref(obj):
-    try:
-        return weakref.ref(obj)
-    except TypeError:
-        return lambda o=obj: o
-
-
-def _get_shared_context_locked(cl, device):
+def _get_shared_context(cl, device):
+    """Share the selected device's context while each stage owns its queue."""
     global _SHARED_CONTEXT
     key = _device_cache_key(device)
-    ctx_cls = getattr(cl, 'Context', None)
-    queue_cls = getattr(cl, 'CommandQueue', None)
-    if _SHARED_CONTEXT is not None:
-        cached_key, cl_ref, dev_ref, ctx_cls_ref, queue_cls_ref, ctx, queue = _SHARED_CONTEXT
-        if (cached_key == key and cl_ref() is cl
-                and ctx_cls_ref() is ctx_cls and queue_cls_ref() is queue_cls
-                and (key[0] is not None or dev_ref() is device)):
-            return ctx, queue
-    try:
-        ctx = cl.Context([device])
-    except TypeError:
-        ctx = cl.Context(devices=[device])
-    queue = cl.CommandQueue(ctx, device=device)
-    _SHARED_CONTEXT = (
-        key, _weak_ref(cl), _weak_ref(device),
-        _weak_ref(ctx_cls), _weak_ref(queue_cls), ctx, queue,
-    )
-    return ctx, queue
+    factory = cl.Context
+    with _context_lock:
+        if _SHARED_CONTEXT is not None:
+            cached_key, cached_cl, cached_factory, cached_device, context = _SHARED_CONTEXT
+            if (cached_key == key and cached_cl is cl and cached_factory is factory
+                    and (key[0] is not None or cached_device is device)):
+                return context
+        try:
+            context = factory(devices=[device])
+        except TypeError:
+            context = factory([device])
+        _SHARED_CONTEXT = (key, cl, factory, device, context)
+        return context
 
 
-def _get_shared_context(cl, device):
-    """Return the process-wide OpenCL (context, queue) shared across GPU stages."""
-    with _cache_lock:
-        return _get_shared_context_locked(cl, device)
-
-
-def _invalidate_shared_context():
+def _invalidate_shared_context(context):
     global _SHARED_CONTEXT
-    with _cache_lock:
-        _SHARED_CONTEXT = None
+    if context is not None:
+        with _context_lock:
+            if _SHARED_CONTEXT is not None and _SHARED_CONTEXT[-1] is context:
+                _SHARED_CONTEXT = None
 
 
 def _get_or_build_merge_program(cl, device):
     global _PROGRAM_CACHE, _DEPTH_PROGRAM_CACHE
     key = _device_cache_key(device)
     with _cache_lock:
-        ctx, queue = _get_shared_context_locked(cl, device)
+        ctx = _get_shared_context(cl, device)
         if _PROGRAM_CACHE is not None and _PROGRAM_CACHE[0] == key and _PROGRAM_CACHE[1] is ctx:
             return _PROGRAM_CACHE[1:]
+        queue = cl.CommandQueue(ctx, device=device)
         program = _build_cached_program(cl, device, ctx, _MERGE_KERNEL)
         kernels = {name: cl.Kernel(program, name) for name in _MERGE_KERNEL_NAMES}
         _PROGRAM_CACHE = (key, ctx, queue, program, kernels)
@@ -400,12 +386,12 @@ def _get_or_build_depth_program(cl, device, context):
         return program, depth_kernels, filter_kernels, resample_kernels, tiled
 
 
-def _invalidate_program_cache():
-    global _PROGRAM_CACHE, _DEPTH_PROGRAM_CACHE, _SHARED_CONTEXT
+def _invalidate_program_cache(context=None):
+    global _PROGRAM_CACHE, _DEPTH_PROGRAM_CACHE
     with _cache_lock:
         _PROGRAM_CACHE = None
         _DEPTH_PROGRAM_CACHE = None
-        _SHARED_CONTEXT = None
+        _invalidate_shared_context(context)
 
 _MERGE_KERNEL = r'''
 __kernel void activity(__global const ushort *gray, __global const ushort *fine,
@@ -704,7 +690,7 @@ def _free_vram(device):
 
 
 class Merge:
-    """A job-local OpenCL context and bounded merge workspace."""
+    """A bounded merge workspace on the process's OpenCL context."""
 
     def __init__(self, width, channels):
         try:
@@ -768,7 +754,7 @@ class Merge:
             try:
                 queue.finish()
             except Exception:
-                _invalidate_program_cache()
+                _invalidate_program_cache(getattr(self, 'context', None))
 
     def acquire(self, should_cancel):
         from fusion_methods.openfocus_ab import _check_cancel
@@ -910,7 +896,7 @@ class Merge:
                 self._drain_queue()
                 raise exc.__cause__
             except (self.cl.Error, MemoryError) as exc:
-                _invalidate_program_cache()
+                _invalidate_program_cache(self.context)
                 self._drain_queue()
                 raise GpuError('OpenCL GPU depth failed') from exc
             except BaseException:
@@ -935,7 +921,7 @@ class Merge:
             cl.enqueue_copy(self.queue, result, ob, is_blocking=True)
         except Exception as exc:
             if hasattr(self, 'cl') and isinstance(exc, (self.cl.Error, MemoryError)):
-                _invalidate_program_cache()
+                _invalidate_program_cache(getattr(self, 'context', None))
             self._drain_queue()
             raise GpuError('OpenCL GPU depth activity failed') from exc
         finally:
@@ -1010,7 +996,7 @@ class Merge:
             return True
         except BaseException as exc:
             if hasattr(self, 'cl') and isinstance(exc, (self.cl.Error, MemoryError)):
-                _invalidate_program_cache()
+                _invalidate_program_cache(getattr(self, 'context', None))
             self._drain_queue()
             _release_buffers(self._merge_acc, self._merge_depth, self._merge_src,
                              getattr(self, '_merge_src_alt', None))
@@ -1090,7 +1076,7 @@ class Merge:
             self.used = True
         except Exception as exc:
             if hasattr(self, 'cl') and isinstance(exc, (self.cl.Error, MemoryError)):
-                _invalidate_program_cache()
+                _invalidate_program_cache(getattr(self, 'context', None))
             self._drain_queue()
             if getattr(self, '_merge_slot_events', None) is not None:
                 self._merge_slot_events = [None, None]
@@ -1112,7 +1098,7 @@ class Merge:
             self._merge_needs_drain = False
         except Exception as exc:
             if hasattr(self, 'cl') and isinstance(exc, (self.cl.Error, MemoryError)):
-                _invalidate_program_cache()
+                _invalidate_program_cache(getattr(self, 'context', None))
             self._drain_queue()
             self._merge_needs_drain = False
             raise GpuError('OpenCL GPU merge download failed') from exc
@@ -1146,7 +1132,7 @@ class Merge:
             self._merge_needs_drain = False
         except Exception as exc:
             if hasattr(self, 'cl') and isinstance(exc, (self.cl.Error, MemoryError)):
-                _invalidate_program_cache()
+                _invalidate_program_cache(getattr(self, 'context', None))
             self._drain_queue()
             self._merge_needs_drain = False
             raise GpuError('OpenCL GPU merge download failed') from exc
@@ -1197,7 +1183,7 @@ class Merge:
             cl.enqueue_copy(self.queue, result, ab, is_blocking=True)
         except Exception as exc:
             if hasattr(self, 'cl') and isinstance(exc, (self.cl.Error, MemoryError)):
-                _invalidate_program_cache()
+                _invalidate_program_cache(getattr(self, 'context', None))
             self._drain_queue()
             raise GpuError('OpenCL GPU merge failed') from exc
         finally:
