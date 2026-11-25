@@ -33,6 +33,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   OpenFocus depth codes and pyramid rounding across platform builds.
 - Read stack previews and metadata in a single scan and reuse compatible
   isolated render workers between renders.
+- Load dialogs and language packs on demand. Generate eligible 4K PNG previews
+  and prepare alignment frames in parallel within CPU and memory budgets.
+  Read TIFF calibration during the stack metadata scan.
 - Use OpenCL for eligible large integer ECC reductions, including 8×8 area
   downsizing. Apply exact Lanczos4 warps for large 8-bit and 16-bit frames
   during ECC and homography registration and whenever a GPU render resolves

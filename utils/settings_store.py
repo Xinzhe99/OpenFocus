@@ -582,28 +582,17 @@ def restore_default_settings(window) -> None:
 
 
 
-def _supported_languages():
-    """Codes the running build can actually render.
-
-    Read from the translation manager rather than a literal tuple: the old
-    hardcoded list silently dropped any newly added pack, so picking a new
-    language was saved but ignored on the next launch (that is exactly what
-    happened to ja/es in v1.50).
-    """
-    try:
-        from locales import trans
-        return tuple(trans.translations)
-    except Exception:  # pragma: no cover - settings must never import-fail
-        return ("en", "zh", "ja", "es")
-
-
 def get_saved_language():
     """Return the persisted language code or None for auto-detect."""
     settings = get_settings()
     if not settings.contains(LANGUAGE_KEY):
         return None
     lang = str(settings.value(LANGUAGE_KEY, "")).lower()
-    return lang if lang in _supported_languages() else None
+    try:
+        from locales import trans
+        return lang if trans.has_language(lang) else None
+    except Exception:  # pragma: no cover - settings must never import-fail
+        return lang if lang in ('en', 'zh', 'ja', 'es') else None
 
 
 def save_window_layout(window) -> None:

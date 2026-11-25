@@ -740,13 +740,13 @@ def _read_raw_exif_bytes(path: str) -> bytes:
             return b""
 
 
-def _exif_bytes_from_image(image) -> bytes:
+def _exif_bytes_from_image(image, *, pre_exif=None) -> bytes:
     """Read EXIF from the active image page without loading pixels."""
     try:
         raw = image.info.get('exif', b'') or b''
         if raw and image.format != 'TIFF':
             return raw
-        exif = read_image_exif(image)
+        exif = pre_exif if pre_exif is not None else read_image_exif(image)
         if not len(exif):
             return b''
         safe = export_exif(exif.tobytes())
@@ -894,12 +894,13 @@ def _frame_metadata(path, frames, should_cancel):
     return result
 
 
-def _pil_metadata_from_image(path: str, image) -> Tuple[bytes, bytes]:
+def _pil_metadata_from_image(path: str, image, *, pre_exif=None) -> Tuple[bytes, bytes]:
     """Extract sanitized EXIF and ICC profile from an already-opened Pillow image."""
     if not PIL_AVAILABLE:
         return b'', b''
     ext = os.path.splitext(path)[1].lower()
-    raw_exif = _exif_bytes_from_image(image) if ext in ('.jpg', '.jpeg', '.jpe', '.jfif', '.png', '.webp') else b''
+    raw_exif = (_exif_bytes_from_image(image, pre_exif=pre_exif)
+                if ext in ('.jpg', '.jpeg', '.jpe', '.jfif', '.png', '.webp') else b'')
     safe_exif = _safe_exif_bytes(path, raw_exif)
     try:
         profile = _display_profile(path, image.info.get('icc_profile', b''), image.mode == 'CMYK')
@@ -1569,8 +1570,12 @@ class ImageStackLoader:
                             thread_count: int = 0,
                             resource_preference: str = "balanced"):
         """Open headers and prepare the first display in an admitted background job."""
-        from concurrent.futures import ThreadPoolExecutor
-        from core.source_frames import scan_source, ensure_display_preview
+        from collections import deque
+        from concurrent.futures import ThreadPoolExecutor, wait
+        from itertools import islice
+        from threading import Event
+        from core.resource_policy import cpu_capacity, probe_resources, ram_budget
+        from core.source_frames import _PREVIEW_WORKING_BYTES, scan_source, ensure_display_preview
         from utils.logging_setup import log_operation
         from utils.scalebar import detect_px_size_um
 
@@ -1580,34 +1585,55 @@ class ImageStackLoader:
         images, names, paths, px_sizes, exifs, profiles = [], [], [], [], [], []
         failed = 0
         exif = b""
-        workers = min(4, max(1, int(thread_count or 4)))
+        snapshot = probe_resources()
+        workers = max(1, min(len(sources), 8, int(thread_count or 8),
+                             cpu_capacity(snapshot, resource_preference),
+                             ram_budget(snapshot) // _PREVIEW_WORKING_BYTES))
+        stop_scans = Event()
+
+        def scan_cancelled():
+            return stop_scans.is_set() or self.should_cancel()
+
         def inspect(path):
-            if self.should_cancel():
+            if scan_cancelled():
                 raise _DecodeCancelled()
             metadata = []
+            px_size_holder = []
             try:
                 frames = scan_source(path, scale_factor, header_only=True,
-                                     should_cancel=self.should_cancel,
-                                     metadata_out=metadata)
+                                     should_cancel=scan_cancelled,
+                                     metadata_out=metadata,
+                                     px_size_out=px_size_holder)
                 if len(metadata) != len(frames):
-                    metadata = _frame_metadata(path, frames, self.should_cancel)
-                px_um = detect_px_size_um(path)
+                    metadata = _frame_metadata(path, frames, scan_cancelled)
+                px_um = px_size_holder[0] if px_size_holder else detect_px_size_um(path)
                 return (frames, metadata, px_um), None
-            except SourceExifTooLarge:
+            except (SourceExifTooLarge, _DecodeCancelled):
                 raise
             except Exception as exc:
                 return ([], [], None), exc
         if self.progress_callback is not None:
             self.progress_callback(0, len(sources))
         with log_operation('source_manifest', count=len(sources), preview_threads=workers):
-            # Only descriptors are queued. The first preview is prepared here;
-            # remaining thumbnails are generated after the workspace is usable.
+            # Alpha validation can decode a strip even in a header-only
+            # scan. Keep its work and the completed descriptors bounded.
             with ThreadPoolExecutor(max_workers=workers) as pool:
+                pending_paths = iter(sources)
+                window = deque()
                 try:
-                    for done, (path, result) in enumerate(zip(sources, pool.map(inspect, sources)), 1):
+                    for path in islice(pending_paths, workers):
                         if self.should_cancel():
                             raise _DecodeCancelled()
-                        (frames, metadata, px_um), error = result
+                        window.append(pool.submit(inspect, path))
+                    for done, path in enumerate(sources, 1):
+                        future = window.popleft()
+                        while not future.done():
+                            if self.should_cancel():
+                                raise _DecodeCancelled()
+                            wait((future,), timeout=.05)
+                        if self.should_cancel():
+                            raise _DecodeCancelled()
+                        (frames, metadata, px_um), error = future.result()
                         if error is not None:
                             if isinstance(error, InterruptedError):
                                 return False, 'CANCELLED', [], []
@@ -1617,7 +1643,7 @@ class ImageStackLoader:
                             failed += 1
                             import logging
                             logging.getLogger(__name__).warning('Source preview failed path=%s: %s', path, error)
-                        else:
+                        elif frames:
                             for frame_exif, frame_icc in metadata:
                                 if not exif:
                                     exif = frame_exif
@@ -1631,8 +1657,17 @@ class ImageStackLoader:
                                          else os.path.basename(path) for index, frame in enumerate(frames))
                         if self.progress_callback is not None:
                             self.progress_callback(done, len(sources))
+                        if self.should_cancel():
+                            raise _DecodeCancelled()
+                        next_path = next(pending_paths, None)
+                        if next_path is not None:
+                            window.append(pool.submit(inspect, next_path))
                 except _DecodeCancelled:
                     return False, 'CANCELLED', [], []
+                finally:
+                    stop_scans.set()
+                    for future in window:
+                        future.cancel()
         if not images:
             return False, 'Could not load any image files', [], []
         if self.should_cancel():
