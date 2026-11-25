@@ -492,6 +492,7 @@ def test_webp_to_jpg_download_honor_card_upload_prompt_and_advanced_settings(int
     # 6a. WebP -> JPG local download + clickable reveal in file manager.
     webp_bytes = _make_webp_bytes(color=(20, 180, 90))
     gc._media_fetcher = lambda url: webp_bytes
+    gc.client.record_download = lambda _work_id: {"download_url": "https://cdn.example.com/beetle.webp"}
     revealed = []
     gc._file_revealer = lambda path: revealed.append(path)
     downloaded = []
@@ -824,3 +825,136 @@ def test_close_waits_for_gallery_publish_receipt(integrated_window, monkeypatch)
         assert authorization == ["Bearer tok_alpha"]
     finally:
         release.set()
+
+
+def test_gallery_download_paths_honor_permission_and_preserve_existing_files(integrated_window, monkeypatch):
+    from utils.gallery_client import HttpResponse
+
+    window, _server, _settings, root = integrated_window
+    gallery = window.gallery_controller
+    work = {"id": "work-download", "title": "Beetle", "allow_download": True}
+    blocked = {"id": "work-denied", "title": "Private", "allow_download": True}
+    gallery.showcase.set_works([dict(work, pixmap=_make_pixmap())])
+    downloads = root / "gallery_downloads"
+    downloads.mkdir(exist_ok=True)
+    existing = downloads / "Beetle.jpg"
+    existing.write_bytes(b"previous download")
+    requests, fetched, saved, failed = [], [], [], []
+    granted_url = "https://media.example/authorized.webp"
+    webp = _make_webp_bytes()
+
+    def transport(method, url, headers, body, timeout):
+        if method == "POST" and url.endswith("/download"):
+            requests.append(url.rsplit("/", 2)[-2])
+            if "/work-denied/" in url:
+                return HttpResponse(status=403, headers={}, body=b'{"error":"download_disabled"}')
+            return HttpResponse(status=200, headers={},
+                                body=b'{"download_url":"https://media.example/authorized.webp"}')
+        return HttpResponse(status=200, headers={}, body=b"{}")
+
+    monkeypatch.setattr(gallery.client, "_transport", transport)
+    monkeypatch.setattr(gallery, "_media_fetcher", lambda url: fetched.append(url) or webp)
+    gallery.download_completed.connect(saved.append)
+    gallery.download_failed.connect(failed.append)
+
+    gallery.showcase.download_requested.emit(work["id"])
+    _wait_until(lambda: len(saved) == 1)
+    hub = window.open_gallery_hub()
+    detail = hub.open_work_detail(work)
+    detail.download_btn.click()
+    _wait_until(lambda: len(saved) == 2)
+    assert requests == ["work-download", "work-download"]
+    assert fetched == [granted_url]
+    assert [Path(path).name for path in saved] == ["Beetle_2.jpg", "Beetle_3.jpg"]
+    assert existing.read_bytes() == b"previous download"
+    for path in saved:
+        with Image.open(path) as image:
+            assert image.format == "JPEG"
+
+    denied_detail = hub.open_work_detail(blocked)
+    denied_detail.download_btn.click()
+    _wait_until(lambda: len(failed) == 1)
+    assert requests[-1] == "work-denied"
+    assert fetched == [granted_url] and len(saved) == 2
+    assert not (downloads / "Private.jpg").exists()
+    denied_detail.reject()
+    detail.reject()
+    hub.reject()
+
+
+# ---------------------------------------------------------------------------
+# 9. MagnifierLabel right-click context menu: single emit, no double-fire,
+#    and suppressed after right-drag pan or ROI right-click exit
+# ---------------------------------------------------------------------------
+
+def test_magnifier_label_context_menu_single_emit_and_pan_roi_suppression(qapp):
+    from PyQt6.QtCore import QEvent, QPointF
+    from PyQt6.QtGui import QContextMenuEvent, QMouseEvent
+    from widgets.magnifier_label import MagnifierLabel
+
+    label = MagnifierLabel()
+    label.resize(200, 150)
+    label.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+    label.set_display_pixmap(_make_pixmap(size=(200, 150)))
+    label.show()
+    qapp.processEvents()
+
+    emitted = []
+    label.customContextMenuRequested.connect(lambda pt: emitted.append((pt.x(), pt.y())))
+
+    def _mouse_ev(ev_type, pos):
+        pt = QPointF(float(pos.x()), float(pos.y()))
+        return QMouseEvent(
+            ev_type,
+            pt,
+            QPointF(label.mapToGlobal(pos)),
+            Qt.MouseButton.RightButton,
+            Qt.MouseButton.RightButton if ev_type != QEvent.Type.MouseButtonRelease else Qt.MouseButton.NoButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+
+    def _send_mouse_ctx(pos):
+        ctx = QContextMenuEvent(
+            QContextMenuEvent.Reason.Mouse,
+            pos,
+            label.mapToGlobal(pos),
+        )
+        QApplication.sendEvent(label, ctx)
+
+    try:
+        # 1. Plain right-click + trailing platform QContextMenuEvent(Reason.Mouse): emits ONCE.
+        p0 = QPoint(60, 60)
+        label.mousePressEvent(_mouse_ev(QEvent.Type.MouseButtonPress, p0))
+        label.mouseReleaseEvent(_mouse_ev(QEvent.Type.MouseButtonRelease, p0))
+        _send_mouse_ctx(p0)
+        assert len(emitted) == 1
+
+        # 2. Right-drag pan (>4px) + trailing QContextMenuEvent(Reason.Mouse): emits ZERO times.
+        emitted.clear()
+        p1 = QPoint(90, 80)
+        label.mousePressEvent(_mouse_ev(QEvent.Type.MouseButtonPress, p0))
+        label.mouseMoveEvent(_mouse_ev(QEvent.Type.MouseMove, p1))
+        label.mouseReleaseEvent(_mouse_ev(QEvent.Type.MouseButtonRelease, p1))
+        _send_mouse_ctx(p1)
+        assert emitted == []
+
+        # 3. ROI mode right-click exit + trailing QContextMenuEvent(Reason.Mouse): emits ZERO times.
+        emitted.clear()
+        roi_exited = []
+        label.roiModeExitRequested.connect(lambda: roi_exited.append(True))
+        label.roi_mode = True
+        label.mousePressEvent(_mouse_ev(QEvent.Type.MouseButtonPress, p0))
+        label.mouseReleaseEvent(_mouse_ev(QEvent.Type.MouseButtonRelease, p0))
+        _send_mouse_ctx(p0)
+        assert roi_exited == [True]
+        assert emitted == []
+
+        # 4. Direct synthetic QContextMenuEvent (openfocus ctl path): emits ONCE.
+        label.roi_mode = False
+        emitted.clear()
+        _send_mouse_ctx(p0)
+        assert len(emitted) == 1
+    finally:
+        label.close()
+        label.deleteLater()
+        qapp.processEvents()

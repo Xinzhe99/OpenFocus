@@ -1734,18 +1734,7 @@ class WorkDetailDialog(QDialog):
         if not bool(_get(self.work, "allow_download", True)):
             self.status_label.setText(t_gallery("gallery_download_disabled_tip"))
             return
-        if self._client is None or not hasattr(self._client, "record_download"):
-            self.download_requested.emit(self.work)
-            return
-
-        self._runner.submit(
-            lambda: self._client.record_download(self.work_id),
-            key="work_download",
-            on_success=lambda _res: self.download_requested.emit(self.work),
-            on_error=lambda exc: self.status_label.setText(
-                translate_error(_error_code_from_exc(exc))
-            ),
-        )
+        self.download_requested.emit(self.work)
 
     def _on_report(self) -> None:
         dlg = ReportContentDialog(self, theme=self._theme)

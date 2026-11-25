@@ -52,7 +52,7 @@ from core.gallery_state import (
     HonorCard,
 )
 from locales import trans
-from utils.export_paths import unique_path
+from utils.export_paths import publish_unique
 from utils.file_manager import select_in_file_manager
 from utils.gallery_client import DEFAULT_TIMEOUT_SEC, GalleryClient, GalleryClientError
 from utils.logging_setup import get_logger
@@ -770,6 +770,7 @@ class GalleryController(QObject):
             prefill_images=prefill_images,
             prefill_openfocus_badge=prefill_openfocus_badge,
         )
+        dlg.download_work_requested.connect(self._download_selected_work)
         dlg.finished.connect(lambda _code: self._clear_dialog_ref("_hub_dialog", dlg))
         self._hub_dialog = dlg
         dlg.show()
@@ -884,43 +885,43 @@ class GalleryController(QObject):
         if self._closed or not work_id:
             return False
         work = self._find_work(work_id)
-        if work is None:
+        return work is not None and self._download_selected_work(work)
+
+    def _download_selected_work(self, work) -> bool:
+        if self._closed:
             return False
-        allow_download = getattr(work, "allow_download", True)
-        if not allow_download:
+        if isinstance(work, Mapping):
+            work = GalleryWork.from_dict(work)
+        work_id = getattr(work, "work_id", "") or getattr(work, "id", "")
+        if not work_id:
+            return False
+        if not getattr(work, "allow_download", True):
             self._show_status(trans.t("gallery_download_disabled_tip"), 5000)
             return False
 
         title = getattr(work, "title", "") or work_id
         local_path = getattr(work, "local_path", "") or ""
-        image_url = getattr(work, "image_url", "") or getattr(work, "full_url", "") or ""
         is_builtin = bool(getattr(work, "is_builtin_fallback", False))
         # Resolve QSettings-backed download directory on the Qt UI thread before dispatching.
-        download_dir = resolve_gallery_download_dir(settings=get_settings(), create=True)
+        download_dir = resolve_gallery_download_dir(settings=get_settings(), create=False)
 
         def _task() -> None:
             try:
-                source_data: Any = None
-                if local_path and os.path.isfile(local_path):
+                if is_builtin:
                     source_data = local_path
-                elif image_url:
-                    cached = self.disk_cache.get(image_url)
-                    if cached is not None:
-                        source_data = cached
-                    else:
-                        source_data = self._fetch_media_bytes(image_url)
-                if source_data is None:
+                else:
+                    receipt = self.client.record_download(work_id)
+                    url = receipt.get("download_url")
+                    if not isinstance(url, str) or not url:
+                        raise ValueError("Missing Gallery download URL")
+                    source_data = self._fetch_media_bytes(url)
+                if not source_data:
                     raise ValueError("Image data unavailable")
 
+                download_dir.mkdir(parents=True, exist_ok=True)
                 stem = _safe_filename_stem(title, fallback=f"gallery_{_safe_filename_stem(work_id, 'work')}")
-                dest_path = Path(unique_path(str(download_dir / f"{stem}.jpg")))
-                saved = convert_webp_to_jpeg(source_data, dest_path)
-
-                if not is_builtin and self.client.has_session():
-                    try:
-                        self.client.record_download(work_id)
-                    except Exception:
-                        pass
+                saved = publish_unique(download_dir / f"{stem}.jpg",
+                                       lambda path: convert_webp_to_jpeg(source_data, path))
 
                 self._emit_safe(self._download_done, str(saved), "")
             except Exception as exc:
