@@ -8,6 +8,7 @@ from PyQt6.QtCore import QObject, QTimer
 
 from constants import app_display_version
 from utils.account_client import BASE_URL
+from utils.tls import https_handler
 
 QR_BASE_URL = f'{BASE_URL}/v1/qr'
 QR_MAX_BYTES = 512 * 1024
@@ -35,7 +36,7 @@ class _Fetch(Thread):
 
     def run(self):
         try:
-            opener = build_opener(_Responses())
+            opener = build_opener(_Responses(), https_handler())
             request = Request(self._url, headers={
                 'Accept': self._content_type,
                 'Cache-Control': 'no-cache',

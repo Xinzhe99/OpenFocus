@@ -33,6 +33,7 @@ from constants import app_display_version
 from utils.app_paths import legacy_windows_account_dirs, shared_account_device_dir, user_data_dir
 from utils.logging_setup import get_logger, log_action
 from utils.report_client import ReportError, _file_lock
+from utils.tls import classify_network_error, https_handler
 
 _logger = get_logger(__name__)
 
@@ -424,7 +425,7 @@ def _http(method, url, body=None, token=None, timeout=15):
         headers["Authorization"] = "Bearer " + token
     request = urllib.request.Request(url, data=body, headers=headers, method=method)
     try:
-        with urllib.request.build_opener(_NoRedirect()).open(request, timeout=timeout) as response:
+        with urllib.request.build_opener(_NoRedirect(), https_handler()).open(request, timeout=timeout) as response:
             raw = response.read(_MAX_RESPONSE + 1)
         if len(raw) > _MAX_RESPONSE:
             raise AccountError("invalid_response")
@@ -450,7 +451,8 @@ def _http(method, url, body=None, token=None, timeout=15):
         finally:
             exc.close()
         raise AccountError(category, exc.code, retry, edge_request_id=edge_request_id) from None
-    except (urllib.error.URLError, TimeoutError, OSError, HTTPException):
+    except (urllib.error.URLError, TimeoutError, OSError, HTTPException) as exc:
+        log_action("account_network_error", reason=classify_network_error(exc))
         raise AccountError("network") from None
     except (ValueError, UnicodeError):
         raise AccountError("invalid_response") from None
