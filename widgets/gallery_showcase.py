@@ -25,7 +25,7 @@ import os
 from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
-from PyQt6.QtCore import QPoint, QRect, QSize, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QPoint, QRect, QSize, Qt, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QColor, QImage, QPainter, QPaintEvent, QPixmap, QResizeEvent
 from PyQt6.QtWidgets import (
     QFrame,
@@ -48,6 +48,7 @@ from widgets.danmaku_overlay import (
     DanmakuOverlay,
     DanmakuSettings,
     gallery_tr,
+    is_actionable_comment_id,
     report_reason_label,
 )
 
@@ -324,7 +325,9 @@ class StaticBlurBackgroundCache:
 
     def __init__(self, max_entries: int = 24) -> None:
         self._max_entries = max(1, int(max_entries))
-        self._entries: OrderedDict[tuple[str, int, int], QPixmap] = OrderedDict()
+        self._entries: OrderedDict[tuple[str, int, int], tuple[int | None, QPixmap]] = (
+            OrderedDict()
+        )
         self.compute_count: int = 0
         self.cache_hits: int = 0
 
@@ -334,13 +337,15 @@ class StaticBlurBackgroundCache:
         if cached is not None:
             self._entries.move_to_end(key)
             self.cache_hits += 1
-        return cached
+            return cached[1]
 
-    def put(self, work_id: str, size: QSize, pixmap: QPixmap) -> None:
+    def put(
+        self, work_id: str, size: QSize, pixmap: QPixmap, *, source_key: int | None = None
+    ) -> None:
         w = max(1, int(size.width()))
         h = max(1, int(size.height()))
         key = (str(work_id), w, h)
-        self._entries[key] = pixmap
+        self._entries[key] = (source_key, pixmap)
         self._entries.move_to_end(key)
         while len(self._entries) > self._max_entries:
             self._entries.popitem(last=False)
@@ -349,16 +354,21 @@ class StaticBlurBackgroundCache:
         w = max(1, int(size.width()))
         h = max(1, int(size.height()))
         key = (str(work_id), w, h)
+        source_key = source.cacheKey()
         cached = self._entries.get(key)
-        if cached is not None:
+        if cached is not None and cached[0] in (None, source_key):
             self._entries.move_to_end(key)
             self.cache_hits += 1
-            return cached
+            return cached[1]
 
         built = _build_blurred_background(source, QSize(w, h))
         self.compute_count += 1
-        self.put(work_id, QSize(w, h), built)
+        self.put(work_id, QSize(w, h), built, source_key=source_key)
         return built
+
+    def invalidate_work(self, work_id: str) -> None:
+        for key in [key for key in self._entries if key[0] == work_id]:
+            del self._entries[key]
 
     def clear(self) -> None:
         self._entries.clear()
@@ -598,16 +608,21 @@ class CommentReplyDrawer(QFrame):
         actions = QHBoxLayout()
         actions.setSpacing(SPACE["xs"])
         btn_up = QPushButton(f"\u25b2 {upvotes}", card)
+        actionable = is_actionable_comment_id(cid)
+        btn_up.setEnabled(actionable)
         btn_up.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_up.clicked.connect(lambda _c=False, i=cid: self.comment_voted.emit(i, 1))
+        if actionable:
+            btn_up.clicked.connect(lambda _c=False, i=cid: self.comment_voted.emit(i, 1))
         actions.addWidget(btn_up)
 
         btn_rep = QPushButton(_tr("gallery_btn_report"), card)
+        btn_rep.setEnabled(actionable)
         btn_rep.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_rep.clicked.connect(lambda _c=False, i=cid, b=btn_rep: self._open_report_menu(i, b))
+        if actionable:
+            btn_rep.clicked.connect(lambda _c=False, i=cid, b=btn_rep: self._open_report_menu(i, b))
         actions.addWidget(btn_rep)
 
-        if can_delete:
+        if actionable and can_delete:
             btn_del = QPushButton(_tr("gallery_comments_delete"), card)
             btn_del.setObjectName(f"btn_delete_comment_{cid}")
             btn_del.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -666,6 +681,7 @@ class GalleryShowcaseWidget(QWidget):
         self._theme = "dark"
         self._works: list[ShowcaseWork] = []
         self._current_index: int = -1
+        self._draft_work_id: str | None = None
         self._slide_interval_sec: float = max(1.0, float(slide_interval_sec))
         self._fusion_busy: bool = False
         self._pause_reasons: dict[str, int] = {}
@@ -673,29 +689,23 @@ class GalleryShowcaseWidget(QWidget):
             blur_cache if blur_cache is not None else StaticBlurBackgroundCache()
         )
         self._cached_bg_pixmap: QPixmap | None = None
-        self._cached_bg_key: tuple[str, int, int] | None = None
+        self._cached_bg_key: tuple[str, int, int, int] | None = None
         self._prefetch_callback = prefetch_callback
         self._prefetched_ids: set[str] = set()
         self._allow_background_prefetch: bool = True
 
         # Floating danmaku layer sits over the painted canvas and below corner HUD
+        # Interactive controls share the drawer's stacking context.
         self.danmaku_overlay = DanmakuOverlay(
             self,
             settings=danmaku_settings,
             clock=clock,
+            controls_parent=self,
         )
-        self.danmaku_overlay.composer_opened.connect(
-            lambda: self.pause_slideshow("danmaku_compose")
-        )
-        self.danmaku_overlay.composer_closed.connect(
-            lambda: self.resume_slideshow("danmaku_compose")
-        )
-        self.danmaku_overlay.popover_opened.connect(
-            lambda: self.pause_slideshow("hover_popover")
-        )
-        self.danmaku_overlay.popover_closed.connect(
-            lambda: self.resume_slideshow("hover_popover")
-        )
+        self.danmaku_overlay.composer_opened.connect(self._on_composer_opened)
+        self.danmaku_overlay.composer_closed.connect(self._on_composer_closed)
+        self.danmaku_overlay.popover_opened.connect(self._pause_for_popover)
+        self.danmaku_overlay.popover_closed.connect(self._resume_from_popover)
         self.danmaku_overlay.comment_submitted.connect(self._on_danmaku_submitted)
         self.danmaku_overlay.comment_voted.connect(self.comment_voted.emit)
         self.danmaku_overlay.comment_reported.connect(self.comment_reported.emit)
@@ -869,6 +879,14 @@ class GalleryShowcaseWidget(QWidget):
     def set_works(self, works: Sequence[Any], *, start_index: int = 0) -> None:
         self._works = [ShowcaseWork.from_any(w) for w in works]
         self._prefetched_ids.clear()
+        draft_index = None
+        if self._draft_work_id is not None:
+            draft_index = next(
+                (i for i, work in enumerate(self._works) if work.id == self._draft_work_id),
+                None,
+            )
+            if draft_index is None:
+                self.close_danmaku_composer()
         if not self._works:
             self._current_index = -1
             self._cached_bg_pixmap = None
@@ -880,17 +898,27 @@ class GalleryShowcaseWidget(QWidget):
             self.update()
             return
 
-        idx = max(0, min(len(self._works) - 1, int(start_index)))
+        idx = draft_index if draft_index is not None else max(
+            0, min(len(self._works) - 1, int(start_index))
+        )
+        if self._fusion_busy:
+            cached = self._find_cached_slide(idx)
+            if cached is not None:
+                idx = cached
         self.show_slide(idx)
 
     def set_work_pixmap(self, work_id: str, pixmap: QPixmap | QImage) -> bool:
         pm = QPixmap.fromImage(pixmap) if isinstance(pixmap, QImage) else pixmap
         for idx, work in enumerate(self._works):
             if work.id == work_id:
+                if work.pixmap is None or work.pixmap.cacheKey() != pm.cacheKey():
+                    self._blur_cache.invalidate_work(work_id)
                 work.pixmap = pm
                 if idx == self._current_index:
-                    self._ensure_static_blur(force=True)
+                    self._ensure_static_blur()
                     self.update()
+                if self._fusion_busy:
+                    self._select_cached_slide_if_needed()
                 return True
         return False
 
@@ -912,8 +940,7 @@ class GalleryShowcaseWidget(QWidget):
         idx = int(index) % len(self._works)
         self._current_index = idx
         work = self._works[idx]
-        work.load_local_pixmap()
-        self._ensure_static_blur(force=False)
+        self._ensure_static_blur()
         self.danmaku_overlay.set_comments(work.comments, work_id=work.id)
         self.comment_drawer.set_comments(work.comments)
         self._update_hud_for_current()
@@ -928,37 +955,16 @@ class GalleryShowcaseWidget(QWidget):
         if len(self._works) <= 1:
             return False
         if self._fusion_busy:
-            cached_indices = [i for i, w in enumerate(self._works) if w.has_local_image()]
-            if not cached_indices:
-                return False
-            if len(cached_indices) == 1:
-                if self._current_index != cached_indices[0]:
-                    return self.show_slide(cached_indices[0])
-                return False
-            # Pick the next locally cached slide after current_index
-            for offset in range(1, len(self._works) + 1):
-                cand = (self._current_index + offset) % len(self._works)
-                if self._works[cand].has_local_image():
-                    return self.show_slide(cand)
-            return False
+            idx = self._find_cached_slide(self._current_index + 1)
+            return idx is not None and idx != self._current_index and self.show_slide(idx)
         return self.show_slide((self._current_index + 1) % len(self._works))
 
     def previous_slide(self) -> bool:
         if len(self._works) <= 1:
             return False
         if self._fusion_busy:
-            cached_indices = [i for i, w in enumerate(self._works) if w.has_local_image()]
-            if not cached_indices:
-                return False
-            if len(cached_indices) == 1:
-                if self._current_index != cached_indices[0]:
-                    return self.show_slide(cached_indices[0])
-                return False
-            for offset in range(1, len(self._works) + 1):
-                cand = (self._current_index - offset) % len(self._works)
-                if self._works[cand].has_local_image():
-                    return self.show_slide(cand)
-            return False
+            idx = self._find_cached_slide(self._current_index - 1, direction=-1)
+            return idx is not None and idx != self._current_index and self.show_slide(idx)
         return self.show_slide((self._current_index - 1) % len(self._works))
 
     def set_fusion_busy(self, busy: bool) -> None:
@@ -967,7 +973,9 @@ class GalleryShowcaseWidget(QWidget):
         if self._fusion_busy == new_busy:
             return
         self._fusion_busy = new_busy
-        if not self._fusion_busy:
+        if self._fusion_busy:
+            self._select_cached_slide_if_needed()
+        else:
             self._maybe_prefetch_next()
 
     def set_slide_interval(self, sec: float) -> None:
@@ -988,6 +996,14 @@ class GalleryShowcaseWidget(QWidget):
             self._pause_reasons[key] = cur - 1
         self._sync_slideshow_timer()
 
+    @pyqtSlot()
+    def _pause_for_popover(self) -> None:
+        self.pause_slideshow("hover_popover")
+
+    @pyqtSlot()
+    def _resume_from_popover(self) -> None:
+        self.resume_slideshow("hover_popover")
+
     def set_danmaku_settings(self, settings: DanmakuSettings) -> None:
         norm = settings.normalized()
         self.danmaku_overlay.set_settings(norm)
@@ -1002,7 +1018,8 @@ class GalleryShowcaseWidget(QWidget):
         self.danmaku_overlay.set_limits(max_chars=max_chars, cooldown_sec=cooldown_sec)
 
     def open_danmaku_composer(self) -> None:
-        self.danmaku_overlay.open_composer()
+        if self.current_work is not None:
+            self.danmaku_overlay.open_composer()
 
     def close_danmaku_composer(self) -> None:
         self.danmaku_overlay.close_composer()
@@ -1010,6 +1027,7 @@ class GalleryShowcaseWidget(QWidget):
     def open_comment_drawer(self) -> None:
         self._layout_overlays()
         self.comment_drawer.open_drawer()
+        self._raise_hud_layers()
 
     def close_comment_drawer(self) -> None:
         self.comment_drawer.close_drawer()
@@ -1029,8 +1047,20 @@ class GalleryShowcaseWidget(QWidget):
 
     # -------------------------------------------------------- internal helpers
 
+    def _select_cached_slide_if_needed(self) -> None:
+        work = self.current_work
+        if work is not None and work.load_local_pixmap() is None:
+            self.next_slide()
+
+    def _find_cached_slide(self, start: int, direction: int = 1) -> int | None:
+        for offset in range(len(self._works)):
+            idx = (start + offset * direction) % len(self._works)
+            if self._works[idx].load_local_pixmap() is not None:
+                return idx
+        return None
+
     def _sync_slideshow_timer(self) -> None:
-        should_run = len(self._works) > 1 and not self.is_slideshow_paused()
+        should_run = self.isVisible() and len(self._works) > 1 and not self.is_slideshow_paused()
         if should_run:
             if not self._slide_timer.isActive():
                 self._slide_timer.start()
@@ -1052,7 +1082,7 @@ class GalleryShowcaseWidget(QWidget):
             self._prefetch_callback(next_work.id)
         self.prefetch_requested.emit(next_work.id)
 
-    def _ensure_static_blur(self, *, force: bool = False) -> None:
+    def _ensure_static_blur(self) -> None:
         work = self.current_work
         if work is None:
             self._cached_bg_pixmap = None
@@ -1066,15 +1096,10 @@ class GalleryShowcaseWidget(QWidget):
         sz = self.size()
         w = max(1, sz.width())
         h = max(1, sz.height())
-        key = (work.id, w, h)
-        if not force and self._cached_bg_key == key and self._cached_bg_pixmap is not None:
+        key = (work.id, w, h, source.cacheKey())
+        if self._cached_bg_key == key and self._cached_bg_pixmap is not None:
             return
-        if force:
-            self._cached_bg_pixmap = _build_blurred_background(source, QSize(w, h))
-            self._blur_cache.put(work.id, QSize(w, h), self._cached_bg_pixmap)
-            self._blur_cache.compute_count += 1
-        else:
-            self._cached_bg_pixmap = self._blur_cache.get_or_build(work.id, source, QSize(w, h))
+        self._cached_bg_pixmap = self._blur_cache.get_or_build(work.id, source, QSize(w, h))
         self._cached_bg_key = key
 
     def _raise_hud_layers(self) -> None:
@@ -1118,7 +1143,7 @@ class GalleryShowcaseWidget(QWidget):
 
         # Right-side comment/reply drawer
         drawer_w = max(240, min(340, int(w * 0.36)))
-        drawer_h = max(160, h - bar_sz.height() - margin * 3)
+        drawer_h = max(1, bar_y - margin * 2)
         self.comment_drawer.setGeometry(w - drawer_w - margin, margin, drawer_w, drawer_h)
 
     def _update_hud_for_current(self) -> None:
@@ -1183,14 +1208,25 @@ class GalleryShowcaseWidget(QWidget):
         self._layout_overlays()
         self.like_toggled.emit(work.id, work.viewer_liked)
 
+    @pyqtSlot()
+    def _on_composer_opened(self) -> None:
+        work = self.current_work
+        self._draft_work_id = work.id if work is not None else None
+        self.pause_slideshow("danmaku_compose")
+
+    @pyqtSlot()
+    def _on_composer_closed(self) -> None:
+        self._draft_work_id = None
+        self.resume_slideshow("danmaku_compose")
+
     def _on_comment_clicked(self) -> None:
         if self.danmaku_overlay.is_composing():
-            self.danmaku_overlay.close_composer()
+            self.close_danmaku_composer()
         else:
-            self.danmaku_overlay.open_composer()
+            self.open_danmaku_composer()
 
     def _on_danmaku_submitted(self, content: str) -> None:
-        work = self.current_work
+        work = next((w for w in self._works if w.id == self._draft_work_id), None)
         if work is None:
             return
         local_item = {
@@ -1203,10 +1239,12 @@ class GalleryShowcaseWidget(QWidget):
         }
         work.comments.append(local_item)
         work.comment_count += 1
-        self.danmaku_overlay.add_comment(local_item, immediate=True)
-        self.comment_drawer.set_comments(work.comments)
-        self._update_hud_for_current()
-        self._layout_overlays()
+        if work is self.current_work:
+            self.danmaku_overlay.add_comment(local_item, immediate=True)
+            self.danmaku_overlay.composer.set_comment_count(work.comment_count)
+            self.comment_drawer.set_comments(work.comments)
+            self._update_hud_for_current()
+            self._layout_overlays()
         self.comment_submitted.emit(work.id, content, "")
 
     def _on_download_clicked(self) -> None:
@@ -1289,22 +1327,22 @@ class GalleryShowcaseWidget(QWidget):
 
     def resizeEvent(self, event: QResizeEvent | None) -> None:
         super().resizeEvent(event)
-        self._ensure_static_blur(force=False)
+        self._ensure_static_blur()
         self._layout_overlays()
 
     def showEvent(self, event: Any) -> None:
         super().showEvent(event)
         if "hidden" in self._pause_reasons:
             self.resume_slideshow("hidden")
-        self.danmaku_overlay.set_paused(False)
-        self._ensure_static_blur(force=False)
+        else:
+            self._sync_slideshow_timer()
+        self._ensure_static_blur()
         self._layout_overlays()
 
     def hideEvent(self, event: Any) -> None:
         super().hideEvent(event)
         if "hidden" not in self._pause_reasons:
             self.pause_slideshow("hidden")
-        self.danmaku_overlay.set_paused(True)
 
     def paintEvent(self, _event: QPaintEvent | None) -> None:
         painter = QPainter(self)

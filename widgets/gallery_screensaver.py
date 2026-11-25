@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any, Callable, Sequence
 
 from PyQt6.QtCore import QEasingCurve, QPropertyAnimation, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QCloseEvent, QKeyEvent, QResizeEvent
+from PyQt6.QtGui import QCloseEvent, QKeySequence, QResizeEvent, QShortcut
 from PyQt6.QtWidgets import QGraphicsOpacityEffect, QLabel, QVBoxLayout, QWidget
 
 from locales import trans
@@ -53,6 +53,8 @@ class GalleryScreensaverWindow(QWidget):
         self.setObjectName("gallery_screensaver")
         self.setProperty("controlId", "gallery_screensaver")
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self._exit_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
+        self._exit_shortcut.activated.connect(self.exit_screensaver)
 
         self._toast_hold_ms = max(0, int(toast_hold_ms))
         self._toast_fade_ms = max(50, int(toast_fade_ms))
@@ -120,9 +122,6 @@ class GalleryScreensaverWindow(QWidget):
 
     def launch(self) -> None:
         """Show fullscreen Always-on-Top and display the auto-fading ESC toast."""
-        self._closed_emitted = False
-        if "screensaver_closed" in self.showcase.active_pause_reasons():
-            self.showcase.resume_slideshow("screensaver_closed")
         self.showFullScreen()
         self.raise_()
         self.activateWindow()
@@ -191,21 +190,19 @@ class GalleryScreensaverWindow(QWidget):
 
     def showEvent(self, event: Any) -> None:
         super().showEvent(event)
-        self._closed_emitted = False
+        if self._closed_emitted:
+            self._closed_emitted = False
+            self.showcase.resume_slideshow("screensaver_closed")
         self._position_toast()
-
-    def keyPressEvent(self, event: QKeyEvent | None) -> None:
-        if event is not None and event.key() == Qt.Key.Key_Escape:
-            self.exit_screensaver()
-            event.accept()
-            return
-        super().keyPressEvent(event)
 
     def closeEvent(self, event: QCloseEvent | None) -> None:
         self._toast_hold_timer.stop()
         self._toast_fade.stop()
-        self.showcase.pause_slideshow("screensaver_closed")
         if not self._closed_emitted:
             self._closed_emitted = True
+            self.showcase.pause_slideshow("screensaver_closed")
+            self.showcase.close_danmaku_composer()
+            self.showcase.close_comment_drawer()
+            self.showcase.danmaku_overlay.popover.dismiss()
             self.closed.emit()
         super().closeEvent(event)

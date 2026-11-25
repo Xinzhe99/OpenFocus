@@ -1,9 +1,10 @@
 """Offscreen Qt tests for GalleryShowcaseWidget and GalleryScreensaverWindow."""
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QPoint, Qt
 from PyQt6.QtGui import QColor, QImage, QPixmap
 from PyQt6.QtTest import QTest
+from PyQt6.QtWidgets import QFrame, QPushButton
 
 from ui.control_surface import control_id
 from widgets.danmaku_overlay import REPORT_REASONS, DanmakuSettings
@@ -106,6 +107,12 @@ def _sample_works() -> list[ShowcaseWork]:
     ]
 
 
+def _click_canvas_control(showcase, control):
+    point = control.mapTo(showcase, control.rect().center())
+    assert showcase.childAt(point) is control, control.objectName()
+    QTest.mouseClick(showcase.windowHandle(), Qt.MouseButton.LeftButton, pos=point)
+
+
 def test_static_blur_cache_reused_across_repaints_and_zero_black_bars(qapp):
     cache = StaticBlurBackgroundCache(max_entries=8)
     showcase = GalleryShowcaseWidget(blur_cache=cache)
@@ -147,6 +154,15 @@ def test_static_blur_cache_reused_across_repaints_and_zero_black_bars(qapp):
     assert cache.compute_count == 2
     assert cache.cache_hits > hits_before
 
+    # Replacing the pixmap at another size must also invalidate the previous backdrop.
+    showcase.resize(800, 450)
+    assert showcase.set_work_pixmap("w1", _make_pixmap(180, 320, QColor(220, 45, 30)))
+    showcase.resize(640, 360)
+    qapp.processEvents()
+    replacement = showcase.grab().toImage().pixelColor(8, 180)
+    assert replacement.red() > 100
+    assert replacement.red() > replacement.blue()
+
     showcase.deleteLater()
 
 
@@ -159,11 +175,13 @@ def test_fusion_busy_pauses_prefetch_and_rotates_only_cached_slides(qapp):
     # Start with fusion busy BEFORE loading works -> zero prefetch calls
     showcase.set_fusion_busy(True)
     assert showcase.prefetch_paused is True
-    showcase.set_works(works, start_index=1)
+    showcase.set_works(works, start_index=2)
     assert prefetched == []
 
     # Rotating while fusion busy skips uncached w3 and stays on locally cached slides (w1, w2)
-    assert showcase.current_work is not None and showcase.current_work.id == "w2"
+    assert showcase.current_work is not None and showcase.current_work.id == "w1"
+    showcase.next_slide()
+    assert showcase.current_work.id == "w2"
     showcase.next_slide()
     assert showcase.current_work.id == "w1"
     showcase.next_slide()
@@ -173,6 +191,12 @@ def test_fusion_busy_pauses_prefetch_and_rotates_only_cached_slides(qapp):
     # Clearing fusion busy resumes prefetching for upcoming uncached slide w3
     showcase.set_fusion_busy(False)
     assert showcase.prefetch_paused is False
+    assert prefetched == ["w3"]
+
+    showcase.show_slide(2)
+    assert showcase.current_work.id == "w3"
+    showcase.set_fusion_busy(True)
+    assert showcase.current_work.id == "w1"
     assert prefetched == ["w3"]
 
     showcase.deleteLater()
@@ -212,11 +236,14 @@ def test_danmaku_composer_pauses_5s_timer_and_send_or_cancel_resumes(qapp):
         for b in showcase.danmaku_overlay.active_bullets
     )
 
-    # Re-open composer -> pauses timer; cancel -> resumes timer
+    # Escape from the embedded input cancels the draft and resumes rotation.
     clock.advance(12.0)
     showcase.btn_comment.click()
     assert showcase.slide_timer.isActive() is False
-    showcase.danmaku_overlay.composer.btn_cancel.click()
+    input_edit = showcase.danmaku_overlay.composer.input_edit
+    input_edit.setText("Cancel this draft")
+    QTest.keyClick(input_edit, Qt.Key.Key_Escape)
+    assert input_edit.text() == ""
     assert showcase.danmaku_overlay.is_composing() is False
     assert showcase.slide_timer.isActive() is True
 
@@ -234,6 +261,151 @@ def test_danmaku_composer_pauses_5s_timer_and_send_or_cancel_resumes(qapp):
     showcase.set_slide_interval(7.5)
     assert showcase.slide_timer.interval() == 7500
 
+    showcase.deleteLater()
+
+
+def test_open_danmaku_draft_retains_work_on_feed_refresh_and_cancels_when_removed(qapp):
+    clock = _FakeClock()
+    showcase = GalleryShowcaseWidget(clock=clock)
+    showcase.set_works(_sample_works()[:2])
+    showcase.show()
+    qapp.processEvents()
+    composer = showcase.danmaku_overlay.composer
+    submitted = []
+    showcase.comment_submitted.connect(lambda *args: submitted.append(args))
+
+    showcase.open_danmaku_composer()
+    composer.input_edit.setText("Draft for the beetle")
+    w1, w2 = _sample_works()[:2]
+    w1.pixmap = None
+    showcase.set_works([w2, w1], start_index=0)
+    assert showcase.current_work.id == "w1"
+    assert composer.input_edit.text() == "Draft for the beetle"
+    showcase.set_fusion_busy(True)
+    assert showcase.current_work.id == "w2"
+    qapp.processEvents()
+    _click_canvas_control(showcase, composer.btn_send)
+    assert submitted == [("w1", "Draft for the beetle", "")]
+    assert w1.comments[-1]["content"] == "Draft for the beetle"
+    assert w2.comments == []
+
+    clock.advance(11)
+    showcase.set_fusion_busy(False)
+    for remaining in ([w2], []):
+        showcase.set_works([w1, w2])
+        showcase.open_danmaku_composer()
+        composer.input_edit.setText("Draft for a removed work")
+        showcase.set_works(remaining)
+        assert not composer.is_open()
+        assert composer.input_edit.text() == ""
+        assert not composer.submit_text("Draft for a removed work")
+        assert composer.cooldown_remaining() == 0
+        assert len(submitted) == 1
+        assert "danmaku_compose" not in showcase.active_pause_reasons()
+    showcase.deleteLater()
+
+
+def test_canvas_clicks_reach_composer_and_popover_over_drawer_at_narrow_sizes(qapp):
+    showcase = GalleryShowcaseWidget(clock=_FakeClock())
+    showcase.set_danmaku_limits(cooldown_sec=0)
+    showcase.show()
+    overlay = showcase.danmaku_overlay
+    composer = overlay.composer
+    popover = overlay.popover
+    submitted = []
+    votes = []
+    reports = []
+    showcase.comment_submitted.connect(lambda *args: submitted.append(args))
+    showcase.comment_voted.connect(lambda *args: votes.append(args))
+    showcase.comment_reported.connect(lambda *args: reports.append(args))
+
+    for width, height in ((640, 360), (320, 200)):
+        showcase.resize(width, height)
+        showcase.set_works(_sample_works()[:2])
+        showcase.open_danmaku_composer()
+        qapp.processEvents()
+        _click_canvas_control(showcase, composer.btn_all_comments)
+        assert showcase.comment_drawer.is_open()
+        composer.input_edit.setText(f"Canvas {width}")
+        _click_canvas_control(showcase, composer.btn_send)
+        assert submitted[-1] == ("w1", f"Canvas {width}", "")
+        assert not composer.is_open()
+        assert showcase.comment_drawer.is_open()
+
+        showcase.open_danmaku_composer()
+        composer.input_edit.setText("Cancel this draft")
+        qapp.processEvents()
+        _click_canvas_control(showcase, composer.btn_cancel)
+        assert not composer.is_open()
+        assert composer.input_edit.text() == ""
+
+        bullet = next(item for item in overlay.active_bullets if item.comment_id == "c1")
+        bullet.x = 30
+        point = QPoint(49, int(bullet.y + bullet.height / 2))
+        assert showcase.childAt(point) is overlay
+        QTest.mouseClick(showcase.windowHandle(), Qt.MouseButton.LeftButton, pos=point)
+        assert popover.current_item is bullet
+        _click_canvas_control(showcase, popover.btn_upvote)
+        assert votes[-1] == ("c1", 1)
+        _click_canvas_control(showcase, popover.btn_report)
+        qapp.processEvents()
+        reason = popover.reason_buttons["other"]
+        popover.report_panel.ensureWidgetVisible(reason)
+        qapp.processEvents()
+        assert showcase.rect().contains(popover.geometry())
+        _click_canvas_control(showcase, reason)
+        assert reports[-1] == ("c1", "other")
+        assert not popover.isVisible()
+        assert showcase.comment_drawer.is_open()
+        showcase.close_comment_drawer()
+
+    assert len(submitted) == len(votes) == len(reports) == 2
+    showcase.deleteLater()
+
+
+def test_pending_danmaku_is_visible_but_only_server_comments_can_vote_or_report(qapp):
+    showcase = GalleryShowcaseWidget()
+    showcase.resize(640, 360)
+    showcase.set_works([ShowcaseWork(id="w1")])
+    showcase.show()
+    qapp.processEvents()
+    votes = []
+    reports = []
+    showcase.comment_voted.connect(lambda *args: votes.append(args))
+    showcase.comment_reported.connect(lambda *args: reports.append(args))
+
+    showcase.open_danmaku_composer()
+    overlay = showcase.danmaku_overlay
+    overlay.composer.input_edit.setText("Pending comment")
+    qapp.processEvents()
+    _click_canvas_control(showcase, overlay.composer.btn_send)
+    pending, = overlay.active_bullets
+    assert pending.content == "Pending comment"
+    assert pending.comment_id.startswith("local-")
+
+    showcase.open_comment_drawer()
+    card = showcase.comment_drawer.findChild(QFrame, "commentCard")
+    assert card is not None
+    actions = card.findChildren(QPushButton)
+    assert len(actions) == 2
+    assert all(not button.isEnabled() for button in actions)
+    for button in actions:
+        button.click()
+
+    assert overlay.open_popover_for(pending)
+    popover = overlay.popover
+    for button in (popover.btn_upvote, popover.btn_downvote, popover.btn_report):
+        assert not button.isEnabled()
+        button.click()
+    assert not popover.report_panel.isVisible()
+    assert votes == reports == []
+
+    showcase.set_work_comments("w1", [{"id": "c-confirmed", "content": pending.content}])
+    assert overlay.open_popover_for("c-confirmed")
+    assert popover.btn_upvote.isEnabled()
+    assert popover.btn_report.isEnabled()
+    popover.btn_upvote.click()
+    assert votes == [("c-confirmed", 1)]
     showcase.deleteLater()
 
 
@@ -355,6 +527,7 @@ def test_fullscreen_screensaver_always_on_top_toast_and_esc_exit(qapp):
 
     win = GalleryScreensaverWindow(toast_hold_ms=20, toast_fade_ms=50)
     win.sync_from_showcase(source)
+    assert not win.showcase.slide_timer.isActive()
 
     flags = win.windowFlags()
     assert bool(flags & Qt.WindowType.WindowStaysOnTopHint)
@@ -376,6 +549,7 @@ def test_fullscreen_screensaver_always_on_top_toast_and_esc_exit(qapp):
     win.launch()
     qapp.processEvents()
     assert win.isVisible() is True
+    assert win.showcase.slide_timer.isActive()
     assert win.lbl_exit_toast.isVisible() is True
     assert "ESC" in win.lbl_exit_toast.text()
 
@@ -384,16 +558,26 @@ def test_fullscreen_screensaver_always_on_top_toast_and_esc_exit(qapp):
     qapp.processEvents()
     assert win.lbl_exit_toast.isVisible() is False
 
-    # Pressing ESC cleanly exits screensaver and emits closed once
-    QTest.keyClick(win, Qt.Key.Key_Escape)
+    # Escape must exit even when the composer input owns keyboard focus.
+    win.showcase.open_danmaku_composer()
+    composer = win.showcase.danmaku_overlay.composer
+    composer.input_edit.setText("Fullscreen draft")
+    assert qapp.focusWidget() is composer.input_edit
+    QTest.keyClick(composer.input_edit, Qt.Key.Key_Escape)
     qapp.processEvents()
     assert win.isVisible() is False
     assert closed_count == 1
+    win.exit_screensaver()
+    assert closed_count == 1
+    assert win.showcase.active_pause_reasons() == frozenset({"hidden", "screensaver_closed"})
 
     # Re-launching resets closed guard and clicking fullscreen button also exits cleanly
     win.launch()
     qapp.processEvents()
     assert win.isVisible() is True
+    assert win.showcase.slide_timer.isActive()
+    assert not composer.is_open()
+    assert composer.input_edit.text() == ""
     win.showcase.btn_fullscreen.click()
     qapp.processEvents()
     assert win.isVisible() is False
@@ -406,10 +590,13 @@ def test_fullscreen_screensaver_always_on_top_toast_and_esc_exit(qapp):
 def test_popover_and_visibility_pause_resume_slideshow(qapp):
     showcase = GalleryShowcaseWidget()
     showcase.resize(720, 420)
+    showcase.set_works(_sample_works()[:2], start_index=0)
+    overlay = showcase.danmaku_overlay
+    assert not showcase.slide_timer.isActive()
+    assert not overlay._anim_timer.isActive()
     showcase.show()
     qapp.processEvents()
-
-    showcase.set_works(_sample_works()[:2], start_index=0)
+    assert overlay._anim_timer.isActive()
     assert showcase.slide_timer.isActive() is True
 
     # Opening a danmaku action popover pauses slideshow via "hover_popover"
@@ -417,7 +604,12 @@ def test_popover_and_visibility_pause_resume_slideshow(qapp):
     assert "hover_popover" in showcase.active_pause_reasons()
     assert showcase.slide_timer.isActive() is False
 
-    showcase.danmaku_overlay.popover.dismiss()
+    pinned = overlay.popover.current_item
+    assert pinned is not None and pinned.paused
+    showcase.resize(320, 200)
+    qapp.processEvents()
+    assert not overlay.popover.isVisible()
+    assert not pinned.paused
     assert "hover_popover" not in showcase.active_pause_reasons()
     assert showcase.slide_timer.isActive() is True
 
@@ -426,11 +618,13 @@ def test_popover_and_visibility_pause_resume_slideshow(qapp):
     qapp.processEvents()
     assert "hidden" in showcase.active_pause_reasons()
     assert showcase.slide_timer.isActive() is False
+    assert not overlay._anim_timer.isActive()
 
     showcase.show()
     qapp.processEvents()
     assert "hidden" not in showcase.active_pause_reasons()
     assert showcase.slide_timer.isActive() is True
+    assert overlay._anim_timer.isActive()
 
     showcase.deleteLater()
 
@@ -510,7 +704,7 @@ def test_nested_replies_and_is_author_reply_badge_in_drawer(qapp):
     showcase.deleteLater()
 
 
-def test_blur_cache_force_put_evicts_lru_and_previous_slide_single_cached_guard(qapp):
+def test_blur_cache_evicts_lru_and_previous_slide_single_cached_guard(qapp):
     cache = StaticBlurBackgroundCache(max_entries=2)
     showcase = GalleryShowcaseWidget(blur_cache=cache)
     showcase.resize(400, 300)
@@ -527,7 +721,7 @@ def test_blur_cache_force_put_evicts_lru_and_previous_slide_single_cached_guard(
     assert showcase.previous_slide() is False
     assert changes == []
 
-    # Fill cache beyond max_entries via force updates (set_work_pixmap)
+    # Fill cache beyond max_entries with pixmap updates.
     showcase.set_work_pixmap("w1", _make_pixmap(100, 100, QColor(20, 90, 210)))
     showcase.show_slide(1)
     showcase.set_work_pixmap("w2", _make_pixmap(100, 100, QColor(30, 100, 220)))

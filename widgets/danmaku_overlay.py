@@ -10,7 +10,7 @@ from dataclasses import dataclass
 import time
 from typing import Any, Callable, Mapping, Sequence
 
-from PyQt6.QtCore import QPoint, QPointF, QRect, QRectF, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QPoint, QPointF, QRect, QRectF, Qt, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import (
     QColor,
     QFont,
@@ -22,11 +22,13 @@ from PyQt6.QtGui import (
     QPaintEvent,
 )
 from PyQt6.QtWidgets import (
+    QBoxLayout,
     QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
@@ -164,6 +166,11 @@ def is_floating_danmaku_comment(comment: Any) -> bool:
     return bool(content)
 
 
+def is_actionable_comment_id(comment_id: str) -> bool:
+    """Local optimistic comments have no server resource to act on yet."""
+    return bool(comment_id) and not comment_id.startswith("local-")
+
+
 def _normalize_vote(raw: Any) -> int:
     if raw in (1, "1", "up", "upvote", True):
         return 1
@@ -290,6 +297,8 @@ class DanmakuActionPopover(QFrame):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._item: DanmakuItem | None = None
+        self._anchor = QPoint()
+        self._bounds = QRect()
         self._theme = "dark"
         self.setObjectName("danmaku_action_popover")
         self.setProperty("controlId", "danmaku_action_popover")
@@ -338,19 +347,24 @@ class DanmakuActionPopover(QFrame):
         actions.addWidget(self.btn_report)
         root.addLayout(actions)
 
-        self.report_panel = QFrame(self)
+        self.report_panel = QScrollArea(self)
         self.report_panel.setObjectName("danmakuReportPanel")
-        rep_layout = QVBoxLayout(self.report_panel)
+        self.report_panel.setFrameShape(QFrame.Shape.NoFrame)
+        self.report_panel.setWidgetResizable(True)
+        self.report_panel.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        report_options = QWidget(self.report_panel)
+        report_options.setObjectName("danmakuReportOptions")
+        rep_layout = QVBoxLayout(report_options)
         rep_layout.setContentsMargins(0, SPACE["xs"], 0, 0)
         rep_layout.setSpacing(SPACE["xs"])
 
-        self.lbl_report_title = QLabel("", self.report_panel)
+        self.lbl_report_title = QLabel("", report_options)
         self.lbl_report_title.setObjectName("danmakuReportTitle")
         rep_layout.addWidget(self.lbl_report_title)
 
         self.reason_buttons: dict[str, QPushButton] = {}
         for reason in REPORT_REASONS:
-            btn = QPushButton("", self.report_panel)
+            btn = QPushButton("", report_options)
             btn.setObjectName(f"btn_danmaku_report_{reason}")
             btn.setProperty("controlId", f"btn_danmaku_report_{reason}")
             btn.setProperty("reasonKey", reason)
@@ -358,6 +372,7 @@ class DanmakuActionPopover(QFrame):
             btn.clicked.connect(lambda _checked=False, r=reason: self._emit_report(r))
             self.reason_buttons[reason] = btn
             rep_layout.addWidget(btn)
+        self.report_panel.setWidget(report_options)
 
         self.report_panel.hide()
         root.addWidget(self.report_panel)
@@ -392,6 +407,8 @@ class DanmakuActionPopover(QFrame):
             " background: transparent; }"
             f" QLabel#danmakuReportTitle {{ color: {p['textMuted']};"
             f" font-size: {FONT['caption']}pt; background: transparent; }}"
+            " QScrollArea#danmakuReportPanel, QWidget#danmakuReportOptions"
+            " { background: transparent; }"
             f" QPushButton {{ background-color: {p['surfaceHover']};"
             f" color: {p['text']}; border: 1px solid {p['border']};"
             f" border-radius: {RADIUS['sm']}px; padding: 3px 8px;"
@@ -420,14 +437,15 @@ class DanmakuActionPopover(QFrame):
 
     def open_for(self, item: DanmakuItem, anchor: QPoint, bounds: QRect) -> None:
         self._item = item
+        self._anchor = anchor
+        self._bounds = bounds
         self.report_panel.hide()
         preview = item.content if len(item.content) <= 28 else f"{item.content[:27]}\u2026"
         if item.author_nickname:
             preview = f"{item.author_nickname}: {preview}"
         self.lbl_preview.setText(preview)
         self.refresh_counts()
-        self.adjustSize()
-        self._reposition(anchor, bounds)
+        self._fit_at_anchor()
         self.show()
         self.raise_()
 
@@ -436,34 +454,48 @@ class DanmakuActionPopover(QFrame):
         up = item.upvotes if item else 0
         down = item.downvotes if item else 0
         vote = item.viewer_vote if item else 0
+        actionable = item is not None and is_actionable_comment_id(item.comment_id)
+        self.btn_upvote.setEnabled(actionable)
+        self.btn_downvote.setEnabled(actionable)
+        self.btn_report.setEnabled(actionable)
+        self.report_panel.setEnabled(actionable)
         self.btn_upvote.setText(f"\u25b2 {up}")
         self.btn_downvote.setText(f"\u25bc {down}")
         self.btn_upvote.setChecked(vote == 1)
         self.btn_downvote.setChecked(vote == -1)
 
-    def _reposition(self, anchor: QPoint, bounds: QRect) -> None:
-        sz = self.sizeHint()
-        x = min(max(bounds.left() + SPACE["sm"], anchor.x()), max(bounds.left() + SPACE["sm"], bounds.right() - sz.width() - SPACE["sm"]))
-        y = anchor.y() + SPACE["xs"]
-        if y + sz.height() > bounds.bottom() - SPACE["sm"]:
-            y = max(bounds.top() + SPACE["sm"], anchor.y() - sz.height() - SPACE["xs"])
-        self.move(int(x), int(y))
+    def _fit_at_anchor(self) -> None:
+        margin = SPACE["sm"]
+        bounds = self._bounds.adjusted(margin, margin, -margin, -margin)
+        size = self.sizeHint().boundedTo(bounds.size())
+        self.resize(size)
+        x = min(self._anchor.x(), bounds.right() - self.width() + 1)
+        y = self._anchor.y() + SPACE["xs"]
+        if y + self.height() > bounds.bottom() + 1:
+            above = self._anchor.y() - self.height() - SPACE["xs"]
+            y = min(above, bounds.bottom() - self.height() + 1)
+        self.move(max(bounds.left(), x), max(bounds.top(), y))
 
     def _toggle_report_panel(self) -> None:
-        show = not self.report_panel.isVisible()
+        if not self.btn_report.isEnabled():
+            return
+        show = self.report_panel.isHidden()
+        if show:
+            spacing = self.layout().spacing()
+            available = self._bounds.height() - 2 * SPACE["sm"] - self.sizeHint().height()
+            height = self.report_panel.widget().sizeHint().height()
+            self.report_panel.setFixedHeight(max(1, min(height, available - spacing)))
         self.report_panel.setVisible(show)
-        self.adjustSize()
-        if self.parentWidget() is not None:
-            self._reposition(self.pos(), self.parentWidget().rect())
+        self._fit_at_anchor()
 
     def _emit_vote(self, direction: int) -> None:
-        if self._item is None:
+        if self._item is None or not is_actionable_comment_id(self._item.comment_id):
             return
         new_vote = 0 if self._item.viewer_vote == direction else direction
         self.vote_requested.emit(self._item.comment_id, new_vote)
 
     def _emit_report(self, reason_key: str) -> None:
-        if self._item is None:
+        if self._item is None or not is_actionable_comment_id(self._item.comment_id):
             return
         cid = self._item.comment_id
         self.report_requested.emit(cid, reason_key)
@@ -508,9 +540,15 @@ class DanmakuComposerBar(QFrame):
         self.setProperty("controlId", "gallery_danmaku_composer")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
 
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(SPACE["sm"], SPACE["xs"], SPACE["sm"], SPACE["xs"])
-        layout.setSpacing(SPACE["xs"])
+        self._layout = QBoxLayout(QBoxLayout.Direction.LeftToRight, self)
+        self._layout.setContentsMargins(SPACE["sm"], SPACE["xs"], SPACE["sm"], SPACE["xs"])
+        self._layout.setSpacing(SPACE["xs"])
+        self._fields = QHBoxLayout()
+        self._fields.setSpacing(SPACE["xs"])
+        self._actions = QHBoxLayout()
+        self._actions.setSpacing(SPACE["xs"])
+        self._layout.addLayout(self._fields, 1)
+        self._layout.addLayout(self._actions)
 
         self.input_edit = QLineEdit(self)
         self.input_edit.setObjectName("gallery_danmaku_input")
@@ -542,12 +580,12 @@ class DanmakuComposerBar(QFrame):
         self.btn_cancel.setProperty("controlId", "btn_danmaku_cancel")
         self.btn_cancel.setCursor(Qt.CursorShape.PointingHandCursor)
 
-        layout.addWidget(self.input_edit, 1)
-        layout.addWidget(self.lbl_counter)
-        layout.addWidget(self.lbl_cooldown)
-        layout.addWidget(self.btn_send)
-        layout.addWidget(self.btn_all_comments)
-        layout.addWidget(self.btn_cancel)
+        self._fields.addWidget(self.input_edit, 1)
+        self._fields.addWidget(self.lbl_counter)
+        self._fields.addWidget(self.lbl_cooldown)
+        self._actions.addWidget(self.btn_send)
+        self._actions.addWidget(self.btn_all_comments)
+        self._actions.addWidget(self.btn_cancel)
 
         self._cooldown_timer = QTimer(self)
         self._cooldown_timer.setInterval(250)
@@ -592,6 +630,17 @@ class DanmakuComposerBar(QFrame):
         elapsed = self._clock() - self._last_sent_at
         return max(0.0, float(self._cooldown_sec) - elapsed)
 
+    def fit_width(self, width: int) -> None:
+        margins = self._layout.contentsMargins()
+        min_row_width = (
+            self._fields.minimumSize().width() + self._actions.minimumSize().width()
+            + self._layout.spacing() + margins.left() + margins.right()
+        )
+        self._layout.setDirection(
+            QBoxLayout.Direction.TopToBottom if width < min_row_width
+            else QBoxLayout.Direction.LeftToRight
+        )
+
     def is_open(self) -> bool:
         return self._is_open
 
@@ -623,6 +672,8 @@ class DanmakuComposerBar(QFrame):
 
     def submit_text(self, text: str) -> bool:
         """Validate and submit *text* enforcing 50-char limit and 10s cooldown."""
+        if not self._is_open:
+            return False
         cleaned = str(text or "").strip()
         if not cleaned:
             self.validation_failed.emit("invalid_request")
@@ -636,16 +687,21 @@ class DanmakuComposerBar(QFrame):
             return False
 
         self._last_sent_at = self._clock()
-        if self._cooldown_sec > 0:
-            self._cooldown_timer.start()
         self.input_edit.clear()
-        self._update_cooldown_ui()
         self.danmaku_submitted.emit(cleaned)
         self.close_composer()
         return True
 
     def submit(self) -> bool:
         return self.submit_text(self.input_edit.text())
+
+    def showEvent(self, event: Any) -> None:
+        super().showEvent(event)
+        self._update_cooldown_ui()
+
+    def hideEvent(self, event: Any) -> None:
+        self._cooldown_timer.stop()
+        super().hideEvent(event)
 
     def keyPressEvent(self, event: QKeyEvent | None) -> None:
         if event is not None and event.key() == Qt.Key.Key_Escape:
@@ -706,6 +762,8 @@ class DanmakuComposerBar(QFrame):
             secs = max(1, int(remaining + 0.999))
             self.lbl_cooldown.setText(gallery_tr("gallery_danmaku_cooldown", seconds=secs))
             self.lbl_cooldown.show()
+            if self.isVisible() and not self._cooldown_timer.isActive():
+                self._cooldown_timer.start()
         else:
             self.lbl_cooldown.clear()
             self.lbl_cooldown.hide()
@@ -741,6 +799,7 @@ class DanmakuOverlay(QWidget):
         *,
         settings: DanmakuSettings | None = None,
         clock: Callable[[], float] | None = None,
+        controls_parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._settings = (settings or DanmakuSettings()).normalized()
@@ -758,13 +817,14 @@ class DanmakuOverlay(QWidget):
         self.setProperty("controlId", "gallery_danmaku_overlay")
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setMouseTracking(True)
+        controls_parent = controls_parent if controls_parent is not None else self
 
-        self.popover = DanmakuActionPopover(self)
+        self.popover = DanmakuActionPopover(controls_parent)
         self.popover.vote_requested.connect(self._on_popover_vote)
         self.popover.report_requested.connect(self._on_popover_report)
         self.popover.popover_closed.connect(self._on_popover_closed)
 
-        self.composer = DanmakuComposerBar(self, clock=self._clock)
+        self.composer = DanmakuComposerBar(controls_parent, clock=self._clock)
         self.composer.composer_opened.connect(self.composer_opened.emit)
         self.composer.composer_closed.connect(self.composer_closed.emit)
         self.composer.danmaku_submitted.connect(self.comment_submitted.emit)
@@ -824,6 +884,7 @@ class DanmakuOverlay(QWidget):
         self._queue.clear()
         self._spawn_accum = 0.0
         self.composer.set_comment_count(len(comments))
+        self._position_composer()
 
         for raw in comments:
             if not is_floating_danmaku_comment(raw):
@@ -845,9 +906,7 @@ class DanmakuOverlay(QWidget):
         item = DanmakuItem.from_comment(comment, default_work_id=self._work_id)
         if item.is_reply or item.parent_id or not item.is_danmaku:
             return None
-        if immediate and self._settings.enabled:
-            self._spawn_item(item, start_inside=False)
-        else:
+        if not (immediate and self._settings.enabled and self._spawn_item(item)):
             self._queue.append(item)
         self._sync_timer()
         self.update()
@@ -863,11 +922,11 @@ class DanmakuOverlay(QWidget):
         self.update()
 
     def open_composer(self) -> None:
-        self._position_composer()
         self.composer.open_composer()
+        self._position_composer()
 
     def close_composer(self) -> None:
-        self.composer.close_composer()
+        self.composer.cancel()
 
     def is_composing(self) -> bool:
         return self.composer.is_open()
@@ -879,6 +938,7 @@ class DanmakuOverlay(QWidget):
     def retranslate(self) -> None:
         self.popover.retranslate()
         self.composer.retranslate()
+        self._position_composer()
 
     # --------------------------------------------------------------- geometry
 
@@ -895,74 +955,75 @@ class DanmakuOverlay(QWidget):
         item.width = max(48.0, metrics.horizontalAdvance(item.content) + pad_x)
         item.height = max(24.0, metrics.height() + pad_y)
 
-    def _zone_bounds(self) -> tuple[float, float]:
-        h = float(max(self.height(), 180))
+    def _zone_bounds(self, row_height: float) -> tuple[float, float]:
         top_margin = 14.0
         bottom_hud_reserve = 88.0
-        usable = max(60.0, h - top_margin - bottom_hud_reserve)
+        usable = max(0.0, self.height() - top_margin - bottom_hud_reserve)
         pos = self._settings.position
         if pos == "top":
-            return top_margin, top_margin + usable * 0.42
+            span = min(usable, max(row_height, usable * 0.42))
+            return top_margin, top_margin + span
         if pos == "middle":
-            return top_margin + usable * 0.28, top_margin + usable * 0.72
+            span = min(usable, max(row_height, usable * 0.44))
+            center = top_margin + usable / 2
+            return center - span / 2, center + span / 2
         if pos == "bottom":
-            return top_margin + usable * 0.56, top_margin + usable
+            span = min(usable, max(row_height, usable * 0.44))
+            return top_margin + usable - span, top_margin + usable
         return top_margin, top_margin + usable
 
-    def _lane_y(self, track: int, row_height: float) -> float:
-        y0, y1 = self._zone_bounds()
-        span = max(row_height, y1 - y0)
+    def _lane_geometry(self, row_height: float) -> tuple[float, float, int]:
+        y0, y1 = self._zone_bounds(row_height)
         max_lanes, _, _ = _DENSITY_PARAMS[self._settings.density]
-        lane_step = max(row_height + 6.0, span / max(1, max_lanes))
-        y = y0 + (track % max_lanes) * lane_step
-        return min(y, max(y0, y1 - row_height))
+        gap = 6.0
+        span = y1 - y0
+        lane_count = min(max_lanes, int((span + gap) / (row_height + gap)))
+        step = (span - row_height) / (lane_count - 1) if lane_count > 1 else 0.0
+        return y0, step, lane_count
 
-    def _pick_track(self, width_hint: float) -> int:
-        max_lanes, _, _ = _DENSITY_PARAMS[self._settings.density]
-        canvas_w = float(max(self.width(), 320))
-        best_track = 0
-        best_right = float("inf")
-        for track in range(max_lanes):
-            rightmost = -1e9
-            for existing in self._active:
-                if existing.track == track:
-                    rightmost = max(rightmost, existing.x + existing.width)
-            if rightmost < canvas_w - 28.0:
-                return track
-            if rightmost < best_right:
-                best_right = rightmost
-                best_track = track
-        return best_track
-
-    def _spawn_item(self, item: DanmakuItem, *, start_inside: bool = False, slot_index: int = 0) -> None:
+    def _spawn_item(self, item: DanmakuItem, *, start_inside: bool = False) -> bool:
         self._measure_item(item)
+        y0, step, lane_count = self._lane_geometry(item.height)
+        occupied = {active.track for active in self._active}
+        track = next((i for i in range(lane_count) if i not in occupied), None)
+        if track is None:
+            return False
+
         _, _, base_speed = _DENSITY_PARAMS[self._settings.density]
-        track = self._pick_track(item.width)
         item.track = track
-        item.y = self._lane_y(track, item.height)
-        canvas_w = float(max(self.width(), 320))
+        item.y = y0 + track * step
         if start_inside:
-            item.x = max(16.0, canvas_w - item.width * 0.65 - slot_index * 72.0)
+            item.x = max(16.0, self.width() - item.width * 0.65 - track * 72.0)
         else:
-            item.x = canvas_w + 16.0
-        # Slight deterministic speed variation by length so lines separate naturally
+            item.x = self.width() + 16.0
         item.speed = base_speed + min(30.0, len(item.content) * 0.5)
         self._active.append(item)
+        return True
 
     def _spawn_initial_batch(self) -> None:
-        max_lanes, _, _ = _DENSITY_PARAMS[self._settings.density]
-        initial = min(len(self._queue), max_lanes)
-        for idx in range(initial):
-            item = self._queue.pop(0)
-            self._spawn_item(item, start_inside=True, slot_index=idx)
+        while self._queue and self._spawn_item(self._queue[0], start_inside=True):
+            self._queue.pop(0)
 
     def _recompute_tracks(self) -> None:
+        if not self._active:
+            return
+        y0, step, lane_count = self._lane_geometry(self._active[0].height)
+        remaining = []
         for item in self._active:
-            item.y = self._lane_y(item.track, item.height)
+            if item.track >= lane_count:
+                if item.comment_id == self._popover_item_id:
+                    self.popover.dismiss()
+                item.hovered = False
+                self._queue.append(item)
+            else:
+                item.y = y0 + item.track * step
+                remaining.append(item)
+        self._active = remaining
 
     def _position_composer(self) -> None:
         margin_x = SPACE["lg"]
-        w = max(240, min(520, self.width() - margin_x * 2))
+        w = max(1, min(520, self.width() - margin_x * 2))
+        self.composer.fit_width(w)
         h = max(36, self.composer.sizeHint().height())
         x = max(SPACE["sm"], (self.width() - w) // 2)
         y = max(SPACE["sm"], self.height() - h - 64)
@@ -970,14 +1031,25 @@ class DanmakuOverlay(QWidget):
 
     def resizeEvent(self, event: Any) -> None:
         super().resizeEvent(event)
+        self.popover.dismiss()
         self._recompute_tracks()
         self._position_composer()
+
+    def showEvent(self, event: Any) -> None:
+        super().showEvent(event)
+        self._sync_timer()
+
+    def hideEvent(self, event: Any) -> None:
+        self.popover.dismiss()
+        self._sync_timer()
+        super().hideEvent(event)
 
     # -------------------------------------------------------------- animation
 
     def _sync_timer(self) -> None:
         should_run = (
-            self._settings.enabled
+            self.isVisible()
+            and self._settings.enabled
             and not self._paused
             and bool(self._active or self._queue)
         )
@@ -1020,12 +1092,12 @@ class DanmakuOverlay(QWidget):
                 remaining.append(item)
         self._active = remaining
 
-        max_lanes, spawn_interval, _ = _DENSITY_PARAMS[self._settings.density]
+        _, spawn_interval, _ = _DENSITY_PARAMS[self._settings.density]
         self._spawn_accum += dt_sec
-        if self._queue and self._spawn_accum >= spawn_interval and len(self._active) < max_lanes * 2:
+        if self._queue and self._spawn_accum >= spawn_interval:
             self._spawn_accum = 0.0
-            next_item = self._queue.pop(0)
-            self._spawn_item(next_item, start_inside=False)
+            if self._spawn_item(self._queue[0]):
+                self._queue.pop(0)
 
         self.update()
 
@@ -1119,6 +1191,7 @@ class DanmakuOverlay(QWidget):
         self.comment_reported.emit(comment_id, reason_key)
         self.update()
 
+    @pyqtSlot()
     def _on_popover_closed(self) -> None:
         self._release_popover_pin()
         self.popover_closed.emit()

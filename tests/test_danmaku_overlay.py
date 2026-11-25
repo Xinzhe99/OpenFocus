@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from PyQt6.QtCore import QPoint, QPointF, Qt
+from PyQt6.QtCore import QPointF, Qt
 from PyQt6.QtGui import QMouseEvent
 from PyQt6.QtTest import QTest
 
@@ -166,15 +166,7 @@ def test_hover_pauses_only_hovered_bullet_and_click_opens_popover(qapp):
     overlay.comment_voted.connect(lambda cid, v: votes.append((cid, v)))
     overlay.comment_reported.connect(lambda cid, r: reports.append((cid, r)))
 
-    press_ev = QMouseEvent(
-        QMouseEvent.Type.MouseButtonPress,
-        hover_pos,
-        hover_pos,
-        Qt.MouseButton.LeftButton,
-        Qt.MouseButton.LeftButton,
-        Qt.KeyboardModifier.NoModifier,
-    )
-    overlay.mousePressEvent(press_ev)
+    QTest.mouseClick(overlay.windowHandle(), Qt.MouseButton.LeftButton, pos=hover_pos.toPoint())
     assert overlay.popover.isVisible() is True
     assert b1.paused is True
     assert len(opened_events) == 1
@@ -273,7 +265,8 @@ def test_composer_50_char_limit_and_10s_cooldown(qapp):
     assert len(submitted) == 1
 
     # Cancel via ESC closes composer and emits composer_closed
-    QTest.keyClick(composer, Qt.Key.Key_Escape)
+    assert qapp.focusWidget() is composer.input_edit
+    QTest.keyClick(composer.input_edit, Qt.Key.Key_Escape)
     assert composer.isVisible() is False
     assert len(closed) == 2
 
@@ -345,4 +338,35 @@ def test_switching_popover_between_bullets_emits_opened_once(qapp):
     overlay.popover.dismiss()
     assert len(closed) == 1
     assert overlay.active_bullets[1].paused is False
+    overlay.deleteLater()
+
+
+def test_short_canvas_queues_comments_instead_of_overlapping_lanes(qapp):
+    overlay = DanmakuOverlay(settings=DanmakuSettings(position="top", density="high"))
+    overlay.resize(720, 420)
+    overlay.show()
+    qapp.processEvents()
+    comments = [
+        _StubComment(id=f"c{i}", work_id="w1", content="A wide comment across the showcase")
+        for i in range(5)
+    ]
+    overlay.set_comments(comments, work_id="w1")
+    assert len(overlay.active_bullets) >= 2
+    for item in overlay.active_bullets:
+        item.x = 40
+
+    overlay.resize(320, 200)
+    qapp.processEvents()
+    active, = overlay.active_bullets
+    assert active.y >= 14
+    assert active.y + active.height <= 14 + (200 - 102) * 0.42
+    assert len(overlay.queued_comments) == 4
+    next_comment = overlay.queued_comments[0]
+    overlay.step_animation(0.6)
+    assert overlay.active_bullets == [active]
+    assert overlay.queued_comments[0] is next_comment
+
+    overlay.step_animation(20)
+    assert overlay.active_bullets == [next_comment]
+    assert len(overlay.queued_comments) == 4
     overlay.deleteLater()
