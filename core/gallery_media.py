@@ -11,17 +11,17 @@ import io
 import math
 import numbers
 import os
-import tempfile
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional, Union
 
 import cv2
 import numpy as np
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageOps
 
 from utils.fonts import load_font_for_text
-from utils.image_utils import export_exif, read_image_exif, to_display_uint8
+from utils.image_utils import imwrite_auto, read_image_exif, to_display_uint8
 from utils.raw_exif import read_raw_exif_bytes
 
 DEFAULT_MAX_LONG_EDGE = 2560
@@ -32,6 +32,26 @@ DEFAULT_MAX_THUMB_BYTES = 256 * 1024
 
 _EXIF_IFD = 0x8769
 _DNG_UNIQUE_CAMERA_MODEL = 50708
+_PUBLIC_EXIF_TEXT_FIELDS = (
+    "make", "model", "camera", "lens", "focal_length", "aperture", "shutter", "date_time",
+)
+
+
+def filter_public_exif(metadata: Optional[Mapping]) -> dict:
+    """Keep only the scalar camera and exposure fields Gallery publishes."""
+    if not isinstance(metadata, Mapping):
+        return {}
+    summary = {}
+    for field in _PUBLIC_EXIF_TEXT_FIELDS:
+        value = metadata.get(field)
+        if isinstance(value, str) and (text := _clean_text(value)):
+            summary[field] = text
+    iso = metadata.get("iso")
+    if isinstance(iso, (str, numbers.Real)):
+        value = _as_positive_int(iso)
+        if value is not None:
+            summary["iso"] = value
+    return summary
 
 
 @dataclass(frozen=True)
@@ -224,21 +244,12 @@ def _summary_from_pil_exif(exif_obj: Image.Exif) -> dict:
     return summary
 
 
-def _summary_from_tiff_file(path: Union[str, os.PathLike]) -> dict:
-    """Read IFD0 + ExifIFD summary from a TIFF file while its handle is open."""
-    try:
-        import tifffile
-        with tifffile.TiffFile(path) as tif:
-            if not tif.pages:
-                return {}
-            page = tif.pages[0]
-            exif_obj = Image.Exif()
-            exif_obj.endian = tif.byteorder
-            exif_obj.bigtiff = tif.is_bigtiff
-            exif_obj.load_from_fp(tif.filehandle, page.offset)
-            return _summary_from_pil_exif(exif_obj)
-    except Exception:
+def _summary_from_exif_bytes(raw: bytes) -> dict:
+    if not raw:
         return {}
+    exif = Image.Exif()
+    exif.load(raw)
+    return _summary_from_pil_exif(exif)
 
 
 def _extract_summary_from_source(path_or_bytes) -> dict:
@@ -256,15 +267,19 @@ def _extract_summary_from_source(path_or_bytes) -> dict:
         raw = bytes(path_or_bytes)
         if not raw:
             return {}
-        if raw.startswith((b"Exif\x00\x00", b"II*\x00", b"MM\x00*")):
-            try:
-                ex = Image.Exif()
-                ex.load(raw)
-                summary = _summary_from_pil_exif(ex)
-                if summary:
-                    return summary
-            except Exception:
-                pass
+        if raw.startswith(b"Exif\x00\x00"):
+            return _summary_from_exif_bytes(raw)
+        if raw.startswith((b"II*\x00", b"MM\x00*", b"II+\x00", b"MM\x00+")):
+            import tifffile
+            from core.image_loader import _tiff_page_exif, tiff_source_pages
+
+            with tifffile.TiffFile(io.BytesIO(raw)) as tif:
+                if not tif.is_dng and tif.pages and tif.pages[0].imagewidth:
+                    entry = next(tiff_source_pages(tif), None)
+                    if entry is None:
+                        return {}
+                    return _summary_from_exif_bytes(_tiff_page_exif(tif, entry[1], "<TIFF bytes>"))
+            return _summary_from_exif_bytes(read_raw_exif_bytes(raw))
         try:
             with Image.open(io.BytesIO(raw)) as img:
                 summary = _summary_from_pil_exif(read_image_exif(img))
@@ -272,15 +287,7 @@ def _extract_summary_from_source(path_or_bytes) -> dict:
                     return summary
         except Exception:
             pass
-        raw_exif = read_raw_exif_bytes(raw)
-        if raw_exif:
-            try:
-                ex = Image.Exif()
-                ex.load(raw_exif)
-                return _summary_from_pil_exif(ex)
-            except Exception:
-                pass
-        return {}
+        return _summary_from_exif_bytes(read_raw_exif_bytes(raw))
 
     try:
         path_str = os.fspath(path_or_bytes)
@@ -290,23 +297,12 @@ def _extract_summary_from_source(path_or_bytes) -> dict:
         return {}
 
     ext = os.path.splitext(path_str)[1].lower()
-    from core.image_loader import is_raw_source
-
-    if is_raw_source(path_str):
-        raw_exif = read_raw_exif_bytes(path_str)
-        if raw_exif:
-            try:
-                ex = Image.Exif()
-                ex.load(raw_exif)
-                return _summary_from_pil_exif(ex)
-            except Exception:
-                pass
-        return {}
+    from core.image_loader import _read_safe_exif, is_raw_source
 
     if ext in (".tif", ".tiff"):
-        summary = _summary_from_tiff_file(path_str)
-        if summary:
-            return summary
+        return _summary_from_exif_bytes(_read_safe_exif(path_str))
+    if is_raw_source(path_str):
+        return _summary_from_exif_bytes(read_raw_exif_bytes(path_str))
 
     try:
         with Image.open(path_str) as img:
@@ -316,15 +312,7 @@ def _extract_summary_from_source(path_or_bytes) -> dict:
     except Exception:
         pass
 
-    raw_exif = read_raw_exif_bytes(path_str)
-    if raw_exif:
-        try:
-            ex = Image.Exif()
-            ex.load(raw_exif)
-            return _summary_from_pil_exif(ex)
-        except Exception:
-            pass
-    return {}
+    return _summary_from_exif_bytes(read_raw_exif_bytes(path_str))
 
 
 def extract_exif_summary(path_or_bytes) -> dict:
@@ -533,12 +521,13 @@ def _encode_bounded_webp_thumb(
         if len(data) <= max_bytes:
             return data, current.shape[1], current.shape[0], candidate_q
 
-    # Final safety net for extreme adversarial noise or tiny max_bytes.
-    while len(data) > max_bytes and max(current.shape[:2]) > 32:
-        new_w = max(16, int(round(current.shape[1] * 0.85)))
-        new_h = max(16, int(round(current.shape[0] * 0.85)))
-        current = cv2.resize(current, (new_w, new_h), interpolation=cv2.INTER_AREA)
+    # Reduce the long edge down to a single pixel if necessary.
+    while len(data) > max_bytes and max(current.shape[:2]) > 1:
+        long_edge = max(current.shape[:2])
+        current = _resize_long_edge(current, max(1, int(long_edge * 0.85)))
         data = _encode_webp(current, quality=1, method=6)
+    if len(data) > max_bytes:
+        raise ValueError(f"Gallery thumbnail cannot fit within {max_bytes} bytes")
     return data, current.shape[1], current.shape[0], 1
 
 
@@ -564,18 +553,17 @@ def prepare_gallery_upload(
        guaranteed to stay ``<= max_thumb_bytes`` (256 KiB default).
     5. Computes SHA-256 digests and output dimensions.
     """
-    extracted_exif: dict
+    metadata = exif
+    if metadata is None and not isinstance(source, np.ndarray):
+        metadata = extract_exif_summary(source)
     if isinstance(source, np.ndarray):
-        extracted_exif = dict(exif) if exif is not None else {}
         rgb = _to_rgb_uint8(source, source_is_rgb=source_is_rgb)
     elif isinstance(source, Image.Image):
-        extracted_exif = dict(exif) if exif is not None else extract_exif_summary(source)
         rgb = np.asarray(source.convert("RGB"), dtype=np.uint8)
     else:
         path_str = os.fspath(source)
         if not os.path.isfile(path_str):
             raise FileNotFoundError(f"Gallery upload source not found: {path_str}")
-        extracted_exif = dict(exif) if exif is not None else extract_exif_summary(path_str)
         from core.image_loader import decode_image
 
         decoded = decode_image(path_str, allow_transparent_png=True)
@@ -610,7 +598,7 @@ def prepare_gallery_upload(
         thumb_bytes=len(thumb_webp),
         sha256=hashlib.sha256(main_webp).hexdigest(),
         thumb_sha256=hashlib.sha256(thumb_webp).hexdigest(),
-        exif=extracted_exif,
+        exif=filter_public_exif(metadata),
         watermark_enabled=bool(watermark_enabled),
         attribution=_clean_text(attribution),
         main_quality=main_q,
@@ -627,10 +615,13 @@ def convert_webp_to_jpeg(
 ) -> Path:
     """Convert WebP bytes or file to a universal JPEG via atomic temp-file replace.
 
-    Preserves ``exif_bytes`` when explicitly provided, or carries embedded EXIF
-    from the source WebP when ``exif_bytes is None``.
+    Writes sanitized ``exif_bytes`` when provided, or sanitized embedded EXIF
+    from the source WebP. The source orientation is applied to the pixels.
+    The destination must use a JPEG filename extension.
     """
     dest = Path(dest_path)
+    if dest.suffix.lower() not in (".jpg", ".jpeg", ".jpe", ".jfif"):
+        raise ValueError("Gallery JPEG destination requires a JPEG extension")
     dest.parent.mkdir(parents=True, exist_ok=True)
     jpeg_quality = max(1, min(100, int(quality)))
 
@@ -641,45 +632,20 @@ def convert_webp_to_jpeg(
 
     with Image.open(source_ctx) as img:
         embedded_exif = img.info.get("exif", b"") if exif_bytes is None else exif_bytes
+        ImageOps.exif_transpose(img, in_place=True)
         if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
-            rgba = img.convert("RGBA")
-            bg = Image.new("RGB", rgba.size, (255, 255, 255))
-            bg.paste(rgba, mask=rgba.split()[3])
-            rgb_img = bg
+            with img.convert("RGBA") as rgba, Image.new("RGB", rgba.size, "white") as bg:
+                bg.paste(rgba, mask=rgba.getchannel("A"))
+                bgr = cv2.cvtColor(np.asarray(bg), cv2.COLOR_RGB2BGR)
+        elif img.mode == "RGB":
+            bgr = cv2.cvtColor(np.asarray(img), cv2.COLOR_RGB2BGR)
         else:
-            rgb_img = img.convert("RGB")
+            with img.convert("RGB") as rgb:
+                bgr = cv2.cvtColor(np.asarray(rgb), cv2.COLOR_RGB2BGR)
 
-    save_kwargs: dict[str, Any] = {
-        "format": "JPEG",
-        "quality": jpeg_quality,
-        "subsampling": 0 if jpeg_quality >= 92 else 2,
-    }
-    if embedded_exif:
-        sanitized = export_exif(embedded_exif)
-        if sanitized is not None:
-            encoded_exif = sanitized.tobytes()
-            if len(encoded_exif) + 2 <= 65535:
-                save_kwargs["exif"] = encoded_exif
-        elif len(embedded_exif) + 2 <= 65535:
-            save_kwargs["exif"] = embedded_exif
-
-    tmp_path: Optional[str] = None
-    try:
-        fd, tmp_path = tempfile.mkstemp(
-            prefix=".openfocus-gallery-",
-            suffix=".jpg.tmp",
-            dir=str(dest.parent),
-        )
-        with os.fdopen(fd, "wb") as handle:
-            rgb_img.save(handle, **save_kwargs)
-            handle.flush()
-        os.replace(tmp_path, dest)
-        tmp_path = None
-    finally:
-        rgb_img.close()
-        if tmp_path and os.path.exists(tmp_path):
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
+    params = [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality]
+    if jpeg_quality >= 92 and hasattr(cv2, "IMWRITE_JPEG_SAMPLING_FACTOR_444"):
+        params += [cv2.IMWRITE_JPEG_SAMPLING_FACTOR, cv2.IMWRITE_JPEG_SAMPLING_FACTOR_444]
+    if not imwrite_auto(str(dest), bgr, params, exif=embedded_exif or b"", raise_on_error=True):
+        raise OSError(f"Unable to write Gallery JPEG: {dest}")
     return dest

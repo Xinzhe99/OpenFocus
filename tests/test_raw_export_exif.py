@@ -120,7 +120,7 @@ def _build_rw2_with_embedded_jpeg_exif(exif_obj: Image.Exif, *, pad_bytes: int =
     Image.new("RGB", (16, 16), (50, 90, 130)).save(
         jpg_buf, format="JPEG", exif=exif_obj.tobytes()
     )
-    jpeg = jpg_buf.getvalue()
+    jpeg = jpg_buf.getvalue() + (b"\x00" * pad_bytes)
 
     make_b = b"Panasonic\x00"
     model_b = b"DC-G9M2\x00"
@@ -141,7 +141,7 @@ def _build_rw2_with_embedded_jpeg_exif(exif_obj: Image.Exif, *, pad_bytes: int =
         + struct.pack("<HHII", 272, 2, len(model_b), model_off)
     )
     ifd = struct.pack("<H", entry_count) + entries + struct.pack("<I", 0)
-    return header + ifd + make_b + model_b + jpeg + (b"\x00" * pad_bytes)
+    return header + ifd + make_b + model_b + jpeg
 
 
 def _assert_exported_exif(
@@ -290,16 +290,31 @@ def test_raf_preserves_embedded_jpeg_exif_and_header_fallback(tmp_path):
     assert fb_exif[272] == "X-T5"
 
 
-def test_rw2_preserves_embedded_jpeg_exif_from_tag_0x002e(tmp_path):
+def test_rw2_preserves_embedded_jpeg_exif_from_tag_0x002e(tmp_path, monkeypatch):
     ex = _full_camera_exif(
         make="Panasonic",
         model="DC-G9M2",
         lens="LEICA DG MACRO-ELMARIT 45/F2.8",
     )
     rw2_path = tmp_path / "macro.rw2"
-    rw2_path.write_bytes(_build_rw2_with_embedded_jpeg_exif(ex, pad_bytes=2 * 1024 * 1024))
+    data = _build_rw2_with_embedded_jpeg_exif(ex, pad_bytes=2 * 1024 * 1024)
+    rw2_path.write_bytes(data)
+    jpeg_offset = struct.unpack_from("<I", data, 18)[0]
+    scan_offset = data.index(b"\xff\xda", jpeg_offset)
+    spans = []
+
+    class TrackedFile(io.BytesIO):
+        def read(self, size=-1):
+            start = self.tell()
+            result = super().read(size)
+            spans.append((start, self.tell()))
+            return result
+
+    monkeypatch.setattr(image_loader, "open", lambda *_args: TrackedFile(data), raising=False)
 
     extracted = image_loader._read_exif_bytes(str(rw2_path))
+    assert sum(end - start for start, end in spans) < 4096
+    assert all(end <= scan_offset + 2 for _, end in spans)
     _assert_exported_exif(
         tmp_path,
         extracted,
@@ -307,6 +322,25 @@ def test_rw2_preserves_embedded_jpeg_exif_from_tag_0x002e(tmp_path):
         expected_model="DC-G9M2",
         expected_lens="LEICA DG MACRO-ELMARIT 45/F2.8",
     )
+
+
+@pytest.mark.parametrize("preview_length", [0, 1, 3, 4, 5, 6, 11, 20])
+def test_jpeg_exif_marker_reads_stop_at_declared_preview_boundary(preview_length):
+    from utils.raw_exif import extract_jpeg_app1_exif
+
+    app1 = _full_camera_exif().tobytes()
+    jpeg = b"\xff\xd8\xff\xe1" + struct.pack(">H", len(app1) + 2) + app1
+    start_offset = 32
+
+    class PreviewFile(io.BytesIO):
+        def read(self, size=-1):
+            assert 0 <= size <= start_offset + preview_length - self.tell()
+            return super().read(size)
+
+    stream = PreviewFile(b"\x00" * start_offset + jpeg)
+    assert extract_jpeg_app1_exif(
+        stream, start_offset=start_offset, max_length=preview_length,
+    ) == b""
 
 
 def test_bigtiff_dng_and_unique_camera_model_fallback(tmp_path):

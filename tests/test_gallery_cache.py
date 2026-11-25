@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
+import sys
 
 import numpy as np
 import pytest
@@ -91,6 +93,56 @@ def test_settings_overrides_for_cache_and_download_dirs(tmp_path):
     assert resolve_gallery_cache_dir(settings=settings, create=False) == default_gallery_cache_dir()
 
 
+def test_install_directory_overrides_fall_back_without_creating_paths(monkeypatch, tmp_path):
+    install = tmp_path.resolve() / "install"
+    home = tmp_path.resolve() / "profile"
+    monkeypatch.setattr(gallery_cache, "_install_root_paths", lambda: (install,))
+    monkeypatch.setattr(gallery_cache, "_qt_standard_location", lambda _name: install)
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.setenv("LOCALAPPDATA", str(install))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(install))
+
+    unsafe = install / "gallery"
+    settings = {GALLERY_CACHE_DIR_KEY: str(unsafe), GALLERY_DOWNLOAD_DIR_KEY: str(unsafe)}
+    assert resolve_gallery_cache_dir(settings).is_relative_to(home)
+    assert resolve_gallery_download_dir(settings).is_relative_to(home)
+    with pytest.raises(PermissionError):
+        GalleryDiskCache(cache_dir=unsafe)
+    assert not install.exists()
+
+    monkeypatch.setattr(Path, "home", lambda: install)
+    with pytest.raises(PermissionError):
+        resolve_gallery_cache_dir(settings)
+    with pytest.raises(PermissionError):
+        resolve_gallery_download_dir(settings)
+    assert not install.exists()
+
+
+def test_gallery_directory_symlink_to_install_is_rejected(monkeypatch, tmp_path):
+    install = tmp_path.resolve() / "install"
+    install.mkdir()
+    link = tmp_path / "redirect"
+    if sys.platform == "win32":
+        junction = subprocess.run(
+            ["cmd.exe", "/d", "/c", "mklink", "/J", str(link), str(install)],
+            capture_output=True, check=False,
+        )
+        if junction.returncode:
+            pytest.skip("Could not create a directory junction on this test volume")
+    else:
+        link.symlink_to(install, target_is_directory=True)
+    monkeypatch.setattr(gallery_cache, "_install_root_paths", lambda: (install,))
+    monkeypatch.setattr(gallery_cache, "_qt_standard_location", lambda _name: tmp_path / "safe")
+
+    unsafe = link / "gallery"
+    settings = {GALLERY_CACHE_DIR_KEY: str(unsafe), GALLERY_DOWNLOAD_DIR_KEY: str(unsafe)}
+    assert resolve_gallery_cache_dir(settings) == default_gallery_cache_dir()
+    assert resolve_gallery_download_dir(settings) == default_gallery_download_dir()
+    with pytest.raises(PermissionError):
+        GalleryDiskCache(cache_dir=unsafe)
+    assert not (install / "gallery").exists()
+
+
 # ---------------------------------------------------------------------------
 # GalleryDiskCache (100 MB default, LRU eviction, clear, safety)
 # ---------------------------------------------------------------------------
@@ -147,6 +199,38 @@ def test_disk_cache_clear_delete_and_oversized_entry(tmp_path):
     assert freed == 600
     assert cache.usage_bytes() == 0
     assert not list(cache.cache_dir.glob("*.tmp"))
+
+
+def test_disk_cache_clear_and_eviction_preserve_unrelated_files(tmp_path):
+    unrelated = [
+        tmp_path / "archive.bin",
+        tmp_path / ("a" * 64 + ".bin"),
+        tmp_path / "openfocus-gallery-invalid.bin",
+    ]
+    for path in unrelated:
+        path.write_bytes(b"unrelated")
+
+    cache = GalleryDiskCache(cache_dir=tmp_path, max_bytes=4)
+    cache.put("old", b"old")
+    cache.put("new", b"new")
+    assert cache.get("old") is None
+    assert cache.usage_bytes() == 3
+    assert cache.clear() == (1, 3)
+    assert [path.read_bytes() for path in unrelated] == [b"unrelated"] * len(unrelated)
+
+
+def test_disk_cache_failed_replace_preserves_previous_entry(tmp_path, monkeypatch):
+    cache = GalleryDiskCache(cache_dir=tmp_path)
+    cache.put("work", b"old")
+
+    def fail_replace(_source, _target):
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(gallery_cache.os, "replace", fail_replace)
+    with pytest.raises(OSError, match="replace failed"):
+        cache.put("work", b"new")
+    assert cache.get("work") == b"old"
+    assert not list(tmp_path.glob("*.tmp"))
 
 
 # ---------------------------------------------------------------------------

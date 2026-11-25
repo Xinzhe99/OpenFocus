@@ -8,8 +8,10 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import tifffile
 from PIL import Image, TiffImagePlugin
 
+from core import image_loader
 from core.gallery_media import (
     DEFAULT_MAX_LONG_EDGE,
     DEFAULT_MAX_THUMB_BYTES,
@@ -20,6 +22,7 @@ from core.gallery_media import (
     prepare_gallery_upload,
     render_watermark,
 )
+from utils.image_utils import ImageWriteError
 
 
 def _sample_exif(
@@ -86,6 +89,22 @@ def test_extract_exif_summary_across_standard_formats(tmp_path, fmt, ext):
     assert summary["shutter"] == "1/250s"
     assert summary["iso"] == 400
     assert summary["date_time"] == "2026:10:15 18:21:27"
+
+
+def test_tiff_summary_uses_bounded_first_full_resolution_page(tmp_path, monkeypatch):
+    path = tmp_path / "pages.tiff"
+    make_tag = (271, "s", 0, "Full resolution", False)
+    with tifffile.TiffWriter(path) as writer:
+        writer.write(np.zeros((8, 8), dtype=np.uint8), subfiletype=1,
+                     extratags=[(271, "s", 0, "Reduced", False)])
+        writer.write(np.zeros((32, 32), dtype=np.uint8), extratags=[make_tag])
+
+    for source in (path, path.read_bytes()):
+        assert extract_exif_summary(source)["make"] == "Full resolution"
+
+    monkeypatch.setattr(image_loader, "_EXIF_SNAPSHOT_LIMIT", 32)
+    for source in (path, path.read_bytes()):
+        assert extract_exif_summary(source) == {}
 
 
 def test_extract_exif_summary_from_bytes_and_camera_dedup():
@@ -253,6 +272,19 @@ def test_prepare_gallery_upload_watermark_toggle_and_file_exif(tmp_path):
     assert int(br_diff.max()) >= 50
 
 
+def test_prepare_gallery_upload_filters_public_exif_override():
+    prepared = prepare_gallery_upload(
+        np.zeros((32, 32, 3), dtype=np.uint8),
+        watermark_enabled=False,
+        exif={"camera": "Sony", "iso": 400, "gps": {"lat": 35, "lon": 139},
+              "serial_number": "private", "lens": {"gps": [35, 139]}},
+    )
+    assert prepared.exif == {"camera": "Sony", "iso": 400}
+    for webp in (prepared.main_webp, prepared.thumb_webp):
+        with Image.open(io.BytesIO(webp)) as image:
+            assert not image.getexif()
+
+
 def test_prepare_gallery_upload_thumb_respects_256kib_cap_on_high_noise():
     # High-entropy random noise is worst-case for WebP compression.
     rng = np.random.default_rng(42)
@@ -273,6 +305,12 @@ def test_prepare_gallery_upload_thumb_respects_256kib_cap_on_high_noise():
     assert prepared_tight.thumb_quality < 95
 
 
+def test_prepare_gallery_upload_rejects_impossible_thumbnail_cap():
+    source = np.zeros((32, 32, 3), dtype=np.uint8)
+    with pytest.raises(ValueError, match="thumbnail cannot fit within 1 bytes"):
+        prepare_gallery_upload(source, watermark_enabled=False, max_thumb_bytes=1)
+
+
 # ---------------------------------------------------------------------------
 # WebP -> JPEG conversion
 # ---------------------------------------------------------------------------
@@ -280,21 +318,27 @@ def test_prepare_gallery_upload_thumb_respects_256kib_cap_on_high_noise():
 def test_convert_webp_to_jpeg_preserves_exif_and_writes_atomically(tmp_path):
     ex = _sample_exif(make="Canon", model="Canon EOS R5", orientation=6)
     webp_path = tmp_path / "downloaded.webp"
-    Image.new("RGB", (96, 64), (80, 120, 160)).save(
-        webp_path, format="WEBP", quality=88, exif=ex.tobytes()
-    )
+    ex[0x8825] = {1: "N", 2: (35.0, 40.0, 12.0), 3: "E", 4: (139.0, 45.0, 5.0)}
+    pixels = np.zeros((64, 96, 3), dtype=np.uint8)
+    pixels[:, :48, 0] = 255
+    pixels[:, 48:, 2] = 255
+    Image.fromarray(pixels).save(webp_path, format="WEBP", lossless=True, exif=ex.tobytes())
 
     # Convert from path (preserving embedded WebP EXIF).
     jpg_from_path = convert_webp_to_jpeg(webp_path, tmp_path / "out_from_path.jpg", quality=94)
     assert isinstance(jpg_from_path, Path) and jpg_from_path.is_file()
     with Image.open(jpg_from_path) as im:
         assert im.format == "JPEG"
-        assert im.size == (96, 64)
+        assert im.size == (64, 96)
+        assert im.getpixel((32, 24))[0] > 240
+        assert im.getpixel((32, 72))[2] > 240
         got = im.getexif()
         assert got[271] == "Canon"
         assert got[272] == "Canon EOS R5"
         assert got[274] == 1  # Orientation neutralized on export
         assert got.get_ifd(0x8769)[0xA434] == "FE 90mm F2.8 Macro G OSS"
+        assert got.get_ifd(0x8825)[1] == "N"
+        assert got.get_ifd(0x8825)[3] == "E"
 
     # Convert from bytes with explicit exif_bytes override.
     override_ex = _sample_exif(make="Nikon", model="Z 8")
@@ -305,6 +349,7 @@ def test_convert_webp_to_jpeg_preserves_exif_and_writes_atomically(tmp_path):
     )
     with Image.open(jpg_from_bytes) as im:
         assert im.format == "JPEG"
+        assert im.size == (64, 96)
         assert im.getexif()[271] == "Nikon"
 
     # Verify no leftover temp files.
@@ -325,3 +370,23 @@ def test_convert_webp_to_jpeg_handles_rgba_and_preserves_existing_on_error(tmp_p
         convert_webp_to_jpeg(b"corrupt-webp-bytes", existing)
     assert existing.read_bytes() == b"original-bytes"
     assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_convert_webp_to_jpeg_uses_export_exif_policy(tmp_path):
+    source = tmp_path / "metadata.webp"
+    dest = tmp_path / "output.jpg"
+    ex = Image.Exif()
+    ex[0x8769] = {0x927C: b"private MakerNote"}
+    Image.new("RGB", (24, 24)).save(source, format="WEBP", exif=ex.tobytes())
+
+    convert_webp_to_jpeg(source, dest)
+    with Image.open(dest) as image:
+        assert not image.getexif()
+    previous = dest.read_bytes()
+
+    ex[270] = "x" * 70_000
+    with pytest.raises(ImageWriteError) as error:
+        convert_webp_to_jpeg(source, dest, exif_bytes=ex.tobytes())
+    assert error.value.code == "exif_too_large"
+    assert dest.read_bytes() == previous
+    assert set(tmp_path.iterdir()) == {source, dest}

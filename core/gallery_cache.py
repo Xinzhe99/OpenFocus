@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -31,8 +32,10 @@ DEFAULT_BLUR_MAX_BYTES = 64 * 1024 * 1024    # 64 MiB safety cap
 _APP_NAME = "OpenFocus"
 _CACHE_SUBDIR = "gallery_cache"
 _DOWNLOAD_SUBDIR = "OpenFocus Gallery"
+_ENTRY_PREFIX = "openfocus-gallery-"
 _ENTRY_SUFFIX = ".bin"
 _TMP_PREFIX = ".openfocus-cache-"
+_ENTRY_NAME = re.compile(rf"{re.escape(_ENTRY_PREFIX)}[0-9a-f]{{64}}{re.escape(_ENTRY_SUFFIX)}")
 
 
 def _qt_standard_location(name: str) -> Optional[Path]:
@@ -73,17 +76,17 @@ def _install_root_paths() -> tuple[Path, ...]:
 
 
 def _is_within_install_dir(candidate: Path) -> bool:
+    return any(candidate.is_relative_to(root) for root in _install_root_paths())
+
+
+def _validated_gallery_dir(candidate: Path) -> Path:
     try:
-        resolved = candidate.resolve(strict=False)
-    except Exception:
-        resolved = candidate
-    for root in _install_root_paths():
-        try:
-            resolved.relative_to(root)
-            return True
-        except ValueError:
-            continue
-    return False
+        resolved = candidate.expanduser().resolve()
+    except RuntimeError as exc:
+        raise OSError(f"Cannot resolve Gallery directory: {candidate}") from exc
+    if _is_within_install_dir(resolved):
+        raise PermissionError(f"Gallery directory is inside the installation: {candidate}")
+    return resolved
 
 
 def _append_app_subdir(base: Path, subdir: str) -> Path:
@@ -103,18 +106,29 @@ def default_gallery_cache_dir() -> Path:
     for loc_name in ("CacheLocation", "AppDataLocation", "GenericCacheLocation"):
         base = _qt_standard_location(loc_name)
         if base is not None:
-            candidate = _append_app_subdir(base, _CACHE_SUBDIR)
-            if not _is_within_install_dir(candidate):
-                return candidate
+            try:
+                return _validated_gallery_dir(_append_app_subdir(base, _CACHE_SUBDIR))
+            except OSError:
+                continue
 
     if sys.platform == "win32":
-        local = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
-        return local / _APP_NAME / "cache" / _CACHE_SUBDIR
-    if sys.platform == "darwin":
-        return Path.home() / "Library" / "Caches" / _APP_NAME / _CACHE_SUBDIR
-    xdg_cache = os.environ.get("XDG_CACHE_HOME")
-    base = Path(xdg_cache) if xdg_cache else Path.home() / ".cache"
-    return base / _APP_NAME / _CACHE_SUBDIR
+        home_cache = Path("AppData") / "Local"
+        configured_cache = os.environ.get("LOCALAPPDATA")
+        subdir = Path(_APP_NAME) / "cache" / _CACHE_SUBDIR
+    elif sys.platform == "darwin":
+        home_cache = Path("Library") / "Caches"
+        configured_cache = None
+        subdir = Path(_APP_NAME) / _CACHE_SUBDIR
+    else:
+        home_cache = Path(".cache")
+        configured_cache = os.environ.get("XDG_CACHE_HOME")
+        subdir = Path(_APP_NAME) / _CACHE_SUBDIR
+    if configured_cache:
+        try:
+            return _validated_gallery_dir(Path(configured_cache) / subdir)
+        except OSError:
+            pass
+    return _validated_gallery_dir(Path.home() / home_cache / subdir)
 
 
 def default_gallery_download_dir() -> Path:
@@ -126,10 +140,11 @@ def default_gallery_download_dir() -> Path:
     for loc_name in ("PicturesLocation", "DownloadLocation"):
         base = _qt_standard_location(loc_name)
         if base is not None:
-            candidate = base / _DOWNLOAD_SUBDIR
-            if not _is_within_install_dir(candidate):
-                return candidate
-    return Path.home() / "Pictures" / _DOWNLOAD_SUBDIR
+            try:
+                return _validated_gallery_dir(base / _DOWNLOAD_SUBDIR)
+            except OSError:
+                continue
+    return _validated_gallery_dir(Path.home() / "Pictures" / _DOWNLOAD_SUBDIR)
 
 
 def _read_setting_str(settings: Any, key: str) -> str:
@@ -163,6 +178,21 @@ def _write_setting_str(settings: Any, key: str, value: str) -> None:
             pass
 
 
+def _resolve_gallery_dir(override: str, default: Callable[[], Path], create: bool) -> Path:
+    if override:
+        try:
+            target = _validated_gallery_dir(Path(override))
+            if create:
+                target.mkdir(parents=True, exist_ok=True)
+            return target
+        except OSError:
+            pass
+    target = default()
+    if create:
+        target.mkdir(parents=True, exist_ok=True)
+    return target
+
+
 def resolve_gallery_cache_dir(
     settings: Any = None,
     *,
@@ -170,15 +200,7 @@ def resolve_gallery_cache_dir(
 ) -> Path:
     """Resolve the active Gallery disk cache directory, honoring settings overrides."""
     override = _read_setting_str(settings, GALLERY_CACHE_DIR_KEY)
-    target = Path(override).expanduser() if override else default_gallery_cache_dir()
-    if create:
-        try:
-            target.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            fallback = default_gallery_cache_dir()
-            fallback.mkdir(parents=True, exist_ok=True)
-            return fallback
-    return target
+    return _resolve_gallery_dir(override, default_gallery_cache_dir, create)
 
 
 def resolve_gallery_download_dir(
@@ -188,35 +210,27 @@ def resolve_gallery_download_dir(
 ) -> Path:
     """Resolve the active Gallery download directory, honoring settings overrides."""
     override = _read_setting_str(settings, GALLERY_DOWNLOAD_DIR_KEY)
-    target = Path(override).expanduser() if override else default_gallery_download_dir()
-    if create:
-        try:
-            target.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            fallback = default_gallery_download_dir()
-            fallback.mkdir(parents=True, exist_ok=True)
-            return fallback
-    return target
+    return _resolve_gallery_dir(override, default_gallery_download_dir, create)
 
 
 def set_gallery_cache_dir(path: Optional[str | os.PathLike], settings: Any = None) -> None:
     """Persist or clear the user override for ``gallery/cache_dir``."""
-    value = str(Path(path).expanduser()) if path else ""
+    value = str(_validated_gallery_dir(Path(path))) if path else ""
     _write_setting_str(settings, GALLERY_CACHE_DIR_KEY, value)
 
 
 def set_gallery_download_dir(path: Optional[str | os.PathLike], settings: Any = None) -> None:
     """Persist or clear the user override for ``gallery/download_dir``."""
-    value = str(Path(path).expanduser()) if path else ""
+    value = str(_validated_gallery_dir(Path(path))) if path else ""
     _write_setting_str(settings, GALLERY_DOWNLOAD_DIR_KEY, value)
 
 
 class GalleryDiskCache:
     """Bounded on-disk LRU cache for Gallery thumbnails, media, and payloads.
 
-    Keys are hashed to safe filenames (SHA-256 hex + ``.bin``). Reads update
-    file mtime monotonically so least-recently-used entries are evicted first
-    whenever total disk usage exceeds ``max_bytes`` (default 100 MiB).
+    Keys are hashed into the Gallery filename namespace. Reads update file
+    mtime so least-recently-used entries are evicted first when the cache
+    exceeds ``max_bytes`` (default 100 MiB).
     """
 
     def __init__(
@@ -226,19 +240,18 @@ class GalleryDiskCache:
         max_bytes: int = DEFAULT_CACHE_MAX_BYTES,
         settings: Any = None,
     ):
-        self.cache_dir = (
-            Path(cache_dir).expanduser()
-            if cache_dir is not None
-            else resolve_gallery_cache_dir(settings=settings, create=True)
-        )
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        if cache_dir is None:
+            self.cache_dir = resolve_gallery_cache_dir(settings=settings, create=True)
+        else:
+            self.cache_dir = _validated_gallery_dir(Path(cache_dir))
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.max_bytes = max(0, int(max_bytes))
         self._lock = threading.RLock()
         self._last_touch_ns = 0
 
     def _entry_path(self, key: str) -> Path:
         digest = hashlib.sha256(str(key).encode("utf-8")).hexdigest()
-        return self.cache_dir / f"{digest}{_ENTRY_SUFFIX}"
+        return self.cache_dir / f"{_ENTRY_PREFIX}{digest}{_ENTRY_SUFFIX}"
 
     def _touch(self, path: Path) -> None:
         """Advance mtime monotonically so rapid accesses keep strict LRU order."""
@@ -256,7 +269,7 @@ class GalleryDiskCache:
         try:
             with os.scandir(self.cache_dir) as it:
                 for entry in it:
-                    if not entry.name.endswith(_ENTRY_SUFFIX) or entry.name.startswith(_TMP_PREFIX):
+                    if _ENTRY_NAME.fullmatch(entry.name) is None:
                         continue
                     try:
                         st = entry.stat(follow_symlinks=False)
@@ -271,12 +284,13 @@ class GalleryDiskCache:
 
     def contains(self, key: str) -> bool:
         with self._lock:
-            return self._entry_path(key).is_file()
+            path = self._entry_path(key)
+            return not path.is_symlink() and path.is_file()
 
     def get(self, key: str) -> Optional[bytes]:
         with self._lock:
             path = self._entry_path(key)
-            if not path.is_file():
+            if path.is_symlink() or not path.is_file():
                 return None
             try:
                 data = path.read_bytes()
@@ -289,7 +303,7 @@ class GalleryDiskCache:
         """Return the cached file path if present, updating LRU recency."""
         with self._lock:
             path = self._entry_path(key)
-            if not path.is_file():
+            if path.is_symlink() or not path.is_file():
                 return None
             self._touch(path)
             return path
@@ -306,7 +320,7 @@ class GalleryDiskCache:
                         pass
                 return None
 
-            self.cache_dir.mkdir(parents=True, exist_ok=True)
+            _validated_gallery_dir(self.cache_dir).mkdir(parents=True, exist_ok=True)
             tmp_path: Optional[str] = None
             try:
                 fd, tmp_path = tempfile.mkstemp(

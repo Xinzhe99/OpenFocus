@@ -279,6 +279,9 @@ def extract_jpeg_app1_exif(
     Stops immediately at SOS (0xFFDA), EOI (0xFFD9), or once ``max_scan_bytes``
     have been inspected, so the embedded image scan payload is never read.
     """
+    limit = max_scan_bytes if max_length is None else min(max_scan_bytes, max_length)
+    if limit < 2:
+        return b""
     try:
         stream.seek(start_offset)
         if stream.read(2) != b"\xff\xd8":
@@ -287,13 +290,14 @@ def extract_jpeg_app1_exif(
         return b""
 
     scanned = 2
-    limit = max_scan_bytes if max_length is None else min(max_scan_bytes, max_length)
     while scanned < limit:
         byte = stream.read(1)
         if not byte:
             return b""
         scanned += 1
         if byte != b"\xff":
+            return b""
+        if scanned >= limit:
             return b""
         marker_byte = stream.read(1)
         while marker_byte == b"\xff":
@@ -309,6 +313,8 @@ def extract_jpeg_app1_exif(
             return b""
         if 0xD0 <= code <= 0xD7 or code == 0x01:  # standalone markers
             continue
+        if limit - scanned < 2:
+            return b""
         len_bytes = stream.read(2)
         if len(len_bytes) != 2:
             return b""
@@ -317,23 +323,21 @@ def extract_jpeg_app1_exif(
         if seg_len < 2:
             return b""
         payload_len = seg_len - 2
-        if code == 0xE1 and payload_len >= 6 and payload_len <= 65533:
+        if payload_len > limit - scanned:
+            return b""
+        if code == 0xE1 and payload_len >= 6:
             prefix = stream.read(6)
-            scanned += len(prefix)
+            if len(prefix) != 6:
+                return b""
+            payload_len -= 6
+            scanned += 6
             if prefix == b"Exif\x00\x00":
-                rest = stream.read(payload_len - 6)
-                if len(rest) == payload_len - 6:
+                rest = stream.read(payload_len)
+                if len(rest) == payload_len:
                     return prefix + rest
                 return b""
-            skip = payload_len - len(prefix)
-            if skip > 0:
-                stream.seek(skip, os.SEEK_CUR)
-                scanned += skip
-        else:
-            if scanned + payload_len > limit:
-                return b""
-            stream.seek(payload_len, os.SEEK_CUR)
-            scanned += payload_len
+        stream.seek(payload_len, os.SEEK_CUR)
+        scanned += payload_len
     return b""
 
 
@@ -448,6 +452,7 @@ def read_tiff_raw_exif_from_stream(stream, magic: bytes) -> bytes:
     """Read sanitized EXIF from an open TIFF-based RAW stream positioned at byte 4."""
     if magic not in RAW_TIFF_MAGICS:
         return b""
+    stream = _BoundedReader(stream)
     endian = "<" if magic[:2] == b"II" else ">"
     is_bigtiff = magic in (b"II+\x00", b"MM\x00+")
     if is_bigtiff:
@@ -462,7 +467,7 @@ def read_tiff_raw_exif_from_stream(stream, magic: bytes) -> bytes:
             src = PILImage.Exif()
             src.endian = endian
             src.bigtiff = True
-            src.load_from_fp(_BoundedReader(stream), ifd_offset)
+            src.load_from_fp(stream, ifd_offset)
             return sanitize_exif_resilient(src)
         except Exception:
             return b""
@@ -475,11 +480,14 @@ def read_tiff_raw_exif_from_stream(stream, magic: bytes) -> bytes:
     src = PILImage.Exif()
     src.endian = endian
     loaded_ok = False
-    try:
-        src.load_from_fp(_BoundedReader(stream), ifd_offset)
-        loaded_ok = bool(len(src))
-    except Exception:
-        loaded_ok = False
+    # Pillow eagerly loads out-of-line IFD values, including RW2's JpgFromRaw.
+    # Read the directory alone for RW2 and open only its metadata sub-IFDs.
+    if magic != b"IIU\x00":
+        try:
+            src.load_from_fp(stream, ifd_offset)
+            loaded_ok = bool(len(src))
+        except Exception:
+            pass
 
     has_exif_ifd = False
     if loaded_ok:
@@ -488,10 +496,9 @@ def read_tiff_raw_exif_from_stream(stream, magic: bytes) -> bytes:
         except Exception:
             has_exif_ifd = False
 
-    # Panasonic RW2 (IIU\x00) and some RAW TIFFs store full camera exposure/lens
-    # EXIF inside an embedded JPEG (tag 0x002E or 513/514) rather than IFD0->0x8769,
-    # or carry non-standard IFD0 tags that confuse Pillow's IFD loader.
-    if not loaded_ok or not has_exif_ifd or magic == b"IIU\x00":
+    # Some RAW TIFFs store full exposure and lens EXIF in an embedded JPEG
+    # or use non-standard IFD0 tags that Pillow cannot parse.
+    if not loaded_ok or not has_exif_ifd:
         try:
             file_size = _stream_size(stream)
             scalars, exif_off, gps_off, embedded_jpeg = _scan_classic_ifd0_minimal(
@@ -507,7 +514,7 @@ def read_tiff_raw_exif_from_stream(stream, magic: bytes) -> bytes:
                     sub = PILImage.Exif()
                     sub.endian = endian
                     try:
-                        sub.load_from_fp(_BoundedReader(stream), exif_off)
+                        sub.load_from_fp(stream, exif_off)
                         if len(sub):
                             src[_EXIF_IFD] = dict(sub.items())
                             has_exif_ifd = True
@@ -517,7 +524,7 @@ def read_tiff_raw_exif_from_stream(stream, magic: bytes) -> bytes:
                     sub_gps = PILImage.Exif()
                     sub_gps.endian = endian
                     try:
-                        sub_gps.load_from_fp(_BoundedReader(stream), gps_off)
+                        sub_gps.load_from_fp(stream, gps_off)
                         if len(sub_gps):
                             src[_GPS_IFD] = dict(sub_gps.items())
                     except Exception:
