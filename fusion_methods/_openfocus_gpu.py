@@ -604,7 +604,18 @@ def _device(cl):
                 index += 1
     if not candidates:
         return None
-    return max(candidates, key=lambda item: _device_rank(item[1], item[0]))[1]
+    ranked = sorted(candidates, key=lambda item: _device_rank(item[1], item[0]), reverse=True)
+    discrete = [device for index, device in ranked if _device_rank(device, index)[0]]
+    if len(discrete) > 1:
+        # Budgeted paths decline a discrete GPU whose free VRAM cannot be read,
+        # so prefer the highest-ranked discrete GPU that has a reading.
+        for device in discrete:
+            try:
+                if _free_vram(device) is not None:
+                    return device
+            except Exception:
+                pass
+    return ranked[0][1]
 
 
 def opencl_device_name(device):

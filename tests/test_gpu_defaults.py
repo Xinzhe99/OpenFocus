@@ -49,6 +49,82 @@ def test_opencl_device_handles_minimal_mock():
     assert _device(cl) is minimal
 
 
+def _fake_opencl(*devices):
+    return SimpleNamespace(
+        get_platforms=lambda: [SimpleNamespace(get_devices=lambda device_type: list(devices))],
+        device_type=SimpleNamespace(GPU=4),
+        Error=RuntimeError,
+    )
+
+
+def _fake_gpu(name, gib, *, unified=False):
+    return SimpleNamespace(
+        type=4, available=True, compiler_available=True, host_unified_memory=unified,
+        global_mem_size=gib * 1024**3, max_compute_units=32, name=name,
+    )
+
+
+def _record_free_vram(monkeypatch, readings):
+    from fusion_methods import _openfocus_gpu
+
+    queried = []
+
+    def free_vram(device):
+        queried.append(device.name)
+        reading = readings[device.name]
+        if isinstance(reading, Exception):
+            raise reading
+        return reading
+
+    monkeypatch.setattr(_openfocus_gpu, '_free_vram', free_vram)
+    return queried
+
+
+def test_opencl_device_prefers_discrete_gpu_with_free_vram_reading(monkeypatch):
+    from fusion_methods._openfocus_gpu import _device
+
+    unread = _fake_gpu('Discrete 16 GB', 16)
+    readable = _fake_gpu('Discrete 12 GB', 12)
+    integrated = _fake_gpu('Integrated', 32, unified=True)
+    queried = _record_free_vram(monkeypatch, {
+        unread.name: None, readable.name: (6 * 1024**3, 12 * 1024**3)})
+    assert _device(_fake_opencl(integrated, unread, readable)) is readable
+    assert queried == [unread.name, readable.name]
+
+
+def test_opencl_device_keeps_memory_order_among_readable_discrete_gpus(monkeypatch):
+    from fusion_methods._openfocus_gpu import _device
+
+    small = _fake_gpu('Discrete 8 GB', 8)
+    large = _fake_gpu('Discrete 12 GB', 12)
+    queried = _record_free_vram(monkeypatch, {
+        small.name: (4 * 1024**3, 8 * 1024**3), large.name: (1 * 1024**3, 12 * 1024**3)})
+    assert _device(_fake_opencl(small, large)) is large
+    assert len(queried) <= 1
+
+
+def test_opencl_device_keeps_memory_order_without_any_discrete_reading(monkeypatch):
+    from fusion_methods._openfocus_gpu import _device
+
+    small = _fake_gpu('Discrete 8 GB', 8)
+    large = _fake_gpu('Discrete 16 GB', 16)
+    queried = _record_free_vram(monkeypatch, {
+        small.name: None, large.name: RuntimeError('driver query failed')})
+    assert _device(_fake_opencl(small, large)) is large
+    assert len(queried) == len(set(queried))
+
+
+def test_opencl_device_reads_no_vram_without_a_second_discrete_gpu(monkeypatch):
+    from fusion_methods._openfocus_gpu import _device
+
+    discrete = _fake_gpu('Discrete 16 GB', 16)
+    integrated = _fake_gpu('Integrated', 32, unified=True)
+    queried = _record_free_vram(monkeypatch, {discrete.name: None, integrated.name: None})
+    assert _device(_fake_opencl(discrete)) is discrete
+    assert _device(_fake_opencl(integrated, discrete)) is discrete
+    assert queried == []
+
+
 def test_gpu_first_api_defaults():
     from core.background_fill import _replace_background, focus_measures
     from core.depth_map import compute_focus_index
