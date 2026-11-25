@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Sequence
 
-from PyQt6.QtCore import QEasingCurve, QPropertyAnimation, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QEasingCurve, QPropertyAnimation, Qt, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QCloseEvent, QKeySequence, QResizeEvent, QShortcut
 from PyQt6.QtWidgets import QGraphicsOpacityEffect, QLabel, QVBoxLayout, QWidget
 
@@ -16,16 +16,6 @@ from locales import trans
 from utils.design_tokens import FONT, RADIUS, SPACE, WEIGHT, palette, rgba
 from widgets.danmaku_overlay import DanmakuSettings, gallery_tr
 from widgets.gallery_showcase import GalleryShowcaseWidget, StaticBlurBackgroundCache
-
-
-_FALLBACK_PRESS_ESC = "Press ESC to exit"
-
-
-def _screensaver_toast_text() -> str:
-    val = gallery_tr("gallery_screensaver_press_esc")
-    if val != "gallery_screensaver_press_esc":
-        return val
-    return _FALLBACK_PRESS_ESC
 
 
 class GalleryScreensaverWindow(QWidget):
@@ -160,8 +150,9 @@ class GalleryScreensaverWindow(QWidget):
         )
         self.showcase.apply_theme(theme)
 
+    @pyqtSlot()
     def retranslate(self) -> None:
-        self.lbl_exit_toast.setText(_screensaver_toast_text())
+        self.lbl_exit_toast.setText(gallery_tr("gallery_screensaver_press_esc"))
         self.showcase.retranslate()
         self._position_toast()
 

@@ -572,3 +572,186 @@ def test_retouch_dialog_reuses_notice_timer_and_guards_post_close_callbacks(qapp
         dialog.close()
         dialog.deleteLater()
         qapp.processEvents()
+
+
+# ---------------------------------------------------------------------------
+# 8. Post-integration Gallery single-source helpers & Qt lifecycle cleanup
+# ---------------------------------------------------------------------------
+
+def test_gallery_single_source_helpers_and_lazy_i18n_packs(qapp):
+    from core.gallery_media import format_exif_summary as media_format_exif
+    from dialogs.gallery_hub import format_exif_line
+    from locales import TranslationManager
+    from locales.gallery_i18n import REPORT_REASON_KEYS, t_gallery
+    from utils.gallery_client import REPORT_REASONS as CLIENT_REPORT_REASONS
+    from widgets.danmaku_overlay import REPORT_REASONS as OVERLAY_REPORT_REASONS
+    from widgets.gallery_showcase import format_exif_summary as showcase_format_exif
+
+    assert showcase_format_exif is media_format_exif
+    assert format_exif_line is media_format_exif
+    assert OVERLAY_REPORT_REASONS == REPORT_REASON_KEYS == CLIENT_REPORT_REASONS
+
+    summary = media_format_exif({
+        "make": "NIKON CORPORATION",
+        "model": "NIKON Z 8",
+        "lens": "105mm MC",
+        "aperture": "f/5.6",
+        "shutter": "1/160s",
+        "iso": 200,
+    })
+    assert summary == "NIKON Z 8 · 105mm MC · f/5.6 · 1/160s · ISO 200"
+
+    # Calling t_gallery() must not eagerly force-load all 12 locale packs.
+    fresh = TranslationManager()
+    assert fresh._all_loaded is False
+    import locales as locales_pkg
+    prev_trans = locales_pkg.trans
+    try:
+        locales_pkg.trans = fresh
+        assert t_gallery("gallery_btn_like")
+        assert fresh._all_loaded is False
+    finally:
+        locales_pkg.trans = prev_trans
+
+
+def test_gallery_dialogs_shutdown_on_done_and_disconnect_state_store(qapp):
+    from core.gallery_state import AccountProfile, GalleryConfig, GalleryStateStore
+    from dialogs.account_center import AccountCenterDialog
+    from dialogs.gallery_hub import (
+        AuthorShowcaseDialog,
+        GalleryHubDialog,
+        WorkDetailDialog,
+    )
+
+    store = GalleryStateStore()
+    try:
+        acct_dlg = AccountCenterDialog(state_store=store)
+        hub_dlg = GalleryHubDialog(state_store=store)
+        author_dlg = AuthorShowcaseDialog("u-1", initial_data={"items": []})
+        detail_dlg = WorkDetailDialog({"id": "w-1", "title": "Sample"})
+
+        # accept() triggers QDialog.done() (not closeEvent); all runners & pools must shut down.
+        acct_dlg.accept()
+        hub_dlg.accept()
+        author_dlg.accept()
+        detail_dlg.accept()
+
+        for dlg in (acct_dlg, hub_dlg, author_dlg, detail_dlg):
+            assert dlg._runner._shutdown is True
+            assert dlg._media_loader._shutdown is True
+
+        # Closed dialogs must be disconnected from long-lived state_store signals.
+        called = []
+        acct_dlg._on_store_profile_changed = lambda _p: called.append("acct_profile")
+        acct_dlg._on_store_config_changed = lambda _c: called.append("acct_config")
+        hub_dlg._on_store_profile_changed = lambda _p: called.append("hub_profile")
+        hub_dlg._on_store_config_changed = lambda _c: called.append("hub_config")
+        store.profile_changed.emit(AccountProfile(user_id="u2", nickname="Late"))
+        store.config_changed.emit(GalleryConfig(upload_cost_points=250))
+        qapp.processEvents()
+        assert called == []
+
+        for dlg in (acct_dlg, hub_dlg, author_dlg, detail_dlg):
+            dlg.deleteLater()
+        qapp.processEvents()
+    finally:
+        store.shutdown()
+
+
+def test_gallery_controller_shutdown_and_shared_settings_helpers(qapp, tmp_path):
+    from PyQt6.QtCore import QSettings
+    from PyQt6.QtWidgets import QStackedWidget
+
+    from controllers.gallery_controller import (
+        GalleryController,
+        load_danmaku_settings,
+        persist_danmaku_settings,
+        persist_gallery_storage_settings,
+        read_cache_max_mb,
+    )
+    from core.gallery_cache import (
+        GalleryDiskCache,
+        resolve_gallery_cache_dir,
+        resolve_gallery_download_dir,
+    )
+    from widgets.danmaku_overlay import DanmakuSettings
+    from widgets.gallery_showcase import GalleryShowcaseWidget
+
+    # Shared Danmaku & Gallery storage persistence helpers round-trip cleanly with clamping.
+    ini = QSettings(str(tmp_path / "gallery_settings.ini"), QSettings.Format.IniFormat)
+    ini.clear()
+    saved = persist_danmaku_settings(
+        DanmakuSettings(enabled=False, position="bottom", font_size=99, opacity=0.4, density="high"),
+        settings=ini,
+    )
+    assert saved == DanmakuSettings(enabled=False, position="bottom", font_size=32, opacity=0.4, density="high")
+    assert load_danmaku_settings(ini) == saved
+
+    dl_dir = tmp_path / "downloads"
+    cache_dir = tmp_path / "cache"
+    clamped = persist_gallery_storage_settings(
+        download_dir=str(dl_dir),
+        cache_dir=str(cache_dir),
+        cache_max_mb=99999,
+        settings=ini,
+    )
+    assert clamped == 2048
+    assert read_cache_max_mb(ini) == 2048
+    assert resolve_gallery_download_dir(settings=ini, create=False) == dl_dir.resolve()
+    assert resolve_gallery_cache_dir(settings=ini, create=False) == cache_dir.resolve()
+
+    # GalleryController.attach_ui() is idempotent and shutdown() disconnects signals safely.
+    host = QWidget()
+    host.view_stack = QStackedWidget(host)
+    host.gallery_showcase_page = GalleryShowcaseWidget(host)
+    host.view_stack.addWidget(QWidget(host))
+    host.view_stack.addWidget(host.gallery_showcase_page)
+    host.output_list = QListWidget(host)
+    host.result_slider = QSlider(host)
+    host.ui_objs = {}
+
+    gc = GalleryController(
+        host,
+        disk_cache=GalleryDiskCache(cache_dir=tmp_path / "gc_cache"),
+    )
+    gc.attach_ui()
+    gc.attach_ui()  # second call must not double-connect window signals
+
+    # Deleting showcase early must not crash lifecycle/theme/retranslate calls.
+    sip.delete(host.gallery_showcase_page)
+    gc.apply_theme("dark")
+    gc.retranslate()
+    gc.set_fusion_busy(True)
+    gc.shutdown()
+
+    # Emitting state_store signals after shutdown must safely no-op.
+    gc.state_store.config_changed.emit(gc.state_store.config)
+    gc.state_store.profile_changed.emit(None)
+    host.deleteLater()
+    qapp.processEvents()
+
+
+def test_showcase_report_menus_clean_up_qmenu_children(qapp, monkeypatch):
+    from PyQt6.QtWidgets import QMenu, QPushButton
+
+    from widgets.gallery_showcase import GalleryShowcaseWidget, ShowcaseWork
+
+    monkeypatch.setattr(QMenu, "exec", lambda _self, *_a, **_k: None)
+
+    showcase = GalleryShowcaseWidget()
+    showcase.set_works([ShowcaseWork(id="w1", title="Beetle")])
+    try:
+        assert showcase.findChildren(QMenu) == []
+        showcase._on_report_clicked()
+        qapp.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        qapp.processEvents()
+        assert showcase.findChildren(QMenu) == []
+
+        anchor = QPushButton(showcase.comment_drawer)
+        showcase.comment_drawer._open_report_menu("c1", anchor)
+        qapp.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        qapp.processEvents()
+        assert showcase.comment_drawer.findChildren(QMenu) == []
+    finally:
+        showcase.deleteLater()
+        qapp.processEvents()

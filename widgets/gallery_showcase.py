@@ -39,6 +39,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from core.gallery_media import format_exif_summary
 from locales import trans
 from utils.design_tokens import FONT, RADIUS, SPACE, WEIGHT, palette, rgba
 from widgets.danmaku_overlay import (
@@ -47,98 +48,12 @@ from widgets.danmaku_overlay import (
     REPORT_REASONS,
     DanmakuOverlay,
     DanmakuSettings,
-    gallery_tr,
+    _field,
+    _first_field,
+    gallery_tr as _tr,
     is_actionable_comment_id,
     report_reason_label,
 )
-
-
-_SHOWCASE_FALLBACK_STRINGS: dict[str, str] = {
-    "gallery_badge_ad": "Sponsored",
-    "gallery_badge_following": "Following",
-    "gallery_badge_openfocus": "OpenFocus",
-    "gallery_btn_like": "Like",
-    "gallery_btn_comment": "Comments & Danmaku",
-    "gallery_btn_download": "Download",
-    "gallery_btn_fullscreen": "Fullscreen Screensaver",
-    "gallery_btn_report": "Report",
-    "gallery_comments_title": "Comments",
-    "gallery_comments_empty": "No comments yet.",
-    "gallery_comments_author_badge": "Author",
-    "gallery_comments_delete": "Delete",
-    "gallery_empty_state": "OpenFocus Gallery",
-    "gallery_close": "Close",
-}
-
-
-def _tr(key: str, **kwargs: Any) -> str:
-    val = gallery_tr(key, **kwargs)
-    if val != key:
-        return val
-    fallback = _SHOWCASE_FALLBACK_STRINGS.get(key, key)
-    if kwargs:
-        try:
-            return fallback.format(**kwargs)
-        except Exception:
-            return fallback
-    return fallback
-
-
-def _field(obj: Any, name: str, default: Any = None) -> Any:
-    if isinstance(obj, Mapping):
-        return obj.get(name, default)
-    return getattr(obj, name, default)
-
-
-def _first_field(obj: Any, names: Sequence[str], default: Any = None) -> Any:
-    for name in names:
-        if isinstance(obj, Mapping):
-            if name in obj and obj[name] is not None:
-                return obj[name]
-        else:
-            val = getattr(obj, name, None)
-            if val is not None:
-                return val
-    return default
-
-
-def format_exif_summary(exif: Mapping[str, Any] | None) -> str:
-    """Format camera / lens / exposure metadata into one compact EXIF line."""
-    if not exif:
-        return ""
-    parts: list[str] = []
-    camera = str(exif.get("camera") or "").strip()
-    if not camera:
-        make = str(exif.get("make") or "").strip()
-        model = str(exif.get("model") or "").strip()
-        if make and model and not model.lower().startswith(make.lower()):
-            camera = f"{make} {model}"
-        else:
-            camera = model or make
-    if camera:
-        parts.append(camera)
-
-    lens = str(exif.get("lens") or "").strip()
-    if lens:
-        parts.append(lens)
-
-    focal = str(exif.get("focal_length") or "").strip()
-    if focal:
-        parts.append(focal)
-
-    aperture = str(exif.get("aperture") or "").strip()
-    if aperture:
-        parts.append(aperture)
-
-    shutter = str(exif.get("shutter") or "").strip()
-    if shutter:
-        parts.append(shutter)
-
-    iso = str(exif.get("iso") or "").strip()
-    if iso:
-        parts.append(iso if iso.upper().startswith("ISO") else f"ISO {iso}")
-
-    return " \u00b7 ".join(parts)
 
 
 @dataclass
@@ -642,7 +557,10 @@ class CommentReplyDrawer(QFrame):
             act.triggered.connect(
                 lambda _checked=False, cid=comment_id, r=reason: self.comment_reported.emit(cid, r)
             )
-        menu.exec(anchor_btn.mapToGlobal(QPoint(0, anchor_btn.height())))
+        try:
+            menu.exec(anchor_btn.mapToGlobal(QPoint(0, anchor_btn.height())))
+        finally:
+            menu.deleteLater()
 
 
 class GalleryShowcaseWidget(QWidget):
@@ -1264,7 +1182,10 @@ class GalleryShowcaseWidget(QWidget):
             act.triggered.connect(
                 lambda _checked=False, wid=work.id, r=reason: self.report_work_requested.emit(wid, r)
             )
-        menu.exec(self.btn_report.mapToGlobal(QPoint(0, -menu.sizeHint().height())))
+        try:
+            menu.exec(self.btn_report.mapToGlobal(QPoint(0, -menu.sizeHint().height())))
+        finally:
+            menu.deleteLater()
 
     def _on_author_clicked(self) -> None:
         work = self.current_work
@@ -1313,6 +1234,7 @@ class GalleryShowcaseWidget(QWidget):
         self.danmaku_overlay.apply_theme(theme)
         self.comment_drawer.apply_theme(theme)
 
+    @pyqtSlot()
     def retranslate(self) -> None:
         self.btn_like.setToolTip(_tr("gallery_btn_like"))
         self.btn_comment.setToolTip(_tr("gallery_btn_comment"))

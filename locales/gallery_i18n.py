@@ -4349,9 +4349,15 @@ def t_gallery(key: str, lang: str | None = None, **kwargs: Any) -> str:
             from locales import trans
 
             active_lang = getattr(trans, "current_lang", "en") or "en"
-            lang_table = getattr(trans, "translations", {}).get(active_lang, {})
-            if key in lang_table:
-                template = trans.t(key)
+            loaded = getattr(trans, "_translations", None)
+            if isinstance(loaded, Mapping):
+                lang_table = loaded.get(active_lang)
+                if isinstance(lang_table, Mapping) and key in lang_table:
+                    template = lang_table[key]
+            else:
+                lang_table = getattr(trans, "translations", {}).get(active_lang, {})
+                if key in lang_table:
+                    template = trans.t(key)
         except Exception:
             active_lang = "en"
 

@@ -56,6 +56,31 @@ def filter_public_exif(metadata: Optional[Mapping]) -> dict:
     return summary
 
 
+def format_exif_summary(exif: Optional[Mapping[str, Any]]) -> str:
+    """Format camera / lens / exposure metadata into one compact EXIF line."""
+    if not isinstance(exif, Mapping) or not exif:
+        return ""
+    parts: list[str] = []
+    camera = str(exif.get("camera") or "").strip()
+    if not camera:
+        make = str(exif.get("make") or "").strip()
+        model = str(exif.get("model") or "").strip()
+        camera = _format_camera(make, model)
+    if camera:
+        parts.append(camera)
+
+    for key in ("lens", "focal_length", "aperture", "shutter"):
+        val = str(exif.get(key) or "").strip()
+        if val:
+            parts.append(val)
+
+    iso = str(exif.get("iso") or "").strip()
+    if iso:
+        parts.append(iso if iso.upper().startswith("ISO") else f"ISO {iso}")
+
+    return " \u00b7 ".join(parts)
+
+
 @dataclass(frozen=True)
 class PreparedGalleryUpload:
     """Result of local client-side upload media preparation."""

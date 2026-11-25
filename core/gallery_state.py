@@ -23,16 +23,16 @@ import re
 import sys
 import threading
 import time
-from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
+from typing import Any, Callable, Mapping, Optional, Sequence
 
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
+from utils.frame_pixels import is_qobject_alive
 from utils.gallery_client import (
     AI_TAG_KEYS,
     GalleryClient,
     GalleryClientError,
     INTEREST_KEYS,
-    is_unmetered_network,
 )
 from utils.logging_setup import get_logger
 
@@ -920,11 +920,8 @@ class GalleryStateStore(QObject):
 
     def stop_polling(self) -> None:
         self._deferred_poll = False
-        try:
-            if self._poll_timer.isActive():
-                self._poll_timer.stop()
-        except RuntimeError:
-            pass
+        if is_qobject_alive(self._poll_timer) and self._poll_timer.isActive():
+            self._poll_timer.stop()
 
     def shutdown(self) -> None:
         self._closed = True

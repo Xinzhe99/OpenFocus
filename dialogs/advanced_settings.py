@@ -13,7 +13,7 @@ from constants import (
 )
 from core.algorithms import (FUSION_DEFAULT, get_fusion, get_registration, registration_parameter_specs,
                              resolve_registration_parameters)
-from core.experimental import alignment_is_experimental, experimental_enabled
+from core.experimental import alignment_is_experimental
 from core.multi_focus_fusion import _DEFAULT_TILE_THRESHOLD
 from core.frame_storage import configure_storage_directory, restore_storage_directory
 from locales import trans
@@ -73,7 +73,7 @@ def _disclosure(layout, title, control_id, content):
 
 
 class AdvancedSettingsDialog(QDialog):
-    """Edit a single draft across four independently scrollable pages."""
+    """Edit a single draft across independently scrollable preference pages."""
 
     def __init__(self, window, parent=None):
         super().__init__(parent or window)
@@ -347,12 +347,7 @@ class AdvancedSettingsDialog(QDialog):
         other.addRow(self.chk_include_beta)
 
     def _build_gallery(self, page_lay):
-        from controllers.gallery_controller import (
-            DEFAULT_CACHE_MAX_MB,
-            GALLERY_CACHE_MAX_MB_KEY,
-            GalleryController,
-            _read_int_setting,
-        )
+        from controllers.gallery_controller import load_danmaku_settings, read_cache_max_mb
         from core.gallery_cache import (
             GALLERY_CACHE_DIR_KEY,
             GALLERY_DOWNLOAD_DIR_KEY,
@@ -367,7 +362,7 @@ class AdvancedSettingsDialog(QDialog):
         danmaku_cfg = (
             gallery.danmaku_settings()
             if gallery is not None
-            else GalleryController._load_danmaku_settings(store)
+            else load_danmaku_settings(store)
         )
 
         # --- Danmaku Settings ---
@@ -440,7 +435,7 @@ class AdvancedSettingsDialog(QDialog):
         initial_limit_mb = (
             gallery.cache_max_mb()
             if gallery is not None
-            else _read_int_setting(store, GALLERY_CACHE_MAX_MB_KEY, DEFAULT_CACHE_MAX_MB, minimum=10, maximum=2048)
+            else read_cache_max_mb(store)
         )
         self.spin_gallery_cache_limit = StepperSpinBox(
             minimum=10, maximum=2048, step=10, decimals=0, value=int(initial_limit_mb)
@@ -743,6 +738,7 @@ class AdvancedSettingsDialog(QDialog):
             analytics.set_enabled(share_usage)
         gallery = getattr(w, "gallery_controller", None)
         if danmaku_changed:
+            from controllers.gallery_controller import persist_danmaku_settings
             from widgets.danmaku_overlay import DanmakuSettings
             new_danmaku = DanmakuSettings(
                 enabled=self.chk_danmaku_enabled.isChecked(),
@@ -754,21 +750,7 @@ class AdvancedSettingsDialog(QDialog):
             if gallery is not None:
                 gallery.apply_danmaku_settings(new_danmaku, persist=True)
             else:
-                from controllers.gallery_controller import (
-                    DANMAKU_DENSITY_KEY,
-                    DANMAKU_ENABLED_KEY,
-                    DANMAKU_FONT_SIZE_KEY,
-                    DANMAKU_OPACITY_KEY,
-                    DANMAKU_POSITION_KEY,
-                )
-                from utils.settings_store import get_settings as _get_settings
-                st = _get_settings()
-                st.setValue(DANMAKU_ENABLED_KEY, new_danmaku.enabled)
-                st.setValue(DANMAKU_POSITION_KEY, new_danmaku.position)
-                st.setValue(DANMAKU_FONT_SIZE_KEY, new_danmaku.font_size)
-                st.setValue(DANMAKU_OPACITY_KEY, new_danmaku.opacity)
-                st.setValue(DANMAKU_DENSITY_KEY, new_danmaku.density)
-                st.sync()
+                persist_danmaku_settings(new_danmaku)
         if gallery_storage_changed:
             if gallery is not None:
                 gallery.apply_storage_settings(
@@ -777,17 +759,12 @@ class AdvancedSettingsDialog(QDialog):
                     cache_max_mb=gallery_cache_max_mb,
                 )
             else:
-                from controllers.gallery_controller import GALLERY_CACHE_MAX_MB_KEY
-                from core.gallery_cache import set_gallery_cache_dir, set_gallery_download_dir
-                from utils.settings_store import get_settings as _get_settings
-                st = _get_settings()
-                if gallery_download_dir is not None:
-                    set_gallery_download_dir(gallery_download_dir or None, settings=st)
-                if gallery_cache_dir is not None:
-                    set_gallery_cache_dir(gallery_cache_dir or None, settings=st)
-                if gallery_cache_max_mb is not None:
-                    st.setValue(GALLERY_CACHE_MAX_MB_KEY, int(gallery_cache_max_mb))
-                    st.sync()
+                from controllers.gallery_controller import persist_gallery_storage_settings
+                persist_gallery_storage_settings(
+                    download_dir=gallery_download_dir,
+                    cache_dir=gallery_cache_dir,
+                    cache_max_mb=gallery_cache_max_mb,
+                )
         from utils.logging_setup import log_action
         log_action("settings.applied", changed=sorted(
             key for key in draft if previous[key] != draft[key]),
