@@ -669,15 +669,22 @@ async function r2Download(request, env, key, name) {
   return new Response(object.body, { status, headers });
 }
 
-function recordWebsiteTraffic(db, ctx, pageViews, downloadStarts) {
+function recordWebsiteTraffic(db, ctx, downloadKind) {
   if (!ctx?.waitUntil) return;
   const now = Math.floor(Date.now() / 1000);
+  const platform = downloadKind?.slice(0, downloadKind.indexOf("-"));
   try {
     ctx.waitUntil(Promise.resolve().then(() => db.prepare(`INSERT INTO website_traffic_daily
-      (day, page_views, download_starts) VALUES (date(?, 'unixepoch', '+8 hours'), ?, ?)
+      (day, page_views, download_starts, windows_downloads, macos_downloads, linux_downloads)
+      VALUES (date(?, 'unixepoch', '+8 hours'), ?, ?, ?, ?, ?)
       ON CONFLICT(day) DO UPDATE SET page_views = page_views + excluded.page_views,
-      download_starts = download_starts + excluded.download_starts`)
-      .bind(now, pageViews, downloadStarts).run()).catch(() => {}));
+      download_starts = download_starts + excluded.download_starts,
+      windows_downloads = COALESCE(windows_downloads, 0) + excluded.windows_downloads,
+      macos_downloads = COALESCE(macos_downloads, 0) + excluded.macos_downloads,
+      linux_downloads = COALESCE(linux_downloads, 0) + excluded.linux_downloads`)
+      .bind(now, Number(downloadKind === null), Number(downloadKind !== null),
+        Number(platform === "windows"), Number(platform === "macos"), Number(platform === "linux"))
+      .run()).catch(() => {}));
   } catch {
     // Statistics must not delay or break the page or file response.
   }
@@ -694,7 +701,7 @@ function recordDownload(request, response, env, ctx, version, kind, channel, sou
   if (response.status !== 200 && response.status !== 302 &&
       !(response.status === 206 && /^bytes 0-\d+\/\d+$/.test(response.headers.get("Content-Range") || ""))) return;
   if (siteAnalytics && new URL(request.url).hostname === "openfocus.top" && !isPrefetch(request)) {
-    recordWebsiteTraffic(siteAnalytics, ctx, 0, 1);
+    recordWebsiteTraffic(siteAnalytics, ctx, kind);
   }
   if (!env.ANALYTICS || typeof version !== "string" || !/^v[0-9A-Za-z._+-]{1,80}$/.test(version)) return;
   try {
@@ -985,7 +992,7 @@ export default {
     if (env.SITE_ANALYTICS && homepage && url.hostname === "openfocus.top" && method === "GET" &&
         (response.status === 304 || (response.status === 200 && response.headers.get("Content-Type")?.startsWith("text/html"))) &&
         !isPrefetch(request)) {
-      recordWebsiteTraffic(env.SITE_ANALYTICS, ctx, 1, 0);
+      recordWebsiteTraffic(env.SITE_ANALYTICS, ctx, null);
     }
     if (!languageHeaders) return response;
     const headers = new Headers(response.headers);
