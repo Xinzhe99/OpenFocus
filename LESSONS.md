@@ -28,8 +28,11 @@ relevant source, tests, or documentation linked from [CONTRIBUTING.md](CONTRIBUT
 - Keep workers, callbacks, and dialogs alive only as long as their owners need
   them. Cancel timers with their owner and wait for native work to finish before
   destroying resources it still uses.
-- Isolate test profiles and temporary files. Clean up only artifacts owned by
-  the finished session; preserve failure evidence and leave files of unknown
+- Isolate test profiles, runtime caches, and temporary files off the system drive
+  and default OS user directories by pointing `TMPDIR`, `TEMP`, `TMP`,
+  `OPENFOCUS_DATA_DIR`, and tool caches to the non-system workspace volume.
+  Clean up preview profiles, downloaded inference packs, and session-owned
+  artifacts on completion; preserve failure evidence and leave files of unknown
   ownership alone.
 - Apply access and feature gates consistently across desktop controls, batch
   workflows, and the control channel. Preserve the user's saved state and make

@@ -47,9 +47,19 @@ After the day's validation and fixes, review the repository and workspace.
 Keep task-specific scripts, screenshots, fixtures, and test output in a named
 folder under the checkout's ignored `.tmp/` directory. Put temporary Git
 worktrees under `.tmp/worktrees/`. Use the application's configured scratch
-directory for generated runtime files. Keep the drive root and workspace
-parent clear of temporary files and folders.
+directory for generated runtime files. Keep the system drive, drive root,
+workspace parent, and default OS user profile/temp directories (`%LOCALAPPDATA%`,
+`%APPDATA%`, `%TEMP%`, and equivalent user caches) clear of temporary files,
+isolated preview profiles, inference packs, build outputs, and tool caches.
+
+When running tests, preview desktop builds, or packaging checks, explicitly
+redirect `TMPDIR`, `TEMP`, `TMP`, and `OPENFOCUS_DATA_DIR` to a task folder
+under `.tmp/` or a non-system workspace cache directory. Set tool cache paths
+there too, including `PIP_CACHE_DIR`, `UV_CACHE_DIR`, `PYINSTALLER_CONFIG_DIR`,
+and `CONDA_PKGS_DIRS`. Create task-specific virtual or Conda environments on
+the same non-system workspace volume.
 
 When the task is complete, archive any results needed for recovery or review.
-Remove the task's remaining temporary files and use `git worktree remove` to
-retire its temporary worktrees after preserving any local changes.
+Remove the task's remaining temporary files, preview profiles, and downloaded
+inference packs, and use `git worktree remove` to retire its temporary worktrees
+after preserving any local changes.
