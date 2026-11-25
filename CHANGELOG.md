@@ -9,6 +9,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Add an interactive desktop tour from the welcome dialog and Help menu.
   Follow the highlighted controls to browse source frames, choose methods,
   render, and compare the result.
+- Add Gallery Hub, Account Center, and Honor Card dialogs in all supported
+  languages. Preserve public camera and exposure metadata in Gallery uploads.
 - Download smaller desktop updates for matching installations on Windows,
   Apple Silicon macOS, and Linux x86-64. Publish a patch helper for the
   official 2.0.0 desktop builds when the patch is smaller than the full package.
@@ -32,6 +34,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   your phone or computer to sign in automatically on the desktop.
 
 ### Changed
+- Distribute OpenFocus source under Apache 2.0 and retain prior attribution
+  and model terms. View bundled licenses and any release EULA in Help.
 - Build desktop packages and platform wheels with C++17 CPU kernels for
   homography ECC and OpenFocus A, B, and C. Reuse per-frame ECC pyramids and
   estimate eligible JPEG stacks from reduced grayscale decodes. Preserve
@@ -241,6 +245,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   control sockets up to the platform path limit.
 
 ### Fixed
+- Preserve available camera, exposure, and other export-safe EXIF when
+  exporting camera RAW sources, including supported RAF and RW2 previews.
 - Preserve saved result metadata and protect original stack files during
   desktop exports. Release ROI previews and finish export and batch cleanup
   safely when closing the window. Resolve Qt UI font fallback families and

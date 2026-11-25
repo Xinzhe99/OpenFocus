@@ -10,6 +10,15 @@
 #endif
 #define MyAppVersion APP_VERSION
 #define MyAppExeName "OpenFocus.exe"
+#ifndef LICENSE_FILE
+  #if FileExists("dist\OpenFocus\EULA.txt")
+    #define LICENSE_FILE "dist\OpenFocus\EULA.txt"
+  #elif FileExists("EULA.txt")
+    #define LICENSE_FILE "EULA.txt"
+  #else
+    #define LICENSE_FILE "LICENSE"
+  #endif
+#endif
 
 [Setup]
 AppId={{8C1F4E52-9B7A-4A2E-9C1D-3F5A7B9E1D42}
@@ -23,11 +32,11 @@ VersionInfoProductVersion={#APP_VERSION_NUM}
 VersionInfoVersion={#APP_VERSION_NUM}
 VersionInfoTextVersion={#APP_VERSION_NUM}
 VersionInfoProductTextVersion={#APP_VERSION_NUM}
-VersionInfoCopyright=MIT License
+VersionInfoCopyright=Copyright 2025-2026 Xinzhe Xie / OpenFocus (Apache-2.0)
 DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
-LicenseFile=LICENSE
+LicenseFile={#LICENSE_FILE}
 OutputDir=installer
 OutputBaseFilename=OpenFocus-{#MyAppVersion}-setup
 SetupIconFile=assets\OpenFocus.ico
@@ -55,6 +64,9 @@ Type: filesandordirs; Name: "{app}\_openfocus_runtime_*"
 
 [Files]
 Source: "dist\OpenFocus\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
+#if !FileExists("dist\OpenFocus\EULA.txt") && FileExists("EULA.txt")
+Source: "EULA.txt"; DestDir: "{app}"; Flags: ignoreversion
+#endif
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
