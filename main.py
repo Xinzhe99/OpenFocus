@@ -3786,6 +3786,9 @@ class OpenFocus(QMainWindow):
         if action is None:
             return
         client = getattr(self, '_account_client', None)
+        gallery = getattr(self, 'gallery_controller', None)
+        if gallery is not None:
+            gallery.sync_account_session(client)
         if client is not None and getattr(client, 'logout_cleanup_pending', False):
             text = trans.t('account_cleanup_pending')
         elif client is not None and client.is_signed_in():
@@ -4536,6 +4539,9 @@ class OpenFocus(QMainWindow):
         from dialogs.account import AccountDialog, cancel_account_jobs
         from dialogs.retouch import RetouchDialog, _SHARPNESS_WORKERS
         shutdown_running = cancel_account_jobs(self)
+        gallery = getattr(self, 'gallery_controller', None)
+        if gallery is not None:
+            shutdown_running = gallery.publication_in_progress or shutdown_running
         accelerator = getattr(self, 'accelerator_banner', None)
         if accelerator is not None:
             shutdown_running = accelerator.shutdown_running() or shutdown_running

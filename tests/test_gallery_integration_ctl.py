@@ -85,8 +85,10 @@ class _StubAccountClient:
     def is_signed_in(self) -> bool:
         return self._signed_in
 
-    def token(self, *, deadline=None):
-        return self._tok if self._signed_in else None
+    def token(self, *, expected_owner=None, deadline=None):
+        if self._signed_in and expected_owner in (None, self._user_id):
+            return self._tok
+        return None
 
     def current_user(self):
         if not self._signed_in:
@@ -549,7 +551,8 @@ def test_webp_to_jpg_download_honor_card_upload_prompt_and_advanced_settings(int
 
     # 6c. Post-fusion UploadPromptDialog respects headless guard and probability.
     fused = np.full((32, 32, 3), 200, dtype=np.uint8)
-    apply_config_snapshot(gc.state_store, {"gallery_enabled": True, "upload_prompt_probability": 1.0})
+    apply_config_snapshot(gc.state_store, {"gallery_enabled": True, "upload_prompt_probability": 1.0,
+                                           "gallery_terms_version": "2026-11-26"})
     # Skipped in offscreen/headless by default, and skipped in batch mode.
     assert gc.on_fusion_completed(fused, interactive=True) is None
     gc.allow_headless_upload_prompt = True
@@ -713,6 +716,8 @@ def test_http_404_config_and_me_degrade_silently_and_preserve_local_account(
     assert window.view_stack.currentWidget() is window.gallery_showcase_page
     assert len(window.gallery_showcase_page.works) >= 1
     assert any(w.id.startswith("builtin_") for w in window.gallery_showcase_page.works)
+    gc.allow_headless_upload_prompt = True
+    assert gc.on_fusion_completed(np.zeros((8, 8, 3), np.uint8)) is None
 
     # 3. Existing local account menu & AccountCenterDialog remain 100% accessible.
     help_acct_action = window.ui_objs["action_account"]
@@ -729,8 +734,93 @@ def test_http_404_config_and_me_degrade_silently_and_preserve_local_account(
     # 4. Signing out clears state cleanly with zero errors.
     local_account._signed_in = False
     window._refresh_account_action()
-    gc.sync_account_session(local_account)
     qapp.processEvents()
     assert gc.state_store.profile is None
     assert gc.state_store.unread_notifications_count == 0
     assert QApplication.activeModalWidget() is None
+
+
+def test_account_switch_drops_queued_gallery_write_and_retires_old_account_view(
+    integrated_window, monkeypatch
+):
+    from utils.gallery_client import HttpResponse
+
+    window, _server, _settings, _root = integrated_window
+    gallery = window.gallery_controller
+    window._account_client = _StubAccountClient(True, "old", "old@example.com", "old-bearer")
+    window._refresh_account_action()
+    account = gallery.open_account_center()
+    assert "old@example.com" in account.email_label.text()
+
+    queued = []
+    writes = []
+    monkeypatch.setattr(gallery._executor, "submit", queued.append)
+
+    def transport(method, url, headers, body, timeout):
+        if method == "POST" and url.endswith("/like"):
+            writes.append((url.rsplit("/", 2)[-2], headers["Authorization"]))
+        return HttpResponse(status=200, headers={}, body=b"{}")
+
+    monkeypatch.setattr(gallery.client, "_transport", transport)
+    gallery.showcase.like_toggled.emit("old-selection", True)
+    window._account_client = _StubAccountClient(True, "new", "new@example.com", "new-bearer")
+    window._refresh_account_action()
+    assert not account.isVisible()
+
+    gallery.showcase.like_toggled.emit("new-selection", True)
+    assert len(queued) == 2
+    for operation in queued:
+        operation()
+    assert writes == [("new-selection", "Bearer new-bearer")]
+
+
+def test_close_waits_for_gallery_publish_receipt(integrated_window, monkeypatch):
+    from threading import Event
+    from utils.gallery_client import HttpResponse
+
+    window, _server, _settings, root = integrated_window
+    gallery = window.gallery_controller
+    window._account_client = _StubAccountClient()
+    window._refresh_account_action()
+    terms = "2026-11-26"
+    apply_config_snapshot(gallery.state_store, {"gallery_terms_version": terms})
+    apply_profile_snapshot(gallery.state_store, {
+        "user_id": "usr_alpha", "gallery_terms_accepted_version": terms,
+    })
+    entered, release = Event(), Event()
+    receipts, authorization = [], []
+
+    def transport(method, url, headers, body, timeout):
+        if method == "POST" and url.endswith("/confirm"):
+            authorization.append(headers.get("Authorization"))
+            entered.set()
+            assert release.wait(8)
+            return HttpResponse(status=201, headers={}, body=b'{"work":{"id":"published-work"},"points_balance":150}')
+        return HttpResponse(status=200, headers={}, body=b"{}")
+
+    monkeypatch.setattr(gallery.client, "_transport", transport)
+    monkeypatch.setattr(gallery.client, "inspect_upload", lambda *_args: {
+        "upload_id": "upload-publish",
+        "upload_urls": {"full": {"url": "https://media.example/full"},
+                        "thumb": {"url": "https://media.example/thumb"}},
+    })
+    monkeypatch.setattr(gallery.client, "put_presigned_webp", lambda *_args, **_kwargs: None)
+    path = root / "publish.png"
+    assert imwrite_auto(str(path), np.full((48, 64, 3), 130, np.uint8))
+    hub = window.open_gallery_hub(2)
+    hub.add_publish_files([str(path)])
+    hub.work_published.connect(receipts.append)
+    hub.publish_btn.click()
+
+    try:
+        _wait_until(entered.is_set)
+        window._force_quit = True
+        assert not window.close()
+        assert window.isVisible() and hub.isVisible()
+        assert not receipts
+        release.set()
+        _wait_until(lambda: not window.isVisible())
+        assert [receipt["work"]["id"] for receipt in receipts] == ["published-work"]
+        assert authorization == ["Bearer tok_alpha"]
+    finally:
+        release.set()

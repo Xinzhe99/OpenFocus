@@ -20,6 +20,7 @@ Key invariants:
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import ContextVar
 import os
 from pathlib import Path
 import random
@@ -126,13 +127,34 @@ def _read_str_setting(settings: Any, key: str, default: str) -> str:
 
 
 class _DynamicAccountProxy:
-    """Delegates live session checks/tokens to ``window._account_client``."""
+    """Resolve tokens against the account that queued each background operation."""
 
     def __init__(self, window: Any) -> None:
         self._window = window
+        self._generation = 0
+        self._operation_session = ContextVar("gallery_operation_session", default=None)
 
     def _current(self) -> Any:
         return getattr(self._window, "_account_client", None)
+
+    def _session(self):
+        client = self._current()
+        return self._generation, client, _account_identity(client)
+
+    def session_changed(self) -> None:
+        self._generation += 1
+
+    def bind_operation(self, operation):
+        session = self._operation_session.get() or self._session()
+
+        def run(*args, **kwargs):
+            binding = self._operation_session.set(session)
+            try:
+                return operation(*args, **kwargs)
+            finally:
+                self._operation_session.reset(binding)
+
+        return run
 
     def is_signed_in(self) -> bool:
         client = self._current()
@@ -144,13 +166,13 @@ class _DynamicAccountProxy:
             return False
 
     def token(self, *, deadline: Optional[float] = None) -> Optional[str]:
-        client = self._current()
-        if client is None or not hasattr(client, "token"):
+        session = self._session()
+        _, client, owner = session
+        scheduled = self._operation_session.get()
+        if owner is None or (scheduled is not None and scheduled != session):
             return None
-        try:
-            return client.token(deadline=deadline)
-        except TypeError:
-            return client.token()
+        token = client.token(expected_owner=owner, deadline=deadline)
+        return token if session == self._session() else None
 
     def current_user(self) -> Optional[dict[str, Any]]:
         client = self._current()
@@ -177,12 +199,6 @@ def _account_identity(account_client: Any) -> Optional[str]:
             uid = str(user.get("user_id") or user.get("id") or user.get("email") or "").strip()
             if uid:
                 return uid
-    except Exception:
-        pass
-    try:
-        tok = account_client.token() if hasattr(account_client, "token") else None
-        if isinstance(tok, str) and tok.strip():
-            return f"session:{hash(tok.strip())}"
     except Exception:
         pass
     return "__signed_in__"
@@ -326,10 +342,6 @@ class GalleryController(QObject):
         if result_slider is not None:
             result_slider.valueChanged.connect(self._on_result_slider_changed)
 
-        acct_sig = getattr(self.window, "account_session_loaded", None)
-        if acct_sig is not None:
-            acct_sig.connect(self._on_window_account_session_loaded)
-
         # Populate offline fallback works synchronously so startup/idle shows the
         # Gallery Showcase immediately without waiting for network I/O.
         if self._showcase is not None and not self._showcase.works:
@@ -376,59 +388,39 @@ class GalleryController(QObject):
 
     # ----------------------------------------------------------- session fence
 
-    def _on_window_account_session_loaded(self, account_client: Any, _error: Any) -> None:
-        self.sync_account_session(account_client)
-
     def sync_account_session(self, account_client: Any = None) -> None:
-        """Enforce the QA t4 session fence on logout or account replacement.
-
-        Always calls ``state_store.clear_account_state()`` synchronously on the
-        Qt UI thread BEFORE starting any refresh for a new account.
-        """
+        """Retire work from the previous account before refreshing the new one."""
         if self._closed:
             return
         client = account_client if account_client is not None else getattr(self.window, "_account_client", None)
-        new_key = _account_identity(client)
-
-        if new_key is None:
-            # Signed out: clear stale account state immediately on UI thread.
-            self._active_account_key = None
-            self._shown_honor_card_ids.clear()
-            self.state_store.clear_account_state()
-            self.update_unread_indicators(0)
+        owner = _account_identity(client)
+        previous = self._active_account_key
+        if owner == previous:
             return
-
-        if self._active_account_key is not None and new_key != self._active_account_key:
-            # Account switched: clear previous account state FIRST before next refresh.
-            self._shown_honor_card_ids.clear()
-            self.state_store.clear_account_state()
-            self.update_unread_indicators(0)
-
-        self._active_account_key = new_key
-        if self.state_store.gallery_enabled and not self._fusion_busy:
-            self.state_store.refresh_account_silently()
-
-    def handle_logout(self) -> None:
-        """Explicitly clear account state on logout (UI thread)."""
-        if self._closed:
-            return
-        self._active_account_key = None
+        self._active_account_key = owner
+        self._account_proxy.session_changed()
+        if previous is not None:
+            self._retire_account_dialogs()
         self._shown_honor_card_ids.clear()
         self.state_store.clear_account_state()
-        self.update_unread_indicators(0)
-
-    def handle_account_switch(self, new_account_client: Any = None) -> None:
-        """Clear previous account state synchronously, then refresh the new account."""
-        if self._closed:
-            return
-        self._shown_honor_card_ids.clear()
-        self.state_store.clear_account_state()
-        self.update_unread_indicators(0)
-        client = new_account_client if new_account_client is not None else getattr(self.window, "_account_client", None)
-        new_key = _account_identity(client)
-        self._active_account_key = new_key
-        if new_key is not None and self.state_store.gallery_enabled and not self._fusion_busy:
+        if owner is not None and self.state_store.gallery_enabled and not self._fusion_busy:
             self.state_store.refresh_account_silently()
+
+    def _retire_account_dialogs(self) -> None:
+        hub = self._hub_dialog
+        publishing = self.publication_in_progress
+        if publishing and hub.isEnabled():
+            hub.setEnabled(False)
+            hub.hide()
+            hub.publication_finished.connect(hub.reject)
+            hub.finished.connect(hub.deleteLater)
+        dialogs = [self._account_dialog, *self._honor_dialogs]
+        if not publishing:
+            dialogs.append(hub)
+        for dialog in dialogs:
+            if dialog is not None and not sip.isdeleted(dialog):
+                dialog.reject()
+                dialog.deleteLater()
 
     # ---------------------------------------------------- showcase & view stack
 
@@ -606,6 +598,8 @@ class GalleryController(QObject):
         if _is_headless_platform() and not self.allow_headless_upload_prompt:
             return None
 
+        if not self.state_store.config.gallery_terms_version:
+            return None
         prob = float(self.state_store.config.upload_prompt_probability)
         if prob <= 0.0:
             return None
@@ -745,6 +739,8 @@ class GalleryController(QObject):
 
         dlg = self._hub_dialog
         if dlg is not None and not sip.isdeleted(dlg):
+            if not dlg.isEnabled():
+                return None
             if prefill_images:
                 for img in prefill_images:
                     dlg.prefill_fused_image(
@@ -1310,6 +1306,11 @@ class GalleryController(QObject):
         if self._reveal_button is not None and not sip.isdeleted(self._reveal_button):
             self._reveal_button.setText(trans.t("gallery_download_reveal"))
 
+    @property
+    def publication_in_progress(self) -> bool:
+        hub = self._hub_dialog
+        return hub is not None and not sip.isdeleted(hub) and hub.is_publishing
+
     def shutdown(self) -> None:
         """Cleanly stop timers, background executors, screensaver, and dialogs."""
         if self._closed:
@@ -1380,7 +1381,7 @@ class GalleryController(QObject):
         if self._closed:
             return
         try:
-            self._executor.submit(fn)
+            self._executor.submit(self._account_proxy.bind_operation(fn))
         except RuntimeError:
             pass
 
