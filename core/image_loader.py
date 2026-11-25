@@ -379,7 +379,7 @@ def validate_tiff_page(path, page):
     return True
 
 
-def _decode_compressed_tiff_page(tif, page):
+def _decode_compressed_tiff_page(tif, page, maxworkers):
     """Decode complete, lossless grayscale or RGB strips with bounded workers."""
     photometric = int(page.photometric)
     channels = 3 if photometric == 2 else 1
@@ -399,10 +399,13 @@ def _decode_compressed_tiff_page(tif, page):
             for offset, count in zip(offsets, counts)):
         return None
 
-    from utils.platform_utils import physical_core_count
+    if maxworkers is None:
+        from utils.platform_utils import physical_core_count
+
+        maxworkers = min(_MAX_DECODE_WORKERS, physical_core_count())
 
     try:
-        image = page.asarray(maxworkers=min(_MAX_DECODE_WORKERS, physical_core_count()))
+        image = page.asarray(maxworkers=maxworkers)
     except (KeyError, ImportError, OSError, RuntimeError, ValueError):
         return None
     shape = (rows, width, 3) if channels == 3 else (rows, width)
@@ -413,7 +416,7 @@ def _decode_compressed_tiff_page(tif, page):
     return _orient_tiff_pixels(page, image)
 
 
-def decode_tiff_page(path, page_index=None, *, preserve_grayscale=False):
+def decode_tiff_page(path, page_index=None, *, preserve_grayscale=False, maxworkers=None):
     """Decode a validated display TIFF page, applying its orientation exactly once."""
     import tifffile
 
@@ -426,7 +429,7 @@ def decode_tiff_page(path, page_index=None, *, preserve_grayscale=False):
         if int(page.photometric) == 3:
             return decode_indexed_tiff_page(page)
         if cmyk:
-            samples = page.asarray()
+            samples = page.asarray(maxworkers=maxworkers)
             _validate_depth(path, samples.dtype)
             if samples.dtype != np.uint8 or samples.shape != (page.imagelength, page.imagewidth, 4):
                 raise UnsupportedColorSpace(f"Unexpected CMYK TIFF decoded layout: {path}: {samples.shape}/{samples.dtype}")
@@ -438,7 +441,7 @@ def decode_tiff_page(path, page_index=None, *, preserve_grayscale=False):
         # Read from the same file handle used to inspect the strip layout.
         image = _read_stored_tiff_page(tif.filehandle, stored) if stored is not None else None
         if image is None and page_index >= 0:
-            image = _decode_compressed_tiff_page(tif, page)
+            image = _decode_compressed_tiff_page(tif, page, maxworkers)
     if image is None:
         data = np.memmap(path, dtype=np.uint8, mode='r')
         success, decoded = cv2.imdecodemulti(data, flags=cv2.IMREAD_UNCHANGED,
@@ -1170,20 +1173,8 @@ class DecodedSource:
     error: Optional[BaseException] = None
 
 
-def _source_is_parallel(path: str) -> bool:
-    ext = os.path.splitext(path)[1].lower()
-    if ext in _PARALLEL_DECODE_FORMATS:
-        return True
-    if ext in ('.tif', '.tiff') and not _is_dng_tiff(path):
-        try:
-            return count_frames(path) == 1
-        except Exception:
-            return False
-    return False
-
-
-def _decode_one_source(path: str, scale_factor: float,
-                       should_cancel=None, allow_transparent_png=False) -> DecodedSource:
+def _decode_one_source(path: str, scale_factor: float, should_cancel=None,
+                       allow_transparent_png=False, *, tiff_workers=None) -> DecodedSource:
     """Decode one source exactly as the serial loaders do (pages included)."""
     try:
         if should_cancel is not None and should_cancel():
@@ -1197,6 +1188,9 @@ def _decode_one_source(path: str, scale_factor: float,
             if image is None:
                 return DecodedSource(path, error=ValueError("decode failed"))
             return DecodedSource(path, [image])
+        if tiff_workers is not None and os.path.splitext(path)[1].lower() in ('.tif', '.tiff'):
+            image = decode_tiff_page(path, maxworkers=tiff_workers)
+            return DecodedSource(path, [_downscale_page(image, scale_factor)])
         image = (decode_image(path, allow_transparent_png=True)
                  if allow_transparent_png else decode_image(path))
         if image is not None and _has_transparency(image) and scale_factor != 1.0:
@@ -1235,21 +1229,26 @@ def _peek_source_size(path: str) -> Optional[Tuple[int, int, int, int]]:
     means "do not parallelise this source", never a guessed allocation.
     """
     ext = os.path.splitext(path)[1].lower()
-    if ext in ('.tif', '.tiff') and not _is_dng_tiff(path):
+    if ext in ('.tif', '.tiff'):
         try:
             import tifffile
             with tifffile.TiffFile(path) as tif:
-                pages = list(tiff_source_pages(tif))
-                if len(pages) != 1:
+                if tif.is_dng:
                     return None
-                page = pages[0][1]
+                pages = tiff_source_pages(tif)
+                _, page = next(pages)
+                if next(pages, None) is not None:
+                    return None
+                validate_tiff_page(path, page)
                 width = int(getattr(page, 'imagewidth', 0) or 0)
                 height = int(getattr(page, 'imagelength', 0) or 0)
-                if width <= 0 or height <= 0:
+                if not _within_opencv_decode_limits(width, height):
                     return None
                 channels = int(getattr(page, 'samplesperpixel', 1) or 1)
                 itemsize = int(np.dtype(page.dtype).itemsize)
-                return width, height, max(3, min(4, channels)), itemsize
+                if 1 <= channels <= 4:
+                    return width, height, max(3, channels), itemsize
+                return None
         except Exception:
             return None
     if ext not in _PARALLEL_DECODE_FORMATS or not PIL_AVAILABLE:
@@ -1271,10 +1270,9 @@ def iter_decoded_sources(sources, scale_factor: float = 1.0, *,
                          disk_backed=False):
     """Yield DecodedSource objects in input order, with bounded parallelism.
 
-    Plain single-frame formats decode in a window of at most the admitted
-    worker count; every other source is decoded alone, after the window is
-    drained. Results are consumed in input order, so names, paths and TIFF
-    page identities line up with the serial loaders.
+    Sources with a known single-frame footprint decode in a window of at most
+    the admitted worker count. Other sources decode alone after the window is
+    drained. Results remain in input order, including failures and TIFF pages.
 
     The caller decides what a failed source means (GUI counts it, the CLI
     aborts); this iterator only reports it in place.
@@ -1291,37 +1289,36 @@ def iter_decoded_sources(sources, scale_factor: float = 1.0, *,
             raise _DecodeCancelled()
 
     workers = 1
-    if sum(1 for p in sources if _source_is_parallel(p)) > 1:
+    sizes = []
+    if len(sources) > 1:
+        for path in sources:
+            check_cancel()
+            sizes.append(_peek_source_size(path))
+    peeked = [size for size in sizes if size is not None]
+    if len(peeked) > 1:
         try:
             requested = max(0, int(thread_count or 0))
         except (TypeError, ValueError):
             requested = 0
         from core import resource_policy as policy
-        from core.resource_policy import ResourceLimitError
-        peeked = [s for s in (_peek_source_size(p) for p in sources)
-                  if s is not None]
-        if peeked:
-            # Final resident pixels plus one decoded frame per worker.
-            width = max(s[0] for s in peeked)
-            height = max(s[1] for s in peeked)
-            channels = max(s[2] for s in peeked)
-            itemsize = max(s[3] for s in peeked)
-            fixed = 0 if disk_backed else sum(w * h * c * i for w, h, c, i in peeked)
-            per_worker = width * height * channels * itemsize * 3
-            plan = policy.plan_execution(
-                policy.Workload(
-                    algorithm="decode", frames=len(peeked),
-                    height=height, width=width, channels=channels,
-                    itemsize=itemsize, fixed_bytes=fixed,
-                    per_worker_bytes=per_worker,
-                    outer_tasks=min(_MAX_DECODE_WORKERS, len(peeked))),
-                preference=resource_preference,
-                user_threads=requested)
-            workers = max(1, min(_MAX_DECODE_WORKERS, plan.workers,
-                                 len(peeked)))
-        elif requested != 1 and sources and not any(
-                _source_is_parallel(p) for p in sources):
-            workers = 1
+        # Final resident pixels plus a decode, conversion and resize per worker.
+        width = max(s[0] for s in peeked)
+        height = max(s[1] for s in peeked)
+        channels = max(s[2] for s in peeked)
+        itemsize = max(s[3] for s in peeked)
+        frame_bytes = [w * h * c * i for w, h, c, i in peeked]
+        fixed = 0 if disk_backed else sum(frame_bytes)
+        per_worker = max(frame_bytes) * 3
+        plan = policy.plan_execution(
+            policy.Workload(
+                algorithm="decode", frames=len(peeked),
+                height=height, width=width, channels=channels,
+                itemsize=itemsize, fixed_bytes=fixed,
+                per_worker_bytes=per_worker,
+                outer_tasks=min(_MAX_DECODE_WORKERS, len(peeked))),
+            preference=resource_preference,
+            user_threads=requested)
+        workers = max(1, min(_MAX_DECODE_WORKERS, plan.workers, len(peeked)))
 
     check_cancel()
     if workers == 1:
@@ -1337,10 +1334,11 @@ def iter_decoded_sources(sources, scale_factor: float = 1.0, *,
         while index < len(sources) or window:
             check_cancel()
             while (index < len(sources) and len(window) < workers
-                   and _source_is_parallel(sources[index])):
+                   and sizes[index] is not None):
                 window.append((sources[index],
                                pool.submit(_decode_one_source, sources[index],
-                                           scale_factor, should_cancel, allow_transparent_png)))
+                                           scale_factor, should_cancel, allow_transparent_png,
+                                           tiff_workers=1)))
                 index += 1
             if not window:
                 # A serial source: decode it alone, then continue.

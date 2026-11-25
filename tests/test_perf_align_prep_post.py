@@ -1,6 +1,7 @@
 """Focused regression and parity tests for alignment, prep, warp, and post-fusion speedups."""
 import gc
 import os
+import sys
 
 import cv2
 import numpy as np
@@ -44,9 +45,10 @@ def test_base_correction_downsampled_lowpass_matches_full_res():
 
 
 def test_native_u16_to_display_u8_and_bgr_to_rgb_exact():
-    # Exhaustively test all 65,536 uint16 values via a 256x256x3 array (>262,144 elems)
-    vals = np.arange(65536, dtype=np.uint16).reshape(256, 256)
+    # Exercise every uint16 code on the native color and grayscale paths.
+    vals = np.arange(65536, dtype=np.uint16).reshape(128, 512)
     img3 = np.stack([vals, vals[::-1], vals[:, ::-1]], axis=-1)
+    img3 = np.tile(img3, (2, 1, 1))
     expected = ((img3.astype(np.uint32) + 128) // 257).astype(np.uint8)
 
     np.testing.assert_array_equal(to_display_uint8(img3), expected)
@@ -57,6 +59,14 @@ def test_native_u16_to_display_u8_and_bgr_to_rgb_exact():
     big2d = np.tile(vals, (2, 2))
     expected_2d = ((big2d.astype(np.uint32) + 128) // 257).astype(np.uint8)
     np.testing.assert_array_equal(to_display_uint8(big2d), expected_2d)
+    bgra = np.concatenate((img3, img3[..., :1] ^ 0xFFFF), axis=2)
+    strided_bgra = bgra[::-1, ::-2]
+    expected_bgra = ((strided_bgra.astype(np.uint32) + 128) // 257).astype(np.uint8)
+    np.testing.assert_array_equal(to_display_uint8(strided_bgra), expected_bgra)
+    unaligned = np.ndarray(big2d.shape, dtype=np.uint16,
+                           buffer=bytearray(big2d.nbytes + 1), offset=1)
+    unaligned[:] = big2d
+    np.testing.assert_array_equal(to_display_uint8(unaligned), expected_2d)
 
     from core._native import load_native
     mod = load_native()
@@ -69,6 +79,10 @@ def test_native_u16_to_display_u8_and_bgr_to_rgb_exact():
         dst_u16 = np.empty_like(img3)
         mod.of_bgr_to_rgb(img3, dst_u16, 4)
         np.testing.assert_array_equal(dst_u16, img3[..., ::-1])
+        src = img3[::-1, ::2, ::-1]
+        dst = np.empty_like(img3)[::-1, ::2]
+        mod.of_bgr_to_rgb(src, dst, 4)
+        np.testing.assert_array_equal(dst, src[..., ::-1])
 
 
 def test_analytic_render_alignment_mask_all_valid_and_shifted():
@@ -77,16 +91,16 @@ def test_analytic_render_alignment_mask_all_valid_and_shifted():
     src = rng.integers(20, 230, (h, w, 3), dtype=np.uint8)
     fp = registration._perspective_source(src, src, None)
 
-    # 1. Identity warp: analytic path proves all pixels valid without scanning pixels
+    # Identity warp leaves no border-connected fill.
     M_id = np.eye(3, dtype=np.float64)
     pw_id = registration.PerspectiveWarp(fp, tuple(M_id.ravel()), "float64", (w, h), method="ecc")
     pf_id = ProcessedFrame(src, pw_id, (h, w, 3), np.dtype(np.uint8), None)
     ram_id = RenderAlignmentMask([pf_id], None, None)
-    assert len(ram_id._pending) == 0
     mask_id, failed_id = ram_id.complete()
-    assert not failed_id and mask_id is None
+    assert not failed_id
+    assert mask_id is _alignment_valid_mask(pf_id) is None
 
-    # 2. Shifted warp: analytic polygon matches pixel floodFill interior
+    # An integer shift has the same fill as the pixel path.
     M_shift = np.array([[1.0, 0.0, 12.0], [0.0, 1.0, -8.0], [0.0, 0.0, 1.0]], dtype=np.float64)
     pw_s = registration.PerspectiveWarp(fp, tuple(M_shift.ravel()), "float64", (w, h), method="ecc")
     pf_s = ProcessedFrame(src, pw_s, (h, w, 3), np.dtype(np.uint8), None)
@@ -96,8 +110,7 @@ def test_analytic_render_alignment_mask_all_valid_and_shifted():
     warped = cv2.warpPerspective(src, M_shift, (w, h), flags=cv2.INTER_LANCZOS4)
     mask_px = _alignment_valid_mask(warped)
     assert mask_px is not None
-    # Interior agreement > 99% (differences only on 1px rounded border)
-    assert float(np.mean(mask_an == mask_px)) > 0.98
+    np.testing.assert_array_equal(mask_an, mask_px)
 
 
 @pytest.mark.parametrize("workers", [1, 4])
@@ -140,6 +153,10 @@ def test_ecc_progress_callback_and_cancel_before_fallback(workers, monkeypatch):
 
 
 def test_frame_transport_shm_roundtrip_and_disk_fallback(tmp_path, monkeypatch):
+    from core import resource_policy
+
+    memory = resource_policy.ResourceSnapshot(available_ram=8 << 30, total_ram=16 << 30)
+    monkeypatch.setattr(resource_policy, 'probe_memory', lambda: memory)
     frame_storage.configure_storage_directory(tmp_path)
     arr = np.arange(512 * 512 * 3, dtype=np.uint8).reshape(512, 512, 3)
 
@@ -148,9 +165,13 @@ def test_frame_transport_shm_roundtrip_and_disk_fallback(tmp_path, monkeypatch):
     payload = enc.encode(arr)
     assert payload[2] == "shm"
     assert len(enc.owned_paths) == 0
+    cancelled_decoder = frame_transport.FrameDecoder(should_cancel=lambda: True)
+    with pytest.raises(registration.RegistrationCancelled):
+        cancelled_decoder.decode(payload)
     dec = frame_transport.FrameDecoder()
     out = dec.decode(payload)
     np.testing.assert_array_equal(out, arr)
+    assert not out.flags.writeable
     enc.close(unlink=True)
 
     # Low RAM headroom -> falls back cleanly to disk memmap
@@ -167,16 +188,85 @@ def test_frame_transport_shm_roundtrip_and_disk_fallback(tmp_path, monkeypatch):
     gc.collect()
 
 
-def test_single_page_tiff_parallel_decode_and_file_digest(tmp_path):
+@pytest.mark.skipif(not sys.platform.startswith('linux'), reason='Requires Linux tmpfs')
+def test_shared_memory_capacity_falls_back_to_disk(tmp_path, monkeypatch):
+    from errno import ENOSPC
+    from multiprocessing.shared_memory import SharedMemory
+    from core import resource_policy
+
+    memory = resource_policy.ResourceSnapshot(available_ram=8 << 30, total_ram=16 << 30)
+    monkeypatch.setattr(resource_policy, 'probe_memory', lambda: memory)
+    frame_storage.configure_storage_directory(tmp_path)
+
+    def full_shared_memory(*_args):
+        raise OSError(ENOSPC, 'Shared-memory filesystem is full')
+
+    monkeypatch.setattr(os, 'posix_fallocate', full_shared_memory)
+    names = []
+    encoder = frame_transport.FrameEncoder(on_shared_memory=names.append)
+    pixels = np.zeros((512, 512), dtype=np.uint8)
+    token = encoder.encode(pixels)
+    assert token[2] == 'frame'
+    assert len(names) == 1 and len(encoder.owned_paths) == 1
+    with pytest.raises(FileNotFoundError):
+        SharedMemory(name=names[0])
+    np.testing.assert_array_equal(frame_transport.FrameDecoder().decode(token), pixels)
+
+
+@pytest.mark.skipif(os.name == 'nt', reason='Windows releases the segment with its last handle')
+def test_render_exchange_discards_unaccepted_child_shared_memory(monkeypatch):
+    from multiprocessing.shared_memory import SharedMemory
+    from core import resource_policy
+    from core.render_process import _RenderExchange
+
+    memory = resource_policy.ResourceSnapshot(available_ram=8 << 30, total_ram=16 << 30)
+    monkeypatch.setattr(resource_policy, 'probe_memory', lambda: memory)
+    exchange = _RenderExchange(None)
+    encoder = frame_transport.FrameEncoder(
+        on_shared_memory=lambda name: exchange.receive(('shm', name), None),
+    )
+    token = encoder.encode(np.zeros((512, 512), dtype=np.uint8))
+    assert token[2] == 'shm'
+    name = token[3][0]
+    try:
+        encoder.close()
+        exchange.discard_shared_memory()
+        with pytest.raises(FileNotFoundError):
+            SharedMemory(name=name)
+    finally:
+        encoder.close(unlink=True)
+        frame_transport.discard_shared_memory(name)
+
+
+def test_single_page_tiff_parallel_decode_and_file_digest(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from core import image_loader, resource_policy
+
+    real_decode = image_loader.decode_tiff_page
+    calls = []
+
+    def record_decode(path, *args, **kwargs):
+        calls.append((path, kwargs.get('maxworkers')))
+        return real_decode(path, *args, **kwargs)
+
     paths = []
     for i in range(6):
         p = str(tmp_path / f"frame_{i:02d}.tif")
         rgb = np.full((64, 80, 3), 20 + i * 30, dtype=np.uint8)
         tifffile.imwrite(p, rgb, photometric="rgb")
         paths.append(p)
-    decoded = list(iter_decoded_sources(paths, thread_count=6))
-    assert [d.path for d in decoded] == paths
-    assert [int(d.pages[0][0, 0, 2]) for d in decoded] == [20 + i * 30 for i in range(6)]
+    bad = tmp_path / 'broken.tif'
+    bad.write_bytes(b'invalid TIFF')
+    sources = [*paths[:2], str(bad), *paths[2:]]
+    with monkeypatch.context() as patch:
+        patch.setattr(image_loader, 'decode_tiff_page', record_decode)
+        patch.setattr(resource_policy, 'plan_execution',
+                      lambda *args, **kwargs: SimpleNamespace(workers=2))
+        decoded = list(iter_decoded_sources(sources, thread_count=2))
+    assert [d.path for d in decoded] == sources
+    assert isinstance(decoded[2].error, tifffile.TiffFileError)
+    assert [int(d.pages[0][0, 0, 2]) for d in decoded if d.pages] == [20 + i * 30 for i in range(6)]
+    assert sorted(calls) == [(path, 1) for path in paths]
 
     # Verify unmodified TIFF SourceFrames use fast file digest in OpenFocus alignment
     sfs = [scan_source(p, header_only=True)[0] for p in paths[:3]]
@@ -207,14 +297,22 @@ def test_openfocus_rotated_alignment_subpixel_accuracy():
         assert after < before * 0.25
 
 
-def test_sharpen_output_scoped_threads_matches_serial():
+def test_sharpen_output_scoped_threads_matches_serial(monkeypatch):
     rng = np.random.default_rng(77)
     img = rng.integers(0, 65535, (600, 600, 3), dtype=np.uint16)
+    from utils import platform_utils
+
     cv2.setNumThreads(0)
+    with monkeypatch.context() as patch:
+        patch.setattr(registration, '_active_backend_bounds_threads', lambda: True)
+        patch.setattr(platform_utils, 'physical_core_count', lambda: 4)
+        patch.setattr(cv2, 'setNumThreads', lambda _: pytest.fail('Changed OpenCV thread count'))
+        serial = sharpen_output(img, strength=100, thread_count=1)
     actual = sharpen_output(img, strength=100)
     blurred = cv2.GaussianBlur(img, (0, 0), 1.0)
     expected = cv2.addWeighted(img, 1.5, blurred, -0.5, 0)
     np.testing.assert_array_equal(actual, expected)
+    np.testing.assert_array_equal(serial, expected)
 
 
 def test_analytic_render_alignment_mask_openfocus_alignment_and_translation():
@@ -239,13 +337,12 @@ def test_analytic_render_alignment_mask_openfocus_alignment_and_translation():
         (h, w, 3), np.dtype(np.uint8), None,
     )
     ram_a = RenderAlignmentMask([pf_align], None, None)
-    assert len(ram_a._pending) == 0
     mask_a, failed_a = ram_a.complete()
     assert not failed_a and mask_a is not None
     warped_a = apply_alignment(src, tr_align)
     mask_px_a = _alignment_valid_mask(warped_a)
     assert mask_px_a is not None
-    assert float(np.mean(mask_a == mask_px_a)) > 0.98
+    np.testing.assert_array_equal(mask_a, mask_px_a)
 
     # 2. Non-identity TranslationTransform
     tr_trans = TranslationTransform(1, 10.0, -6.0, 10.0, -6.0, fp)
@@ -254,13 +351,12 @@ def test_analytic_render_alignment_mask_openfocus_alignment_and_translation():
         (h, w, 3), np.dtype(np.uint8), None,
     )
     ram_t = RenderAlignmentMask([pf_trans], None, None)
-    assert len(ram_t._pending) == 0
     mask_t, failed_t = ram_t.complete()
     assert not failed_t and mask_t is not None
     warped_t = apply_translation(src, tr_trans)
     mask_px_t = _alignment_valid_mask(warped_t)
     assert mask_px_t is not None
-    assert float(np.mean(mask_t == mask_px_t)) > 0.98
+    np.testing.assert_array_equal(mask_t, mask_px_t)
 
 
 def test_base_correction_grayscale_base_broadcasts_onto_color_fused():
@@ -285,6 +381,9 @@ def test_peek_source_size_handles_planar_separate_tiff(tmp_path):
 
 def test_frame_encoder_enforces_cumulative_shm_budget(tmp_path, monkeypatch):
     from core import resource_policy
+
+    memory = resource_policy.ResourceSnapshot(available_ram=8 << 30, total_ram=16 << 30)
+    monkeypatch.setattr(resource_policy, 'probe_memory', lambda: memory)
 
     frame_storage.configure_storage_directory(tmp_path)
     arr1 = np.zeros((512, 512, 3), dtype=np.uint8)  # 768 KiB

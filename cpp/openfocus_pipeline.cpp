@@ -974,15 +974,14 @@ void of_u16_to_display_u8_cpp(
     bool bgr_rev,
     int num_threads
 ) {
-    if (src.is_float || dst.is_float || src.itemsize != 2 || dst.itemsize != 1
-            || (src.ndim != 2 && src.ndim != 3) || dst.ndim != src.ndim) {
+    if (src.is_float || dst.is_float || src.is_signed || dst.is_signed
+            || src.itemsize != 2 || dst.itemsize != 1
+            || (src.ndim != 2 && src.ndim != 3) || dst.ndim != src.ndim
+            || reinterpret_cast<uintptr_t>(src.data) % alignof(uint16_t) != 0) {
         throw std::invalid_argument("Unsupported array layout for of_u16_to_display_u8");
     }
     const int64_t height = src.shape[0];
     const int64_t width = src.shape[1];
-    if (height <= 0 || width <= 0) {
-        return;
-    }
     const int64_t channels = (src.ndim == 2) ? 1 : src.shape[2];
     if (dst.shape[0] != height || dst.shape[1] != width
             || (dst.ndim == 3 && dst.shape[2] != channels)) {
@@ -990,6 +989,9 @@ void of_u16_to_display_u8_cpp(
     }
     if (bgr_rev && (src.ndim != 3 || channels != 3)) {
         throw std::invalid_argument("bgr_rev requires 3-channel 3D arrays");
+    }
+    if (height <= 0 || width <= 0 || channels <= 0) {
+        return;
     }
     const int64_t count = height * width * channels;
     const int threads = (count >= 65536) ? std::max(1, num_threads) : 1;
@@ -1067,9 +1069,11 @@ void of_bgr_to_rgb_cpp(
     const ArrayView& dst,
     int num_threads
 ) {
-    if (src.is_float || dst.is_float || src.itemsize != dst.itemsize
-            || (src.itemsize != 1 && src.itemsize != 2)
-            || src.ndim != 3 || dst.ndim != 3 || src.shape[2] != 3 || dst.shape[2] != 3) {
+    if (src.is_float || dst.is_float || src.is_signed || dst.is_signed
+            || src.itemsize != dst.itemsize || (src.itemsize != 1 && src.itemsize != 2)
+            || src.ndim != 3 || dst.ndim != 3 || src.shape[2] != 3 || dst.shape[2] != 3
+            || (src.itemsize == 2 && (reinterpret_cast<uintptr_t>(src.data) % alignof(uint16_t) != 0
+                                     || reinterpret_cast<uintptr_t>(dst.data) % alignof(uint16_t) != 0))) {
         throw std::invalid_argument("Unsupported array layout for of_bgr_to_rgb");
     }
     const int64_t height = src.shape[0];
