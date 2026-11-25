@@ -566,6 +566,23 @@ def test_gpu_warp_of_a_region_outside_the_image_keeps_the_scope_usable(warp_gpu)
         backend.close()
 
 
+def test_gpu_warp_stays_exact_after_opencl_context_replacement(warp_gpu):
+    from fusion_methods import _openfocus_gpu
+
+    image = _textured_rgb(300, 400, seed=73)
+    matrix, size = _MATRICES[0], (400, 300)
+    expected = _reference(image, matrix, size)
+    backend = gpu.ExactPerspectiveGpu()
+    try:
+        np.testing.assert_array_equal(backend.warp(image, matrix, size, None), expected)
+        old_context = _openfocus_gpu._get_shared_context(*warp_gpu)
+        _openfocus_gpu._invalidate_shared_context(old_context)
+        np.testing.assert_array_equal(backend.warp(image, matrix, size, None), expected)
+        assert backend.gpu_warps == 2
+    finally:
+        backend.close()
+
+
 def test_gpu_warp_cancels_between_bands_and_keeps_the_scope_usable(warp_gpu, monkeypatch):
     monkeypatch.setattr(gpu, '_BAND_ROWS', (64, 32, 16))
     image = _textured_rgb(300, 400, seed=23)

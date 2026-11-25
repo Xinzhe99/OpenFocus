@@ -41,6 +41,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   during ECC and homography registration and whenever a GPU render resolves
   deferred frames, in whole images or tiles. Report the device for each step
   of a combined registration.
+- Share the OpenCL context across fusion, registration, and background focus
+  while retaining separate command queues. Cache the remaining GPU kernels
+  across launches.
+- Scan retained logs and crash reports using directory entry metadata.
 - Prefetch OpenFocus frames within CPU and memory budgets, and reuse compiled
   OpenCL binaries across launches. Keep exact pixel checks on alignment plans,
   estimate registration memory from imported metadata, and retain enough

@@ -292,13 +292,13 @@ def _self_check(cl, device, program):
 
 def _verified_program(cl, device):
     global _program
-    from fusion_methods._openfocus_gpu import _build_cached_program
+    from fusion_methods._openfocus_gpu import _build_cached_program, _get_shared_context
 
+    context = _get_shared_context(cl, device)
     key = _device_cache_key(device)
-    if _program is not None and _program[0] == key:
+    if _program is not None and _program[0] == key and _program[1][0] is context:
         return _program[1]
-    context = cl.Context(devices=[device])
-    queue = cl.CommandQueue(context)
+    queue = cl.CommandQueue(context, device=device)
     program = _build_cached_program(
         cl, device, context, _SOURCE, options=[f'-DREPAIR_LIMIT={_REPAIR_LIMIT}'],
     )
@@ -324,6 +324,7 @@ class ExactPerspectiveGpu:
 
     def __init__(self):
         self._cl = self._device = self._buffers = None
+        self._buffer_context = None
         self._vram_cache = None
         self._disabled = False
         self._round_mode = None
@@ -336,6 +337,7 @@ class ExactPerspectiveGpu:
     def close(self):
         self._vram_cache = None
         buffers, self._buffers = self._buffers, None
+        self._buffer_context = None
         for buffer in (buffers or ())[2:]:
             buffer.release()
 
@@ -359,13 +361,15 @@ class ExactPerspectiveGpu:
         # a region mapped outside the image.
         src_bytes, dst_bytes = max(1, src_bytes), max(1, dst_bytes)
         buffers = self._buffers
-        if buffers is None or buffers[0] < src_bytes or buffers[1] < dst_bytes:
+        if (self._buffer_context is not context or buffers is None
+                or buffers[0] < src_bytes or buffers[1] < dst_bytes):
             self.close()
             flags = cl.mem_flags
             self._buffers = (src_bytes, dst_bytes,
                              cl.Buffer(context, flags.READ_ONLY, src_bytes),
                              cl.Buffer(context, flags.WRITE_ONLY, dst_bytes),
                              cl.Buffer(context, flags.READ_WRITE, _REPAIR_BYTES))
+            self._buffer_context = context
             buffers = self._buffers
         return buffers[2:]
 
@@ -436,7 +440,9 @@ class ExactPerspectiveGpu:
                     try:
                         queue.finish()
                     except Exception:
+                        from fusion_methods._openfocus_gpu import _invalidate_shared_context
                         _program = None
+                        _invalidate_shared_context(program[0])
                 if isinstance(exc, RegistrationCancelled):
                     raise
                 self.close()

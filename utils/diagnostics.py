@@ -72,20 +72,21 @@ def _prune_fallback_crashes(directory):
     cutoff = time.time() - logging_setup.RETENTION_DAYS * 86400
     active = {os.getpid(): True}
     try:
-        for path in directory.iterdir():
-            match = logging_setup._SESSION_FILE.fullmatch(path.name)
-            if not match or not path.name.endswith('.crash.txt') or path.is_symlink():
-                continue
-            try:
-                if path.stat().st_mtime >= cutoff:
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                match = logging_setup._SESSION_FILE.fullmatch(entry.name)
+                if not match or not entry.name.endswith('.crash.txt') or entry.is_symlink():
                     continue
-                pid = int(match.group(1))
-                if pid not in active:
-                    active[pid] = logging_setup._process_alive(pid)
-                if not active[pid]:
-                    path.unlink()
-            except OSError:
-                continue
+                try:
+                    if entry.stat(follow_symlinks=False).st_mtime >= cutoff:
+                        continue
+                    pid = int(match.group(1))
+                    if pid not in active:
+                        active[pid] = logging_setup._process_alive(pid)
+                    if not active[pid]:
+                        os.unlink(entry.path)
+                except OSError:
+                    continue
     except OSError:
         pass
 
