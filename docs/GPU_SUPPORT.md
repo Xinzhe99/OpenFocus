@@ -4,12 +4,21 @@ OpenFocus B can use OpenCL for depth resampling, filtering, activity and selecti
 
 OpenFocus A, Guided Filter, GFG-FGF, DCT and DTCWT stream one source frame at a time to the GPU. Their host memory checks cover decoding, deferred alignment, upload and output readback under the render process's RAM limit. During upload they can reuse existing cached frames while keeping newly decoded frames only for the current transfer.
 
-For OpenFocus B full GPU depth and OpenFocus A/C, Guided Filter, GFG-FGF, DCT and DTCWT GPU fusion, unified-memory devices use the host budget; discrete GPUs require a readable free-memory report. AMD devices use the OpenCL free-memory extension and NVIDIA devices use a uniquely matched `nvidia-smi` report. If discrete free memory is unknown, A, C, Guided Filter, GFG-FGF, DCT and DTCWT fall back to CPU and B skips full GPU depth; B's bounded GPU stages can still be used when admitted.
+Unified-memory GPUs use the host RAM budget. Discrete devices need a readable
+free-memory report for full-image GPU fusion and OpenFocus B full GPU depth.
+OpenFocus checks NVIDIA NVML or the AMD OpenCL free-memory extension first.
+Fallbacks include DXGI's process budget for the matching Windows adapter,
+`nvidia-smi` on NVIDIA, and AMD DRM VRAM counters when exposed on Linux.
+If the device budget is unknown, OpenFocus B can still use eligible bounded
+GPU stages. Full-image GPU fusion uses the CPU in this case.
 
 DTCWT retains the upstream wavelet transform on the CPU. Its OpenCL path uses
 single-precision arithmetic, so GPU results can vary slightly by driver.
 Unsupported floating-point ranges and non-finite samples use the CPU path.
 Cancelling a GPU render waits for queued device work and ends the render.
+
+OpenFocus C uses software-rounded division on GPUs that lack the optional
+OpenCL flag for correctly rounded FP32 division and square root.
 
 Retouch’s **Auto background** and the CLI `--auto-background` can use OpenCL to select the peak, first sharpest frame, and median focus energy for every pixel in a large stack. The GPU processes bands that fit the device memory budget. The log records the device after the reduction completes. Small stacks, unavailable devices, and failed GPU operations use the CPU path. Turning off GPU acceleration in the desktop or passing `--cpu` on the CLI selects CPU processing for the entire replacement.
 
@@ -32,6 +41,8 @@ stages. The log events `registration_ecc_resize`, `registration_warp` and
 `deferred_ecc_warp` record the work completed on the accelerator.
 The desktop reports warp devices separately when the two steps of a combined
 registration ran on different devices.
+Unified-memory devices budget the host output and transfer staging together
+with their resize or warp buffers.
 
 StackMFF V1, V2 and V3 ship with dynamic ONNX models. **Settings → AI acceleration
 components** checks the hardware and offers a compatible optional pack once

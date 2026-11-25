@@ -44,45 +44,50 @@ def test_macos_memory_uses_c_size_t_page_size_and_stat64_fallback(monkeypatch):
 
     total_bytes = 16 * 1024**3
     page_bytes = 16384
-    state = {"use_stat64": True, "free_pages": 2000, "inactive_pages": 3000}
+    state = {'count64': 40, 'memsize_count': 8, 'host': 77, 'free_pages': 2000}
+    released = []
 
     def fake_sysctl(name, oldp, oldlenp, _newp, _newlen):
         if name == b"hw.memsize" and oldp is not None:
             ctypes.memmove(oldp, ctypes.byref(ctypes.c_uint64(total_bytes)), 8)
+            ctypes.cast(oldlenp, ctypes.POINTER(ctypes.c_size_t))[0] = state['memsize_count']
             return 0
         return -1
 
     def fake_host_page_size(_host, out_ptr):
+        assert ctypes.sizeof(out_ptr._obj) == ctypes.sizeof(ctypes.c_size_t)
         ctypes.memmove(out_ptr, ctypes.byref(ctypes.c_size_t(page_bytes)), ctypes.sizeof(ctypes.c_size_t))
         return 0
 
     def fake_stat64(_host, flavor, buf, count_ptr):
         assert flavor == 4
-        if not state["use_stat64"]:
+        count = ctypes.cast(count_ptr, ctypes.POINTER(ctypes.c_uint))
+        assert count[0] == 40
+        if state['count64'] == 0:
             return -1
-        arr = (ctypes.c_uint32 * 38)()
-        arr[0] = state["free_pages"]
-        arr[2] = state["inactive_pages"]
-        ctypes.memmove(buf, arr, ctypes.sizeof(arr))
-        ctypes.memmove(count_ptr, ctypes.byref(ctypes.c_uint(38)), 4)
+        stats = ctypes.cast(buf, ctypes.POINTER(ctypes.c_uint32))
+        stats[0] = state['free_pages']
+        stats[2] = 3000
+        count[0] = state['count64']
         return 0
 
     def fake_stat32(_host, flavor, buf, count_ptr):
         assert flavor == 2
-        arr = (ctypes.c_uint * 15)()
-        arr[0] = 100
-        arr[2] = 200
-        ctypes.memmove(buf, arr, ctypes.sizeof(arr))
-        ctypes.memmove(count_ptr, ctypes.byref(ctypes.c_uint(15)), 4)
+        count = ctypes.cast(count_ptr, ctypes.POINTER(ctypes.c_uint))
+        assert count[0] == 15
+        stats = ctypes.cast(buf, ctypes.POINTER(ctypes.c_uint32))
+        stats[0] = 100
+        stats[2] = 200
+        count[0] = 12
         return 0
 
     libc = SimpleNamespace(
         sysctlbyname=FakeFn(fake_sysctl),
-        mach_host_self=FakeFn(lambda: 77),
+        mach_host_self=FakeFn(lambda: state['host']),
         host_page_size=FakeFn(fake_host_page_size),
         host_statistics64=FakeFn(fake_stat64),
         host_statistics=FakeFn(fake_stat32),
-        mach_port_deallocate=FakeFn(lambda _t, _h: 0),
+        mach_port_deallocate=FakeFn(lambda task, host: released.append((task, host)) or 0),
     )
 
     monkeypatch.setattr(ctypes, "CDLL", lambda _name: libc)
@@ -96,17 +101,23 @@ def test_macos_memory_uses_c_size_t_page_size_and_stat64_fallback(monkeypatch):
     assert total == total_bytes
     assert avail == (2000 + 3000) * page_bytes
     assert libc.host_page_size.argtypes[1] is ctypes.POINTER(ctypes.c_size_t)
-    assert libc.host_statistics64.argtypes is not None
+    assert released == [(88, 77)]
 
-    # Clamps oversized page counts cleanly to total physical memory.
-    state["free_pages"] = 10**9
+    state['free_pages'] = 10**9
     avail_clamped, _ = memory_utils._macos_memory()
     assert avail_clamped == total_bytes
 
-    # Falls back cleanly to HOST_VM_INFO (host_statistics) if host_statistics64 fails.
-    state["use_stat64"] = False
-    avail_fb, total_fb = memory_utils._macos_memory()
-    assert (avail_fb, total_fb) == (300 * page_bytes, total_bytes)
+    # A short, failed, or oversized reply cannot supply the page counters.
+    for count in (2, 0, 41):
+        state['count64'] = count
+        assert memory_utils._macos_memory() == (300 * page_bytes, total_bytes)
+    assert released == [(88, 77)] * 5
+
+    state['host'] = 0
+    assert memory_utils._macos_memory() == (0, total_bytes)
+    state['memsize_count'] = 4
+    assert memory_utils._macos_memory() == (0, 0)
+    assert released == [(88, 77)] * 5
 
 
 def test_macos_physical_cores_declares_argtypes(monkeypatch):
@@ -118,13 +129,15 @@ def test_macos_physical_cores_declares_argtypes(monkeypatch):
 
         def __call__(self, *args):
             return self._fn(*args)
+    size_written = 4
 
     def fake_sysctl(name, oldp, oldlenp, _newp, _newlen):
         assert name == b"hw.physicalcpu"
-        if oldp is None:
-            ctypes.memmove(oldlenp, ctypes.byref(ctypes.c_size_t(4)), ctypes.sizeof(ctypes.c_size_t))
-            return 0
-        ctypes.memmove(oldp, ctypes.byref(ctypes.c_uint32(10)), 4)
+        assert oldp is not None
+        count = ctypes.cast(oldlenp, ctypes.POINTER(ctypes.c_size_t))
+        assert count[0] == ctypes.sizeof(ctypes.c_int)
+        ctypes.cast(oldp, ctypes.POINTER(ctypes.c_int))[0] = 10
+        count[0] = size_written
         return 0
 
     libc = SimpleNamespace(sysctlbyname=FakeFn(fake_sysctl))
@@ -132,10 +145,14 @@ def test_macos_physical_cores_declares_argtypes(monkeypatch):
     assert platform_utils._macos_physical_cores() == 10
     assert libc.sysctlbyname.argtypes is not None
     assert libc.sysctlbyname.restype is ctypes.c_int
+    size_written = 2
+    assert platform_utils._macos_physical_cores() == 0
 
 
-def test_fp32_build_options_and_all_six_gpu_modules_respect_optional_flag(monkeypatch, tmp_path):
+@pytest.mark.parametrize('fp_flags', [None, 0, 8])
+def test_opencl_fusion_build_options_match_device_capabilities(monkeypatch, tmp_path, fp_flags):
     monkeypatch.setenv("OPENFOCUS_OPENCL_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(ogpu, '_SHARED_CONTEXT', None)
     recorded_options = []
 
     class FakeKernel:
@@ -154,7 +171,7 @@ def test_fp32_build_options_and_all_six_gpu_modules_respect_optional_flag(monkey
             return self
 
     class FakeContext:
-        def __init__(self, _devs):
+        def __init__(self, devices):
             pass
 
     cl = SimpleNamespace(
@@ -166,7 +183,7 @@ def test_fp32_build_options_and_all_six_gpu_modules_respect_optional_flag(monkey
         kernel_work_group_info=SimpleNamespace(WORK_GROUP_SIZE=1),
     )
 
-    unsupported_dev = SimpleNamespace(
+    device = SimpleNamespace(
         int_ptr=0x1111,
         name="IntegratedGPU",
         vendor="Test",
@@ -177,26 +194,25 @@ def test_fp32_build_options_and_all_six_gpu_modules_respect_optional_flag(monkey
         max_work_group_size=256,
         max_work_item_sizes=(256, 256, 64),
         local_mem_size=32768,
-        single_fp_config=0,
     )
-    supported_dev = SimpleNamespace(**{**vars(unsupported_dev), "int_ptr": 0x2222, "single_fp_config": 8})
-
-    assert ogpu._fp32_build_options(cl, unsupported_dev) == []
-    assert ogpu._fp32_build_options(cl, supported_dev) == ["-cl-fp32-correctly-rounded-divide-sqrt"]
+    if fp_flags is not None:
+        device.single_fp_config = fp_flags
+    expected = ['-cl-fp32-correctly-rounded-divide-sqrt'] if fp_flags == 8 else []
 
     for mod in (ogpu, ogpu_a, ogpu_c, ogpu_dct, ogpu_dtcwt, ogpu_gff, ogpu_gfg):
         mod._invalidate_program_cache()
     try:
         for mod in (ogpu_a, ogpu_c, ogpu_dct, ogpu_dtcwt, ogpu_gff, ogpu_gfg):
-            mod._get_or_build_program(cl, unsupported_dev)
-        assert len(recorded_options) == 6
-        assert all(opt == [] for opt in recorded_options)
+            mod._get_or_build_program(cl, device)
+        assert recorded_options == [expected] * 6
     finally:
         for mod in (ogpu, ogpu_a, ogpu_c, ogpu_dct, ogpu_dtcwt, ogpu_gff, ogpu_gfg):
             mod._invalidate_program_cache()
 
 
 def test_linux_drm_free_vram_and_free_vram_routing(monkeypatch, tmp_path):
+    import subprocess
+
     drm = tmp_path / "drm"
     card0 = drm / "card0" / "device"
     card1 = drm / "card1" / "device"
@@ -209,15 +225,13 @@ def test_linux_drm_free_vram_and_free_vram_routing(monkeypatch, tmp_path):
     (card0 / "mem_info_vram_used").write_text(str(2 * 1024**3), encoding="ascii")
 
     (card1 / "vendor").write_text("0x8086\n", encoding="ascii")
-    (card1 / "mem_info_vram_total").write_text(str(16 * 1024**3), encoding="ascii")
-    (card1 / "mem_info_vram_used").write_text(str(4 * 1024**3), encoding="ascii")
 
     amd_dev = SimpleNamespace(vendor_id=0x1002, global_mem_size=8 * 1024**3, name="Radeon", extensions="")
     intel_dev = SimpleNamespace(vendor_id=0x8086, global_mem_size=16 * 1024**3, name="Arc", extensions="")
     other_dev = SimpleNamespace(vendor_id=0x10de, global_mem_size=8 * 1024**3, name="RTX", extensions="")
 
     assert ogpu._linux_drm_free_vram(amd_dev, drm_root=str(drm)) == (6 * 1024**3, 8 * 1024**3)
-    assert ogpu._linux_drm_free_vram(intel_dev, drm_root=str(drm)) == (12 * 1024**3, 16 * 1024**3)
+    assert ogpu._linux_drm_free_vram(intel_dev, drm_root=str(drm)) is None
     assert ogpu._linux_drm_free_vram(other_dev, drm_root=str(drm)) is None
 
     # Dual identical GPUs under separate PCI devices must be treated as ambiguous -> None.
@@ -228,25 +242,76 @@ def test_linux_drm_free_vram_and_free_vram_routing(monkeypatch, tmp_path):
     (card2 / "mem_info_vram_used").write_text(str(1 * 1024**3), encoding="ascii")
     assert ogpu._linux_drm_free_vram(amd_dev, drm_root=str(drm)) is None
 
+    realpath = os.path.realpath
+    pci_paths = {str(card0): '/sys/devices/pci0000:00/0000:03:00.0',
+                 str(card2): '/sys/devices/pci0001:00/0001:03:00.0'}
+
+    def resolve_device(path):
+        return pci_paths[str(path)] if str(path) in pci_paths else realpath(path)
+
+    monkeypatch.setattr(os.path, 'realpath', resolve_device)
+    monkeypatch.setattr(ogpu, '_opencl_pci_address', lambda device: (1, 3, 0, 0))
+    assert ogpu._linux_drm_free_vram(amd_dev, drm_root=str(drm)) == (7 * 1024**3, 8 * 1024**3)
+    (card2 / 'mem_info_vram_used').unlink()
+    assert ogpu._linux_drm_free_vram(amd_dev, drm_root=str(drm)) is None
+    monkeypatch.setattr(ogpu, '_opencl_pci_address', lambda device: (None, 3, 0, 0))
+    assert ogpu._linux_drm_free_vram(amd_dev, drm_root=str(drm)) is None
+
     # Route check on win32 DXGI and linux DRM without calling external nvidia-smi.
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(ogpu, "_dxgi_free_vram", lambda _d: (5 * 1024**3, 8 * 1024**3))
     assert ogpu._free_vram(intel_dev) == (5 * 1024**3, 8 * 1024**3)
+    monkeypatch.setattr(ogpu, '_nvml_free_vram', lambda device: None)
+    monkeypatch.setattr(subprocess, 'run', lambda *a, **kw: pytest.fail('DXGI already supplied a budget'))
+    assert ogpu._free_vram(other_dev) == (5 * 1024**3, 8 * 1024**3)
 
     monkeypatch.setattr(sys, "platform", "linux")
-    monkeypatch.setattr(ogpu, "_linux_drm_free_vram", lambda _d: (11 * 1024**3, 16 * 1024**3))
-    assert ogpu._free_vram(intel_dev) == (11 * 1024**3, 16 * 1024**3)
+    monkeypatch.setattr(ogpu, '_linux_drm_free_vram', lambda device: (5 * 1024**3, 8 * 1024**3))
+    assert ogpu._free_vram(amd_dev) == (5 * 1024**3, 8 * 1024**3)
+
+
+@pytest.mark.parametrize('second', ['same-adapter', 'equal-budget', 'unknown-budget'])
+def test_dxgi_rejects_distinct_matching_adapters(monkeypatch, second):
+    total = 8 * 1024**3
+    reading = total // 2, total
+    device = SimpleNamespace(vendor_id=0x8086, global_mem_size=total, name='Intel Arc')
+    first = (111, device.name, total, reading)
+    other = first if second == 'same-adapter' else (
+        222, device.name, total, None if second == 'unknown-budget' else reading,
+    )
+    monkeypatch.setattr(sys, 'platform', 'win32')
+    monkeypatch.setattr(resource_policy, '_dxgi_adapter_budgets', lambda vendor: (first, other))
+    expected = reading if second == 'same-adapter' else None
+    assert ogpu._dxgi_free_vram(device) == expected
+
+
+@pytest.mark.parametrize('luid, node_mask, expected_free', [
+    ((222, 0), 1, 2), ((333, 0), 1, None), ((222, 0), 2, None),
+])
+def test_dxgi_uses_the_opencl_adapter_luid(monkeypatch, luid, node_mask, expected_free):
+    gib = 1024**3
+    device = SimpleNamespace(vendor_id=0x8086, global_mem_size=8 * gib, name='Intel Arc')
+    adapters = [((111, 0), device.name, 8 * gib, (6 * gib, 8 * gib)),
+                ((222, 0), device.name, 8 * gib, (2 * gib, 8 * gib))]
+    monkeypatch.setattr(sys, 'platform', 'win32')
+    monkeypatch.setattr(resource_policy, '_dxgi_adapter_budgets', lambda vendor: adapters)
+    monkeypatch.setattr(ogpu, '_opencl_dxgi_identity', lambda device: (luid, node_mask))
+    reading = ogpu._dxgi_free_vram(device)
+    assert reading == (None if expected_free is None else (expected_free * gib, 8 * gib))
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="DXGI probe is Windows-only")
 def test_dxgi_live_windows_discrete_gpu():
-    import pyopencl as cl
-
-    dev = ogpu._device(cl)
+    cl = pytest.importorskip('pyopencl')
+    try:
+        dev = ogpu._device(cl)
+    except cl.Error:
+        pytest.skip('OpenCL platform unavailable')
     if dev is None or getattr(dev, "host_unified_memory", False):
         pytest.skip("No discrete Windows OpenCL GPU available")
     reading = ogpu._dxgi_free_vram(dev)
-    assert reading is not None
+    if reading is None:
+        pytest.skip('Selected OpenCL device has no uniquely verified DXGI reading')
     free_b, total_b = reading
     assert 0 <= free_b <= total_b and total_b > 0
 
@@ -290,3 +355,13 @@ def test_perspective_and_ecc_area_support_unified_memory(monkeypatch):
     img = np.zeros((512, 512, 3), dtype=np.uint8)
     assert a._workspace(img, 256, 256, 3, (2, 2)) is True
     a.close()
+
+    # Output, driver staging, and device buffers share one process envelope.
+    limit = 2 * 1024**2
+    with resource_policy.process_budget(resource_policy.ProcessBudget(limit, limit, limit)):
+        smaller = p._plan_bands(inv, (0, 0, 512, 512), (512, 512), 3, 1, 1024)
+        assert smaller is not None
+        bands, source_bytes, dest_bytes, staged = smaller
+        assert bands[0][1] < plan[0][0][1]
+        assert img.nbytes + 2 * (source_bytes + dest_bytes) + staged + 1024 <= limit
+        assert not a._workspace(img, 128, 128, 3, (4, 4))

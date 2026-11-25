@@ -197,8 +197,9 @@ def _source_window(inverse, rect, src_w, src_h):
             max(top, min(src_h, int(math.ceil(sy.max())) + 1 + _HALO)))
 
 
-def _band_plan(inverse, rect, src_size, channels, itemsize, budget, max_alloc, fixed_bytes):
-    """Split the destination into bands whose source windows fit the VRAM budget."""
+def _band_plan(inverse, rect, src_size, channels, itemsize, budget, max_alloc, fixed_bytes,
+               *, shared_budget=None):
+    """Fit a destination band within the device and optional shared-memory budgets."""
     x0, y0, width, height = rect
     src_h, src_w = src_size
     for rows in _BAND_ROWS:
@@ -213,7 +214,13 @@ def _band_plan(inverse, rect, src_size, channels, itemsize, budget, max_alloc, f
                      for area, (_, _, *window) in zip(areas, bands))
         src_bytes = max(areas) * channels * itemsize
         rows_bytes = min(rows, height) * width * channels * itemsize
-        if (src_bytes + rows_bytes + fixed_bytes <= budget
+        transfer_bytes = src_bytes + rows_bytes
+        # On unified memory, device buffers and pageable transfers share RAM
+        # with the host copy used for narrow source windows.
+        if (shared_budget is not None
+                and fixed_bytes + 2 * transfer_bytes + staged * channels * itemsize > shared_budget):
+            continue
+        if (transfer_bytes + fixed_bytes <= budget
                 and max(src_bytes, rows_bytes) <= max_alloc):
             return bands, src_bytes, rows_bytes, staged * channels
     return None
@@ -454,14 +461,16 @@ class ExactPerspectiveGpu:
         from core import resource_policy as policy
 
         if getattr(self._device, 'host_unified_memory', False):
-            dev_mem = int(getattr(self._device, 'global_mem_size', 0) or 0)
-            budget = min(_MAX_WORKSPACE_BYTES,
-                         policy.frame_ram_budget(policy.probe_memory()),
-                         dev_mem // 4 if dev_mem > 0 else _MAX_WORKSPACE_BYTES)
-            if budget <= 0:
+            snapshot = policy.probe_memory()
+            dev_mem = int(self._device.global_mem_size)
+            budget = min(_MAX_WORKSPACE_BYTES, policy.frame_ram_budget(snapshot), dev_mem // 4)
+            output_bytes = rect[2] * rect[3] * channels * itemsize
+            shared_budget = policy.ram_ceiling(snapshot) - output_bytes
+            if budget <= 0 or shared_budget <= 0:
                 return None
             return _band_plan(inverse, rect, src_size, channels, itemsize, budget,
-                              int(self._device.max_mem_alloc_size), fixed_bytes)
+                              int(self._device.max_mem_alloc_size), fixed_bytes,
+                              shared_budget=shared_budget)
 
         now = time.monotonic()
         cache = self._vram_cache
@@ -498,7 +507,8 @@ class ExactPerspectiveGpu:
             self._disabled = True
             return None
         bands, src_bytes, dst_bytes, staged = plan
-        policy.require_memory(width * height * channels * itemsize + staged * itemsize)
+        if not getattr(self._device, 'host_unified_memory', False):
+            policy.require_memory(width * height * channels * itemsize + staged * itemsize)
         _check_cancel(should_cancel)
         result = np.empty((height, width) if channels == 1 else (height, width, channels), image.dtype)
         stage = np.empty(staged, image.dtype) if staged else None
