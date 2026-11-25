@@ -52,7 +52,7 @@ def test_batch_config_allows_frame_order_and_tile_overlap_and_validates(tmp_path
     cfg.write_text(
         json.dumps({
             "stackA": {
-                "frame_order": "reverse",
+                "frame_order": "name",
                 "tile_size": 128,
                 "tile_overlap": 32,
             }
@@ -69,6 +69,10 @@ def test_batch_config_allows_frame_order_and_tile_overlap_and_validates(tmp_path
     )
     rc_bad = cli.run_cli(["-i", str(stack), "-d", str(out), "--config", str(bad_cfg), "--dry-run"])
     assert rc_bad == cli.EXIT_USAGE
+
+    bad_cfg.write_text(json.dumps({"stackA": {"frame_order": "reverse"}}),
+                       encoding="utf-8")
+    assert cli.run_cli(["-i", str(stack), "-d", str(out), "--config", str(bad_cfg), "--dry-run"]) == cli.EXIT_USAGE
 
 
 def test_cli_watermark_export_and_validation(tmp_path):
@@ -275,8 +279,10 @@ def test_frozen_gui_launch_uses_executable_parent_as_cwd(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     monkeypatch.setattr(sys, "executable", str(exe))
     monkeypatch.setattr(cli, "_spawn_detached", fake_spawn)
-    assert cli._run_gui([]) == cli.EXIT_OK
-    assert seen_cli["command"] == [str(exe)]
+    monkeypatch.chdir(tmp_path)
+    image_path = tmp_path / "caller-input.tif"
+    assert cli._run_gui([image_path.name]) == cli.EXIT_OK
+    assert seen_cli["command"] == [str(exe), str(image_path)]
     assert Path(seen_cli["cwd"]).resolve() == bundle_dir.resolve()
 
     seen_client = {}
@@ -290,68 +296,64 @@ def test_frozen_gui_launch_uses_executable_parent_as_cwd(monkeypatch, tmp_path):
 
     monkeypatch.setenv("OPENFOCUS_CONTROL_FILE", str(disc))
     monkeypatch.setattr(control_client, "read_discovery", lambda path=None: {"socket": "s", "token": "t"})
-    res = control_client.launch_gui("s", timeout=2.0, process_factory=fake_popen)
+    res = control_client.launch_gui("s", timeout=2.0, paths=(image_path.name,),
+                                    process_factory=fake_popen)
     assert res["socket"] == "s"
+    assert seen_client["cmd"][-1] == str(image_path)
     assert Path(seen_client["cwd"]).resolve() == bundle_dir.resolve()
 
 
-def test_posix_unix_socket_handles_long_parent_and_rejects_over_103_bytes(monkeypatch, tmp_path):
-    # Exercise _listen_unix error message & direct-bind fallback under simulated POSIX.
-    monkeypatch.setattr(control_server.os, "name", "posix")
-    monkeypatch.setattr(control_server.os, "chmod", lambda p, m: None, raising=False)
+@pytest.mark.parametrize("limit", [103, 107])
+def test_posix_unix_socket_handles_long_parent_and_enforces_platform_limit(monkeypatch, limit):
+    import posixpath
+    import stat
 
-    class DummyQServer:
-        def __init__(self):
-            self.listened = []
+    events = []
+    fake_os = SimpleNamespace(
+        path=posixpath,
+        fsencode=lambda path: path.encode("utf-8"),
+        makedirs=lambda *args, **kwargs: None,
+        stat=lambda path: SimpleNamespace(st_uid=123, st_mode=stat.S_IFDIR | 0o700),
+        geteuid=lambda: 123,
+        lstat=lambda path: SimpleNamespace(st_dev=1, st_ino=2, st_mode=stat.S_IFSOCK),
+        chmod=lambda path, mode, **kwargs: events.append(("chmod", path, mode, kwargs)),
+    )
+    fake_sock = SimpleNamespace(
+        bind=lambda path: events.append(("bind", path)),
+        listen=lambda backlog: events.append(("listen", backlog)),
+        fileno=lambda: 77,
+        detach=lambda: events.append(("detach",)),
+    )
 
-        def listen(self, fd):
-            self.listened.append(fd)
-            return True
-
-        def errorString(self):
-            return ""
-
-        def close(self):
-            pass
+    def adopt(fd):
+        events.append(("adopt", fd))
+        return True
 
     srv = SimpleNamespace(
         _unix_stage=None,
         _unix_endpoint=None,
-        _server=DummyQServer(),
-        _cleanup_unix_endpoint=lambda: None,
-        socket_name="/" + "a" * 104,
+        _server=SimpleNamespace(listen=adopt),
+        socket_name="/" + "a" * (limit - 2) + "é",
     )
-
-    # >103 UTF-8 bytes raises a clear limit error.
-    with pytest.raises(RuntimeError, match="103-byte limit"):
+    monkeypatch.setattr(control_server, "os", fake_os)
+    monkeypatch.setattr(control_server, "socket", SimpleNamespace(
+        AF_UNIX=1, SOCK_STREAM=1, socket=lambda *args: fake_sock,
+    ))
+    monkeypatch.setattr(control_server, "_UNIX_SOCKET_PATH_MAX", limit)
+    with pytest.raises(RuntimeError, match=f"{limit}-byte limit"):
         control_server.ControlServer._listen_unix(srv)
+    assert not events
 
-    # Path <104 bytes whose .of-*/s staging dir would be >=104 bytes falls back to direct bind.
-    deep_parent = "/tmp/" + ("d" * 87)
-    short_name = f"{deep_parent}/s"
-    assert len(os.fsencode(short_name)) < 104
-    assert len(os.fsencode(f"{deep_parent}/.of-12345678/s")) >= 104
-
-    fake_sock = SimpleNamespace(
-        bound=[],
-        bind=lambda p: fake_sock.bound.append(p),
-        listen=lambda n: None,
-        fileno=lambda: 77,
-        detach=lambda: None,
-        close=lambda: None,
-    )
-    srv.socket_name = short_name
-    monkeypatch.setattr(control_server.os, "makedirs", lambda *a, **kw: None)
-    monkeypatch.setattr(control_server.os.path, "dirname", lambda p: p.rsplit("/", 1)[0])
-    monkeypatch.setattr(control_server.os.path, "join", lambda *parts: "/".join(p.rstrip("/") for p in parts))
-    monkeypatch.setattr(control_server.os.path, "lexists", lambda p: False)
-    monkeypatch.setattr(control_server.os, "lstat", lambda p: SimpleNamespace(st_dev=1, st_ino=2))
-    monkeypatch.setattr(control_server.socket, "AF_UNIX", 1, raising=False)
-    monkeypatch.setattr(control_server.socket, "socket", lambda *a, **kw: fake_sock)
+    # The requested endpoint fits exactly, but there is no room to stage it.
+    path = "/tmp/" + "d" * (limit - 7) + "/s"
+    srv.socket_name = path
     control_server.ControlServer._listen_unix(srv)
-    assert fake_sock.bound == [short_name]
     assert srv._unix_stage is None
-    assert srv._server.listened == [77]
+    assert srv._unix_endpoint == (path, 1, 2)
+    assert events == [
+        ("bind", path), ("chmod", path, 0o700, {"follow_symlinks": False}),
+        ("listen", 50), ("adopt", 77), ("detach",),
+    ]
 
 
 def test_control_server_none_method_parameters_and_new_dialogs(qapp, tmp_path):

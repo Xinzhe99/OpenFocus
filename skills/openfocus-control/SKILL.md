@@ -236,6 +236,11 @@ Dialog names: `settings`, `batch`, `compare`, `depth`, `feedback`, `scalebar`,
 `environment`, `contact`. (`dust` and `mosaic` remain disabled in development and
 return `invalid_argument`.)
 
+In the converter, click Convert with `ui.click` and poll `dialog.list` for
+`busy`. Use `dialog.close` or `dialog.reject` to close it, then poll for its
+disappearance if workers are still stopping. In the watermark dialog,
+`dialog.accept` applies the draft and the dialog closes after preview cleanup.
+
 File helper actions triggered through `ui.trigger` or supported control clicks
 use addressable Qt pickers. Wait for `QFileDialog` in `dialog.list`, discover
 its actual controls and answer it by path. The running control server alone

@@ -15,6 +15,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Use single-scale inference by default in StackMFF V3. Select dual-scale
   inference in fusion, batch, method comparison, and depth settings, or
   with the command-line inference scale option.
+- Add tiled text watermarks to command-line exports and recipes. Open the
+  Watermark and Batch Image Converter dialogs through desktop control.
 - Show live grayscale focus layers while OpenFocus A, B, and C render. The
   selected source row follows the frame in processing order, and OpenFocus B
   keeps the focus map readable during layer blending.
@@ -214,6 +216,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   image views and scalar variance decisions for nearly flat ECC samples.
 - Check repeated original paths once when validating a desktop export
   destination, including exports from large image stacks.
+- Count physical CPU cores from Linux sysfs when processor records omit
+  topology. Preserve caller-relative files when launching the desktop app.
+  Finish conversion work safely during shutdown and support private Unix
+  control sockets up to the platform path limit.
 
 ### Fixed
 - Bundle trusted CA roots with the desktop app so sign-in and other HTTPS

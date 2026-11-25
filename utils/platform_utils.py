@@ -237,66 +237,87 @@ def _windows_core_records(raw, affinity_mask=0, affinity_group=0):
 
 def _parse_cpu_list(text: str) -> tuple[int, ...]:
     """Parse Linux sysfs cpulist syntax (e.g. '0-3,6,8-9') into CPU IDs."""
-    cpus = []
-    for part in text.strip().split(","):
-        part = part.strip()
-        if not part:
-            continue
-        if "-" in part:
-            start_s, end_s = part.split("-", 1)
-            start, end = int(start_s), int(end_s)
-            if end < start:
-                raise ValueError(f"Invalid CPU range: {part!r}")
-            cpus.extend(range(start, end + 1))
-        else:
-            cpus.append(int(part))
-    return tuple(sorted(set(cpus)))
+    # Binary sysfs topology attributes can include the kernel's trailing NUL.
+    text = text.removesuffix("\0").strip()
+    if not text:
+        return ()
+    cpus = set()
+    for part in text.split(","):
+        bounds = part.strip().split("-", 1)
+        if any(not (bound.isascii() and bound.isdecimal()) for bound in bounds):
+            raise ValueError(f"Invalid CPU list entry: {part!r}")
+        start, end = int(bounds[0]), int(bounds[-1])
+        if end < start:
+            raise ValueError(f"Invalid CPU range: {part!r}")
+        cpus.update(range(start, end + 1))
+    return tuple(sorted(cpus))
 
 
 def _linux_sysfs_physical_cores(affinity=None, sys_cpu_root: str = "/sys/devices/system/cpu") -> int:
-    """Fallback physical-core count via Linux sysfs topology (ARM64/VMs without /proc/cpuinfo IDs)."""
-    try:
-        entries = os.listdir(sys_cpu_root)
-    except OSError:
-        return 0
-    seen_groups = set()
-    for name in entries:
-        if not name.startswith("cpu") or not name[3:].isdigit():
-            continue
-        cpu_id = int(name[3:])
-        if affinity is not None and cpu_id not in affinity:
-            continue
-        topo = os.path.join(sys_cpu_root, name, "topology")
-        counted = False
-        for sibling_file in ("core_cpus_list", "thread_siblings_list"):
-            path = os.path.join(topo, sibling_file)
+    """Count usable physical cores from Linux sysfs when /proc lacks IDs."""
+    if affinity is None:
+        try:
+            with open(os.path.join(sys_cpu_root, "online"), encoding="ascii") as fh:
+                cpus = set(_parse_cpu_list(fh.read()))
+        except OSError:
             try:
-                with open(path, "r", encoding="utf-8", errors="ignore") as fh:
-                    siblings = _parse_cpu_list(fh.read())
-                if affinity is not None:
-                    siblings = tuple(c for c in siblings if c in affinity)
-                if siblings:
-                    seen_groups.add(("list", siblings))
-                    counted = True
-                    break
+                entries = os.listdir(sys_cpu_root)
+            except OSError:
+                return 0
+            cpus = {int(name[3:]) for name in entries
+                    if name.startswith("cpu") and name[3:].isascii() and name[3:].isdecimal()}
+        except ValueError:
+            return 0
+    else:
+        cpus = set(affinity)
+
+    remaining = cpus.copy()
+    cores = 0
+    for cpu_id in cpus:
+        if cpu_id not in remaining:
+            continue
+        topo = os.path.join(sys_cpu_root, f"cpu{cpu_id}", "topology")
+        for sibling_file in ("core_cpus_list", "thread_siblings_list"):
+            try:
+                with open(os.path.join(topo, sibling_file), encoding="ascii") as fh:
+                    siblings = cpus.intersection(_parse_cpu_list(fh.read()))
             except (OSError, ValueError):
                 continue
-        if counted:
-            continue
+            if cpu_id not in siblings:
+                continue
+            if not siblings <= remaining:
+                return 0
+            remaining.difference_update(siblings)
+            cores += 1
+            break
+
+    # A sibling list represents the whole core, even if a sibling's own
+    # topology files are unreadable. Use IDs only for CPUs still uncovered.
+    id_groups = set()
+    for cpu_id in remaining:
+        topo = os.path.join(sys_cpu_root, f"cpu{cpu_id}", "topology")
         try:
-            with open(os.path.join(topo, "physical_package_id"), "r", encoding="utf-8") as fh:
-                pkg = fh.read().strip()
-            with open(os.path.join(topo, "core_id"), "r", encoding="utf-8") as fh:
-                core = fh.read().strip()
-            if pkg and core:
-                seen_groups.add(("pair", pkg, core))
-        except OSError:
-            continue
-    return len(seen_groups)
+            with open(os.path.join(topo, "physical_package_id"), encoding="ascii") as fh:
+                package = int(fh.read())
+            with open(os.path.join(topo, "core_id"), encoding="ascii") as fh:
+                core = int(fh.read())
+            if package < 0 or core < 0:
+                return 0
+            domain = []
+            for attribute in ("die_id", "cluster_id"):
+                try:
+                    with open(os.path.join(topo, attribute), encoding="ascii") as fh:
+                        domain.append(int(fh.read()))
+                except FileNotFoundError:
+                    domain.append(-1)
+        except (OSError, ValueError):
+            return 0
+        id_groups.add((package, *domain, core))
+    return cores + len(id_groups)
 
 
 def _linux_physical_cores() -> int:
-    """Count physical/core pairs only for processors in this process's affinity."""
+    """Count physical cores available to the calling thread's affinity."""
     try:
         affinity = set(os.sched_getaffinity(0))
     except (AttributeError, OSError):
@@ -312,12 +333,17 @@ def _linux_physical_cores() -> int:
             processor = int(fields.get("processor", "-1"))
             if affinity is not None and processor not in affinity:
                 continue
-            if "physical id" not in fields or "core id" not in fields:
-                return _linux_sysfs_physical_cores(affinity)
-            pairs.add((fields["physical id"], fields["core id"]))
-        return len(pairs) if pairs else _linux_sysfs_physical_cores(affinity)
-    except (OSError, ValueError):
-        return _linux_sysfs_physical_cores(affinity)
+            package = int(fields["physical id"])
+            core = int(fields["core id"])
+            if package < 0 or core < 0:
+                break
+            pairs.add((package, core))
+        else:
+            if pairs:
+                return len(pairs)
+    except (KeyError, OSError, ValueError):
+        pass
+    return _linux_sysfs_physical_cores(affinity)
 
 
 def _macos_physical_cores() -> int:

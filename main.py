@@ -4343,7 +4343,7 @@ class OpenFocus(QMainWindow):
         self._cancel_depth_warmup()
         self.render_manager.cancel_storage_preflight()
 
-        # Keep modal owners and their documents alive while native work stops.
+        # Keep dialog owners and their documents alive while native work stops.
         # A Python reference to a QThread cannot protect it from destruction
         # with its QObject parent. Retry the authorized close on the GUI loop
         # instead of waiting here or orphaning a dialog-owned worker.
@@ -4355,12 +4355,16 @@ class OpenFocus(QMainWindow):
             shutdown_running = accelerator.shutdown_running() or shutdown_running
         from ui.sensor_cleanup import cancel_sensor_inspections
         shutdown_running = cancel_sensor_inspections(self) or shutdown_running
+        from dialogs.batch_converter import BatchConverterDialog
         from dialogs.compare import CompareDialog
         from dialogs.scalebar import ScaleBarDialog
         from dialogs.watermark import WatermarkDialog
         for dialog_type in (ScaleBarDialog, WatermarkDialog, CompareDialog):
             for dialog in self.findChildren(dialog_type):
                 shutdown_running = dialog.shutdown_running() or shutdown_running
+        for dialog in self.findChildren(BatchConverterDialog):
+            if not dialog.close():
+                shutdown_running = True
         loader = getattr(self, '_standalone_retouch_load_dialog', None)
         if loader is not None:
             loader.reject()

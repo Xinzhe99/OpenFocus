@@ -187,7 +187,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--scale-um", type=float, default=None,
                         help="Pixel size in um/px, overriding metadata (implies --scale-bar)")
     parser.add_argument("--watermark", default=None, metavar="TEXT",
-                        help="Burn a visible tiled text watermark onto the exported output")
+                        help="Burn a visible tiled text watermark onto the exported image (except native DNG)")
     parser.add_argument("--watermark-opacity", type=float, default=None,
                         help="Watermark opacity from 0.05 to 0.90 (default: 0.28; requires --watermark)")
     parser.add_argument("--watermark-size", type=float, default=None,
@@ -298,7 +298,7 @@ def _validate_execution_args(args):
             raise ValueError(f"{name} must be boolean")
     validate_sharpen_strength(getattr(args, 'sharpen_strength', DEFAULT_SHARPEN_STRENGTH))
     actions = {action.dest: action for action in build_parser()._actions}
-    for name in ('method', 'align', 'base_frame', 'sort', 'ai_mode',
+    for name in ('method', 'align', 'base_frame', 'sort', 'frame_order', 'ai_mode',
                  'resource_preference', 'auto_background', 'background_mode'):
         value = getattr(args, name)
         if value is None and name in ('ai_mode', 'auto_background'):
@@ -323,15 +323,16 @@ def _validate_execution_args(args):
     if args.native_raw and (args.suggest_duplicates or args.group_size or
                             args.defect_mask_path or args.sensor_denoise or args.depth_map):
         raise ValueError('native_raw cannot be combined with grouped fusion, references or depth maps')
-    if args.native_raw and (args.scale_bar or args.scale_um is not None) and (
-            (args.output_dir and (args.native_batch_format or 'dng') == 'dng') or
-            (args.output and os.path.splitext(args.output)[1].lower() == '.dng')):
-        raise ValueError('scale bars are not supported in native DNG output')
-    _resolve_watermark_cfg(args)
-    if getattr(args, 'watermark', None) is not None and args.native_raw and (
-            (args.output_dir and (args.native_batch_format or 'dng') == 'dng') or
-            (args.output and os.path.splitext(args.output)[1].lower() == '.dng')):
-        raise ValueError('watermarks are not supported in native DNG output')
+    watermark_cfg = _resolve_watermark_cfg(args)
+    if args.native_raw:
+        if args.output_dir is not None:
+            native_dng = (args.native_batch_format or 'dng') == 'dng'
+        else:
+            native_dng = args.output and os.path.splitext(args.output)[1].lower() == '.dng'
+        if native_dng and (args.scale_bar or args.scale_um is not None):
+            raise ValueError('scale bars are not supported in native DNG output')
+        if native_dng and watermark_cfg is not None:
+            raise ValueError('watermarks are not supported in native DNG output')
     extras = args.background_mode != 'clean' or args.keep_soft_parts or args.save_stacked or args.missing_data_map
     if extras and not args.auto_background:
         raise ValueError('background options require auto_background')
@@ -1348,44 +1349,34 @@ def _resolve_scale_cfg(args, paths):
 def _resolve_watermark_cfg(args):
     """Build and validate a WatermarkConfig from CLI flags or batch overrides."""
     text = getattr(args, "watermark", None)
-    style_fields = (
-        ("watermark_opacity", getattr(args, "watermark_opacity", None)),
-        ("watermark_size", getattr(args, "watermark_size", None)),
-        ("watermark_color", getattr(args, "watermark_color", None)),
-        ("watermark_angle", getattr(args, "watermark_angle", None)),
-        ("watermark_density", getattr(args, "watermark_density", None)),
-        ("watermark_copyright", getattr(args, "watermark_copyright", None)),
-        ("watermark_font", getattr(args, "watermark_font", None)),
-    )
-    has_style = any(value is not None for _name, value in style_fields)
+    payload = {}
+    for field, option in (
+            ("opacity", "opacity"), ("size_percent", "size"), ("color", "color"),
+            ("angle", "angle"), ("density", "density"), ("font_family", "font"),
+            ("copyright_position", "copyright")):
+        value = getattr(args, f"watermark_{option}", None)
+        if value is not None:
+            if field in ("opacity", "size_percent", "angle") and type(value) not in (int, float):
+                raise ValueError(f"--watermark-{option} requires a number")
+            payload[field] = value
     if text is None:
-        if has_style:
+        if payload:
             raise ValueError("watermark styling options require --watermark TEXT")
         return None
     from utils import watermark
-    payload = {"text": text}
-    if getattr(args, "watermark_opacity", None) is not None:
-        payload["opacity"] = args.watermark_opacity
-    if getattr(args, "watermark_size", None) is not None:
-        payload["size_percent"] = args.watermark_size
-    if getattr(args, "watermark_color", None) is not None:
-        payload["color"] = args.watermark_color
-    if getattr(args, "watermark_angle", None) is not None:
-        payload["angle"] = args.watermark_angle
-    if getattr(args, "watermark_density", None) is not None:
-        payload["density"] = args.watermark_density
-    if getattr(args, "watermark_font", None) is not None:
-        payload["font_family"] = args.watermark_font
-    copyright_pos = getattr(args, "watermark_copyright", None)
-    if copyright_pos is not None:
+    payload["text"] = text
+    if "copyright_position" in payload:
         payload["copyright_enabled"] = True
-        payload["copyright_position"] = copyright_pos
     return watermark.normalize_config(payload)
 
 
 def _save(path: str, fused, scale_cfg=None, icc_profile=b"",
           watermark_cfg=None, should_cancel=None) -> None:
     from utils.image_utils import imwrite_auto
+    from core.registration import RegistrationCancelled
+
+    if should_cancel is not None and should_cancel():
+        raise KeyboardInterrupt
     if fused.ndim == 3 and fused.shape[2] == 4:
         if os.path.splitext(path)[1].lower() != '.png':
             raise ValueError("Transparent output requires a PNG file")
@@ -1398,9 +1389,15 @@ def _save(path: str, fused, scale_cfg=None, icc_profile=b"",
         fused = scalebar.burn(fused, scale_cfg)
     if watermark_cfg is not None:
         from utils import watermark
-        fused = watermark.burn(fused, watermark_cfg, should_cancel=should_cancel)
-    if not imwrite_auto(path, fused, icc_profile=icc_profile):
-        raise RuntimeError(f"Failed to write output: {path}")
+        try:
+            fused = watermark.burn(fused, watermark_cfg, should_cancel=should_cancel)
+        except watermark.WatermarkCancelled as exc:
+            raise KeyboardInterrupt from exc
+    try:
+        if not imwrite_auto(path, fused, icc_profile=icc_profile, should_cancel=should_cancel):
+            raise RuntimeError(f"Failed to write output: {path}")
+    except RegistrationCancelled as exc:
+        raise KeyboardInterrupt from exc
 
 
 def _run_batch(args, _emit_json=None, _allow_summary=None) -> int:
@@ -1978,11 +1975,6 @@ def _run_cli_parsed(args) -> int:
                 args.defect_mask_path or args.sensor_denoise or args.depth_map):
             print("error: --native-raw cannot be combined with duplicate review, grouped fusion, sensor cleanup or depth maps", file=sys.stderr)
             return EXIT_USAGE
-        if (args.scale_bar or args.scale_um is not None) and (
-                (args.output_dir and (args.native_batch_format or "dng") == "dng") or
-                (args.output and os.path.splitext(args.output)[1].lower() == ".dng")):
-            print("error: scale bars are not supported in native DNG output", file=sys.stderr)
-            return EXIT_USAGE
     if args.profile_performance is not None:
         if args.suggest_duplicates or args.output_dir or args.group_size or args.dry_run:
             print("error: --profile-performance requires a single, non-grouped fusion run", file=sys.stderr)
@@ -2543,7 +2535,7 @@ def _run_gui(argv: List[str]) -> int:
             print(f"error: unknown gui option: {token}", file=sys.stderr)
             return EXIT_USAGE
         else:
-            paths.append(token)
+            paths.append(os.path.abspath(os.path.expanduser(token)))
             index += 1
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if control or socket_name:
