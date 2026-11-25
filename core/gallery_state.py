@@ -719,9 +719,9 @@ class GalleryStateStore(QObject):
 
     # Internal thread-marshaling signals
     _config_loaded = pyqtSignal(object)
-    _profile_loaded = pyqtSignal(object)
-    _feed_loaded = pyqtSignal(object)
-    _notifications_loaded = pyqtSignal(object)
+    _profile_loaded = pyqtSignal(int, object)
+    _feed_loaded = pyqtSignal(int, object)
+    _notifications_loaded = pyqtSignal(int, object)
     _operation_failed = pyqtSignal(str, str)
 
     def __init__(
@@ -755,8 +755,9 @@ class GalleryStateStore(QObject):
         self._fusion_busy: bool = False
         self._deferred_poll: bool = False
         self._closed: bool = False
+        self._account_generation = 0
         self._inflight_lock = threading.Lock()
-        self._inflight_ops: set[str] = set()
+        self._inflight_ops: set[tuple[str, Optional[int]]] = set()
 
         # Connect internal thread-safe slots
         self._config_loaded.connect(self._apply_config)
@@ -928,10 +929,15 @@ class GalleryStateStore(QObject):
 
     def clear_account_state(self) -> None:
         """Clear signed-in account state on sign-out without touching config."""
+        self._account_generation += 1
         self._profile = None
         self._notifications = []
+        had_feed = bool(self._feed_works)
+        self._feed_works = []
         self.profile_changed.emit(None)
         self.notifications_changed.emit([], 0)
+        if had_feed:
+            self.feed_changed.emit(self.effective_showcase_works())
 
     # ---- Background worker orchestration ----
 
@@ -940,20 +946,24 @@ class GalleryStateStore(QObject):
         thread = threading.Thread(target=task, name="openfocus-gallery-sync", daemon=True)
         thread.start()
 
-    def _submit(self, op_name: str, worker_fn: Callable[[], None]) -> bool:
+    def _submit(
+        self, op_name: str, worker_fn: Callable[[], None], *, generation: Optional[int] = None,
+    ) -> bool:
         if self._closed:
             return False
+        key = (op_name, generation)
         with self._inflight_lock:
-            if op_name in self._inflight_ops:
+            if key in self._inflight_ops:
                 return False
-            self._inflight_ops.add(op_name)
+            self._inflight_ops.add(key)
 
         def _wrapped() -> None:
             try:
-                worker_fn()
+                if not self._closed and (generation is None or generation == self._account_generation):
+                    worker_fn()
             finally:
                 with self._inflight_lock:
-                    self._inflight_ops.discard(op_name)
+                    self._inflight_ops.discard(key)
 
         self._background_runner(_wrapped)
         return True
@@ -999,18 +1009,20 @@ class GalleryStateStore(QObject):
         if not self._client.has_session():
             return False
 
+        generation = self._account_generation
+
         def _work() -> None:
             try:
                 raw = self._client.get_me(bypass_backoff=bypass_backoff)
                 profile = AccountProfile.from_dict(raw)
-                self._safe_emit(self._profile_loaded, profile)
+                self._safe_emit(self._profile_loaded, generation, profile)
             except GalleryClientError as exc:
                 self._safe_emit(self._operation_failed, "account", exc.code)
             except Exception:
                 _logger.debug("Unexpected gallery account refresh error", exc_info=True)
                 self._safe_emit(self._operation_failed, "account", "internal_error")
 
-        return self._submit("account", _work)
+        return self._submit("account", _work, generation=generation)
 
     def refresh_feed(
         self,
@@ -1029,6 +1041,8 @@ class GalleryStateStore(QObject):
         if self._closed or self._fusion_busy or not self._config.gallery_enabled:
             return False
 
+        generation = self._account_generation
+
         def _work() -> None:
             try:
                 raw = self._client.get_feed(
@@ -1046,14 +1060,14 @@ class GalleryStateStore(QObject):
                             work = GalleryWork.from_dict(item)
                             if work.work_id:
                                 works.append(work)
-                self._safe_emit(self._feed_loaded, works)
+                self._safe_emit(self._feed_loaded, generation, works)
             except GalleryClientError as exc:
                 self._safe_emit(self._operation_failed, "feed", exc.code)
             except Exception:
                 _logger.debug("Unexpected gallery feed refresh error", exc_info=True)
                 self._safe_emit(self._operation_failed, "feed", "internal_error")
 
-        return self._submit("feed", _work)
+        return self._submit("feed", _work, generation=generation)
 
     def refresh_notifications(self, *, limit: Optional[int] = None, bypass_backoff: bool = False) -> bool:
         """Fetch /api/v1/account/notifications off the UI thread."""
@@ -1061,6 +1075,8 @@ class GalleryStateStore(QObject):
             return False
         if not self._client.has_session():
             return False
+
+        generation = self._account_generation
 
         def _work() -> None:
             try:
@@ -1073,14 +1089,14 @@ class GalleryStateStore(QObject):
                             note = GalleryNotification.from_dict(item)
                             if note.notification_id:
                                 parsed.append(note)
-                self._safe_emit(self._notifications_loaded, parsed)
+                self._safe_emit(self._notifications_loaded, generation, parsed)
             except GalleryClientError as exc:
                 self._safe_emit(self._operation_failed, "notifications", exc.code)
             except Exception:
                 _logger.debug("Unexpected gallery notifications refresh error", exc_info=True)
                 self._safe_emit(self._operation_failed, "notifications", "internal_error")
 
-        return self._submit("notifications", _work)
+        return self._submit("notifications", _work, generation=generation)
 
     # ---- UI-thread state applicators ----
 
@@ -1099,25 +1115,25 @@ class GalleryStateStore(QObject):
             if not cfg.gallery_enabled:
                 self.feed_changed.emit([])
 
-    def _apply_profile(self, profile: AccountProfile) -> None:
-        if self._closed:
+    def _apply_profile(self, generation: int, profile: AccountProfile) -> None:
+        if self._closed or generation != self._account_generation:
             return
         self._profile = profile
         self.profile_changed.emit(profile)
         unacked = [card for card in profile.pending_honor_cards if not card.acknowledged]
-        if unacked:
+        if unacked and generation == self._account_generation:
             self.honor_cards_pending.emit(unacked)
 
-    def _apply_feed(self, works: list[GalleryWork]) -> None:
-        if self._closed:
+    def _apply_feed(self, generation: int, works: list[GalleryWork]) -> None:
+        if self._closed or generation != self._account_generation:
             return
         if not self._config.gallery_enabled:
             return
         self._feed_works = list(works)
         self.feed_changed.emit(self.effective_showcase_works())
 
-    def _apply_notifications(self, notifications: list[GalleryNotification]) -> None:
-        if self._closed:
+    def _apply_notifications(self, generation: int, notifications: list[GalleryNotification]) -> None:
+        if self._closed or generation != self._account_generation:
             return
         self._notifications = list(notifications)
         unread = sum(1 for item in self._notifications if not item.is_read)
@@ -1140,5 +1156,5 @@ def apply_config_snapshot(store: GalleryStateStore, raw: Mapping[str, Any]) -> G
 def apply_profile_snapshot(store: GalleryStateStore, raw: Mapping[str, Any]) -> AccountProfile:
     """Synchronous helper to apply a parsed /api/v1/account/me payload onto a store."""
     profile = AccountProfile.from_dict(raw)
-    store._apply_profile(profile)
+    store._apply_profile(store._account_generation, profile)
     return profile

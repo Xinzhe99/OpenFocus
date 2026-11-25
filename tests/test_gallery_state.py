@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from queue import Queue
+from threading import Event, Thread
 from typing import Any
 
 from PyQt6.QtCore import QCoreApplication
@@ -387,3 +389,55 @@ def test_state_store_safe_emit_and_destroyed_lifecycle(qapp):
     store2 = gs.GalleryStateStore(client=client, background_runner=lambda fn: fn())
     store2._safe_emit(_DeletedSignal(), "payload")
     store2.shutdown()
+
+
+def test_retired_gallery_responses_cannot_replace_new_session(qapp):
+    release = Event()
+    requested = Queue()
+    pending = []
+    token = "retired"
+
+    def transport(method, url, headers, body, timeout):
+        _, user = headers["Authorization"].split()
+        operation = url.rsplit("/", 1)[-1]
+        if user == "retired":
+            requested.put(operation)
+            assert release.wait(10)
+        if operation == "me":
+            return _json_response({"user_id": user, "nickname": user})
+        if operation == "notifications":
+            return _json_response({"items": [{"notification_id": f"notice-{user}"}]})
+        return _json_response({"items": [{"work_id": f"work-{user}"}]})
+
+    client = gc.GalleryClient(token_provider=lambda: token, transport=transport)
+    store = gs.GalleryStateStore(client, background_runner=pending.append)
+    refreshes = (store.refresh_account_silently, store.refresh_notifications, store.refresh_feed)
+    for refresh in refreshes:
+        assert refresh()
+    workers = [Thread(target=run) for run in pending]
+    pending.clear()
+    for worker in workers:
+        worker.start()
+    try:
+        assert {requested.get(timeout=5) for _ in workers} == {"me", "notifications", "feed"}
+        store.clear_account_state()
+        token = "replacement"
+        for refresh in refreshes:
+            assert refresh()
+        for run in pending:
+            run()
+    finally:
+        release.set()
+        for worker in workers:
+            worker.join(timeout=5)
+            assert not worker.is_alive()
+
+    qapp.processEvents()
+    assert store.profile.user_id == "replacement"
+    assert [notice.notification_id for notice in store.notifications] == ["notice-replacement"]
+    assert [work.work_id for work in store.feed_works] == ["work-replacement"]
+    store.clear_account_state()
+    assert store.profile is None
+    assert store.notifications == []
+    assert store.feed_works == []
+    store.shutdown()
