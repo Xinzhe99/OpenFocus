@@ -165,8 +165,17 @@ class SourceHover(QObject):
 
     def _finished(self, request, details):
         self.running = False
+        from PyQt6 import sip
+        from PyQt6.QtCore import QObject
+
+        window = getattr(self.manager, 'window', None)
+        if (self.view is None or (isinstance(self.view, QObject) and sip.isdeleted(self.view))
+                or window is None or (isinstance(window, QObject) and sip.isdeleted(window))
+                or getattr(window, '_shutting_down', False)):
+            self.pending = None
+            return
         generation, serial, row = request[:3]
-        frames = getattr(self.manager.window, 'raw_images', ())
+        frames = getattr(window, 'raw_images', ())
         position = self.view.viewport().mapFromGlobal(QCursor.pos())
         item = self.view.itemAt(position)
         if (generation == self.generation and serial == self.serial

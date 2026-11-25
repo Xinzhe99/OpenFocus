@@ -192,6 +192,16 @@ class LayeredTiffWorker(QThread):
             self.completed.emit(True, os.fsdecode(self.path))
 
 
+def _window_unavailable(window: Any) -> bool:
+    """True when the host window is torn down or closing."""
+    from PyQt6 import sip
+    from PyQt6.QtCore import QObject
+
+    return (window is None
+            or (isinstance(window, QObject) and sip.isdeleted(window))
+            or bool(getattr(window, '_shutting_down', False)))
+
+
 class ExportManager:
     """Handles save and export workflows for the main window."""
 
@@ -387,6 +397,8 @@ class ExportManager:
             self.layered_progress_dialog.show()
 
     def _layered_tiff_completed(self, success, message):
+        if _window_unavailable(self.window):
+            return
         if success:
             if self._layered_record is not None and self.layered_worker is not None:
                 # Layered output contains the captured pixels without live
@@ -468,8 +480,9 @@ class ExportManager:
             record = output_manager.record_for_image(result_to_save)
         baked = bool(record is not None and record.annotations_baked)
         preview_record = getattr(window, '_wipe_preview_record', None)
-        metadata = (preview_record.linear_dng_metadata
-                    if preview_record is not None and preview_record.image is result_to_save else None)
+        metadata = record.linear_dng_metadata if record is not None else None
+        if metadata is None and preview_record is not None and preview_record.image is result_to_save:
+            metadata = preview_record.linear_dng_metadata
         if metadata is None and result_to_save is window.fusion_result:
             render_context = getattr(getattr(window, 'render_manager', None), '_render_context', None) or {}
             metadata = render_context.get('linear_dng_metadata')
@@ -496,19 +509,35 @@ class ExportManager:
             from utils.logging_setup import log_action, log_operation
             log_action('export_image', path=file_path)
             if os.path.splitext(file_path)[1].lower() == '.dng':
-                if metadata is None or (record is not None and record.watermark_baked):
+                if (metadata is None or (record is not None
+                        and (record.annotations_baked or record.watermark_baked))):
                     show_warning_box(window, trans.t('linear_dng_filter'),
                                      trans.t('linear_dng_requires_raw'))
                     return
+                from copy import deepcopy
+                from dataclasses import replace
                 from controllers.output_manager import OutputRecord
-                record = OutputRecord.create(result_to_save, default_filename)
-                record.linear_dng_metadata = metadata
-                if wm_cfg:
-                    record.watermark_config = dict(wm_cfg)
-                    record.watermark_initialized = True
+                original = record
+                if original is not None:
+                    export_record = replace(
+                        original,
+                        scale_bar_config=deepcopy(original.scale_bar_config),
+                        watermark_config=deepcopy(original.watermark_config),
+                    )
+                    if export_record.linear_dng_metadata is None:
+                        export_record.linear_dng_metadata = metadata
+                else:
+                    export_record = OutputRecord.create(result_to_save, default_filename)
+                    export_record.linear_dng_metadata = metadata
+                    export_record.source_paths = tuple(
+                        getattr(window, 'image_source_paths', ()) or ())
+                if wm_cfg and not export_record.watermark_initialized:
+                    export_record.watermark_config = dict(wm_cfg)
+                    export_record.watermark_initialized = True
                 window.output_manager.start_linear_dng_export(
-                    record, None, file_path, labels,
-                    px_size_um=scalebar.effective_px_um(window))
+                    export_record, original, file_path, labels,
+                    px_size_um=(None if original is not None
+                                else scalebar.effective_px_um(window)))
                 return
             render_context = getattr(record, 'context', None) if record is not None else None
             if render_context is None and result_to_save is window.fusion_result:
@@ -542,7 +571,8 @@ class ExportManager:
                     if not written:
                         operation.fail()
                     return written
-            self._safe_export_path(file_path)
+            self._safe_export_path(
+                file_path, record.source_paths if record is not None else ())
             if run_pixel_worker(window, trans.t('action_save'), write_result):
                 from utils.output_share import notify_saved_path
                 notify_saved_path(window, file_path)
@@ -822,7 +852,8 @@ class ExportManager:
             file_path = os.path.splitext(file_path)[0] + '.gif'
 
         try:
-            self._safe_export_path(file_path)
+            self._safe_export_path(
+                file_path, record.source_paths if record is not None else ())
         except ValueError as exc:
             show_error_box(window, trans.t('msg_save_failed_title'), trans.t('msg_save_failed_text'), str(exc))
             return
@@ -873,6 +904,9 @@ class ExportManager:
         if self.gif_progress_dialog:
             self.gif_progress_dialog.close()
             self.gif_progress_dialog = None
+
+        if _window_unavailable(window):
+            return
 
         if message == 'CANCELLED':
             window.statusBar().showMessage(trans.t('compare_cancelled'), 8000)
@@ -937,7 +971,8 @@ class ExportManager:
         try:
             metadata = (getattr(record, 'linear_dng_metadata', None) if record is not None
                         else getattr(window, 'linear_dng_metadata', None))
-            self._safe_export_path(file_path)
+            self._safe_export_path(
+                file_path, record.source_paths if record is not None else ())
             from utils.image_utils import srgb_icc_profile
             profile = srgb_icc_profile() if metadata is not None else b''
             if run_pixel_worker(window, trans.t('action_save_multipage_tiff'),

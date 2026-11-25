@@ -140,7 +140,19 @@ class BatchManager:
         dialog.show()
         self._progress_dialog = dialog
 
+    def _window_unavailable(self) -> bool:
+        from PyQt6 import sip
+        from PyQt6.QtCore import QObject
+
+        window = self.window
+        return (window is None
+                or (isinstance(window, QObject) and sip.isdeleted(window))
+                or bool(getattr(window, "_shutting_down", False)))
+
     def _handle_progress_update(self, current: int, total: int, message: str) -> None:
+        if self._window_unavailable():
+            self._close_progress_dialog()
+            return
         if not self._progress_dialog:
             return
 
@@ -155,6 +167,9 @@ class BatchManager:
 
 
     def _handle_finished(self, results: dict) -> None:
+        if self._window_unavailable():
+            self._close_progress_dialog()
+            return
         from utils.logging_setup import log_action
         log_action("batch_finished", **{k: results.get(k) for k in
                    ("success", "total", "cancelled")})
@@ -215,6 +230,8 @@ class BatchManager:
 
     def _render_owns_controls(self) -> bool:
         """True while a render/compare run owns the fusion controls."""
+        if self._window_unavailable():
+            return False
         _rm = getattr(self.window, "render_manager", None)
         if _rm is None:
             return False
@@ -223,7 +240,7 @@ class BatchManager:
 
     def _restore_controls(self) -> None:
         """Re-enable the controls a batch job disabled (unless a render owns them)."""
-        if self._render_owns_controls():
+        if self._window_unavailable() or self._render_owns_controls():
             return
         for name in ("fusion_parameter_panel", "registration_parameter_panel",
                      "combo_fusion", "combo_align", "btn_reset"):
@@ -237,11 +254,16 @@ class BatchManager:
         # StackMFF-V3 stays disabled when torch is missing.
         hook = getattr(self.window, "refresh_method_availability", None)
         if callable(hook):
-            hook()
+            try:
+                hook()
+            except RuntimeError:
+                pass
 
     def _handle_error(self, error_msg: str) -> None:
         self.last_error = str(error_msg)
         self._close_progress_dialog()
+        if self._window_unavailable():
+            return
         self._show_message(
             title=trans.t("batch_error_title"),
             text=trans.t("batch_error_title"),
