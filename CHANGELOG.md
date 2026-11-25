@@ -48,6 +48,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Write disk-backed frames, preview pixels and imported video frames to scratch
   in chunks up to 8 MiB, with bounded packing of strided images and exact pixel
   bytes in C order.
+- Speed up eligible 8-bit and 16-bit PNG reads and banded PNG writes. Read
+  orientation from the validated PNG or JPEG header and preserve lossless WebP
+  metadata in one pass. Encode eligible baseline JPEGs in memory when RAM fits.
 - Read eligible uncompressed 8-bit and 16-bit gray and RGB TIFF pages directly
   from the file, preserving pixel values. Keep decoder validation for incomplete
   strip tables, configured limits, and other TIFF layouts.

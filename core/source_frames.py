@@ -55,7 +55,7 @@ class FrameCache:
             budget = policy.ram_budget(snap)
         except Exception:
             return self.max_bytes
-        target = min(1024 * 1024 ** 2, max(min(64 * 1024 ** 2, budget // 2), budget // 8))
+        target = min(1024 * 1024 ** 2, max(min(64 * 1024 ** 2, budget // 2), budget // 5))
         with self._lock:
             if self._last_adapted_max != self.max_bytes:
                 return self.max_bytes

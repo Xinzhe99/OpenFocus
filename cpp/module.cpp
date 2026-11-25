@@ -912,6 +912,13 @@ void of_align_warp_translation_region_int_rows_py(
         dx, dy, oy_start, oy_stop, bgr_rev);
 }
 
+void pack_png_scanlines_py(ConstAnyCpuArray src, AnyCpuArray dst, int num_threads) {
+    const auto sv = make_array_view(src);
+    const auto dv = make_array_view(dst);
+    nb::gil_scoped_release release;
+    openfocus::pack_png_scanlines_cpp(sv, dv, num_threads);
+}
+
 }  // namespace
 
 NB_MODULE(_openfocus_native, m) {
@@ -1077,4 +1084,6 @@ NB_MODULE(_openfocus_native, m) {
     m.def("of_align_warp_alignment_region_int_rows", &of_align_warp_alignment_region_int_rows_py);
     m.def("of_align_warp_alignment_region_float_rows", &of_align_warp_alignment_region_float_rows_py);
     m.def("of_align_warp_translation_region_int_rows", &of_align_warp_translation_region_int_rows_py);
+    m.def("pack_png_scanlines", &pack_png_scanlines_py,
+          nb::arg("src"), nb::arg("dst"), nb::arg("num_threads") = 8);
 }
