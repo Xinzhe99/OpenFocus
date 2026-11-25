@@ -1,9 +1,8 @@
 # OpenFocus C GPU fusion (opt-in via use_gpu=True on openfocus_c_impl).
 #
-# Bit-exact port of fusion_methods._openfocus_pyramid.fuse_pyramid onto
-# OpenCL kernels. The program builds with -cl-fp32-correctly-rounded-divide-sqrt
-# and every mul+add pair is split across statements so device results match
-# the numba CPU path bit for bit (verified: 92-frame stack ndiff=0).
+# OpenCL port of fusion_methods._openfocus_pyramid.fuse_pyramid. The kernels
+# keep multiply and add separate and request correctly rounded FP32 division
+# and square root on devices that advertise support.
 # The per-level weight filter reuses the proven filt4 IIR kernel from
 # _openfocus_gpu via device-side transposes, replicating
 # openfocus_depth._filter's axis order (1 then 0) and per-axis counts.
@@ -33,7 +32,8 @@ _PROGRAM_CACHE = None
 def _get_or_build_program(cl, device):
     global _PROGRAM_CACHE
     from fusion_methods._openfocus_gpu import (
-        _PREVIEW_KERNEL, _build_filter_program, _device_cache_key, _get_shared_context,
+        _PREVIEW_KERNEL, _build_filter_program, _device_cache_key,
+        _fp32_build_options, _get_shared_context,
     )
 
     key = _device_cache_key(device)
@@ -42,9 +42,10 @@ def _get_or_build_program(cl, device):
         if _PROGRAM_CACHE is not None and _PROGRAM_CACHE[0] == key and _PROGRAM_CACHE[1] is ctx:
             return _PROGRAM_CACHE[1:]
         queue = cl.CommandQueue(ctx, device=device)
+        options = _fp32_build_options(cl, device)
+        source = _C_K if options else '#define C_SOFTWARE_FP32_DIVIDE\n' + _C_K
         program, tiled_transpose = _build_filter_program(
-            cl, device, ctx, _C_K + _PREVIEW_KERNEL.format(type='ushort'),
-            options=['-cl-fp32-correctly-rounded-divide-sqrt'],
+            cl, device, ctx, source + _PREVIEW_KERNEL.format(type='ushort'), options=options,
         )
         kernels = {name: cl.Kernel(program, name) for name in _KERNEL_NAMES}
         _PROGRAM_CACHE = (key, ctx, queue, kernels, tiled_transpose)
@@ -64,6 +65,35 @@ _C_K = r'''
 __constant float C_DOWN[4]={0.125f,0.375f,0.375f,0.125f};
 __constant float C_EVEN[5]={0.019027505f,0.318410337f,0.559359729f,0.103202470f,0.0f};
 __constant float C_ODD[5]={0.0f,0.103202470f,0.559359729f,0.318410337f,0.019027505f};
+
+static inline float c_divide(float numerator, float denominator)
+{
+#ifdef C_SOFTWARE_FP32_DIVIDE
+    // Pyramid ratios have finite normal operands or zero. Divide the two
+    // 24-bit significands and round their exact remainder to nearest even.
+    if (denominator == 1.0f || numerator == 0.0f) return numerator;
+    uint n = as_uint(numerator), d = as_uint(denominator);
+    int ne = (n >> 23) & 255u, de = (d >> 23) & 255u;
+    if (ne == 0 || ne == 255 || de == 0 || de == 255) return numerator / denominator;
+    uint ns = 0x800000u | (n & 0x7fffffu), ds = 0x800000u | (d & 0x7fffffu);
+    int exponent = ne - de + 127;
+    if (ns < ds) {
+        ns <<= 1;
+        --exponent;
+    }
+    if (exponent <= 0 || exponent >= 255) return numerator / denominator;
+    ulong dividend = (ulong)ns << 23;
+    uint quotient = (uint)(dividend / ds);
+    uint twice_remainder = (uint)(dividend - (ulong)quotient * ds) << 1;
+    if (twice_remainder > ds || (twice_remainder == ds && (quotient & 1u))) ++quotient;
+    // Adding the implicit leading bit also carries a rounded significand
+    // of 2.0 into the next exponent.
+    uint magnitude = ((uint)(exponent - 1) << 23) + quotient;
+    return as_float(((n ^ d) & 0x80000000u) | magnitude);
+#else
+    return numerator / denominator;
+#endif
+}
 
 static inline float c_source_value(__global const uchar* src, int k, int c, int C,
                                    int u8, int reverse, float factor)
@@ -146,7 +176,7 @@ static inline float c_up_value(__global const float* s, const __constant float* 
         int i=origin+k;
         if(i>=0&&i<length){float p=s[offset+i*stride]*w[k]; value=value+p;}
     }
-    return value/total;
+    return c_divide(value, total);
 }
 
 __kernel void c_up_h(__global const float* s, __global float* d,
@@ -178,7 +208,7 @@ static inline float c_packed_detail(__global const uchar* src,
 {
     float lo=c_up_value(horizontal,w,x*C+c,W*C,sy,SH,total);
     float fine=c_source_value(src,k,c,C,u8,reverse,factor);
-    return (fine-lo)/(lo+0.1f);
+    return c_divide(fine-lo, lo+0.1f);
 }
 
 __kernel void c_weight_packed(__global const uchar* src, __global const float* horizontal,
@@ -250,7 +280,7 @@ __kernel void c_detail_w(__global float* fine, __global const float* horizontal,
     for(int c=0;c<C;c++){
         int i=(y*W+x)*C+c;
         float lo=c_up_value(horizontal,w,x*C+c,W*C,sy,SH,total);
-        float v=(fine[i]-lo)/(lo+0.1f);
+        float v=c_divide(fine[i]-lo, lo+0.1f);
         fine[i]=v;
         if(c<3) st=st+fabs(v);
     }

@@ -215,14 +215,20 @@ class ExactAreaGpu:
         dst_bytes = rows * width * channels * itemsize
         table_bytes = 0 if block else (width + height) * _AXIS.itemsize
         workspace = src_bytes + dst_bytes + table_bytes
-        memory = _free_vram(self._device)
-        if memory is None:
-            return False
-        budget = policy.vram_budget(policy.ResourceSnapshot(free_vram=memory[0], total_vram=memory[1]))
-        # Also allow for one stripe of pageable transfer staging on the host.
+        frame_budget = policy.frame_ram_budget(policy.probe_memory())
+        unified = getattr(self._device, 'host_unified_memory', False)
+        if unified:
+            budget = int(self._device.global_mem_size) // 4
+        else:
+            memory = _free_vram(self._device)
+            if memory is None:
+                return False
+            budget = policy.vram_budget(policy.ResourceSnapshot(free_vram=memory[0], total_vram=memory[1]))
+        # Charge the output and one stripe of host transfer staging. Device
+        # buffers also use the host budget on unified-memory adapters.
+        host_bytes = workspace * (2 if unified else 1) + height * width * channels * itemsize
         if (workspace > budget or max(src_bytes, dst_bytes, table_bytes) > self._device.max_mem_alloc_size
-                or workspace + height * width * channels * itemsize >
-                policy.frame_ram_budget(policy.probe_resources())):
+                or host_bytes > frame_budget):
             return False
         if self._context is None:
             self._context, self._queue, self._kernels = _get_or_build_program(

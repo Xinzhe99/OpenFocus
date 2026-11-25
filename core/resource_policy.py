@@ -175,52 +175,131 @@ def set_directml_adapter(index):
     _DIRECTML_ADAPTER_INDEX = max(0, int(index))
 
 
+def _dxgi_method(obj, index, restype, *argtypes):
+    import ctypes
+
+    table = ctypes.cast(obj, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
+    return ctypes.WINFUNCTYPE(restype, ctypes.c_void_p, *argtypes)(table[index])
+
+
+def _dxgi_guid(value):
+    import ctypes
+    import uuid
+
+    return (ctypes.c_ubyte * 16).from_buffer_copy(uuid.UUID(value).bytes_le)
+
+
+@contextmanager
+def _dxgi_factory():
+    import ctypes
+
+    factory = ctypes.c_void_p()
+    try:
+        create = ctypes.WinDLL('dxgi').CreateDXGIFactory1
+        create.argtypes = (ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p))
+        create.restype = ctypes.c_int32
+        iid = _dxgi_guid('770aae78-f26f-4dba-a829-253c83d1b387')
+        if create(ctypes.byref(iid), ctypes.byref(factory)) < 0 or not factory.value:
+            raise OSError('CreateDXGIFactory1 failed')
+        yield factory
+    finally:
+        if factory.value:
+            _dxgi_method(factory, 2, ctypes.c_uint32)(factory)
+
+
+def _dxgi_local_budget(adapter):
+    import ctypes
+
+    class VideoMemoryInfo(ctypes.Structure):
+        _fields_ = [(name, ctypes.c_uint64) for name in
+                    ('budget', 'usage', 'available_reservation', 'reservation')]
+
+    adapter3 = ctypes.c_void_p()
+    try:
+        query_interface = _dxgi_method(adapter, 0, ctypes.c_int32, ctypes.c_void_p,
+                                       ctypes.POINTER(ctypes.c_void_p))
+        iid = _dxgi_guid('645967a4-1392-4310-a798-8053ce3e93fd')
+        if query_interface(adapter, ctypes.byref(iid), ctypes.byref(adapter3)) < 0 or not adapter3.value:
+            return None
+        query_memory = _dxgi_method(adapter3, 14, ctypes.c_int32, ctypes.c_uint32,
+                                    ctypes.c_int32, ctypes.POINTER(VideoMemoryInfo))
+        info = VideoMemoryInfo()
+        # Node 0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL.
+        if query_memory(adapter3, 0, 0, ctypes.byref(info)) < 0 or not info.budget:
+            return None
+        return max(0, info.budget - info.usage), info.budget
+    finally:
+        if adapter3.value:
+            _dxgi_method(adapter3, 2, ctypes.c_uint32)(adapter3)
+
+
+def _dxgi_adapter_budgets(vendor):
+    """Return (LUID, name, dedicated bytes, optional LOCAL budget) per hardware adapter."""
+    import ctypes
+    from itertools import count
+
+    class AdapterDesc1(ctypes.Structure):
+        _fields_ = [('name', ctypes.c_wchar * 128), ('vendor', ctypes.c_uint32),
+                    ('device', ctypes.c_uint32), ('subsystem', ctypes.c_uint32),
+                    ('revision', ctypes.c_uint32), ('dedicated', ctypes.c_size_t),
+                    ('system', ctypes.c_size_t), ('shared', ctypes.c_size_t),
+                    ('luid', ctypes.c_uint32 * 2), ('flags', ctypes.c_uint32)]
+
+    adapters = []
+    with _dxgi_factory() as factory:
+        enumerate_adapter = _dxgi_method(factory, 12, ctypes.c_int32, ctypes.c_uint32,
+                                         ctypes.POINTER(ctypes.c_void_p))
+        for index in count():
+            adapter = ctypes.c_void_p()
+            hr = enumerate_adapter(factory, index, ctypes.byref(adapter))
+            if hr == ctypes.c_int32(0x887A0002).value:  # DXGI_ERROR_NOT_FOUND
+                break
+            if hr < 0 or not adapter.value:
+                raise OSError('EnumAdapters1 failed')
+            try:
+                desc = AdapterDesc1()
+                get_desc = _dxgi_method(adapter, 10, ctypes.c_int32, ctypes.POINTER(AdapterDesc1))
+                if get_desc(adapter, ctypes.byref(desc)) < 0:
+                    raise OSError('GetDesc1 failed')
+                if desc.vendor == vendor and desc.vendor != 0x1414 and not (desc.flags & 2):
+                    adapters.append((tuple(desc.luid), desc.name, desc.dedicated,
+                                     _dxgi_local_budget(adapter)))
+            finally:
+                _dxgi_method(adapter, 2, ctypes.c_uint32)(adapter)
+    return adapters
+
+
 def directml_adapters():
     """Enumerate hardware DXGI adapters, preferring discrete GPU memory."""
     if sys.platform != 'win32':
         return []
     import ctypes
-    import uuid
 
     class AdapterDesc(ctypes.Structure):
         _fields_ = [('name', ctypes.c_wchar * 128), ('vendor', ctypes.c_uint32),
                     ('device', ctypes.c_uint32), ('subsystem', ctypes.c_uint32),
                     ('revision', ctypes.c_uint32), ('dedicated', ctypes.c_size_t),
                     ('system', ctypes.c_size_t), ('shared', ctypes.c_size_t),
-                    ('luid', ctypes.c_uint64)]
+                    ('luid', ctypes.c_uint32 * 2)]
 
-    def method(obj, index, restype, *argtypes):
-        table = ctypes.cast(obj, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
-        return ctypes.WINFUNCTYPE(restype, ctypes.c_void_p, *argtypes)(table[index])
-
-    factory = ctypes.c_void_p()
     found = []
     try:
-        create = ctypes.WinDLL('dxgi').CreateDXGIFactory1
-        create.argtypes = (ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p))
-        create.restype = ctypes.c_int32
-        iid = (ctypes.c_ubyte * 16).from_buffer_copy(
-            uuid.UUID('770aae78-f26f-4dba-a829-253c83d1b387').bytes_le)
-        if create(ctypes.byref(iid), ctypes.byref(factory)) < 0 or not factory.value:
-            return []
-        enum = method(factory, 7, ctypes.c_int32, ctypes.c_uint32,
-                      ctypes.POINTER(ctypes.c_void_p))
-        for index in range(64):
-            adapter = ctypes.c_void_p()
-            if enum(factory, index, ctypes.byref(adapter)) < 0 or not adapter.value:
-                break
-            try:
-                desc = AdapterDesc()
-                get_desc = method(adapter, 8, ctypes.c_int32, ctypes.POINTER(AdapterDesc))
-                if get_desc(adapter, ctypes.byref(desc)) >= 0 and desc.vendor != 0x1414:
-                    found.append((index, desc.name, int(desc.vendor), int(desc.dedicated)))
-            finally:
-                method(adapter, 2, ctypes.c_uint32)(adapter)
+        with _dxgi_factory() as factory:
+            enum = _dxgi_method(factory, 7, ctypes.c_int32, ctypes.c_uint32,
+                                ctypes.POINTER(ctypes.c_void_p))
+            for index in range(64):
+                adapter = ctypes.c_void_p()
+                if enum(factory, index, ctypes.byref(adapter)) < 0 or not adapter.value:
+                    break
+                try:
+                    desc = AdapterDesc()
+                    get_desc = _dxgi_method(adapter, 8, ctypes.c_int32, ctypes.POINTER(AdapterDesc))
+                    if get_desc(adapter, ctypes.byref(desc)) >= 0 and desc.vendor != 0x1414:
+                        found.append((index, desc.name, int(desc.vendor), int(desc.dedicated)))
+                finally:
+                    _dxgi_method(adapter, 2, ctypes.c_uint32)(adapter)
     except (OSError, AttributeError, ValueError):
         return []
-    finally:
-        if factory.value:
-            method(factory, 2, ctypes.c_uint32)(factory)
     return sorted(found, key=lambda item: (item[3] > 512 * 1024 ** 2,
                                           item[2] in (0x10de, 0x1002, 0x8086),
                                           item[3], -item[0]), reverse=True)
@@ -236,52 +315,21 @@ def _directml_memory() -> tuple:
     if sys.platform != 'win32':
         return 0, 0
     import ctypes
-    import uuid
-
-    class VideoMemoryInfo(ctypes.Structure):
-        _fields_ = [(name, ctypes.c_uint64) for name in
-                    ('budget', 'usage', 'available_reservation', 'reservation')]
-
-    def guid(value):
-        return (ctypes.c_ubyte * 16).from_buffer_copy(uuid.UUID(value).bytes_le)
-
-    def method(obj, index, restype, *argtypes):
-        table = ctypes.cast(obj, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
-        return ctypes.WINFUNCTYPE(restype, ctypes.c_void_p, *argtypes)(table[index])
-
-    factory = ctypes.c_void_p()
-    adapter = ctypes.c_void_p()
-    adapter3 = ctypes.c_void_p()
     try:
-        dxgi = ctypes.WinDLL('dxgi')
-        create = dxgi.CreateDXGIFactory1
-        create.argtypes = (ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p))
-        create.restype = ctypes.c_int32
-        factory_id = guid('770aae78-f26f-4dba-a829-253c83d1b387')
-        if create(ctypes.byref(factory_id), ctypes.byref(factory)) < 0 or not factory.value:
-            return 0, 0
-        enumerate_adapter = method(factory, 7, ctypes.c_int32, ctypes.c_uint32,
-                                   ctypes.POINTER(ctypes.c_void_p))
-        if enumerate_adapter(factory, _DIRECTML_ADAPTER_INDEX, ctypes.byref(adapter)) < 0 or not adapter.value:
-            return 0, 0
-        query_interface = method(adapter, 0, ctypes.c_int32, ctypes.c_void_p,
-                                 ctypes.POINTER(ctypes.c_void_p))
-        adapter3_id = guid('645967a4-1392-4310-a798-8053ce3e93fd')
-        if query_interface(adapter, ctypes.byref(adapter3_id), ctypes.byref(adapter3)) < 0 or not adapter3.value:
-            return 0, 0
-        query_memory = method(adapter3, 14, ctypes.c_int32, ctypes.c_uint32,
-                              ctypes.c_int32, ctypes.POINTER(VideoMemoryInfo))
-        info = VideoMemoryInfo()
-        # Node 0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL.
-        if query_memory(adapter3, 0, 0, ctypes.byref(info)) < 0 or not info.budget:
-            return 0, 0
-        return max(0, int(info.budget) - int(info.usage)), int(info.budget)
+        with _dxgi_factory() as factory:
+            adapter = ctypes.c_void_p()
+            enumerate_adapter = _dxgi_method(factory, 7, ctypes.c_int32, ctypes.c_uint32,
+                                             ctypes.POINTER(ctypes.c_void_p))
+            try:
+                if (enumerate_adapter(factory, _DIRECTML_ADAPTER_INDEX, ctypes.byref(adapter)) < 0
+                        or not adapter.value):
+                    return 0, 0
+                return _dxgi_local_budget(adapter) or (0, 0)
+            finally:
+                if adapter.value:
+                    _dxgi_method(adapter, 2, ctypes.c_uint32)(adapter)
     except (OSError, AttributeError, ValueError):
         return 0, 0
-    finally:
-        for obj in (adapter3, adapter, factory):
-            if obj.value:
-                method(obj, 2, ctypes.c_uint32)(obj)
 
 
 def _gpu_memory(kind: str) -> tuple:

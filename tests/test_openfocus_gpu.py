@@ -290,18 +290,24 @@ def test_opencl_matches_cpu_for_lazy_sources(dtype, channels, resize):
     np.testing.assert_array_equal(actual, expected)
 
 
-@pytest.mark.parametrize('dtype,channels,resize,smoothing', [
-    (np.uint8, 1, None, 0.),
-    (np.uint8, 3, (51, 49), 4.),
-    (np.uint16, 1, None, 4.),
-    (np.uint16, 3, None, 0.),
-    (np.float32, 3, None, 4.),
+@pytest.mark.parametrize('dtype,channels,resize,smoothing,software_divide', [
+    (np.uint8, 1, None, 0., False),
+    (np.uint8, 3, (51, 49), 4., False),
+    (np.uint16, 1, None, 4., False),
+    (np.uint16, 3, None, 0., False),
+    (np.float32, 3, None, 4., False),
+    pytest.param(np.uint16, 3, None, 0., True, id='uint16-software-division'),
 ])
 def test_openfocus_c_gpu_matches_cpu_and_reports_device(
-        dtype, channels, resize, smoothing, monkeypatch):
+        dtype, channels, resize, smoothing, software_divide, monkeypatch):
     from fusion_methods import _openfocus_gpu
     if not _openfocus_gpu.gpu_available():
         pytest.skip('No OpenCL GPU is available')
+    if software_divide:
+        from fusion_methods import _openfocus_gpu_c
+
+        monkeypatch.setattr(_openfocus_gpu_c, '_PROGRAM_CACHE', None)
+        monkeypatch.setattr(_openfocus_gpu, '_fp32_build_options', lambda cl, device: [])
     monkeypatch.setattr(_openfocus_gpu, '_free_vram',
                         lambda device: (int(device.global_mem_size),
                                         int(device.global_mem_size)))

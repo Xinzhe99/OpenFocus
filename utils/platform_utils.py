@@ -250,16 +250,18 @@ def _macos_physical_cores() -> int:
     import ctypes
     try:
         libc = ctypes.CDLL(None)
-        size = ctypes.c_size_t(0)
-        if libc.sysctlbyname(b"hw.physicalcpu", None,
-                             ctypes.byref(size), None, 0) != 0:
-            return 0
-        value = ctypes.c_uint32(0)
+        libc.sysctlbyname.argtypes = (
+            ctypes.c_char_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t),
+            ctypes.c_void_p, ctypes.c_size_t,
+        )
+        libc.sysctlbyname.restype = ctypes.c_int
+        value = ctypes.c_int()
         size = ctypes.c_size_t(ctypes.sizeof(value))
-        if libc.sysctlbyname(b"hw.physicalcpu", ctypes.byref(value),
-                             ctypes.byref(size), None, 0) != 0:
+        if (libc.sysctlbyname(b"hw.physicalcpu", ctypes.byref(value),
+                              ctypes.byref(size), None, 0) != 0
+                or size.value != ctypes.sizeof(value)):
             return 0
-        return int(value.value)
+        return max(0, value.value)
     except (AttributeError, OSError):
         return 0
 

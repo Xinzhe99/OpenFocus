@@ -44,6 +44,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Share the OpenCL context across fusion, registration, and background focus
   while retaining separate command queues. Cache the remaining GPU kernels
   across launches.
+- Use the optional correctly rounded FP32 build flag on OpenCL devices that
+  advertise it. Budget eligible unified-memory registration against shared RAM.
+  Preserve OpenFocus C's pyramid rounding on devices that lack the flag.
+- Read OpenCL device budgets through DXGI on Windows and use Linux DRM VRAM
+  counters when the driver exposes them and the adapter can be identified.
 - Scan retained logs and crash reports using directory entry metadata.
 - Prefetch OpenFocus frames within CPU and memory budgets, and reuse compiled
   OpenCL binaries across launches. Keep exact pixel checks on alignment plans,
@@ -209,6 +214,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   destination, including exports from large image stacks.
 
 ### Fixed
+- Use the Darwin C ABI for system memory and CPU topology probes, including
+  64-bit page sizes and validated system counter lengths.
 - Admit large JPEG stacks for ECC using reduced grayscale decodes, including
   with GPU acceleration enabled. Keep registration warps at full resolution.
 - Budget sequential decode and processing peaks separately. Decode RGB JPEGs

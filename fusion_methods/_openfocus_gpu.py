@@ -7,6 +7,7 @@ import hashlib
 import logging
 import os
 from pathlib import Path
+import sys
 from tempfile import NamedTemporaryFile
 from threading import Event, Lock
 
@@ -656,37 +657,272 @@ def _nvml_free_vram(device):
         return None
 
 
+def _fp32_build_options(cl, device):
+    """Pass correctly rounded FP32 divide/sqrt only when advertised by the device."""
+    try:
+        rounded = cl.device_fp_config.CORRECTLY_ROUNDED_DIVIDE_SQRT
+        single_fp = device.single_fp_config
+    except Exception:
+        return []
+    if (isinstance(rounded, int) and not isinstance(rounded, bool) and rounded > 0
+            and isinstance(single_fp, int) and not isinstance(single_fp, bool)
+            and single_fp >= 0 and (single_fp & rounded) == rounded):
+        return ['-cl-fp32-correctly-rounded-divide-sqrt']
+    return []
+
+
+def _dxgi_free_vram(device):
+    """Read free/total DXGI LOCAL budget for a unique matching physical adapter."""
+    if sys.platform != 'win32':
+        return None
+    try:
+        vid = int(getattr(device, 'vendor_id', 0) or 0)
+    except (TypeError, ValueError):
+        return None
+    if vid <= 0:
+        return None
+    from core import resource_policy
+
+    try:
+        dev_mem = int(getattr(device, 'global_mem_size', 0) or 0)
+    except (TypeError, ValueError):
+        dev_mem = 0
+    dev_name = str(getattr(device, 'name', '') or '').strip().lower()
+
+    try:
+        adapters = resource_policy._dxgi_adapter_budgets(vid)
+    except Exception:
+        return None
+
+    identity = _opencl_dxgi_identity(device)
+    if identity is not None:
+        luid, node_mask = identity
+        # The DXGI budget probe covers node 0 on the matched adapter.
+        if node_mask != 1:
+            return None
+        return next((reading for adap_luid, _, _, reading in adapters if adap_luid == luid), None)
+
+    seen_luids = set()
+    exact_matches = []
+    mem_matches = []
+    for luid, name, dedicated, reading in adapters:
+        if luid in seen_luids:
+            continue
+        seen_luids.add(luid)
+        if dev_name and name.strip().lower() == dev_name:
+            exact_matches.append(reading)
+        elif dev_mem > 0 and dedicated > 0 and abs(dedicated - dev_mem) <= max(512 * 1024**2, dev_mem // 8):
+            mem_matches.append(reading)
+    matches = exact_matches or mem_matches
+    return matches[0] if len(matches) == 1 else None
+
+
+def _opencl_device_query(device):
+    """Query extension fields through the ICD that owns a PyOpenCL device."""
+    import ctypes
+
+    try:
+        import pyopencl as cl
+    except ImportError:
+        return None
+
+    try:
+        if not isinstance(device, cl.Device) or 'cl_khr_icd' not in device.platform.extensions.split():
+            return None
+        handle = device.int_ptr
+        if not handle:
+            return None
+        # cl_khr_icd puts the dispatch table at the front of a device ID.
+        # clGetDeviceInfo is the fourth member of cl_icd_dispatch.
+        table = ctypes.cast(handle, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
+        convention = ctypes.WINFUNCTYPE if sys.platform == 'win32' else ctypes.CFUNCTYPE
+        get_info = convention(ctypes.c_int32, ctypes.c_void_p, ctypes.c_uint32, ctypes.c_size_t,
+                              ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t))(table[3])
+    except (cl.Error, AttributeError, TypeError, ValueError):
+        return None
+
+    def read_info(field, result):
+        size = ctypes.sizeof(result)
+        written = ctypes.c_size_t()
+        return (get_info(handle, field, size, ctypes.byref(result), ctypes.byref(written)) == 0
+                and written.value == size)
+
+    return read_info
+
+
+def _opencl_dxgi_identity(device):
+    """Return the reported Windows adapter LUID and its device-node mask."""
+    if 'cl_khr_device_uuid' not in getattr(device, 'extensions', '').split():
+        return None
+    query = _opencl_device_query(device)
+    if query is None:
+        return None
+    import ctypes
+
+    valid = ctypes.c_uint32()
+    # CL_DEVICE_LUID_VALID_KHR, CL_DEVICE_LUID_KHR, CL_DEVICE_NODE_MASK_KHR.
+    if not query(0x106C, valid) or not valid.value:
+        return None
+    luid = (ctypes.c_uint32 * 2)()
+    if not query(0x106D, luid):
+        return None
+    node_mask = ctypes.c_uint32()
+    return tuple(luid), node_mask.value if query(0x106E, node_mask) else 0
+
+
+def _opencl_pci_address(device):
+    """Return (domain, bus, slot, function), with domain unknown on AMD's older extension."""
+    if not sys.platform.startswith('linux'):
+        return None
+    import ctypes
+
+    try:
+        extensions = device.extensions.split()
+    except Exception:
+        return None
+    khr = 'cl_khr_pci_bus_info' in extensions
+    amd = 'cl_amd_device_attribute_query' in extensions
+    if not (khr or amd):
+        return None
+
+    query = _opencl_device_query(device)
+    if query is None:
+        return None
+
+    if khr:
+        address = (ctypes.c_uint32 * 4)()
+        # CL_DEVICE_PCI_BUS_INFO_KHR
+        if query(0x410F, address):
+            domain, bus, slot, function = address
+            if bus <= 0xff and slot <= 0x1f and function <= 7:
+                return domain, bus, slot, function
+    if amd:
+        class AmdTopology(ctypes.Structure):
+            _fields_ = [('type', ctypes.c_uint32), ('unused', ctypes.c_uint8 * 17),
+                        ('bus', ctypes.c_uint8), ('slot', ctypes.c_uint8), ('function', ctypes.c_uint8)]
+
+        topology = AmdTopology()
+        # CL_DEVICE_TOPOLOGY_AMD and CL_DEVICE_TOPOLOGY_TYPE_PCIE_AMD
+        if (query(0x4037, topology)
+                and topology.type == 1 and topology.slot <= 0x1f and topology.function <= 7):
+            return None, topology.bus, topology.slot, topology.function
+    return None
+
+
+def _drm_counter(device_path, name, base=10):
+    try:
+        return int((device_path / name).read_text(encoding='ascii'), base)
+    except (OSError, ValueError):
+        return None
+
+
+def _linux_drm_free_vram(device, *, drm_root='/sys/class/drm'):
+    """Read free/total bytes from the matching amdgpu adapter's sysfs VRAM counters."""
+    try:
+        if int(getattr(device, 'vendor_id', 0) or 0) != 0x1002:
+            return None
+    except (TypeError, ValueError):
+        return None
+
+    pci_address = _opencl_pci_address(device)
+    if pci_address is None:
+        try:
+            dev_mem = int(getattr(device, 'global_mem_size', 0) or 0)
+        except (TypeError, ValueError):
+            return None
+        if dev_mem <= 0:
+            return None
+        tol = max(256 * 1024**2, dev_mem // 8)
+    else:
+        domain, bus, slot, function = pci_address
+        bdf = f':{bus:02x}:{slot:02x}.{function:x}'
+        full_address = f'{domain:04x}{bdf}' if domain is not None else None
+    try:
+        entries = sorted(os.listdir(drm_root))
+    except OSError:
+        return None
+    seen_devs = set()
+    matches = []
+    for name in entries:
+        if not (name.startswith('card') and name[4:].isdigit()):
+            continue
+        dev_dir = Path(drm_root) / name / 'device'
+        real_dev = Path(os.path.realpath(os.fspath(dev_dir)))
+        if real_dev in seen_devs:
+            continue
+        seen_devs.add(real_dev)
+        if pci_address is not None:
+            if full_address is not None and real_dev.name != full_address:
+                continue
+            if full_address is None and not real_dev.name.endswith(bdf):
+                continue
+        vendor = _drm_counter(dev_dir, 'vendor', 16)
+        if vendor is None and pci_address is not None:
+            return None
+        if vendor != 0x1002:
+            continue
+        total = _drm_counter(dev_dir, 'mem_info_vram_total')
+        if (pci_address is None and total is not None and total > 0
+                and abs(total - dev_mem) > tol):
+            continue
+        if matches:
+            return None
+        matches.append((dev_dir, total))
+    if not matches:
+        return None
+    dev_dir, total = matches[0]
+    if total is None or total <= 0:
+        return None
+    used = _drm_counter(dev_dir, 'mem_info_vram_used')
+    if used is None or not 0 <= used <= total:
+        return None
+    return total - used, total
+
+
 def _free_vram(device):
     """Read free memory from the selected OpenCL GPU's matching driver."""
-    import subprocess
-    if (int(device.vendor_id) == 0x1002
-            and 'cl_amd_device_attribute_query' in device.extensions.split()):
+    try:
+        vid = int(getattr(device, 'vendor_id', 0) or 0)
+    except (TypeError, ValueError):
+        vid = 0
+    if vid == 0x1002:
         try:
-            free_kib = int(device.get_info(0x4039)[0])
-            if 0 < free_kib * 1024 <= int(device.global_mem_size):
-                return free_kib * 1024, int(device.global_mem_size)
+            if 'cl_amd_device_attribute_query' in getattr(device, 'extensions', '').split():
+                free_kib = int(device.get_info(0x4039)[0])
+                if 0 < free_kib * 1024 <= int(device.global_mem_size):
+                    return free_kib * 1024, int(device.global_mem_size)
         except Exception:
             pass
-    if int(device.vendor_id) != 0x10de:
-        return None
-    nvml = _nvml_free_vram(device)
-    if nvml is not None:
-        return nvml
-    try:
-        result = subprocess.run(
-            ['nvidia-smi', '--query-gpu=name,memory.free,memory.total',
-             '--format=csv,noheader,nounits'], capture_output=True, text=True,
-            timeout=3, check=True, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
-        matches = []
-        for line in result.stdout.splitlines():
-            name, free, total = (part.strip() for part in line.rsplit(',', 2))
-            total_bytes = int(total) * 1024 * 1024
-            if (name == str(device.name).strip()
-                    and abs(total_bytes - int(device.global_mem_size)) <= 64 * 1024 * 1024):
-                matches.append((int(free) * 1024 * 1024, total_bytes))
-        return matches[0] if len(matches) == 1 else None
-    except (OSError, ValueError, subprocess.SubprocessError):
-        return None
+    if vid == 0x10de:
+        nvml = _nvml_free_vram(device)
+        if nvml is not None:
+            return nvml
+    if sys.platform == 'win32':
+        dxgi = _dxgi_free_vram(device)
+        if dxgi is not None:
+            return dxgi
+    if vid == 0x10de:
+        import subprocess
+
+        try:
+            result = subprocess.run(
+                ['nvidia-smi', '--query-gpu=name,memory.free,memory.total',
+                 '--format=csv,noheader,nounits'], capture_output=True, text=True,
+                timeout=3, check=True, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+            matches = []
+            for line in result.stdout.splitlines():
+                name, free, total = (part.strip() for part in line.rsplit(',', 2))
+                total_bytes = int(total) * 1024 * 1024
+                if (name == str(device.name).strip()
+                        and abs(total_bytes - int(device.global_mem_size)) <= 64 * 1024 * 1024):
+                    matches.append((int(free) * 1024 * 1024, total_bytes))
+            if len(matches) == 1:
+                return matches[0]
+        except (OSError, ValueError, subprocess.SubprocessError):
+            pass
+    if sys.platform.startswith('linux'):
+        return _linux_drm_free_vram(device)
+    return None
 
 
 class Merge:

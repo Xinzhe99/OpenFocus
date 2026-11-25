@@ -599,7 +599,9 @@ def _device_cache_key(device):
 
 def _get_or_build_program(cl, device):
     global _PROGRAM_CACHE
-    from fusion_methods._openfocus_gpu import _build_cached_program, _get_shared_context
+    from fusion_methods._openfocus_gpu import (
+        _build_cached_program, _fp32_build_options, _get_shared_context,
+    )
 
     key = _device_cache_key(device)
     with _cache_lock:
@@ -609,7 +611,7 @@ def _get_or_build_program(cl, device):
         q = cl.CommandQueue(ctx, device=device)
         prog = _build_cached_program(
             cl, device, ctx, _GFF_K,
-            options=['-cl-fp32-correctly-rounded-divide-sqrt'],
+            options=_fp32_build_options(cl, device),
         )
         kernels = {name: cl.Kernel(prog, name) for name in _KERNEL_NAMES}
         _PROGRAM_CACHE = (key, ctx, q, kernels)
