@@ -114,7 +114,8 @@ load, stack decode) return immediately; poll `app.state`/`render.state`/
 | `app.quit` | `force?` | `{quitting:true, force}`; `force:true` discards prompts/work |
 
 `app.info.methods` mirrors the registry (id, label, category, neural,
-order_sensitive, depth_map, weights, parameters). `capabilities` reports torch,
+order_sensitive, depth_map, weights, parameters, experimental, available,
+unavailable_reason). `capabilities` reports torch,
 gpu, heic, raw, dtcwt and pyqt without importing the optional packages. `gpu`
 is `null` until a background device probe or OS hardware query has completed.
 
@@ -157,9 +158,11 @@ than block size, tile threshold and AI batch size at least 1, and registration
 downscale width at least 64. Invalid values leave the option unchanged.
 
 `option.set` names: `base_correct`, `exposure_match`, `reverse_order`,
-`thread_count`, `use_gpu`, `tile_enabled`, `tile_block_size`, `tile_overlap`,
-`tile_threshold`, `preview`, `ai_batch_size`, `resource_preference`,
-`reg_downscale_width`, `profile_performance`, `debug_logging`, `storage_directory`.
+`sharpen_output`, `sharpen_strength`, `thread_count`, `use_gpu`, `tile_enabled`,
+`tile_block_size`, `tile_overlap`, `tile_threshold`, `preview`, `ai_batch_size`,
+`resource_preference`, `reg_downscale_width`, `profile_performance`,
+`debug_logging`, `storage_directory`. `sharpen_output` is a boolean and
+`sharpen_strength` accepts an integer percentage from `0` to `200` (default `100`).
 `thread_count`, `ai_batch_size`, `profile_performance` and `debug_logging` are
 typed control options outside the Advanced Settings dialog. The two diagnostics
 options require JSON booleans and apply to the current session.
@@ -267,8 +270,9 @@ blank path is invalid.
 | `dialog.color` | `color`, `index?` | answers a `QColorDialog` with `#rrggbb` |
 
 Names: `settings`, `batch`, `compare`, `depth`, `feedback`, `scalebar`,
-`dust`, `retouch`, `welcome`, `method_help`, `registration_help`,
-`environment`, `contact`.
+`watermark`, `converter`, `retouch`, `welcome`, `method_help`, `registration_help`,
+`environment`, `contact`. (`dust` and `mosaic` are disabled in development and
+return `invalid_argument`.)
 
 `dialog.list` is not limited to these named dialogs: it includes **every
 visible Qt top-level window**, including file pickers, message boxes,

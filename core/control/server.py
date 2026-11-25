@@ -295,17 +295,32 @@ class ControlServer(QObject):
         path = self.socket_name
         if not path.startswith('/'):
             path = os.path.join(QDir.tempPath(), path)
+        if len(os.fsencode(path)) >= 104:
+            raise RuntimeError(
+                f"Could not listen on {self.socket_name}: Unix socket path "
+                f"exceeds 103-byte limit ({len(os.fsencode(path))} bytes)")
+        parent = os.path.dirname(path) or "."
+        os.makedirs(parent, mode=0o700, exist_ok=True)
         listener = None
         try:
-            self._unix_stage = tempfile.TemporaryDirectory(
-                prefix='.of-', dir=os.path.dirname(path))
-            staged = os.path.join(self._unix_stage.name, 's')
+            stage_probe = os.path.join(parent, '.of-12345678', 's')
             listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            listener.bind(staged)
-            os.chmod(staged, 0o700)
-            listener.listen(50)
-            info = os.lstat(staged)
-            os.link(staged, path)
+            if len(os.fsencode(stage_probe)) < 104:
+                self._unix_stage = tempfile.TemporaryDirectory(
+                    prefix='.of-', dir=parent)
+                staged = os.path.join(self._unix_stage.name, 's')
+                listener.bind(staged)
+                os.chmod(staged, 0o700)
+                listener.listen(50)
+                info = os.lstat(staged)
+                os.link(staged, path)
+            else:
+                if os.path.lexists(path):
+                    raise FileExistsError(f"Address already in use: {path}")
+                listener.bind(path)
+                os.chmod(path, 0o700)
+                listener.listen(50)
+                info = os.lstat(path)
             self._unix_endpoint = (path, info.st_dev, info.st_ino)
             if not self._server.listen(listener.fileno()):
                 raise RuntimeError(self._server.errorString())
@@ -876,6 +891,8 @@ class ControlServer(QObject):
 
     def _cmd_method_parameters(self, args):
         method = _string(args, "id", required=False) or self.window.current_fusion_method()
+        if method == "none":
+            return {"id": "none", "parameters": {}, "specs": [], "depth": False}
         spec = get_fusion(method)
         return {
             "id": method,
@@ -1327,7 +1344,7 @@ class ControlServer(QObject):
         sensor = getattr(dialog, "sensor_cleanup", None)
         if getattr(sensor, "_pending", False):
             return True
-        for attribute in ("_worker", "_export_worker"):
+        for attribute in ("_worker", "worker", "_export_worker"):
             worker = getattr(dialog, attribute, None)
             if worker is not None and hasattr(worker, "isRunning") \
                     and worker.isRunning():
@@ -1439,6 +1456,12 @@ class ControlServer(QObject):
         elif name == "scalebar":
             from dialogs.scalebar import ScaleBarDialog
             dialog = ScaleBarDialog(window)
+        elif name == "watermark":
+            from dialogs.watermark import WatermarkDialog
+            dialog = WatermarkDialog(window)
+        elif name == "converter":
+            from dialogs.batch_converter import BatchConverterDialog
+            dialog = BatchConverterDialog(window)
         elif name in ('dust', 'mosaic'):
             raise ControlError('invalid_argument', trans.t('development_unavailable_hint'))
         elif name == "retouch":

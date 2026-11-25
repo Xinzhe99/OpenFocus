@@ -131,11 +131,12 @@ This workflow works with a fresh default configuration (OpenFocus B and ECC):
 
 ```bash
 # load -> configure -> render -> inspect -> export
-openfocus ctl stack.load --folder 'F:/stacks/session'
+openfocus ctl stack.load --folder 'F:/stacks/session'   # add --linear-raw for camera-linear RAW
 # poll stack.frames until load.finished for the returned load_id
 openfocus ctl method.set --id openfocus_b
 openfocus ctl align.set --id ecc
 openfocus ctl option.set --name resource_preference --value balanced
+openfocus ctl option.set --name sharpen_output --value true        # sharpen_strength: 0..200 (default 100)
 openfocus ctl render.start --wait --timeout 300
 openfocus ctl render.state
 openfocus ctl output.list
@@ -231,8 +232,9 @@ openfocus ctl dialog.accept
 ```
 
 Dialog names: `settings`, `batch`, `compare`, `depth`, `feedback`, `scalebar`,
-`dust`, `retouch`, `welcome`, `method_help`, `registration_help`,
-`environment`, `contact`.
+`watermark`, `converter`, `retouch`, `welcome`, `method_help`, `registration_help`,
+`environment`, `contact`. (`dust` and `mosaic` remain disabled in development and
+return `invalid_argument`.)
 
 File helper actions triggered through `ui.trigger` or supported control clicks
 use addressable Qt pickers. Wait for `QFileDialog` in `dialog.list`, discover
