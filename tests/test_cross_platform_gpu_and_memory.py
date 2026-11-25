@@ -149,6 +149,40 @@ def test_macos_physical_cores_declares_argtypes(monkeypatch):
     assert platform_utils._macos_physical_cores() == 0
 
 
+def test_linux_cpu_limits_use_complete_sysfs_topology(monkeypatch, tmp_path):
+    for cpu, files in (
+        (0, {"core_cpus_list": "0-1\n\0"}),
+        (1, {"physical_package_id": "0\n", "core_id": "0\n"}),
+        (3, {"physical_package_id": "0\n", "core_id": "1\n"}),
+        (7, {"core_cpus_list": "7\n"}),
+    ):
+        topology = tmp_path / f"cpu{cpu}" / "topology"
+        topology.mkdir(parents=True)
+        for name, value in files.items():
+            (topology / name).write_text(value, encoding="ascii")
+
+    real_open = open
+
+    def fake_open(path, *args, **kwargs):
+        if path == "/proc/cpuinfo":
+            raise FileNotFoundError(path)
+        return real_open(path, *args, **kwargs)
+
+    sysfs_cores = platform_utils._linux_sysfs_physical_cores
+    monkeypatch.setattr("builtins.open", fake_open)
+    monkeypatch.setattr(platform_utils, "_linux_sysfs_physical_cores",
+                        lambda affinity: sysfs_cores(affinity, sys_cpu_root=str(tmp_path)))
+    monkeypatch.setattr(platform_utils, "is_windows", lambda: False)
+    monkeypatch.setattr(platform_utils, "is_linux", lambda: True)
+    monkeypatch.setattr(platform_utils.os, "sched_getaffinity", lambda pid: {0, 1, 3}, raising=False)
+    monkeypatch.setattr(platform_utils.os, "cpu_count", lambda: 4)
+    monkeypatch.setattr(platform_utils, "_linux_cpu_quota", lambda: 0)
+
+    assert platform_utils.cpu_limits() == (2, 3, 0, True)
+    (tmp_path / "cpu3" / "topology" / "physical_package_id").write_text("-1\n", encoding="ascii")
+    assert platform_utils.cpu_limits() == (1, 3, 0, False)
+
+
 @pytest.mark.parametrize('fp_flags', [None, 0, 8])
 def test_opencl_fusion_build_options_match_device_capabilities(monkeypatch, tmp_path, fp_flags):
     monkeypatch.setenv("OPENFOCUS_OPENCL_CACHE_DIR", str(tmp_path))

@@ -382,14 +382,13 @@ def test_multipage_container_lookup_handles_uppercase_tiff_on_case_sensitive_fs(
     assert project_file._multipage_container_for("zstack_page_001.tiff", str(tmp_path)) == expected_tif
 
 
-def test_apply_appearance_parses_css_font_stack_into_qfont_families(qapp, monkeypatch):
+def test_apply_appearance_uses_platform_font_fallback_order(qapp, monkeypatch):
     import main as main_mod
+    from utils import platform_utils
     from utils.design_tokens import UI_FONT_PRESETS
 
     css_stack = '"Ubuntu", "DejaVu Sans", Arial, sans-serif'
-    mono_stack = '"Ubuntu Mono", "DejaVu Sans Mono", Consolas, monospace'
-    monkeypatch.setattr(main_mod, "get_ui_font_family", lambda: css_stack)
-    monkeypatch.setattr(main_mod, "get_monospace_font_family", lambda: mono_stack)
+    monkeypatch.setattr(platform_utils, "get_os_type", lambda: "linux")
 
     host = QtWidgets.QWidget()
     host.font_size_mode = "standard"

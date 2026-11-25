@@ -177,6 +177,7 @@ from utils import (
 )
 from utils.image_utils import cv2_to_pixmap
 from utils.output_sharpen import DEFAULT_SHARPEN_STRENGTH, validate_sharpen_strength
+from utils.platform_utils import get_ui_font_families
 from utils.settings_store import (
     load_window_settings,
     save_window_settings,
@@ -404,26 +405,6 @@ def _apply_font_family(qss: str, ui_font: str, mono_font: str) -> str:
     for stack in ('Consolas, "Segoe UI", monospace',):
         qss = qss.replace(stack, mono_font)
     return qss
-
-
-def _ui_qfont(ui_font: str, point_size: int) -> QFont:
-    """Resolve a CSS font stack string into an ordered QFont family list."""
-    generic = {"sans-serif", "serif", "monospace", "system-ui", "ui-sans-serif"}
-    families = []
-    for entry in str(ui_font or "").split(","):
-        name = entry.strip().strip("\"'")
-        if name and name.lower() not in generic and name not in families:
-            families.append(name)
-    if not families:
-        fallback = get_default_font()
-        if fallback:
-            families.append(fallback)
-    font = QFont(families[0], point_size) if families else QFont()
-    if families:
-        font.setFamilies(families)
-    else:
-        font.setPointSize(point_size)
-    return font
 
 
 def update_manager_for(window) -> UpdateManager:
@@ -4073,7 +4054,10 @@ class OpenFocus(QMainWindow):
         if app is not None:
             app.setStyleSheet("")
             app.setPalette(app.style().standardPalette())
-            app.setFont(_ui_qfont(ui_font, points))
+            font = QFont()
+            font.setFamilies(list(get_ui_font_families()))
+            font.setPointSize(points)
+            app.setFont(font)
             app.setStyleSheet(_apply_font_family(get_theme_style(theme, font_size=points),
                                                  ui_font, mono_font))
 
@@ -4363,7 +4347,7 @@ class OpenFocus(QMainWindow):
         self._cancel_depth_warmup()
         self.render_manager.cancel_storage_preflight()
 
-        # Keep modal owners and their documents alive while native work stops.
+        # Keep dialog owners and their documents alive while native work stops.
         # A Python reference to a QThread cannot protect it from destruction
         # with its QObject parent. Retry the authorized close on the GUI loop
         # instead of waiting here or orphaning a dialog-owned worker.
@@ -4375,12 +4359,16 @@ class OpenFocus(QMainWindow):
             shutdown_running = accelerator.shutdown_running() or shutdown_running
         from ui.sensor_cleanup import cancel_sensor_inspections
         shutdown_running = cancel_sensor_inspections(self) or shutdown_running
+        from dialogs.batch_converter import BatchConverterDialog
         from dialogs.compare import CompareDialog
         from dialogs.scalebar import ScaleBarDialog
         from dialogs.watermark import WatermarkDialog
         for dialog_type in (ScaleBarDialog, WatermarkDialog, CompareDialog):
             for dialog in self.findChildren(dialog_type):
                 shutdown_running = dialog.shutdown_running() or shutdown_running
+        for dialog in self.findChildren(BatchConverterDialog):
+            if not dialog.close():
+                shutdown_running = True
         loader = getattr(self, '_standalone_retouch_load_dialog', None)
         if loader is not None:
             loader.reject()
