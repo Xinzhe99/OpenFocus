@@ -70,4 +70,17 @@ void of_tile_finalize_cpp(
     int64_t stop
 );
 
+void pack_png_scanlines_cpp(
+    const ArrayView& src,
+    const ArrayView& dst,
+    int num_threads
+);
+
+void parallel_copy_bytes_cpp(
+    const uint8_t* src,
+    uint8_t* dst,
+    int64_t nbytes,
+    int num_threads
+);
+
 }  // namespace openfocus

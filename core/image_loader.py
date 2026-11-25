@@ -518,6 +518,64 @@ def _decode_jpeg_bgr_into(path, encoded_bytes, destination):
             and decoded.ctypes.data == destination.ctypes.data)
 
 
+def _decode_png_fast(path: str, raw_bytes: bytes, *, allow_transparent_png: bool,
+                     preserve_grayscale: bool) -> Optional[np.ndarray]:
+    """Decode standard 8/16-bit PNG via imagecodecs without opening Pillow twice."""
+    if (len(raw_bytes) < 33 or raw_bytes[:8] != b'\x89PNG\r\n\x1a\n'
+            or raw_bytes[12:16] != b'IHDR'):
+        return None
+    bit_depth = raw_bytes[24]
+    color_type = raw_bytes[25]
+    if bit_depth not in (8, 16) or color_type not in (0, 2, 4, 6):
+        return None
+    try:
+        import imagecodecs
+    except ImportError:
+        return None
+    decoder = getattr(imagecodecs, 'spng_decode' if bit_depth == 8 else 'png_decode', None)
+    if decoder is None:
+        return None
+    try:
+        decoded = decoder(raw_bytes)
+    except Exception:
+        return None
+    if decoded is None or decoded.dtype not in (np.uint8, np.uint16):
+        return None
+    if not decoded.dtype.isnative:
+        decoded = np.ascontiguousarray(decoded, dtype=decoded.dtype.newbyteorder('='))
+    _validate_depth(path, decoded.dtype)
+    orientation = 1
+    if PIL_AVAILABLE:
+        try:
+            from utils.image_utils import _scan_png_exif_bytes
+            exif_payload = _scan_png_exif_bytes(raw_bytes, path)
+            if exif_payload:
+                exif = PILImage.Exif()
+                exif.load(exif_payload)
+                orientation = int(exif.get(274, 1))
+        except SourceExifTooLarge:
+            raise
+        except Exception:
+            orientation = 1
+    if _has_transparency(decoded):
+        if allow_transparent_png:
+            bgra = cv2.cvtColor(decoded, cv2.COLOR_RGBA2BGRA)
+            return _apply_orientation_value(bgra, orientation)
+        raise UnsupportedTransparency(
+            f"Transparent input is unsupported here: {path}. "
+            "Matching rectangular PNG transparency is supported in the desktop and CLI workflows; see the manual.")
+    if decoded.ndim == 2:
+        img = decoded if preserve_grayscale else cv2.cvtColor(decoded, cv2.COLOR_GRAY2BGR)
+    elif decoded.ndim == 3 and decoded.shape[2] == 3:
+        img = cv2.cvtColor(decoded, cv2.COLOR_RGB2BGR)
+    elif decoded.ndim == 3 and decoded.shape[2] == 4:
+        img = cv2.cvtColor(decoded, cv2.COLOR_RGBA2BGR)
+    else:
+        return None
+    _validate_depth(path, img.dtype)
+    return _apply_orientation_value(img, orientation)
+
+
 def decode_image(path: str, *, allow_transparent_png: bool = False,
                  preserve_grayscale: bool = False, scale_factor: float = 1.0,
                  area_resizer=None) -> Optional[np.ndarray]:
@@ -534,52 +592,75 @@ def decode_image(path: str, *, allow_transparent_png: bool = False,
         return _read_raw(path, scale_factor)
     if ext in ('.tif', '.tiff'):
         return decode_tiff_page(path, preserve_grayscale=preserve_grayscale)
-    # _downscale_page leaves the image alone at a scale of one.
-    jpeg_scale = scale_factor if is_scaled_jpeg(path, scale_factor) else 1.0
-    jpeg_mode = None
-    if PIL_AVAILABLE:
-        with PILImage.open(path) as header:
-            validate_pil_header(path, header)
-            if header.mode == 'CMYK':
-                image = cmyk_to_bgr(header, path, header.info.get('icc_profile', b''))
-                image = _downscale_page(image, jpeg_scale, area_resizer)
-                return apply_exif_orientation(path, image)
-            if ext in ('.jpg', '.jpeg', '.jpe', '.jfif') and header.format == 'JPEG':
-                jpeg_mode = header.mode
-                jpeg_size = header.size
-    if jpeg_mode is not None:
+    if ext == '.png':
         with open(path, 'rb') as fh:
             raw_bytes = fh.read()
-        img = None
-        try:
-            import imagecodecs
-            if jpeg_mode == 'L':
-                img = imagecodecs.jpeg8_decode(raw_bytes, outcolorspace='GRAY')
-                if img is not None and img.ndim == 2 and not preserve_grayscale:
-                    img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-            else:
-                # Use the decoder's explicit extension enum. Older wheels
-                # without it retain the portable RGB conversion path.
-                colors = getattr(imagecodecs.JPEG8, 'CS', None)
-                bgr = getattr(colors, 'EXT_BGR', None) if jpeg_mode == 'RGB' else None
-                img = imagecodecs.jpeg8_decode(raw_bytes, outcolorspace=bgr if bgr is not None else 'RGB')
-                if img is not None and img.ndim == 3 and img.shape[2] == 3:
-                    if bgr is None:
-                        img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-                elif img is not None and img.ndim == 2 and not preserve_grayscale:
-                    img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-                else:
-                    img = None
-        except Exception:
-            img = None
+        img = _decode_png_fast(
+            path, raw_bytes,
+            allow_transparent_png=allow_transparent_png,
+            preserve_grayscale=preserve_grayscale,
+        )
         if img is not None:
             del raw_bytes
-            _validate_depth(path, img.dtype)
-            img = _downscale_page(img, jpeg_scale, area_resizer)
-            return apply_exif_orientation(path, img)
+            return _downscale_page(img, 1.0, area_resizer)
         data = np.frombuffer(raw_bytes, dtype=np.uint8)
+        jpeg_scale = 1.0
+        jpeg_mode = None
+        jpeg_orientation = None
     else:
-        data = np.fromfile(path, dtype=np.uint8)
+        # _downscale_page leaves the image alone at a scale of one.
+        jpeg_scale = scale_factor if is_scaled_jpeg(path, scale_factor) else 1.0
+        jpeg_mode = None
+        jpeg_orientation = None
+        if PIL_AVAILABLE:
+            with PILImage.open(path) as header:
+                validate_pil_header(path, header)
+                if header.mode == 'CMYK':
+                    image = cmyk_to_bgr(header, path, header.info.get('icc_profile', b''))
+                    image = _downscale_page(image, jpeg_scale, area_resizer)
+                    return apply_exif_orientation(path, image)
+                if ext in ('.jpg', '.jpeg', '.jpe', '.jfif') and header.format == 'JPEG':
+                    jpeg_mode = header.mode
+                    jpeg_size = header.size
+                    try:
+                        jpeg_orientation = int(read_image_exif(header).get(274, 1))
+                    except Exception:
+                        jpeg_orientation = 1
+        if jpeg_mode is not None:
+            with open(path, 'rb') as fh:
+                raw_bytes = fh.read()
+            img = None
+            try:
+                import imagecodecs
+                if jpeg_mode == 'L':
+                    img = imagecodecs.jpeg8_decode(raw_bytes, outcolorspace='GRAY')
+                    if img is not None and img.ndim == 2 and not preserve_grayscale:
+                        img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+                else:
+                    # Use the decoder's explicit extension enum. Older wheels
+                    # without it retain the portable RGB conversion path.
+                    colors = getattr(imagecodecs.JPEG8, 'CS', None)
+                    bgr = getattr(colors, 'EXT_BGR', None) if jpeg_mode == 'RGB' else None
+                    img = imagecodecs.jpeg8_decode(raw_bytes, outcolorspace=bgr if bgr is not None else 'RGB')
+                    if img is not None and img.ndim == 3 and img.shape[2] == 3:
+                        if bgr is None:
+                            img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+                    elif img is not None and img.ndim == 2 and not preserve_grayscale:
+                        img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+                    else:
+                        img = None
+            except Exception:
+                img = None
+            if img is not None:
+                del raw_bytes
+                _validate_depth(path, img.dtype)
+                img = _downscale_page(img, jpeg_scale, area_resizer)
+                if jpeg_orientation is not None:
+                    return _apply_orientation_value(img, jpeg_orientation)
+                return apply_exif_orientation(path, img)
+            data = np.frombuffer(raw_bytes, dtype=np.uint8)
+        else:
+            data = np.fromfile(path, dtype=np.uint8)
     unchanged = cv2.imdecode(data, cv2.IMREAD_UNCHANGED)
     if unchanged is not None:
         _validate_depth(path, unchanged.dtype)
@@ -615,7 +696,10 @@ def decode_image(path: str, *, allow_transparent_png: bool = False,
     if img is not None:
         _validate_depth(path, img.dtype)
         img = _downscale_page(img, jpeg_scale, area_resizer)
-        img = apply_exif_orientation(path, img)
+        if jpeg_orientation is not None:
+            img = _apply_orientation_value(img, jpeg_orientation)
+        else:
+            img = apply_exif_orientation(path, img)
     return img
 
 
@@ -906,6 +990,13 @@ _EXIF_TRANSFORMS = {
 }
 
 
+def _apply_orientation_value(img: np.ndarray, orientation: int) -> np.ndarray:
+    transform = _EXIF_TRANSFORMS.get(int(orientation))
+    if transform is not None:
+        return np.ascontiguousarray(transform(img))
+    return img
+
+
 def apply_exif_orientation(path: str, img: np.ndarray) -> np.ndarray:
     """Rotate/flip a decoded image according to its EXIF Orientation tag.
 
@@ -922,9 +1013,7 @@ def apply_exif_orientation(path: str, img: np.ndarray) -> np.ndarray:
             return img
         with PILImage.open(path) as pil_img:
             orientation = read_image_exif(pil_img).get(274, 1)
-        transform = _EXIF_TRANSFORMS.get(int(orientation))
-        if transform is not None:
-            return np.ascontiguousarray(transform(img))
+        return _apply_orientation_value(img, orientation)
     except Exception as e:
         print(f"EXIF orientation check failed for {path}: {e}")
     return img

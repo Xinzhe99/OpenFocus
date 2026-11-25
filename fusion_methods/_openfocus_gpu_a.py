@@ -496,10 +496,10 @@ class GpuA:
 
         gray_bufs = lap_buf = best_buf = out_buf = acc_buf = wt_buf = stat_buf = dst_buf = None
         src_bufs = ()
-        reader = prepared_iter = None
+        reader = prepared_iter = pinned_pool = None
         in_flight = False
         try:
-            from fusion_methods._openfocus_gpu import _prefetch_window, _wait_event
+            from fusion_methods._openfocus_gpu import _PinnedUploadPool, _prefetch_window, _wait_event
 
             gray_bufs = [self.cl.Buffer(self.ctx, self.mf.READ_WRITE, size) for size in gray_sizes]
             lap_buf = (self.cl.Buffer(self.ctx, self.mf.READ_WRITE, lap_bytes)
@@ -523,6 +523,11 @@ class GpuA:
             src_bufs = tuple(
                 self.cl.Buffer(self.ctx, self.mf.READ_ONLY, src_bytes)
                 for _ in range(2 if ping_pong else 1)
+            )
+            pinned_pool = _PinnedUploadPool(
+                self.cl, self.ctx, self.q, self.device,
+                2 if ping_pong else 1, src_bytes,
+                prefetch_budget - staging - prefetch_slots * source_peak - (src_bytes if unified_memory else 0),
             )
             if live_preview is not None:
                 reader = _PreviewPlaneReader(self.cl, self.ctx, self.q, self.k['sample_focus_plane'],
@@ -564,7 +569,8 @@ class GpuA:
                 _check_cancel(should_cancel)
                 src_buf = src_bufs[slot]
                 in_flight = True
-                upload = self.cl.enqueue_copy(self.q, src_buf, host_src, is_blocking=False)
+                staged_src = pinned_pool.stage(slot, host_src) if pinned_pool is not None else host_src
+                upload = self.cl.enqueue_copy(self.q, src_buf, staged_src, is_blocking=False)
                 _check_cancel(should_cancel)
                 rh, rw = pyr_shapes[1]
                 down2 = self.k['a_down2_u8'] if src_is_u8 else self.k['a_down2_u16']
@@ -601,7 +607,9 @@ class GpuA:
                 )
                 if ping_pong and last_event is not None and hasattr(last_event, 'wait'):
                     slot_events[slot] = last_event
-                    slot_hosts[slot] = (host_src, upload)
+                    slot_hosts[slot] = (
+                        (staged_src, upload) if staged_src is not host_src else (host_src, upload)
+                    )
                     if reader is not None and live_preview.tracks():
                         _wait_event(last_event, lambda: _check_cancel(should_cancel))
                         slot_events[slot] = None
@@ -617,7 +625,7 @@ class GpuA:
                         sample = reader.read(best_buf, live_preview)
                         if sample is not None:
                             live_preview.update_best(sample, index, total, sampled=True)
-                    del host_src, upload
+                    del staged_src, host_src, upload
                 if progress_callback is not None:
                     progress_callback(index + 1, total)
 
@@ -661,4 +669,6 @@ class GpuA:
                 prepared_iter.close()
             if reader is not None:
                 reader.close()
+            if pinned_pool is not None:
+                pinned_pool.release()
             _release_buffers(gray_bufs, lap_buf, best_buf, out_buf, acc_buf, wt_buf, stat_buf, src_bufs, dst_buf)

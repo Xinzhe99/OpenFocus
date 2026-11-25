@@ -441,8 +441,8 @@ class GpuC:
             frame_has_mapped_pixels, frame_resolution_bytes, without_source_cache_growth,
         )
         from fusion_methods._openfocus_gpu import (
-            GpuError, _PreviewPlaneReader, _free_vram, _iter_prefetched, _prepare_gpu_upload,
-            _release_buffers,
+            GpuError, _PinnedUploadPool, _PreviewPlaneReader, _free_vram, _iter_prefetched,
+            _prepare_gpu_upload, _release_buffers,
         )
         from utils.logging_setup import log_debug
 
@@ -541,7 +541,7 @@ class GpuC:
 
         accumulators = maxima = coarsest = rolling = horizontal = weight = winner = filter_scratch = dst = None
         srcs = ()
-        reader = prepared_iter = None
+        reader = prepared_iter = pinned_pool = None
         in_flight = False
         try:
             from fusion_methods._openfocus_gpu import _prefetch_window, _wait_event
@@ -578,6 +578,11 @@ class GpuC:
             srcs = tuple(
                 self.cl.Buffer(self.ctx, self.mf.READ_ONLY, upload_bytes)
                 for _ in range(2 if ping_pong else 1)
+            )
+            pinned_pool = _PinnedUploadPool(
+                self.cl, self.ctx, self.q, self.device,
+                2 if ping_pong else 1, upload_bytes,
+                prefetch_budget - staging - prefetch_slots * source_peak - (upload_bytes if unified_memory else 0),
             )
             if live_preview is not None and detail_levels:
                 reader = _PreviewPlaneReader(self.cl, self.ctx, self.q, self.k['sample_focus_plane'],
@@ -619,7 +624,8 @@ class GpuC:
                 packing = (np.float32(scale / (65280.0 if is_u8 else 65535.0)),
                            np.int32(pix_u8), np.int32(bgr_rev))
                 in_flight = True
-                upload = self.cl.enqueue_copy(self.q, src, codes, is_blocking=False)
+                staged_codes = pinned_pool.stage(slot, codes) if pinned_pool is not None else codes
+                upload = self.cl.enqueue_copy(self.q, src, staged_codes, is_blocking=False)
                 last_event = None
                 if not detail_levels:
                     last_event = self._run(self.k['c_norm'], full_size, src, coarsest,
@@ -668,7 +674,9 @@ class GpuC:
                         )
                 if ping_pong and last_event is not None and hasattr(last_event, 'wait'):
                     slot_events[slot] = last_event
-                    slot_hosts[slot] = (codes, item, upload)
+                    slot_hosts[slot] = (
+                        (staged_codes, upload) if staged_codes is not codes else (codes, item, upload)
+                    )
                     if reader is not None and live_preview.tracks():
                         _wait_event(last_event, lambda: _check_cancel(should_cancel))
                         slot_events[slot] = None
@@ -686,7 +694,7 @@ class GpuC:
                             live_preview.update_best(sample, index, count, sampled=True)
                     elif reader is None and live_preview is not None and not detail_levels:
                         live_preview.show_positions(np.zeros((height, width), np.uint8), index, count, 1)
-                    del codes, item, upload
+                    del staged_codes, codes, item, upload
                 if progress_callback is not None:
                     progress_callback(index + 1, total)
 
@@ -742,6 +750,8 @@ class GpuC:
                 prepared_iter.close()
             if reader is not None:
                 reader.close()
+            if pinned_pool is not None:
+                pinned_pool.release()
             _release_buffers(
                 accumulators, maxima, coarsest, rolling, horizontal,
                 weight, winner, filter_scratch, srcs, dst,

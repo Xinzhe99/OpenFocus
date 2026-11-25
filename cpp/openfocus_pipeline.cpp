@@ -848,4 +848,137 @@ void of_tile_finalize_cpp(
     }
 }
 
+void pack_png_scanlines_cpp(
+    const ArrayView& src,
+    const ArrayView& dst,
+    int num_threads
+) {
+    if (src.is_float || dst.is_float || dst.itemsize != 1
+            || (src.itemsize != 1 && src.itemsize != 2)
+            || (src.ndim != 2 && src.ndim != 3) || dst.ndim != 2) {
+        throw std::invalid_argument("Unsupported array layout for pack_png_scanlines");
+    }
+    const int64_t height = src.shape[0];
+    const int64_t width = src.shape[1];
+    const int64_t channels = (src.ndim == 2) ? 1 : src.shape[2];
+    if (channels != 1 && channels != 3 && channels != 4) {
+        throw std::invalid_argument("pack_png_scanlines supports 1, 3, or 4 channels");
+    }
+    const int64_t row_bytes = width * channels * src.itemsize;
+    if (dst.shape[0] != height || dst.shape[1] != row_bytes + 1) {
+        throw std::invalid_argument("Destination shape mismatch for pack_png_scanlines");
+    }
+    if (height <= 0 || width <= 0) {
+        return;
+    }
+    const bool src_packed = (src.ndim == 2)
+        ? (src.stride[1] == 1 && src.stride[0] == width)
+        : (src.stride[2] == 1 && src.stride[1] == channels && src.stride[0] == width * channels);
+    const bool dst_packed = (dst.stride[1] == 1 && dst.stride[0] == row_bytes + 1);
+    if (!src_packed || !dst_packed) {
+        throw std::invalid_argument("pack_png_scanlines requires C-contiguous arrays");
+    }
+
+    const int threads = (height * row_bytes >= 262144) ? std::max(1, num_threads) : 1;
+    uint8_t* dst_base = static_cast<uint8_t*>(dst.data);
+    const int64_t dst_stride = dst.stride[0];
+
+    if (src.itemsize == 1) {
+        const uint8_t* src_base = static_cast<const uint8_t*>(src.data);
+        const int64_t src_stride = src.stride[0];
+        parallel_bands(height, 64, threads, [&](int64_t start, int64_t stop) {
+            for (int64_t y = start; y < stop; ++y) {
+                const uint8_t* sr = src_base + y * src_stride;
+                uint8_t* dr = dst_base + y * dst_stride;
+                dr[0] = 0;
+                uint8_t* out = dr + 1;
+                if (channels == 1) {
+                    std::memcpy(out, sr, static_cast<size_t>(width));
+                } else if (channels == 3) {
+                    for (int64_t x = 0; x < width; ++x) {
+                        const uint8_t b = sr[x * 3];
+                        const uint8_t g = sr[x * 3 + 1];
+                        const uint8_t r = sr[x * 3 + 2];
+                        out[x * 3] = r;
+                        out[x * 3 + 1] = g;
+                        out[x * 3 + 2] = b;
+                    }
+                } else {
+                    for (int64_t x = 0; x < width; ++x) {
+                        const uint8_t b = sr[x * 4];
+                        const uint8_t g = sr[x * 4 + 1];
+                        const uint8_t r = sr[x * 4 + 2];
+                        const uint8_t a = sr[x * 4 + 3];
+                        out[x * 4] = r;
+                        out[x * 4 + 1] = g;
+                        out[x * 4 + 2] = b;
+                        out[x * 4 + 3] = a;
+                    }
+                }
+            }
+        });
+    } else {
+        const uint16_t* src_base = static_cast<const uint16_t*>(src.data);
+        const int64_t src_stride = src.stride[0];
+        parallel_bands(height, 64, threads, [&](int64_t start, int64_t stop) {
+            for (int64_t y = start; y < stop; ++y) {
+                const uint16_t* sr = src_base + y * src_stride;
+                uint8_t* dr = dst_base + y * dst_stride;
+                dr[0] = 0;
+                uint8_t* out = dr + 1;
+                if (channels == 1) {
+                    for (int64_t x = 0; x < width; ++x) {
+                        const uint16_t v = sr[x];
+                        out[x * 2] = static_cast<uint8_t>(v >> 8);
+                        out[x * 2 + 1] = static_cast<uint8_t>(v & 0xFF);
+                    }
+                } else if (channels == 3) {
+                    for (int64_t x = 0; x < width; ++x) {
+                        const uint16_t b = sr[x * 3];
+                        const uint16_t g = sr[x * 3 + 1];
+                        const uint16_t r = sr[x * 3 + 2];
+                        out[x * 6] = static_cast<uint8_t>(r >> 8);
+                        out[x * 6 + 1] = static_cast<uint8_t>(r & 0xFF);
+                        out[x * 6 + 2] = static_cast<uint8_t>(g >> 8);
+                        out[x * 6 + 3] = static_cast<uint8_t>(g & 0xFF);
+                        out[x * 6 + 4] = static_cast<uint8_t>(b >> 8);
+                        out[x * 6 + 5] = static_cast<uint8_t>(b & 0xFF);
+                    }
+                } else {
+                    for (int64_t x = 0; x < width; ++x) {
+                        const uint16_t b = sr[x * 4];
+                        const uint16_t g = sr[x * 4 + 1];
+                        const uint16_t r = sr[x * 4 + 2];
+                        const uint16_t a = sr[x * 4 + 3];
+                        out[x * 8] = static_cast<uint8_t>(r >> 8);
+                        out[x * 8 + 1] = static_cast<uint8_t>(r & 0xFF);
+                        out[x * 8 + 2] = static_cast<uint8_t>(g >> 8);
+                        out[x * 8 + 3] = static_cast<uint8_t>(g & 0xFF);
+                        out[x * 8 + 4] = static_cast<uint8_t>(b >> 8);
+                        out[x * 8 + 5] = static_cast<uint8_t>(b & 0xFF);
+                        out[x * 8 + 6] = static_cast<uint8_t>(a >> 8);
+                        out[x * 8 + 7] = static_cast<uint8_t>(a & 0xFF);
+                    }
+                }
+            }
+        });
+    }
+}
+
+void parallel_copy_bytes_cpp(
+    const uint8_t* src,
+    uint8_t* dst,
+    int64_t nbytes,
+    int num_threads
+) {
+    if (nbytes <= 0 || src == dst) {
+        return;
+    }
+    constexpr int64_t kChunk = 4LL << 20;
+    const int threads = (nbytes >= (16LL << 20)) ? std::max(1, num_threads) : 1;
+    parallel_bands(nbytes, kChunk, threads, [&](int64_t start, int64_t stop) {
+        std::memcpy(dst + start, src + start, static_cast<size_t>(stop - start));
+    });
+}
+
 }  // namespace openfocus
