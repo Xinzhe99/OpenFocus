@@ -164,6 +164,20 @@ void pyr_up_horiz_3c_row_avx2(
 void pyr_down_horiz_f32_3c_row_avx2(
     const float* sr, float* h_row, int64_t ix_stop, float d0, float d1);
 
+// One row of a packed three-channel translation warp. row0/row1 are the two
+// source rows of src_w pixels; ix/jx/fx/inv_x are the per-column samples.
+void align_warp_translation_rgb_row_avx2(
+    const void* row0, const void* row1, bool is_u8, void* out_row, int64_t rw,
+    const int32_t* ix, const int32_t* jx, const uint32_t* fx, const uint8_t* inv_x,
+    uint32_t fy, bool bgr_rev, int64_t src_w);
+
+// Adds the sum and the sum of squares of a_row[k] - bilinear(b)[k] for `count`
+// columns (a multiple of eight, at most 262144) whose sources are consecutive:
+// column k blends b_row[k] and b_row[k + 1] with weights[k] = gx | fx << 16.
+void align_refine_dense_row_avx2(
+    const uint16_t* a_row, const uint16_t* b_row0, const uint16_t* b_row1,
+    const int32_t* weights, int64_t count, uint32_t fy, int64_t* sum, int64_t* sq);
+
 void align_valid_mask_row_avx2(
     uint8_t* mr, int64_t w,
     float cx, float p08, float p18, float tx, float ty, float v_dy, float u_dy,
