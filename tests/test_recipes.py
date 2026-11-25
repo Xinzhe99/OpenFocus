@@ -160,11 +160,13 @@ def test_recipe_preserves_grouping_and_output_sharpening(tmp_path, monkeypatch):
     from utils import output_sharpen
 
     strengths = []
+    thread_counts = []
     sharpen_output = output_sharpen.sharpen_output
 
-    def record_strength(image, should_cancel=None, *, strength):
+    def record_strength(image, should_cancel=None, *, strength, thread_count):
         strengths.append(strength)
-        return sharpen_output(image, should_cancel, strength=strength)
+        thread_counts.append(thread_count)
+        return sharpen_output(image, should_cancel, strength=strength, thread_count=thread_count)
 
     monkeypatch.setattr(output_sharpen, 'sharpen_output', record_strength)
     _stack(tmp_path / "stack", count=4)
@@ -180,6 +182,7 @@ def test_recipe_preserves_grouping_and_output_sharpening(tmp_path, monkeypatch):
     assert run_recipe(path, experimental=True) == 0
     assert cv2.imread(str(tmp_path / "out.png")) is not None
     assert strengths == [175]
+    assert thread_counts == [1]
 
 
 @pytest.mark.parametrize('version', [1, 2])

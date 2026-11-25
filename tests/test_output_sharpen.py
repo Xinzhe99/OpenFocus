@@ -142,11 +142,11 @@ def test_batch_sharpening_changes_only_final_fused_output(qapp, tmp_path, monkey
     from core.workers import BatchWorker
     from utils import output_sharpen
 
-    strengths = []
+    calls = []
 
-    def record_strength(image, should_cancel=None, *, strength=DEFAULT_SHARPEN_STRENGTH):
-        strengths.append(strength)
-        return sharpen_output(image, should_cancel, strength=strength)
+    def record_strength(image, should_cancel=None, *, strength=DEFAULT_SHARPEN_STRENGTH, thread_count=None):
+        calls.append((strength, thread_count))
+        return sharpen_output(image, should_cancel, strength=strength, thread_count=thread_count)
 
     monkeypatch.setattr(output_sharpen, 'sharpen_output', record_strength)
     source = tmp_path / 'stack'
@@ -169,7 +169,7 @@ def test_batch_sharpening_changes_only_final_fused_output(qapp, tmp_path, monkey
     assert all(output.dtype == np.uint16 for output in outputs)
     np.testing.assert_array_equal(outputs[0], outputs[1])
     assert not np.array_equal(outputs[0], outputs[2])
-    assert strengths == ([175] if group_size else [0, 175])
+    assert calls == ([(175, 1)] if group_size else [(0, 1), (175, 1)])
 
 
 def test_sharpening_does_not_invalidate_alignment_cache():

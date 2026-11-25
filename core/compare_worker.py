@@ -296,7 +296,8 @@ class PreviewWorker(_CancellableWorker):
             raise ValueError("Fusion returned an invalid comparison image size.")
         if self.shared.get('sharpen_output', False):
             from utils.output_sharpen import sharpen_output
-            result = sharpen_output(result, self._should_cancel, strength=self.sharpen_strength)
+            result = sharpen_output(result, self._should_cancel, strength=self.sharpen_strength,
+                                    thread_count=params['thread_count'])
         x, y, w, h = bounds
         if context != bounds:
             result = result[y - y0:y - y0 + h, x - x0:x - x0 + w]
