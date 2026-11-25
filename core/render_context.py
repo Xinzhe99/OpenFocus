@@ -351,8 +351,17 @@ def _analytic_frame_valid_polygon(frame, crop):
                             and np.all(v >= 0.0) and np.all(v <= src_h - 1.001)):
                         return 'all_valid', None
                     # Invert the similarity transform to map source corners into dst coords.
-                    tx, ty, cx_p, cy_p, p08, p0c, p18, p1c = (float(val) for val in params)
-                    A = np.array([[p08, p0c], [p18, p1c]], dtype=np.float64)
+                    # map_coords computes: u = P18*(x-cx) + P0C*(y-cy) + tx,
+                    #                      v = -P08*(x-cx) + P1C*(y-cy) + ty.
+                    tx = float(params['tx'])
+                    ty = float(params['ty'])
+                    cx_p = float(params['cx'])
+                    cy_p = float(params['cy'])
+                    p08 = float(params['P08'])
+                    p0c = float(params['P0C'])
+                    p18 = float(params['P18'])
+                    p1c = float(params['P1C'])
+                    A = np.array([[p18, p0c], [-p08, p1c]], dtype=np.float64)
                     det = float(A[0, 0] * A[1, 1] - A[0, 1] * A[1, 0])
                     if abs(det) < 1e-12:
                         return 'fallback', None

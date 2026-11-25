@@ -154,7 +154,7 @@ def test_frame_transport_shm_roundtrip_and_disk_fallback(tmp_path, monkeypatch):
     enc.close(unlink=True)
 
     # Low RAM headroom -> falls back cleanly to disk memmap
-    monkeypatch.setattr(frame_transport, "_try_shm_encode", lambda _a: None)
+    monkeypatch.setattr(frame_transport, "_try_shm_encode", lambda _a, **_k: None)
     enc2 = frame_transport.FrameEncoder()
     payload2 = enc2.encode(arr)
     assert payload2[2] == "frame"
@@ -215,3 +215,95 @@ def test_sharpen_output_scoped_threads_matches_serial():
     blurred = cv2.GaussianBlur(img, (0, 0), 1.0)
     expected = cv2.addWeighted(img, 1.5, blurred, -0.5, 0)
     np.testing.assert_array_equal(actual, expected)
+
+
+def test_analytic_render_alignment_mask_openfocus_alignment_and_translation():
+    from functools import partial
+    from core.openfocus_alignment import (
+        AlignmentTransform,
+        TranslationTransform,
+        apply_alignment,
+        apply_translation,
+    )
+
+    h, w = 128, 160
+    rng = np.random.default_rng(19)
+    src = rng.integers(25, 230, (h, w, 3), dtype=np.uint8)
+    fp = openfocus_alignment._build_source_fingerprint(src, src, None)
+
+    # 1. Non-identity AlignmentTransform (rotation + scale + translation)
+    f8 = (88.0, 60.0, 80.0, 64.0, 4.0, 1.04, 1.04, 1.0)
+    tr_align = AlignmentTransform(1, f8, f8, fp, 0, 1, '')
+    pf_align = ProcessedFrame(
+        src, partial(apply_alignment, transform=tr_align),
+        (h, w, 3), np.dtype(np.uint8), None,
+    )
+    ram_a = RenderAlignmentMask([pf_align], None, None)
+    assert len(ram_a._pending) == 0
+    mask_a, failed_a = ram_a.complete()
+    assert not failed_a and mask_a is not None
+    warped_a = apply_alignment(src, tr_align)
+    mask_px_a = _alignment_valid_mask(warped_a)
+    assert mask_px_a is not None
+    assert float(np.mean(mask_a == mask_px_a)) > 0.98
+
+    # 2. Non-identity TranslationTransform
+    tr_trans = TranslationTransform(1, 10.0, -6.0, 10.0, -6.0, fp)
+    pf_trans = ProcessedFrame(
+        src, partial(apply_translation, transform=tr_trans),
+        (h, w, 3), np.dtype(np.uint8), None,
+    )
+    ram_t = RenderAlignmentMask([pf_trans], None, None)
+    assert len(ram_t._pending) == 0
+    mask_t, failed_t = ram_t.complete()
+    assert not failed_t and mask_t is not None
+    warped_t = apply_translation(src, tr_trans)
+    mask_px_t = _alignment_valid_mask(warped_t)
+    assert mask_px_t is not None
+    assert float(np.mean(mask_t == mask_px_t)) > 0.98
+
+
+def test_base_correction_grayscale_base_broadcasts_onto_color_fused():
+    rng = np.random.default_rng(23)
+    h, w = 128, 160
+    fused = rng.uniform(30, 220, (h, w, 3)).astype(np.float32)
+    base_gray = rng.uniform(40, 210, (h, w)).astype(np.float32)
+    mff = MultiFocusFusion(algorithm="openfocus_b", base_frame="first")
+    actual = mff._apply_base_correction(fused.copy(), [base_gray])
+    assert actual.shape == fused.shape and actual.dtype == fused.dtype
+
+
+def test_peek_source_size_handles_planar_separate_tiff(tmp_path):
+    from core.image_loader import _peek_source_size
+
+    p = str(tmp_path / "planar.tif")
+    # Planar-separate TIFF: shape on disk is (3, H, W)
+    planar = np.zeros((3, 96, 144), dtype=np.uint16)
+    tifffile.imwrite(p, planar, photometric="rgb", planarconfig="separate")
+    assert _peek_source_size(p) == (144, 96, 3, 2)
+
+
+def test_frame_encoder_enforces_cumulative_shm_budget(tmp_path, monkeypatch):
+    from core import resource_policy
+
+    frame_storage.configure_storage_directory(tmp_path)
+    arr1 = np.zeros((512, 512, 3), dtype=np.uint8)  # 768 KiB
+    arr2 = np.ones((512, 512, 3), dtype=np.uint8)   # 768 KiB
+    # Cap cumulative RAM ceiling so only the first array fits in shm (2 * 768 KiB = 1.5 MiB)
+    monkeypatch.setattr(resource_policy, "ram_ceiling", lambda _snap: 2 * arr1.nbytes + 1024)
+
+    enc = frame_transport.FrameEncoder()
+    p1 = enc.encode(arr1)
+    p2 = enc.encode(arr2)
+    assert p1[2] == "shm"
+    assert p2[2] == "frame"  # Second array exceeds cumulative 2x budget -> spills to disk
+    assert enc._shm_bytes == arr1.nbytes
+    assert len(enc.owned_paths) == 1
+
+    dec = frame_transport.FrameDecoder(owned_paths=enc.owned_paths)
+    np.testing.assert_array_equal(dec.decode(p1), arr1)
+    np.testing.assert_array_equal(dec.decode(p2), arr2)
+    frame_storage.disown_temp_files(enc.owned_paths)
+    enc.close(unlink=True)
+    del dec, enc
+    gc.collect()

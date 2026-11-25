@@ -1243,11 +1243,11 @@ def _peek_source_size(path: str) -> Optional[Tuple[int, int, int, int]]:
                 if len(pages) != 1:
                     return None
                 page = pages[0][1]
-                shape = page.shape
-                if len(shape) < 2:
+                width = int(getattr(page, 'imagewidth', 0) or 0)
+                height = int(getattr(page, 'imagelength', 0) or 0)
+                if width <= 0 or height <= 0:
                     return None
-                height, width = int(shape[0]), int(shape[1])
-                channels = int(shape[2]) if len(shape) >= 3 else 1
+                channels = int(getattr(page, 'samplesperpixel', 1) or 1)
                 itemsize = int(np.dtype(page.dtype).itemsize)
                 return width, height, max(3, min(4, channels)), itemsize
         except Exception:

@@ -611,7 +611,7 @@ class MultiFocusFusion:
                     base_ds = base_ds[:, :, None]
                 elif base_ds.ndim == 3 and out_ds.ndim == 2:
                     base_ds = base_ds[:, :, 0]
-                diff_ds = base_ds - out_ds.reshape(base_ds.shape)
+                diff_ds = base_ds - out_ds
                 diff_low = cv2.GaussianBlur(diff_ds, (0, 0), sigma / ds)
                 diff_up = cv2.resize(diff_low, (w, h), interpolation=cv2.INTER_LINEAR)
                 corrected = out + diff_up.reshape(out.shape)

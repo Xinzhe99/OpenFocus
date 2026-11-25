@@ -18,14 +18,17 @@ _SHM_MIN_BYTES = 256 * 1024
 _SHM_MAX_BYTES = 512 * 1024 * 1024
 
 
-def _try_shm_encode(array: np.ndarray):
+def _try_shm_encode(array: np.ndarray, *, existing_bytes: int = 0):
     """Copy an unmapped array into a POSIX/Windows SharedMemory block when RAM permits.
 
+    Enforces cumulative SharedMemory bounds across all buffers held by one encoder
+    so multi-array transfers spill cleanly to disk instead of exhausting RAM.
     Returns ``(SharedMemory, metadata)`` on success, or ``None`` to fall back to
     disk-backed ``store_frame(..., prefer_ram=False)``.
     """
     nbytes = int(array.nbytes)
-    if nbytes < _SHM_MIN_BYTES or nbytes > _SHM_MAX_BYTES or array.dtype.hasobject:
+    total_bytes = int(existing_bytes) + nbytes
+    if nbytes < _SHM_MIN_BYTES or total_bytes > _SHM_MAX_BYTES or array.dtype.hasobject:
         return None
     try:
         from core import resource_policy as policy
@@ -33,7 +36,7 @@ def _try_shm_encode(array: np.ndarray):
         if not snapshot.ram_known:
             return None
         ceiling = policy.ram_ceiling(snapshot)
-        if ceiling < nbytes * 2:
+        if ceiling < total_bytes * 2:
             return None
     except Exception:
         return None
@@ -121,11 +124,13 @@ class FrameEncoder:
         self._memo = {}
         self._keep = []
         self._shm_handles = []
+        self._shm_bytes = 0
 
     def close(self, *, unlink=False):
         """Release any SharedMemory handles created by this encoder."""
         handles = self._shm_handles
         self._shm_handles = []
+        self._shm_bytes = 0
         for shm in handles:
             try:
                 shm.close()
@@ -171,10 +176,11 @@ class FrameEncoder:
         if isinstance(value, np.ndarray):
             description = storage.describe_frame(value)
             if description is None:
-                shm_encoded = _try_shm_encode(value)
+                shm_encoded = _try_shm_encode(value, existing_bytes=self._shm_bytes)
                 if shm_encoded is not None:
                     shm, shm_data = shm_encoded
                     self._shm_handles.append(shm)
+                    self._shm_bytes += int(value.nbytes)
                     kind, data = 'shm', shm_data
                     return ('value', index, kind, data)
                 mapped = storage.store_frame(value, prefer_ram=False)
