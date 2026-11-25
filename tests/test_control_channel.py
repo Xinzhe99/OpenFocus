@@ -2140,6 +2140,64 @@ def test_dialog_open_reuses_the_managed_instance(server):
     call(server, "dialog.reject")
 
 
+def test_control_converter_keeps_thumbnail_worker_owned_until_close(server, qapp, tmp_path):
+    from PyQt6 import sip
+    from PyQt6.QtCore import QCoreApplication, QEvent
+
+    source = tmp_path / 'source.png'
+    assert imwrite_auto(str(source), np.zeros((8, 8, 3), np.uint8))
+    assert call(server, 'dialog.open', name='converter')['ok']
+    dialog = server._dialogs['converter']
+    dialog._append([source])
+    worker = dialog.thumbnail_worker
+    try:
+        assert worker.isRunning()
+        reply = call(server, 'dialog.accept', title=dialog.windowTitle())
+        assert reply['error']['code'] == 'unsupported'
+        assert dialog.isVisible() and worker.isRunning()
+    finally:
+        dialog.reject()
+        assert worker.wait(5000)
+        qapp.processEvents()
+
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert 'converter' not in server._dialogs
+    assert sip.isdeleted(dialog)
+
+
+def test_control_watermark_accepts_while_preview_stops(server):
+    from types import SimpleNamespace
+    from PyQt6 import sip
+    from PyQt6.QtCore import QCoreApplication, QEvent
+    from utils import watermark
+
+    assert call(server, 'dialog.open', name='watermark')['ok']
+    dialog = server._dialogs['watermark']
+    dialog.text_edit.setText('OpenFocus')
+    dialog.target_checks['output'].setChecked(True)
+    assert wait_until(dialog._ok_button.isEnabled)
+    stopped = []
+    dialog._pixel_worker = SimpleNamespace(
+        requestInterruption=lambda: stopped.append(True), deleteLater=lambda: None)
+    try:
+        title = dialog.windowTitle()
+        reply = call(server, 'dialog.accept', title=title)
+        assert reply['ok'] and reply['result']['accepted'], reply
+        assert watermark.config_for_target(server.window, 'output').text == 'OpenFocus'
+        assert stopped == [True] and dialog.isVisible()
+        entries = call(server, 'dialog.list')['result']['dialogs']
+        assert next(entry for entry in entries if entry['title'] == title)['busy']
+        assert call(server, 'dialog.accept', title=title)['error']['code'] == 'busy'
+    finally:
+        if not dialog._closing:
+            dialog.reject()
+        dialog._fit_finished()
+
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert 'watermark' not in server._dialogs
+    assert sip.isdeleted(dialog)
+
+
 def test_option_set_keeps_checkboxes_in_sync(server, control_window, monkeypatch):
     monkeypatch.setattr(control_window, "current_fusion_method", lambda: "openfocus_a")
     call(server, "option.set", name="base_correct", value=True)
@@ -2400,6 +2458,9 @@ def test_control_channel_guards_experimental_fusion_and_alignment(server, contro
 
 def test_alignment_only_selection_is_accepted(server, control_window):
     assert call(server, "method.set", id="none")["result"]["id"] == "none"
+    assert call(server, "method.parameters")["result"] == {
+        "id": "none", "parameters": {}, "specs": [], "depth": False,
+    }
     # With neither fusion nor alignment there is no work to start.
     response = call(server, "render.start")
     assert response["error"]["code"] == "invalid_argument"
@@ -2801,6 +2862,50 @@ def test_control_socket_close_preserves_replacement(qapp, unix_socket_dir, monke
     path.write_bytes(b'new owner')
     instance.close()
     assert path.read_bytes() == b'new owner'
+
+
+@pytest.mark.skipif(os.name != 'posix', reason='Unix socket paths only')
+@pytest.mark.parametrize('failure', [None, 'socket chmod failed', 'user-owned socket directory'])
+def test_direct_control_socket_setup_preserves_directory_ownership(
+        qapp, unix_socket_dir, monkeypatch, failure):
+    from PyQt6.QtNetwork import QLocalSocket
+    from core.control import server as module
+
+    # The endpoint fits while the longer private staging path does not.
+    padding = module._UNIX_SOCKET_PATH_MAX - len(os.fsencode(unix_socket_dir)) - 3
+    parent = unix_socket_dir / ('d' * padding)
+    parent.mkdir(mode=0o700)
+    if failure == 'user-owned socket directory':
+        parent.chmod(0o770)
+    endpoint = parent / 's'
+    chmod = os.chmod
+
+    def fail_chmod(path, mode, **kwargs):
+        if os.fspath(path) == str(endpoint):
+            raise PermissionError('socket chmod failed')
+        return chmod(path, mode, **kwargs)
+
+    if failure == 'socket chmod failed':
+        monkeypatch.setattr(module.os, 'chmod', fail_chmod)
+    if failure:
+        with pytest.raises(RuntimeError, match=failure):
+            ControlServer(None, socket_name=str(endpoint))
+    else:
+        monkeypatch.setattr(module, 'write_discovery', lambda *args: {'socket': args[0]})
+        monkeypatch.setattr(module, 'clear_discovery', lambda *args: None)
+        instance = ControlServer(None, socket_name=str(endpoint))
+        try:
+            assert instance._unix_stage is None
+            assert endpoint.stat().st_mode & 0o777 == 0o700
+            client = QLocalSocket()
+            client.connectToServer(str(endpoint))
+            assert client.waitForConnected(5000), client.errorString()
+            client.abort()
+        finally:
+            instance.close()
+
+    assert parent.is_dir()
+    assert not os.path.lexists(endpoint)
 
 
 def test_stack_load_rejects_invalid_linear_raw_mode(server, tmp_path):

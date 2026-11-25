@@ -25,6 +25,11 @@ _FIELDS = (
     "group_size", "group_overlap", "frame_order",
     "auto_background", "background_mode", "keep_soft_parts", "save_stacked", "missing_data_map",
 )
+_WATERMARK_NUMERIC_FIELDS = ("watermark_opacity", "watermark_size", "watermark_angle")
+_WATERMARK_FIELDS = (
+    "watermark", *_WATERMARK_NUMERIC_FIELDS, "watermark_color", "watermark_density",
+    "watermark_copyright", "watermark_font",
+)
 _PATH_FIELDS = {"dust_map", "depth_map", "defect_mask_path", "save_stacked", "missing_data_map"}
 _INTEGER_LIMITS = {"threads": 0, "batch_size": 1, "downscale": 1, "tile_size": 64,
                    "tile_overlap": 0, "tile_threshold": 1,
@@ -122,7 +127,8 @@ def validate_recipe(recipe, recipe_path):
             if output_key == 'output' and same_path(source, output):
                 raise ValueError('Recipe output would overwrite an explicitly selected source')
     options = recipe.get("options", {})
-    _object(options, "options", (*_FIELDS, "fusion_parameters", "registration_parameters", "defect_mask_sha256"))
+    _object(options, "options", (*_FIELDS, *_WATERMARK_FIELDS, "fusion_parameters",
+                                  "registration_parameters", "defect_mask_sha256"))
     parser = build_parser()
     actions = {action.dest: action for action in parser._actions}
     argv = ["--input", *paths, "--" + output_key.replace("_", "-"), output]
@@ -150,6 +156,9 @@ def validate_recipe(recipe, recipe_path):
                 continue
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
                 raise ValueError("scale_um must be a positive finite number")
+        elif key in _WATERMARK_NUMERIC_FIELDS:
+            if type(value) not in (int, float):
+                raise ValueError(f"{key} must be a number")
         elif key == "auto_background" and value is None:
             continue
         elif key == "native_batch_format" and value is None:
@@ -181,7 +190,11 @@ def validate_recipe(recipe, recipe_path):
             raise ValueError(f"{key} must be a non-empty string")
         if actions[key].choices is not None and value not in actions[key].choices:
             raise ValueError(f"invalid {key}: {value!r}")
-        argv.extend(("--" + key.replace("_", "-"), str(value)))
+        flag = "--" + key.replace("_", "-")
+        if key in _WATERMARK_FIELDS:
+            argv.append(f"{flag}={value}")
+        else:
+            argv.extend((flag, str(value)))
     if "frame_order" not in options:
         # Recipes written before --frame-order existed recorded filename
         # order implicitly.  Keep that order instead of inheriting the new
@@ -326,6 +339,10 @@ def _capture_recipe_data(path, argv):
         except ValueError as exc:
             raise ValueError("recipe and referenced paths must be on the same drive") from exc
     options = {key: getattr(args, key) for key in _FIELDS}
+    for key in _WATERMARK_FIELDS:
+        value = getattr(args, key)
+        if value is not None:
+            options[key] = value
     if args.defect_mask_path:
         options["defect_mask_sha256"] = _mask_fingerprint(args.defect_mask_path)
     for key in _PATH_FIELDS:

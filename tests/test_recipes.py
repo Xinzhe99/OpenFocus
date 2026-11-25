@@ -10,10 +10,10 @@ from core.recipes import capture_recipe, load_recipe, run_recipe, save_recipe, v
 from utils.output_sharpen import DEFAULT_SHARPEN_STRENGTH
 
 
-def _stack(folder, count=2):
+def _stack(folder, count=2, edge=64):
     folder.mkdir()
     for index in range(count):
-        image = np.zeros((64, 64, 3), dtype=np.uint8)
+        image = np.zeros((edge, edge, 3), dtype=np.uint8)
         image[8 + index * 8:40 + index * 8, 8:40] = 100 + index * 50
         assert cv2.imwrite(str(folder / f"{index}.png"), image)
 
@@ -48,6 +48,25 @@ def test_capture_relocate_and_execute(tmp_path):
     assert not (moved / "result.png").exists()
     assert run_recipe(path, experimental=True) == 0
     assert cv2.imread(str(moved / "result.png")) is not None
+
+
+def test_captured_recipe_replays_watermarked_output(tmp_path):
+    stack = tmp_path / 'stack'
+    _stack(stack, edge=256)
+    plain = tmp_path / 'plain.png'
+    marked = tmp_path / 'marked.png'
+    recipe = tmp_path / 'watermark.json'
+    base = ['-i', str(stack), '--align', 'none', '--cpu']
+    assert run_cli([*base, '-o', str(plain)]) == 0
+    capture_recipe(recipe, [*base, '-o', str(marked), '--watermark=-OpenFocus',
+                            '--watermark-opacity', '0.75', '--watermark-density', 'dense'])
+
+    assert run_recipe(recipe) == 0
+    plain_pixels = cv2.imread(str(plain))
+    marked_pixels = cv2.imread(str(marked))
+    assert marked_pixels is not None
+    assert marked_pixels.shape == plain_pixels.shape
+    assert not np.array_equal(plain_pixels, marked_pixels)
 
 
 def test_command_create_and_batch_dry_run(tmp_path):

@@ -15,6 +15,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Use single-scale inference by default in StackMFF V3. Select dual-scale
   inference in fusion, batch, method comparison, and depth settings, or
   with the command-line inference scale option.
+- Add tiled text watermarks to command-line exports and recipes. Open the
+  Watermark and Batch Image Converter dialogs through desktop control.
 - Show live grayscale focus layers while OpenFocus A, B, and C render. The
   selected source row follows the frame in processing order, and OpenFocus B
   keeps the focus map readable during layer blending.
@@ -189,6 +191,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   arena memory after each StackMFF inference.
 - Avoid repeated CPU topology queries while admitting each file in Batch Image
   Converter. Continue checking current memory and destination disk space.
+- Fit Wipe controls in narrow result panels and keep status text available on
+  hover. Refine dialog layouts, keyboard actions, and translated captions.
 - Reuse OpenFocus A response rows and limit GPU output readback size. Skip
   inactive OpenFocus B merge tiles and reuse OpenFocus C pyramid buffers.
 - Reduce the OpenFocus C OpenCL working set by processing the finest layer
@@ -218,14 +222,25 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   image views and scalar variance decisions for nearly flat ECC samples.
 - Check repeated original paths once when validating a desktop export
   destination, including exports from large image stacks.
+- Count physical CPU cores from Linux sysfs when processor records omit
+  topology. Preserve caller-relative files when launching the desktop app.
+  Finish conversion work safely during shutdown and support private Unix
+  control sockets up to the platform path limit.
 
 ### Fixed
+- Preserve saved result metadata and protect original stack files during
+  desktop exports. Release ROI previews and finish export and batch cleanup
+  safely when closing the window. Resolve Qt UI font fallback families and
+  find uppercase multi-page TIFF containers when reopening projects.
 - Bundle trusted CA roots with the desktop app so sign-in and other HTTPS
   requests can verify server certificates on macOS.
 - Keep desktop sign-in responsive when the browser opens an idle connection,
   handle unsupported system proxy schemes, and recover stale macOS Keychain
   sessions after a confirmed write mismatch.
 - Restore embedded TIFF thumbnail previews in Batch Image Converter.
+- Keep desktop updates recoverable across channel changes, failed delta
+  downloads and interrupted installation. Verify the Windows website
+  installer against the release's published size and SHA-256 digest.
 - Use the Darwin C ABI for system memory and CPU topology probes, including
   64-bit page sizes and validated system counter lengths.
 - Admit large JPEG stacks for ECC using reduced grayscale decodes, including

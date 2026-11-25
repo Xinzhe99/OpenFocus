@@ -168,6 +168,7 @@ class ScaleBarDialog(QDialog):
         self.font_combo = QFontComboBox()
         self.font_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.font_combo.setMinimumContentsLength(14)
+        self.font_combo.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         family = getattr(window, "scale_bar_font_family", "") or ""
         self.font_combo.setCurrentFont(QFont(family or self.font().family()))
         text_form.addRow(trans.t("scalebar_font"), self.font_combo)
@@ -208,6 +209,7 @@ class ScaleBarDialog(QDialog):
         self.output_combo = QComboBox()
         self.output_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.output_combo.setMinimumContentsLength(14)
+        self.output_combo.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         manager = getattr(window, "output_manager", None)
         outputs = getattr(window, "output_list", None)
         if manager is not None and outputs is not None:
@@ -340,6 +342,8 @@ class ScaleBarDialog(QDialog):
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.setObjectName("dialogButtonBar")
+        buttons.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        buttons.setContentsMargins(SPACE["sm"], SPACE["xs"], SPACE["sm"], SPACE["xs"])
         self._ok_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
         self._ok_button.setText(trans.t("label_apply_close"))
         self._ok_button.setObjectName("primaryButton")
@@ -382,7 +386,7 @@ class ScaleBarDialog(QDialog):
             self.mode_combo.setCurrentIndex(
                 self.mode_combo.findData(CALIBRATION_MANUAL))
         self._refresh_preview()
-        workspace.fit_dialog(880, 630)
+        workspace.fit_dialog(920, 660)
 
     # ------------------------------------------------------------------
     def _header_text(self) -> str:

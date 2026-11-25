@@ -413,13 +413,14 @@ QGroupBox {{
     background-color: {t['surface']};
     border: 1px solid {t['border']};
     border-radius: {r['md']}px;
-    margin-top: {s['md']}px;
+    margin-top: {max(18, f['caption'] + 10)}px;
     padding: {s['sm']}px {s['sm']}px {s['sm']}px {s['sm']}px;
     font-weight: {WEIGHT['semibold']};
 }}
 QGroupBox::title {{
     subcontrol-origin: margin;
     subcontrol-position: top left;
+    top: 0px;
     left: {s['sm']}px;
     padding: 0 {s['xs']}px;
     color: {t['textMuted']};

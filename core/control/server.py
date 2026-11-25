@@ -8,6 +8,8 @@ import json
 import os
 import secrets
 import socket
+import stat
+import sys
 import tempfile
 import threading
 import time
@@ -37,6 +39,7 @@ from utils.output_sharpen import DEFAULT_SHARPEN_STRENGTH
 
 _log = get_logger(__name__)
 MAX_MOUSE_STEPS = 1024
+_UNIX_SOCKET_PATH_MAX = 107 if sys.platform == 'linux' else 103
 
 class _DeferredResponse:
     def __init__(self, start):
@@ -243,11 +246,11 @@ class ControlServer(QObject):
         self.socket_name = socket_name or f"{SOCKET_PREFIX}-{os.getpid()}"
         if os.name == 'posix' and not socket_name:
             temp_dir = QDir.tempPath()
-            # macOS limits sockaddr_un paths to 103 bytes, including the
-            # private staging directory used to publish the socket safely.
+            # Leave room for the private staging path on this platform.
             stage_path = os.path.join(temp_dir, '.of-12345678', 's')
             self.socket_name = os.path.join(temp_dir, self.socket_name)
-            if max(len(os.fsencode(stage_path)), len(os.fsencode(self.socket_name))) >= 104:
+            if max(len(os.fsencode(stage_path)),
+                   len(os.fsencode(self.socket_name))) > _UNIX_SOCKET_PATH_MAX:
                 self.socket_name = os.path.join('/tmp', f'ofc-{os.getpid()}')
         self._buffers = {}
         self._pending_replies = {}
@@ -295,25 +298,49 @@ class ControlServer(QObject):
         path = self.socket_name
         if not path.startswith('/'):
             path = os.path.join(QDir.tempPath(), path)
+        path_bytes = len(os.fsencode(path))
+        if path_bytes > _UNIX_SOCKET_PATH_MAX:
+            raise RuntimeError(
+                f"Could not listen on {self.socket_name}: Unix socket path "
+                f"exceeds {_UNIX_SOCKET_PATH_MAX}-byte limit ({path_bytes} bytes)")
+        parent = os.path.dirname(path)
         listener = None
         try:
-            self._unix_stage = tempfile.TemporaryDirectory(
-                prefix='.of-', dir=os.path.dirname(path))
-            staged = os.path.join(self._unix_stage.name, 's')
+            os.makedirs(parent, mode=0o700, exist_ok=True)
+            stage_probe = os.path.join(parent, '.of-12345678', 's')
             listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            listener.bind(staged)
-            os.chmod(staged, 0o700)
-            listener.listen(50)
-            info = os.lstat(staged)
-            os.link(staged, path)
-            self._unix_endpoint = (path, info.st_dev, info.st_ino)
+            if len(os.fsencode(stage_probe)) <= _UNIX_SOCKET_PATH_MAX:
+                self._unix_stage = tempfile.TemporaryDirectory(
+                    prefix='.of-', dir=parent)
+                staged = os.path.join(self._unix_stage.name, 's')
+                listener.bind(staged)
+                os.chmod(staged, 0o700)
+                listener.listen(50)
+                info = os.lstat(staged)
+                os.link(staged, path)
+                self._unix_endpoint = (path, info.st_dev, info.st_ino)
+            else:
+                # Only publish directly where other users cannot replace the
+                # socket between bind() and setting its permissions.
+                parent_info = os.stat(parent)
+                if parent_info.st_uid != os.geteuid() or parent_info.st_mode & 0o022:
+                    raise PermissionError(
+                        f"Direct bind requires a user-owned socket directory "
+                        f"with no group or other write permission: {parent}")
+                listener.bind(path)  # Fails atomically if the name is occupied.
+                info = os.lstat(path)
+                if not stat.S_ISSOCK(info.st_mode):
+                    raise RuntimeError(f"Socket path changed during bind: {path}")
+                self._unix_endpoint = (path, info.st_dev, info.st_ino)
+                os.chmod(path, 0o700, follow_symlinks=False)
+                listener.listen(50)
             if not self._server.listen(listener.fileno()):
                 raise RuntimeError(self._server.errorString())
             listener.detach()  # QLocalServer owns the descriptor after adoption.
         except (OSError, ValueError, RuntimeError) as error:
+            self._cleanup_unix_endpoint()
             if listener is not None:
                 listener.close()
-            self._cleanup_unix_endpoint()
             if self._unix_stage is not None:
                 self._unix_stage.cleanup()
                 self._unix_stage = None
@@ -326,10 +353,13 @@ class ControlServer(QObject):
         self._unix_endpoint = None
         try:
             info = os.lstat(path)
-            if (info.st_dev, info.st_ino) == (device, inode):
+            if (stat.S_ISSOCK(info.st_mode)
+                    and (info.st_dev, info.st_ino) == (device, inode)):
                 os.unlink(path)
         except FileNotFoundError:
             pass
+        except OSError:
+            _log.warning("Could not remove control socket %s", path, exc_info=True)
 
     def _start_watchdog(self):
         """Opt-in: dump the GUI thread if it stops answering for 10 s."""
@@ -631,8 +661,8 @@ class ControlServer(QObject):
             connection.abort()
             if connection in self._buffers:
                 self._drop(connection)
-        self._server.close()
         self._cleanup_unix_endpoint()
+        self._server.close()
         if self._unix_stage is not None:
             self._unix_stage.cleanup()
             self._unix_stage = None
@@ -876,6 +906,8 @@ class ControlServer(QObject):
 
     def _cmd_method_parameters(self, args):
         method = _string(args, "id", required=False) or self.window.current_fusion_method()
+        if method == "none":
+            return {"id": "none", "parameters": {}, "specs": [], "depth": False}
         spec = get_fusion(method)
         return {
             "id": method,
@@ -1320,14 +1352,19 @@ class ControlServer(QObject):
     # ------------------------------------------------------------- dialogs
     @staticmethod
     def _dialog_busy(dialog):
-        if getattr(dialog, "_import_busy", False):
+        if (getattr(dialog, "_import_busy", False)
+                or getattr(dialog, "_source_loading", False)
+                or getattr(dialog, "_busy", False)
+                or getattr(dialog, "_close_pending", False)):
             return True
-        if getattr(dialog, "_source_loading", False):
+        if getattr(dialog, "_closing", False) and (
+                getattr(dialog, "_pixel_worker", None) is not None
+                or getattr(dialog, "_region_worker", None) is not None):
             return True
         sensor = getattr(dialog, "sensor_cleanup", None)
         if getattr(sensor, "_pending", False):
             return True
-        for attribute in ("_worker", "_export_worker"):
+        for attribute in ("_worker", "worker", "_export_worker"):
             worker = getattr(dialog, attribute, None)
             if worker is not None and hasattr(worker, "isRunning") \
                     and worker.isRunning():
@@ -1439,6 +1476,14 @@ class ControlServer(QObject):
         elif name == "scalebar":
             from dialogs.scalebar import ScaleBarDialog
             dialog = ScaleBarDialog(window)
+        elif name == "watermark":
+            from dialogs.watermark import WatermarkDialog
+            dialog = WatermarkDialog(window)
+            dialog.finished.connect(dialog.deleteLater)
+        elif name == "converter":
+            from dialogs.batch_converter import BatchConverterDialog
+            dialog = BatchConverterDialog(window)
+            dialog.finished.connect(dialog.deleteLater)
         elif name in ('dust', 'mosaic'):
             raise ControlError('invalid_argument', trans.t('development_unavailable_hint'))
         elif name == "retouch":
@@ -1515,12 +1560,16 @@ class ControlServer(QObject):
         return {"closed": dialog.close()}
 
     def _cmd_dialog_accept(self, args):
-        from PyQt6.QtWidgets import QDialogButtonBox, QPushButton
+        from PyQt6.QtWidgets import QDialog, QDialogButtonBox, QPushButton
+        from dialogs.batch_converter import BatchConverterDialog
         dialog = self._find_dialog(args)
         title = dialog.windowTitle()
         if self._dialog_busy(dialog):
             raise ControlError("busy", "The dialog is still working",
                                "Poll dialog.list until busy is false, then retry.")
+        if isinstance(dialog, BatchConverterDialog):
+            raise ControlError("unsupported", "The converter has no OK action",
+                               "Use ui.click on Convert, or close it with dialog.close.")
         if not hasattr(dialog, "accept"):
             raise ControlError("unsupported",
                                f"{type(dialog).__name__} has no accept()")
@@ -1554,6 +1603,10 @@ class ControlServer(QObject):
         except RuntimeError:  # a delete-on-close dialog was destroyed
             still_open = False
         if still_open:
+            # Watermark applies synchronously, then waits for its preview
+            # workers to stop before emitting finished.
+            if getattr(dialog, "_close_result", None) == QDialog.DialogCode.Accepted:
+                return {"accepted": True, "title": title}
             if self._dialog_busy(dialog):
                 raise ControlError("busy", "The dialog is still working",
                                    "Poll dialog.list until busy is false, then retry.")
