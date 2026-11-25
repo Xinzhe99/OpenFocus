@@ -96,6 +96,11 @@ class MagnifierLabel(QLabel):
         self._zoom_indicator_animation = QPropertyAnimation(self, b"zoom_indicator_opacity")
         self._zoom_indicator_animation.setDuration(400)
         self._zoom_indicator_animation.setEasingCurve(QEasingCurve.Type.OutQuad)
+        self._zoom_indicator_animation.finished.connect(self._on_zoom_indicator_animation_finished)
+        self._zoom_indicator_timer = QTimer(self)
+        self._zoom_indicator_timer.setSingleShot(True)
+        self._zoom_indicator_timer.setInterval(1000)
+        self._zoom_indicator_timer.timeout.connect(self._start_zoom_indicator_fade)
         self._space_pressed = False
         self._last_cursor_state = None
         
@@ -162,7 +167,33 @@ class MagnifierLabel(QLabel):
         """Returns the current ROI in base image coordinates."""
         return self._roi_rect
 
+    def _clamp_point_to_source(self, point: QPointF) -> QPointF:
+        if self._source_size.isEmpty():
+            return QPointF(point)
+        return QPointF(
+            max(0.0, min(point.x(), self._source_size.width())),
+            max(0.0, min(point.y(), self._source_size.height())),
+        )
+
+    def _clamp_roi_rect(self, rect: QRectF, *, preserve_size: bool = False) -> QRectF:
+        if self._source_size.isEmpty():
+            return QRectF(rect)
+        max_w, max_h = self._source_size.width(), self._source_size.height()
+        if preserve_size:
+            w = min(rect.width(), max_w)
+            h = min(rect.height(), max_h)
+            x = max(0.0, min(rect.x(), max(0.0, max_w - w)))
+            y = max(0.0, min(rect.y(), max(0.0, max_h - h)))
+            return QRectF(x, y, w, h)
+        l = max(0.0, min(rect.left(), max_w))
+        t = max(0.0, min(rect.top(), max_h))
+        r = max(0.0, min(rect.right(), max_w))
+        b = max(0.0, min(rect.bottom(), max_h))
+        return QRectF(QPointF(l, t), QPointF(r, b)).normalized()
+
     def set_roi_rect(self, rect: Optional[QRectF]):
+        if rect is not None and not self._source_size.isEmpty():
+            rect = self._clamp_roi_rect(rect)
         self._roi_rect = rect
         self.update()
 
@@ -208,9 +239,17 @@ class MagnifierLabel(QLabel):
         hs = s / 2
         l, t, r, b = widget_roi.left(), widget_roi.top(), widget_roi.right(), widget_roi.bottom()
         
-        # Add delete button rect (top-right corner attached)
+        # Add delete button rect (top-right corner attached, flipped inside near widget edges)
         del_btn_size = 16
-        del_rect = QRectF(r, t - del_btn_size, del_btn_size, del_btn_size)
+        del_x = r
+        del_y = t - del_btn_size
+        if del_x + del_btn_size > self.width():
+            del_x = r - del_btn_size
+        if del_y < 0:
+            del_y = t
+        del_x = max(0.0, min(del_x, max(0.0, self.width() - del_btn_size)))
+        del_y = max(0.0, min(del_y, max(0.0, self.height() - del_btn_size)))
+        del_rect = QRectF(del_x, del_y, del_btn_size, del_btn_size)
         
         return {
             "tl": QRectF(l - hs, t - hs, s, s),
@@ -279,6 +318,8 @@ class MagnifierLabel(QLabel):
         self.viewStateChanged.emit()
 
     def pixmap(self) -> QPixmap:
+        if self._base_pixmap is not None and not self._base_pixmap.isNull():
+            self._update_scaled_pixmap(clamp=False, schedule_update=False)
         canvas = self._backing_pixmaps[self._backing_index]
         # Keep QLabel's QIcon cache out of the mutable backing buffers.
         return QPixmap(canvas) if canvas is not None else super().pixmap()
@@ -386,6 +427,10 @@ class MagnifierLabel(QLabel):
     def reset_view(self):
         self._refine_timer.stop()
         self._interactive_transform = False
+        self._zoom_indicator_timer.stop()
+        self._zoom_indicator_animation.stop()
+        self._zoom_indicator_visible = False
+        self._zoom_indicator_opacity = 0.0
         self._zoom_factor = 1.0
         self._pan_offset = QPointF(0, 0)
         self.viewStateChanged.emit()
@@ -410,6 +455,10 @@ class MagnifierLabel(QLabel):
         self._source_region_failed = False
         self._composite_key = None
         self._backing_pixmaps = [None, None]
+        self._zoom_indicator_timer.stop()
+        self._zoom_indicator_animation.stop()
+        self._zoom_indicator_visible = False
+        self._zoom_indicator_opacity = 0.0
         self._zoom_factor = 1.0
         self._pan_offset = QPointF(0, 0)
         self._magnifier_active = False
@@ -460,7 +509,8 @@ class MagnifierLabel(QLabel):
             self._clamp_pan_offset()
             if self._pan_offset != previous:
                 self._begin_interactive_transform()
-                self._update_scaled_pixmap(clamp=False)
+                self._composite_key = None
+                self.update()
             event.accept()
             return
 
@@ -470,13 +520,9 @@ class MagnifierLabel(QLabel):
             return
 
         old_zoom = self._zoom_factor
-        step = 1.1
-        new_zoom = self._zoom_factor
-        
-        if delta > 0:
-            new_zoom = min(old_zoom * step, self._view_max_zoom())
-        else:
-            new_zoom = max(old_zoom / step, self._min_zoom)
+        steps = max(-4.0, min(delta / 120.0, 4.0))
+        factor = 1.1 ** steps
+        new_zoom = max(self._min_zoom, min(old_zoom * factor, self._view_max_zoom()))
 
         if new_zoom != old_zoom:
             # The image is centred within the label, so zoom changes its
@@ -519,9 +565,10 @@ class MagnifierLabel(QLabel):
             self._begin_interactive_transform()
             if scaled_w <= self.width() and scaled_h <= self.height():
                 self._pan_offset = QPointF(0, 0)
-                self._update_scaled_pixmap()
-            else:
-                self._update_scaled_pixmap(clamp=False)
+                self._clamp_pan_offset()
+            self._composite_key = None
+            self._request_source_regions()
+            self.update()
             self._show_zoom_indicator()
             self.viewStateChanged.emit()
 
@@ -530,21 +577,32 @@ class MagnifierLabel(QLabel):
     def _show_zoom_indicator(self) -> None:
         self._zoom_indicator_visible = True
         self._zoom_indicator_opacity = 1.0
+        self._zoom_indicator_timer.stop()
+        self._zoom_indicator_animation.stop()
+        self._zoom_indicator_timer.start()
+        self.update()
+
+    def _start_zoom_indicator_fade(self) -> None:
+        if not self._zoom_indicator_visible:
+            return
         self._zoom_indicator_animation.stop()
         self._zoom_indicator_animation.setStartValue(1.0)
         self._zoom_indicator_animation.setEndValue(0.0)
         self._zoom_indicator_animation.setDuration(400)
-        self._zoom_indicator_animation.finished.connect(self._on_zoom_indicator_animation_finished)
-        QTimer.singleShot(1000, self._zoom_indicator_animation.start)
+        self._zoom_indicator_animation.start()
 
     def _on_zoom_indicator_animation_finished(self) -> None:
         self._zoom_indicator_visible = False
-        self._zoom_indicator_animation.finished.disconnect(self._on_zoom_indicator_animation_finished)
+        self.update()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
         if self._base_pixmap is not None and not self._base_pixmap.isNull():
-            self._update_scaled_pixmap()
+            self._clamp_pan_offset()
+            if self.isVisible() and event.oldSize().isValid() and event.oldSize() != event.size():
+                self._begin_interactive_transform()
+            self._composite_key = None
+            self.update()
             self.viewStateChanged.emit()
 
     def keyPressEvent(self, event):
@@ -561,6 +619,20 @@ class MagnifierLabel(QLabel):
     def mousePressEvent(self, event):
         # Ensure we get keyboard focus when clicked
         self.setFocus(Qt.FocusReason.MouseFocusReason)
+
+        if (
+            self._space_pressed
+            and event.button() == Qt.MouseButton.LeftButton
+            and self._base_pixmap is not None
+            and not self._base_pixmap.isNull()
+        ):
+            self._is_panning = True
+            self._pan_button = Qt.MouseButton.LeftButton
+            self._last_mouse_pos = event.position()
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            self.update()
+            event.accept()
+            return
 
         if self._roi_mode and event.button() == Qt.MouseButton.LeftButton:
             if self._base_pixmap is None:
@@ -603,7 +675,7 @@ class MagnifierLabel(QLabel):
             
             # Start new ROI (only if not clicking delete button)
             self._roi_state = "creating"
-            self._roi_start_pos = base_pos
+            self._roi_start_pos = self._clamp_point_to_source(base_pos)
             self._roi_rect = None
             # Do NOT emit roiDeleted here, otherwise it toggles the button off!
             event.accept()
@@ -682,7 +754,8 @@ class MagnifierLabel(QLabel):
                     self._last_mouse_pos = event.position()
                     if self._pan_offset != previous:
                         self._begin_interactive_transform()
-                        self._update_scaled_pixmap(clamp=False)
+                        self._composite_key = None
+                        self.update()
             event.accept()
             return
         if self._roi_mode:
@@ -690,16 +763,20 @@ class MagnifierLabel(QLabel):
             if self._roi_state != "none":
                 base_pos = self._map_to_base(pos)
                 if self._roi_state == "creating":
-                    x = min(self._roi_start_pos.x(), base_pos.x())
-                    y = min(self._roi_start_pos.y(), base_pos.y())
-                    w = abs(base_pos.x() - self._roi_start_pos.x())
-                    h = abs(base_pos.y() - self._roi_start_pos.y())
+                    clamped = self._clamp_point_to_source(base_pos)
+                    x = min(self._roi_start_pos.x(), clamped.x())
+                    y = min(self._roi_start_pos.y(), clamped.y())
+                    w = abs(clamped.x() - self._roi_start_pos.x())
+                    h = abs(clamped.y() - self._roi_start_pos.y())
                     self._roi_rect = QRectF(x, y, w, h)
                 elif self._roi_state == "moving":
                     dx = base_pos.x() - self._roi_start_pos.x()
                     dy = base_pos.y() - self._roi_start_pos.y()
                     r = self._roi_original_rect
-                    self._roi_rect = QRectF(r.x() + dx, r.y() + dy, r.width(), r.height())
+                    self._roi_rect = self._clamp_roi_rect(
+                        QRectF(r.x() + dx, r.y() + dy, r.width(), r.height()),
+                        preserve_size=True,
+                    )
                 elif self._roi_state.startswith("resizing_"):
                     corner = self._roi_state.split("_")[1]
                     r = self._roi_original_rect
@@ -713,7 +790,9 @@ class MagnifierLabel(QLabel):
                     if "r" in corner: new_r += dx
                     if "b" in corner: new_b += dy
 
-                    self._roi_rect = QRectF(QPointF(new_l, new_t), QPointF(new_r, new_b)).normalized()
+                    self._roi_rect = self._clamp_roi_rect(
+                        QRectF(QPointF(new_l, new_t), QPointF(new_r, new_b)).normalized()
+                    )
                 self.update()
                 return
 
@@ -781,10 +860,8 @@ class MagnifierLabel(QLabel):
 
 
         if event.button() == Qt.MouseButton.MiddleButton:
-            if self._base_pixmap is not None and not self._base_pixmap.isNull():
-                self.reset_view()
-                event.accept()
-                return
+            event.accept()
+            return
 
         if event.button() == Qt.MouseButton.LeftButton:
             if self._magnifier_active:
@@ -841,7 +918,7 @@ class MagnifierLabel(QLabel):
         if self._base_pixmap is None or self._base_pixmap.isNull():
             super().paintEvent(event)
             return
-        self._update_scaled_pixmap(clamp=False)
+        self._update_scaled_pixmap(clamp=False, schedule_update=False)
         painter = QPainter(self)
         painter.drawPixmap(QPointF(0, 0), self._backing_pixmaps[self._backing_index])
 
@@ -1045,7 +1122,7 @@ class MagnifierLabel(QLabel):
                     max(1, self.height()) / height) * self._zoom_factor
         return width * scale, height * scale
 
-    def _update_scaled_pixmap(self, *, clamp=True):
+    def _update_scaled_pixmap(self, *, clamp=True, schedule_update=True):
         if self._base_pixmap is None or self._base_pixmap.isNull():
             super().clear()
             self._composite_key = None
@@ -1082,7 +1159,12 @@ class MagnifierLabel(QLabel):
             self._backing_pixmaps[slot] = result
         visible = QRectF(x, y, scaled_w, scaled_h).intersected(QRectF(self.rect()))
         # Fractional DPR can round the buffer beyond the painted rectangle.
-        full_opaque = (not self._base_pixmap.hasAlphaChannel()
+        source_has_alpha = (
+            self._source_pixmap.hasAlphaChannel()
+            if self._source_pixmap is not None
+            else self._base_pixmap.hasAlphaChannel()
+        )
+        full_opaque = (not source_has_alpha
                        and visible == QRectF(self.rect())
                        and pw <= physical_width and ph <= physical_height)
         if not full_opaque:
@@ -1093,13 +1175,14 @@ class MagnifierLabel(QLabel):
         if not visible.isEmpty():
             if full_opaque:
                 painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
-            sx = self._base_pixmap.width() / scaled_w
-            sy = self._base_pixmap.height() / scaled_h
-            source = QRectF((visible.x() - x) * sx, (visible.y() - y) * sy,
-                            visible.width() * sx, visible.height() * sy)
-            painter.drawPixmap(visible, self._base_pixmap, source)
-            if full_opaque:
-                painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+            if self._source_pixmap is None:
+                sx = self._base_pixmap.width() / scaled_w
+                sy = self._base_pixmap.height() / scaled_h
+                source = QRectF((visible.x() - x) * sx, (visible.y() - y) * sy,
+                                visible.width() * sx, visible.height() * sy)
+                painter.drawPixmap(visible, self._base_pixmap, source)
+                if full_opaque:
+                    painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
             pixels = self._source_pixmap
             region = QRectF(0, 0, self._source_size.width(), self._source_size.height())
             if pixels is None and 'view' in self._source_regions:
@@ -1119,7 +1202,8 @@ class MagnifierLabel(QLabel):
         painter.end()
         self._backing_index = slot
         self._composite_key = key
-        self.update()
+        if schedule_update:
+            self.update()
 
     def _clamp_pan_offset(self, scaled_width: int = None, scaled_height: int = None):
         if self._base_pixmap is None or self._base_pixmap.isNull():
@@ -1173,6 +1257,8 @@ class MagnifierLabel(QLabel):
             new_cursor = Qt.CursorShape.ClosedHandCursor
         elif self._space_pressed:
             new_cursor = Qt.CursorShape.OpenHandCursor
+        elif self._roi_mode:
+            new_cursor = Qt.CursorShape.CrossCursor
         elif self._magnifier_active:
             new_cursor = Qt.CursorShape.CrossCursor
         else:

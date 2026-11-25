@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 import dataclasses
+from functools import lru_cache
 from math import isqrt, prod
 import threading
 from typing import Optional, Tuple
@@ -192,22 +193,34 @@ def brush_mask(diameter: int, hardness: float) -> np.ndarray:
     `hardness` is the fraction of the radius that stays fully opaque; the
     remainder falls off with a raised cosine.  100 % is a hard-edged disc
     and diameter 1 is a single opaque pixel.
+
+    Masks are memoized per (diameter, hardness) because a stroke stamps the
+    same brush many times; the shared arrays are read-only.
     """
     d = max(1, int(diameter))
+    h = round(float(np.clip(hardness, 0.0, 1.0)), 4)
+    return _brush_mask(d, h)
+
+
+@lru_cache(maxsize=16)
+def _brush_mask(d: int, h: float) -> np.ndarray:
     if d == 1:
-        return np.ones((1, 1), np.float32)
+        alpha = np.ones((1, 1), np.float32)
+        alpha.setflags(write=False)
+        return alpha
     radius = d / 2.0
     coords = np.arange(d, dtype=np.float32) - (d - 1) / 2.0
     yy, xx = np.meshgrid(coords, coords, indexing="ij")
     dist = np.sqrt(xx * xx + yy * yy) / radius
-    h = float(np.clip(hardness, 0.0, 1.0))
     if h >= 1.0:
         alpha = (dist <= 1.0).astype(np.float32)
     else:
         t = np.clip((dist - h) / (1.0 - h), 0.0, 1.0)
         alpha = 0.5 * (1.0 + np.cos(np.pi * t))
         alpha[dist > 1.0] = 0.0
-    return alpha.astype(np.float32)
+        alpha = alpha.astype(np.float32)
+    alpha.setflags(write=False)
+    return alpha
 
 
 class StrokeCoverage:
@@ -570,6 +583,18 @@ class TileHistory:
         tx, ty = key
         return (slice(ty * TILE, ty * TILE + min(TILE, self.target.shape[0] - ty * TILE)),
                 slice(tx * TILE, tx * TILE + min(TILE, self.target.shape[1] - tx * TILE)))
+
+    def entry_rect(self, entry) -> Optional[Tuple[int, int, int, int]]:
+        """Pixel bounds (x0, y0, x1, y1) covered by the tiles of one entry."""
+        rect = None
+        height, width = self.target.shape[:2]
+        for tx, ty in entry:
+            tile = (tx * TILE, ty * TILE, min(width, (tx + 1) * TILE),
+                    min(height, (ty + 1) * TILE))
+            rect = tile if rect is None else (
+                min(rect[0], tile[0]), min(rect[1], tile[1]),
+                max(rect[2], tile[2]), max(rect[3], tile[3]))
+        return rect
 
     def _tile_copy(self, image, key):
         from core.frame_storage import store_frame
@@ -1238,6 +1263,7 @@ class RetouchDocument:
         plan = self.history._prepare_swap(self.working, undo)
         if plan is None:
             return False
+        rect = self.history.entry_rect(plan[0])
         candidate = copy.copy(self)
         candidate.history = copy.copy(self.history)
         candidate.history._undo, candidate.history._redo = plan[2], plan[3]
@@ -1256,12 +1282,14 @@ class RetouchDocument:
         self._background_fills = candidate._background_fills
         self._background_analyses = candidate._background_analyses
         self.history._reserved_bytes = candidate.history._reserved_bytes
-        return True
+        return rect or True
 
-    def undo(self) -> bool:
+    def undo(self):
+        """Undo one step; return its dirty (x0, y0, x1, y1) rect, or False."""
         return self._swap_history(True)
 
-    def redo(self) -> bool:
+    def redo(self):
+        """Redo one step; return its dirty (x0, y0, x1, y1) rect, or False."""
         return self._swap_history(False)
 
     def restore_all(self) -> bool:
