@@ -128,7 +128,10 @@ def test_wipe_widget_paint_and_interactions(qapp):
                        Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton,
                        Qt.KeyboardModifier.NoModifier)
     widget.mouseMoveEvent(move)
-    widget.mouseReleaseEvent(press)
+    release = QMouseEvent(QEvent.Type.MouseButtonRelease, QPointF(500, 50),
+                          Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton,
+                          Qt.KeyboardModifier.NoModifier)
+    widget.mouseReleaseEvent(release)
     assert widget._divider_ratio == pytest.approx(0.98)
 
     widget.reset_view()
@@ -759,7 +762,9 @@ def test_compare_all_cancel_between_renders_unlocks_the_ui(qapp, monkeypatch):
     w = _render_window(frames)
     rm, _saved = _patched_render_manager(monkeypatch, w)
     rm.start_compare_all()
-    rm.worker._running = False  # between two queued renders nothing runs
+    rm.worker._running = False
+    rm.on_render_finished(frames, frames[0], False, 0.0, 1.0, 'CPU')
+    assert rm.last_state == 'done' and rm._compare_chain_timer.isActive()
 
     rm.start_compare_all()
 
