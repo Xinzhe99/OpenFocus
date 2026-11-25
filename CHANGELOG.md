@@ -248,6 +248,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   control sockets up to the platform path limit.
 
 ### Fixed
+- Match scalar and AVX2 rounding in OpenFocus A background accumulation.
+- Verify all encoded file bytes when reusing file-backed alignment plans and
+  preserve decoded BGR fingerprints for directly mapped RGB TIFF frames.
+- Release Retouch pixel buffers as soon as the dialog closes while background
+  workers finish cooperatively.
 - Preserve available camera, exposure, and other export-safe EXIF when
   exporting camera RAW sources, including supported RAF and RW2 previews.
 - Preserve saved result metadata and protect original stack files during

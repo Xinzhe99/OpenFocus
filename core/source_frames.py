@@ -1231,7 +1231,7 @@ class ProcessedFrame:
                     self.source, image, transform, should_cancel=merged)
             if (self.processor.func is _oa._ORIGINAL_APPLY_TRANSLATION
                     and isinstance(transform, _oa.TranslationTransform)
-                    and transform.source.digest_kind == 'file'):
+                    and (direct_tiff or transform.source.digest_kind == 'file')):
                 merged = _merge_cancel_callbacks(cancelled, kw.get('should_cancel'))
                 return _oa.apply_translation(image, transform, should_cancel=merged, source=self.source)
         return self.processor(image)

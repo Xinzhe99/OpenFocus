@@ -260,9 +260,13 @@ def test_ecc_registration_direct_rgb16_tiff_bit_exact(tmp_path, accelerate_ecc):
     assert st_map.dsize == st_ctg.dsize
     assert st_map.bounds == st_ctg.bounds
     np.testing.assert_array_equal(st_map.matrices, st_ctg.matrices)
-    assert [s.sha256 for s in st_map.sources] == [s.sha256 for s in st_ctg.sources]
+    reference_digests = [hashlib.sha256(memoryview(frame).cast('B')).hexdigest()
+                         for frame in contig_frames]
+    for stage in (st_map, st_ctg):
+        assert all(source.digest_kind == 'pixel' for source in stage.sources)
+        assert [source.sha256 for source in stage.sources] == reference_digests
 
-    for fr_m, fr_c in zip(out_mapped, out_contig):
+    for fr_m, fr_c in zip(out_mapped, out_contig, strict=True):
         np.testing.assert_array_equal(resolve_frame(fr_m), resolve_frame(fr_c))
 
 

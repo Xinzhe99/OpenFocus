@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from types import SimpleNamespace
+import hashlib
 import os
 import threading
 
@@ -160,7 +161,13 @@ def test_file_backed_alignment_rejects_changed_pixels_with_same_stamp(tmp_path):
     with without_source_cache_growth():
         plan = openfocus_alignment.estimate_alignment_plan([source])
         transform = plan.transforms[0]
-        # This BMP row lies outside the first, middle and last 64 KiB.
+        assert transform.source.digest_kind == 'file'
+        assert transform.source.sha256 == hashlib.sha256(path.read_bytes()).hexdigest()
+        np.testing.assert_array_equal(
+            openfocus_alignment.apply_alignment_region(source, transform, 128, 128, 16, 16),
+            pixels[128:144, 128:144],
+        )
+        # This BMP row lies outside the samples used by the old file digest.
         pixels[128, 128] ^= 255
         assert cv2.imwrite(str(path), pixels)
         os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))

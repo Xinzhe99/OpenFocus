@@ -1,10 +1,12 @@
 """The neural tile overlap follows a tile that the memory plan made smaller."""
 from dataclasses import replace
+import subprocess
+import sys
 
 import numpy as np
 import pytest
 
-from conftest import make_two_focus_stack
+from tests.conftest import make_two_focus_stack
 from core import multi_focus_fusion as mff
 from core.multi_focus_fusion import (MultiFocusFusion, is_ai_fusion_available,
                                      _ai_effective_tiling, _planned_tile_overlap)
@@ -69,8 +71,28 @@ def _render(block, overlap, profile=pp.NULL_PROFILE):
                            model_path=WEIGHTS, thread_count=1)
 
 
+def _run_render_check(check, environment):
+    if sys.platform == 'win32':
+        # Give the native ONNX Runtime session a fresh Windows process and
+        # surface any crash as a failure of this case with its own diagnostics.
+        result = subprocess.run(
+            [sys.executable, '-X', 'faulthandler', '-m', 'tests.test_planned_tile_overlap',
+             check.__name__], env=environment, capture_output=True, encoding='utf-8',
+            errors='replace', timeout=60)
+        assert result.returncode == 0, (
+            f'StackMFF render process exited with {result.returncode}\n'
+            f'{result.stdout}{result.stderr}')
+    else:
+        with pytest.MonkeyPatch.context() as monkeypatch:
+            check(monkeypatch)
+
+
 @pytest.mark.skipif(not is_ai_fusion_available(), reason="ONNX Runtime not installed")
-def test_a_reduced_plan_renders_like_the_reduced_request(monkeypatch):
+def test_a_reduced_plan_renders_like_the_reduced_request(isolated_process_env):
+    _run_render_check(_check_reduced_plan, isolated_process_env)
+
+
+def _check_reduced_plan(monkeypatch):
     from core import resource_policy as policy
     planner = policy.plan_neural_tiles
 
@@ -96,7 +118,11 @@ def test_a_reduced_plan_renders_like_the_reduced_request(monkeypatch):
 
 
 @pytest.mark.skipif(not is_ai_fusion_available(), reason="ONNX Runtime not installed")
-def test_a_reduced_plan_does_not_scale_below_the_floor(monkeypatch):
+def test_a_reduced_plan_does_not_scale_below_the_floor(isolated_process_env):
+    _run_render_check(_check_overlap_floor, isolated_process_env)
+
+
+def _check_overlap_floor(monkeypatch):
     from core import resource_policy as policy
     planner = policy.plan_neural_tiles
 
@@ -115,7 +141,11 @@ def test_a_reduced_plan_does_not_scale_below_the_floor(monkeypatch):
 
 
 @pytest.mark.skipif(not is_ai_fusion_available(), reason="ONNX Runtime not installed")
-def test_an_unreduced_plan_keeps_the_requested_overlap():
+def test_an_unreduced_plan_keeps_the_requested_overlap(isolated_process_env):
+    _run_render_check(_check_unreduced_plan, isolated_process_env)
+
+
+def _check_unreduced_plan(_monkeypatch):
     profile = pp.PerformanceProfile()
     _render(256, 128, profile)
     tiling = profile.report('completed')['tiling']
@@ -148,7 +178,11 @@ def test_reported_v3_memory_snapshots_keep_directml_at_a_smaller_tile():
 
 
 @pytest.mark.skipif(not is_ai_fusion_available(), reason='ONNX Runtime not installed')
-def test_v3_child_fuses_the_smaller_grid_after_a_late_cpu_fallback(monkeypatch):
+def test_v3_child_fuses_the_smaller_grid_after_a_late_cpu_fallback(isolated_process_env):
+    _run_render_check(_check_late_cpu_fallback, isolated_process_env)
+
+
+def _check_late_cpu_fallback(monkeypatch):
     from core import resource_policy as policy
     from fusion_methods import neural_runtime as runtime
 
@@ -222,7 +256,7 @@ def test_v3_refuses_an_unaffordable_minimum_before_cropping(monkeypatch):
     monkeypatch.setattr(policy, 'probe_resources', lambda *_: snapshot)
     monkeypatch.setattr(MultiFocusFusion, '_validate_ai_environment', lambda _: None)
     monkeypatch.setattr(source_frames, 'resolve_region', lambda *a, **k: pytest.fail('resolved a tile'))
-    fusion = MultiFocusFusion('stackmffv3', exposure_match=False, tile_enabled=True,
+    fusion = MultiFocusFusion('stackmffv3', use_gpu=False, exposure_match=False, tile_enabled=True,
                               tile_block_size=128, tile_threshold=32)
     with pytest.raises(policy.ResourceLimitError, match='minimum 64px tile') as error:
         fusion.fuse(_stack((128, 130)), thread_count=1)
@@ -235,7 +269,7 @@ def test_v3_cancellation_after_live_planning_does_not_start_a_tile(monkeypatch):
 
     monkeypatch.setattr(MultiFocusFusion, '_validate_ai_environment', lambda _: None)
     monkeypatch.setattr(source_frames, 'resolve_region', lambda *a, **k: pytest.fail('resolved a tile'))
-    fusion = MultiFocusFusion('stackmffv3', exposure_match=False, tile_enabled=True,
+    fusion = MultiFocusFusion('stackmffv3', use_gpu=False, exposure_match=False, tile_enabled=True,
                               tile_block_size=64, tile_threshold=32)
     progress = []
     with pytest.raises(RegistrationCancelled):
@@ -245,3 +279,10 @@ def test_v3_cancellation_after_live_planning_does_not_start_a_tile(monkeypatch):
                     focus_callback=lambda *_: pytest.fail('published cancelled focus'))
     assert len(progress) == 1 and progress[0][0] == 0
     assert fusion.fusion_details is None
+
+
+if __name__ == '__main__':
+    checks = {check.__name__: check for check in (
+        _check_reduced_plan, _check_overlap_floor, _check_unreduced_plan, _check_late_cpu_fallback)}
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        checks[sys.argv[1]](monkeypatch)

@@ -1222,9 +1222,7 @@ class RetouchDialog(QDialog):
             self._set_notice(trans.t("retouch_from_retouched"))
         self._focus_signal = QApplication.instance().focusChanged
         self._focus_signal.connect(self._on_focus_changed)
-        self.finished.connect(lambda _result: self._save_geometry())
-        self.finished.connect(self._shutdown_sharpness)
-        self.finished.connect(self.deleteLater)
+        self.finished.connect(self._finish_close)
         self.destroyed.connect(
             lambda _object=None, ref=weakref.ref(self): _release_dialog_buffers(ref))
 
@@ -2704,8 +2702,9 @@ class RetouchDialog(QDialog):
             self.source_canvas.setCursor(Qt.CursorShape.CrossCursor)
             self.result_canvas.setCursor(Qt.CursorShape.CrossCursor)
 
-    def _shutdown_sharpness(self, *_args) -> None:
+    def _finish_close(self) -> None:
         self._closing = True
+        self._save_geometry()
         self._source_timer.stop()
         if self._notice_timer is not None:
             self._notice_timer.stop()
@@ -2718,13 +2717,15 @@ class RetouchDialog(QDialog):
         safe_disconnect(self._focus_signal, self._on_focus_changed)
         worker = self._sharpness_worker
         self._sharpness_worker = None
-        if worker is None:
-            return
-        safe_disconnect(worker.ready, self._on_sharpness_ready)
-        safe_disconnect(worker.failed, self._on_sharpness_failed)
-        safe_disconnect(worker.finished, getattr(self, "_sharpness_finished_callback", None))
-        worker.requestInterruption()
-        self._sharpness_request += 1
+        if worker is not None:
+            safe_disconnect(worker.ready, self._on_sharpness_ready)
+            safe_disconnect(worker.failed, self._on_sharpness_failed)
+            safe_disconnect(worker.finished, getattr(self, "_sharpness_finished_callback", None))
+            worker.requestInterruption()
+            self._sharpness_request += 1
+        self.hide()
+        _release_dialog_buffers(weakref.ref(self))
+        self.deleteLater()
 
     # ----------------------------------------------------------- layout/fs
 
@@ -2850,13 +2851,11 @@ class RetouchDialog(QDialog):
         self._closing = True
         if self._confirm_box is not None:
             self._confirm_box.reject()
-        self._save_geometry()
-        self._shutdown_sharpness()
-        self.deleteLater()
+        self._finish_close()
         event.accept()
 
     def changeEvent(self, event) -> None:
-        if not self._ui_ready:
+        if not self._ui_ready or self._closing:
             super().changeEvent(event)
             return
         if event.type() == QEvent.Type.ActivationChange and not self.isActiveWindow():
@@ -2991,7 +2990,7 @@ class RetouchDialog(QDialog):
         return False
 
     def eventFilter(self, obj, event) -> bool:
-        if self._edit_dialog is not None or self._checkpoint_dialog is not None:
+        if self._closing or self._edit_dialog is not None or self._checkpoint_dialog is not None:
             return super().eventFilter(obj, event)
         if event.type() in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease):
             if self._confirm_box is not None or self._applying:

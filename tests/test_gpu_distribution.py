@@ -268,18 +268,20 @@ def test_verify_bundle_rejects_incomplete_source_jit_resources(
 
 
 def test_verify_bundle_rejects_missing_dlls_and_wrong_marker(
-        tmp_path, monkeypatch):
+        tmp_path, monkeypatch, capsys):
     bundle = _bundle_with_runtimes(tmp_path, monkeypatch)
     (bundle / "_internal" / "_rocm_sdk_libraries_custom" / "bin" /
      "hipblas.dll").unlink()
     with pytest.raises(gpu.VariantError):
         gpu.verify_bundle("rocm", str(bundle))
+    assert "missing bin/hipblas.dll" in capsys.readouterr().err
 
     bundle = _bundle_with_runtimes(tmp_path / "other", monkeypatch)
     marker = bundle / "OpenFocus.gpu-variant"
     marker.write_text('{"variant": "xpu"}', encoding="utf-8")
     with pytest.raises(gpu.VariantError):
         gpu.verify_bundle("rocm", str(bundle))
+    assert "bundle marker is 'xpu', expected 'rocm'" in capsys.readouterr().err
 
 
 def test_package_requires_a_matching_gpu_marker(tmp_path, monkeypatch):

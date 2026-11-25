@@ -733,9 +733,10 @@ def test_dialog_stroke_and_apply_publish_once(qapp):
     dlg.end_stroke()
     assert dlg.doc.is_dirty
     assert dlg.btn_apply.isEnabled()
+    expected_shape = dlg.doc.base.shape
     assert dlg._apply() is True
     assert len(published) == 1
-    assert published[0][1].shape == dlg.doc.base.shape
+    assert published[0][1].shape == expected_shape
     dlg.close()
 
 
@@ -1057,7 +1058,7 @@ def test_render_completion_attaches_provenance(qapp, monkeypatch):
 
     w = W()
     manager = RenderManager(w)
-    manager._hide_progress_bar = lambda: None
+    manager._hide_progress_bar = lambda *, produced_output=False: None
     manager._restore_ui_controls = lambda: None
     manager._dispose_worker = lambda: None
     manager._compare_mode = False
