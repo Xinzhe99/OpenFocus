@@ -27,6 +27,9 @@ from utils.image_utils import read_image_exif
 logger = logging.getLogger(__name__)
 PREVIEW_EDGE = 768
 PREVIEW_DECODE_BUDGET = 32 * 1024 * 1024
+# Poorly compressed UHD PNGs can occupy another raster's worth of encoded
+# bytes. Leave space for scanlines, resize tables and preview pixels.
+_PREVIEW_WORKING_BYTES = 72 * 1024 * 1024
 _DEFAULT_PIL_THUMBNAIL = Image.Image.thumbnail
 
 
@@ -440,7 +443,96 @@ def _jpeg_full_buffer_bytes(width, height, components):
     return 2 * components * (width + 31) * (height + 31)
 
 
-def _pil_preview(image, *, itemsize=1, alpha=False, jpeg_single_scan=None):
+def _png_preview(image, target, alpha, orientation, should_cancel):
+    """Decode an admitted 8-bit PNG raster with bounded native workspace."""
+    from core.resource_policy import require_memory
+
+    stream = image.fp
+    if stream is None:
+        return None
+    position = stream.tell()  # Pillow stops at the first IDAT payload.
+    try:
+        stream.seek(0)
+        header = stream.read(33)
+        if (len(header) != 33 or header[:16] != b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR'
+                or header[24] != 8 or header[25] not in (0, 2, 6)
+                or position < len(header) + 8):
+            return None
+        width, height = image.size
+        if (int.from_bytes(header[16:20], 'big'), int.from_bytes(header[20:24], 'big')) != image.size:
+            return None
+        channels = {0: 1, 2: 3, 6: 4}[header[25]]
+        raster_bytes = width * height * channels
+        if raster_bytes > PREVIEW_DECODE_BUDGET:
+            return None
+
+        stream.seek(position - 4)
+        if stream.read(4) != b'IDAT':
+            return None
+        start = position - 8
+        data_bytes = os.fstat(stream.fileno()).st_size - start
+        if data_bytes < 12:
+            return None
+        encoded_bytes = len(header) + data_bytes
+        # libspng uses two filter rows and a third row for interlaced input,
+        # plus its decoder context, padding and zlib's inflate state/window.
+        decode_bytes = encoded_bytes + raster_bytes + 3 * width * channels + 128 * 1024
+        target_width, target_height = target
+        reduced_bytes = target_width * target_height * channels
+        display_bytes = target_width * target_height * (4 if alpha else 3)
+        resize_bytes = 0
+        if target != image.size:
+            if width % target_width == height % target_height == 0:
+                resize_scratch = 4 * ((width // target_width) * (height // target_height)
+                                      + target_width * channels)
+            else:
+                # INTER_AREA uses two tables of 12-byte entries per source
+                # coordinate and two float rows per active output task.
+                tasks = min(target_height, max(1, cv2.getNumThreads()))
+                resize_scratch = (24 * (width + height) + 4 * (target_height + 1)
+                                  + 8 * target_width * channels * tasks)
+            resize_bytes = raster_bytes + reduced_bytes + resize_scratch
+        orientation_bytes = 2 * display_bytes if 2 <= orientation <= 8 else 0
+        working = max(decode_bytes, resize_bytes, reduced_bytes + display_bytes, orientation_bytes)
+        if working > _PREVIEW_WORKING_BYTES:
+            return None
+        require_memory(working)
+        _check_preview_cancel(should_cancel)
+
+        # Pillow has already read the metadata. Give SPNG only IHDR and the
+        # pixel stream so it cannot also inflate ancillary headers such as
+        # compressed text and ICC profiles during pixel admission.
+        stream.seek(start)
+        encoded = bytearray(encoded_bytes)
+        encoded[:len(header)] = header
+        with memoryview(encoded) as output:
+            if stream.readinto(output[len(header):]) != data_bytes:
+                raise OSError('Truncated PNG pixel stream')
+    finally:
+        stream.seek(position)
+    _check_preview_cancel(should_cancel)
+    try:
+        import imagecodecs
+        decoded = imagecodecs.spng_decode(encoded)
+    except (ImportError, RuntimeError, ValueError):
+        return None
+    del encoded
+    _check_preview_cancel(should_cancel)
+    expected_shape = (height, width) if channels == 1 else (height, width, channels)
+    if decoded is None or decoded.dtype != np.uint8 or decoded.shape != expected_shape:
+        return None
+    if target != image.size:
+        decoded = cv2.resize(decoded, target, interpolation=cv2.INTER_AREA)
+        _check_preview_cancel(should_cancel)
+    if alpha:
+        convert = {1: cv2.COLOR_GRAY2BGRA, 3: cv2.COLOR_RGB2BGRA, 4: cv2.COLOR_RGBA2BGRA}
+    else:
+        convert = {1: cv2.COLOR_GRAY2BGR, 3: cv2.COLOR_RGB2BGR, 4: cv2.COLOR_RGBA2BGR}
+    return cv2.cvtColor(decoded, convert[channels])
+
+
+def _pil_preview(image, *, itemsize=1, alpha=False, jpeg_single_scan=None, orientation=1,
+                 should_cancel=None):
     """Admit the decoder's actual geometry before Pillow can allocate pixels."""
     width, height = image.size
     factor = min(1, PREVIEW_EDGE / max(width, height))
@@ -459,7 +551,14 @@ def _pil_preview(image, *, itemsize=1, alpha=False, jpeg_single_scan=None):
                     if info.get('progressive') or info.get('progression')
                     or (jpeg and not jpeg_single_scan) else 0)
     row_scratch = width * max(4, bands) * 32
-    from core.resource_policy import require_memory
+    from core.resource_policy import ResourceLimitError, require_memory
+    if (getattr(image, 'format', None) == 'PNG' and source_path
+            and itemsize == 1 and 'transparency' not in info
+            and getattr(image, 'custom_mimetype', None) != 'image/apng'
+            and Image.Image.thumbnail is _DEFAULT_PIL_THUMBNAIL):
+        preview = _png_preview(image, target, alpha, orientation, should_cancel)
+        if preview is not None:
+            return preview
     if (jpeg and source_path and not cmyk
             and not alpha and itemsize == 1 and Image.Image.thumbnail is _DEFAULT_PIL_THUMBNAIL
             and os.path.isfile(source_path)):
@@ -476,17 +575,28 @@ def _pil_preview(image, *, itemsize=1, alpha=False, jpeg_single_scan=None):
                 logger.warning('Preview decoder exceeds budget size=%sx%s need=%d budget=%d',
                                width, height, working, PREVIEW_DECODE_BUDGET)
                 return _unavailable_preview(width, height)
-            require_memory(working)
             try:
                 import imagecodecs
                 with open(source_path, 'rb') as fh:
-                    raw_bytes = fh.read()
-                decoded = imagecodecs.jpeg8_decode(raw_bytes, outcolorspace='BGR', scale=(1, scale_den))
-                if decoded.shape[1] != target[0] or decoded.shape[0] != target[1]:
-                    decoded = cv2.resize(decoded, target, interpolation=cv2.INTER_AREA)
-                return decoded
-            except Exception:
-                pass
+                    encoded_bytes = os.fstat(fh.fileno()).st_size
+                    if working + encoded_bytes <= _PREVIEW_WORKING_BYTES:
+                        require_memory(working + encoded_bytes)
+                        _check_preview_cancel(should_cancel)
+                        raw_bytes = fh.read(encoded_bytes)
+                    else:
+                        raw_bytes = None
+                if raw_bytes is not None:
+                    _check_preview_cancel(should_cancel)
+                    decoded = imagecodecs.jpeg8_decode(raw_bytes, outcolorspace='BGR', scale=(1, scale_den))
+                    del raw_bytes
+                    _check_preview_cancel(should_cancel)
+                    if decoded.shape[1] != target[0] or decoded.shape[0] != target[1]:
+                        decoded = cv2.resize(decoded, target, interpolation=cv2.INTER_AREA)
+                    return decoded
+            except InterruptedError:
+                raise
+            except (ImportError, OSError, RuntimeError, ValueError, ResourceLimitError):
+                pass  # Pillow can use a streaming input with lower peak RAM.
     # Aspect-correct draft targets let libjpeg choose its largest useful DCT
     # reduction. Other formats retain native geometry and are checked below.
     image.draft('CMYK' if cmyk else 'RGB', target)
@@ -496,7 +606,9 @@ def _pil_preview(image, *, itemsize=1, alpha=False, jpeg_single_scan=None):
                        width, height, working, PREVIEW_DECODE_BUDGET)
         return _unavailable_preview(width, height)
     require_memory(working)
+    _check_preview_cancel(should_cancel)
     image.thumbnail((PREVIEW_EDGE, PREVIEW_EDGE), Image.Resampling.LANCZOS)
+    _check_preview_cancel(should_cancel)
     if cmyk:
         from core.image_loader import cmyk_to_bgr
         return cmyk_to_bgr(image, source_path, profile)
@@ -627,7 +739,7 @@ def _raw_preview(raw, orientation, path, should_cancel=None):
     for encoded in _embedded_raw_jpegs(path, should_cancel=should_cancel):
         try:
             with Image.open(BytesIO(encoded)) as image:
-                preview = _pil_preview(image)
+                preview = _pil_preview(image, should_cancel=should_cancel)
             if not isinstance(preview, _UnavailablePreview):
                 _check_preview_cancel(should_cancel)
                 return _orient(preview, orientation)
@@ -653,7 +765,7 @@ def _raw_preview(raw, orientation, path, should_cancel=None):
             _check_preview_cancel(should_cancel)
             if thumb.format == rawpy.ThumbFormat.JPEG and len(thumb.data) <= 32 * 1024 * 1024:
                 with Image.open(BytesIO(thumb.data)) as image:
-                    preview = _pil_preview(image)
+                    preview = _pil_preview(image, should_cancel=should_cancel)
                 return _orient(preview, orientation)
             if (thumb.format == rawpy.ThumbFormat.BITMAP and thumb.data.ndim == 3
                     and thumb.data.shape[2] == 3 and thumb.data.nbytes * 4 <= PREVIEW_DECODE_BUDGET):
@@ -2313,11 +2425,12 @@ def _tiff_preview(page, should_cancel=None):
     return _orient(cv2.cvtColor(small, cv2.COLOR_RGB2BGR), orientation)
 
 
-def _matching_tiff_previews(page, following):
+def _matching_tiff_previews(page, following, should_cancel):
     """Reduced images attached as SubIFDs or immediately following this page."""
     from itertools import chain
     orientation = _tiff_orientation(page)
     for candidate in chain(page.pages or (), following):
+        _check_preview_cancel(should_cancel)
         if (candidate.is_reduced and not candidate.is_mask
                 and 0 < candidate.imagewidth <= page.imagewidth
                 and 0 < candidate.imagelength <= page.imagelength
@@ -2332,7 +2445,8 @@ def _matching_tiff_previews(page, following):
 def _tiff_embedded_preview(page, candidates, should_cancel):
     """Use a compatible reduced image belonging to this full-resolution IFD."""
     orientation = _tiff_orientation(page)
-    candidates = [p for p in _matching_tiff_previews(page, candidates) if int(p.compression) != 5]
+    candidates = [p for p in _matching_tiff_previews(page, candidates, should_cancel)
+                  if int(p.compression) != 5]
     candidates.sort(key=lambda p: p.imagewidth * p.imagelength, reverse=True)
     for candidate in candidates:
         _check_preview_cancel(should_cancel)
@@ -2343,13 +2457,98 @@ def _tiff_embedded_preview(page, candidates, should_cancel):
             if 'Orientation' not in candidate.tags:
                 preview = _orient(preview, orientation)
             return preview
+        except InterruptedError:
+            raise
         except (OSError, ValueError, ImportError):
             continue
     return None
 
 
+def _tiff_scan_entries(pages, page_index, header_only, should_cancel):
+    """Scan physical pages lazily, with lookahead for attached previews."""
+    if page_index is not None and page_index < -1:
+        return
+    entries = enumerate(pages)
+
+    def next_entry():
+        _check_preview_cancel(should_cancel)
+        return next(entries, None)
+
+    entry = next_entry()
+    while entry is not None:
+        index, page = entry
+        if not getattr(page, 'is_reduced', False) and page_index in (None, -1, index):
+            following = []
+            if not header_only:
+                entry = next_entry()
+                while entry is not None and getattr(entry[1], 'is_reduced', False):
+                    following.append(entry[1])
+                    entry = next_entry()
+            yield index, page, following
+            if page_index is not None:
+                return
+            if not header_only:
+                continue
+        elif index == page_index:
+            return
+        entry = next_entry()
+
+
+def _scan_tiff(tif, path, stamp, scale, header_only, page_index, should_cancel,
+               metadata_out, px_size_out):
+    from core.image_loader import (UnsupportedColorSpace, _safe_exif_bytes, _tiff_page_exif,
+                                   _tiff_page_profile, validate_tiff_page)
+    from utils.image_utils import SourceExifTooLarge
+
+    if px_size_out is not None and tif.pages:
+        from utils.scalebar import _calibration_from_tags, _rational
+        try:
+            # Calibration historically comes from physical IFD 0, including
+            # containers whose first exported image is a later IFD.
+            tags = tif.pages[0].tags
+            desc = tags[270].value if 270 in tags else ''
+            if isinstance(desc, bytes):
+                desc = desc.decode('latin-1')
+            xres = _rational(tags[282].value) if 282 in tags else None
+            resunit = int(tags[296].value) if 296 in tags else 2
+            px_size_out.append(_calibration_from_tags(str(desc or ''), xres, resunit))
+        except (OSError, ValueError, TypeError, EOFError):
+            pass  # Use the existing calibration reader for unusual tag layouts.
+
+    frames = []
+    for index, page, following in _tiff_scan_entries(tif.pages, page_index, header_only, should_cancel):
+        if not validate_tiff_page(path, page):
+            _validate_tiff_alpha(page, should_cancel)
+        orientation = _tiff_orientation(page)
+        h, w = page.imagelength, page.imagewidth
+        if orientation in (5, 6, 7, 8):
+            h, w = w, h
+        preview = None
+        if not header_only:
+            preview = _tiff_embedded_preview(page, following, should_cancel)
+            if preview is None:
+                preview = _tiff_preview(page, should_cancel)
+        _check_preview_cancel(should_cancel)
+        frames.append(SourceFrame(path, index, (max(1, int(h * scale)), max(1, int(w * scale)), 3),
+                                  np.dtype(page.dtype), store_preview(preview), stamp, scale, orientation,
+                                  native_shape=(h, w, 3),
+                                  grayscale=page.samplesperpixel == 1 and page.photometric in (0, 1),
+                                  preview_is_available=not isinstance(preview, _UnavailablePreview)))
+        del preview
+        if metadata_out is not None:
+            try:
+                raw_exif = _tiff_page_exif(tif, page, path)
+                profile = _tiff_page_profile(path, page)
+            except (SourceExifTooLarge, UnsupportedColorSpace, InterruptedError):
+                raise
+            except (OSError, ValueError, TypeError, EOFError):
+                raw_exif, profile = b'', b''
+            metadata_out.append((_safe_exif_bytes(path, raw_exif), profile))
+    return frames
+
+
 def scan_source(path, scale=1.0, *, linear=False, header_only=False, page_index=None, should_cancel=None,
-                metadata_out=None):
+                metadata_out=None, px_size_out=None):
     """Read headers and bounded previews; linear RAW calibration may unpack the sensor."""
     from core.image_loader import is_raw_source
     _check_preview_cancel(should_cancel)
@@ -2359,7 +2558,17 @@ def scan_source(path, scale=1.0, *, linear=False, header_only=False, page_index=
     stamp = _fingerprint(path)
     extension = os.path.splitext(path)[1].lower()
     frames = []
-    if is_raw_source(path):
+    tiff_source = extension in ('.tif', '.tiff')
+    if tiff_source:
+        import tifffile
+        with tifffile.TiffFile(path) as tif:
+            raw_source = bool(tif.is_dng)
+            if not raw_source:
+                frames = _scan_tiff(tif, path, stamp, scale, header_only, page_index, should_cancel,
+                                    metadata_out, px_size_out)
+    else:
+        raw_source = is_raw_source(path)
+    if raw_source:
         import rawpy
         with rawpy.RawPy() as raw:
             raw.open_file(path)
@@ -2380,12 +2589,14 @@ def scan_source(path, scale=1.0, *, linear=False, header_only=False, page_index=
             if linear:
                 from utils.linear_dng import (LinearDNGMetadata, _camera_identity,
                                               _linear_dng_calibration, _validate_metadata)
-                import tifffile
-                try:
-                    with tifffile.TiffFile(path) as tif:
-                        is_dng = tif.is_dng
-                except (OSError, ValueError, tifffile.TiffFileError):
-                    is_dng = False
+                is_dng = tiff_source
+                if not is_dng:
+                    import tifffile
+                    try:
+                        with tifffile.TiffFile(path) as tif:
+                            is_dng = tif.is_dng
+                    except (OSError, ValueError, tifffile.TiffFileError):
+                        pass
                 if is_dng:
                     metadata = _linear_dng_calibration(path)
                 else:
@@ -2396,54 +2607,13 @@ def scan_source(path, scale=1.0, *, linear=False, header_only=False, page_index=
                 _validate_metadata(metadata)
             _check_preview_cancel(should_cancel)
             preview = None if header_only else _raw_preview(raw, orientation, path, should_cancel)
+        _check_preview_cancel(should_cancel)
         frames.append(SourceFrame(path, 0, (max(1, int(height * scale)), max(1, int(width * scale)), 3),
-                                  np.dtype(np.uint16), preview, stamp, scale, orientation,
+                                  np.dtype(np.uint16), store_preview(preview), stamp, scale, orientation,
                                   linear_metadata=metadata, preview_is_display=True,
-                                  native_shape=(height, width, 3), raw_sensor_shape=sensor_shape))
-    elif extension in ('.tif', '.tiff'):
-        import tifffile
-        with tifffile.TiffFile(path) as tif:
-            pages = list(tif.pages)
-            first_index = next((i for i, p in enumerate(pages)
-                                if not getattr(p, 'is_reduced', False)), None)
-            for index, page in enumerate(pages):
-                _check_preview_cancel(should_cancel)
-                if (getattr(page, 'is_reduced', False)
-                        or (page_index is not None and index != (first_index if page_index == -1 else page_index))):
-                    continue
-                from core.image_loader import validate_tiff_page
-                if not validate_tiff_page(path, page):
-                    _validate_tiff_alpha(page, should_cancel)
-                orientation = int(page.tags['Orientation'].value) if 'Orientation' in page.tags else 1
-                h, w = page.imagelength, page.imagewidth
-                if orientation in (5, 6, 7, 8):
-                    h, w = w, h
-                preview = None
-                if not header_only:
-                    following = []
-                    for candidate in pages[index + 1:]:
-                        if not getattr(candidate, 'is_reduced', False):
-                            break
-                        following.append(candidate)
-                    preview = _tiff_embedded_preview(page, following, should_cancel)
-                    if preview is None:
-                        preview = _tiff_preview(page, should_cancel)
-                frames.append(SourceFrame(path, index, (max(1, int(h * scale)), max(1, int(w * scale)), 3),
-                                          np.dtype(page.dtype), preview, stamp, scale, orientation,
-                                          native_shape=(h, w, 3),
-                                          grayscale=page.samplesperpixel == 1 and page.photometric in (0, 1)))
-                if metadata_out is not None:
-                    from core.image_loader import UnsupportedColorSpace, _safe_exif_bytes, _tiff_page_exif, _tiff_page_profile
-                    from utils.image_utils import SourceExifTooLarge
-                    try:
-                        raw_exif = _tiff_page_exif(tif, page, path)
-                        profile = _tiff_page_profile(path, page)
-                    except (SourceExifTooLarge, UnsupportedColorSpace):
-                        raise
-                    except (OSError, ValueError, TypeError, EOFError):
-                        raw_exif, profile = b'', b''
-                    metadata_out.append((_safe_exif_bytes(path, raw_exif), profile))
-    else:
+                                  native_shape=(height, width, 3), raw_sensor_shape=sensor_shape,
+                                  preview_is_available=not isinstance(preview, _UnavailablePreview)))
+    elif not tiff_source:
         with Image.open(path) as image:
             from core.image_loader import _JPEG_EXTENSIONS, validate_pil_header
             validate_pil_header(path, image)
@@ -2457,7 +2627,8 @@ def scan_source(path, scale=1.0, *, linear=False, header_only=False, page_index=
                                and extension in _JPEG_EXTENSIONS else 0)
             jpeg_single_scan = (_jpeg_header_is_single_scan(image, jpeg_components)
                                 if jpeg_components else None)
-            orientation = int(read_image_exif(image).get(274, 1))
+            parsed_exif = read_image_exif(image)
+            orientation = int(parsed_exif.get(274, 1))
             if extension == '.png':
                 # Pillow presents RGB16 PNG as RGB8; the IHDR bit depth is
                 # still authoritative for the original pixel decoder.
@@ -2469,21 +2640,22 @@ def scan_source(path, scale=1.0, *, linear=False, header_only=False, page_index=
                 width, height = height, width
             if metadata_out is not None:
                 from core.image_loader import _pil_metadata_from_image
-                metadata_out.append(_pil_metadata_from_image(path, image))
+                metadata_out.append(_pil_metadata_from_image(path, image, pre_exif=parsed_exif))
             preview = None
             if not header_only:
                 preview = _orient(_pil_preview(image, itemsize=dtype.itemsize, alpha=alpha,
-                                               jpeg_single_scan=jpeg_single_scan),
+                                               jpeg_single_scan=jpeg_single_scan,
+                                               orientation=orientation, should_cancel=should_cancel),
                                   orientation)
+        _check_preview_cancel(should_cancel)
         frames.append(SourceFrame(path, 0, (max(1, int(height * scale)), max(1, int(width * scale)),
-                                            4 if alpha else 3), dtype, preview, stamp, scale, orientation,
+                                            4 if alpha else 3), dtype, store_preview(preview), stamp, scale, orientation,
                                   native_shape=(height, width, 4 if alpha else 3), grayscale=grayscale,
+                                  preview_is_available=not isinstance(preview, _UnavailablePreview),
                                   _jpeg_components=jpeg_components, _jpeg_single_scan=bool(jpeg_single_scan)))
     _check_preview_cancel(should_cancel)
     if _fingerprint(path) != stamp:
         raise OSError(f'Source changed while reading its preview: {path}')
-    frames = [with_preview(replace(frame, preview_is_available=not isinstance(frame.preview, _UnavailablePreview)),
-                           frame.preview) for frame in frames]
     logger.debug('source manifest path=%s frames=%d preview_bytes=%d header_only=%s', path, len(frames),
                  sum(frame.preview.nbytes for frame in frames if frame.preview is not None), header_only)
     return frames

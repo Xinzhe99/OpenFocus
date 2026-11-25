@@ -313,7 +313,7 @@ def _en() -> dict:
             "manage": "Manage your account",
             "cookies": "The website remembers your language in a cookie and your theme in local storage. The account area also uses cookies for sign-in sessions, request protection, pending sign-in and language preferences.",
             "providers": "Cloudflare hosts the website and account service. If you choose a third-party sign-in provider, that provider processes your sign-in. Resend delivers account and notification emails. These services may process request or delivery information separately. For personal-data requests, contact support@openfocus.top.",
-            "downloads": "When website statistics are enabled, the website keeps daily totals of homepage views and desktop download starts. Optional detailed download statistics also group starts by version, asset type, route and source. Retries, scanners and incomplete downloads can count as starts.",
+            "downloads": "When website statistics are enabled, the website keeps daily totals of homepage views and groups desktop download starts by package platform. Optional detailed download statistics also group starts by version, asset type, route and source. Retries, scanners and incomplete downloads can count as starts.",
             "usage": "Desktop usage reporting is enabled by default when no preference exists; a previous explicit opt-out is preserved. Usage reports send only a random installation ID, application version and operating system to estimate active installations. They do not include images, paths, hardware details or logs. Turn reporting off in Settings → Advanced Settings → Share usage statistics, then choose OK, to stop future reports and delete the local ID. Cancel discards changes. A request already in flight may still complete.",
             "retention": "Usage records are kept for up to 90 UTC calendar days; operational failures can delay deletion. Homepage and download totals remain until an operator deletes them. The statistics database does not store IP addresses, user agents or hardware identifiers. Cloudflare may keep separate request logs, including network information.",
         },
@@ -590,7 +590,7 @@ def _zh() -> dict:
             "manage": "管理你的账号",
             "cookies": "网站使用 Cookie 记住语言偏好，使用本地存储记住主题。账号区还使用 Cookie 维持登录会话、提供请求保护、跟踪待完成的登录和记住语言偏好。",
             "providers": "Cloudflare 托管网站及账号服务。若选择第三方登录平台，该平台会处理你的登录。Resend 负责发送账号及通知邮件。这些服务可能另行处理请求或投递信息。如需提出个人信息相关请求，请联系 support@openfocus.top。",
-            "downloads": "启用官网统计后，网站按自然日汇总中英文首页的浏览次数和桌面安装包的下载发起次数。可选的详细下载统计还会按版本、文件类型、下载路径和来源汇总。重试、扫描和未完成的下载也可能计入。",
+            "downloads": "启用官网统计后，网站按自然日统计中英文首页的浏览次数，并按安装包平台汇总桌面软件下载发起次数。可选的详细下载统计还会按版本、文件类型、下载路径和来源汇总。重试、扫描和未完成的下载也可能计入。",
             "usage": "未保存偏好时，桌面使用统计默认开启；此前明确关闭的偏好会保留。使用统计报告仅发送随机安装标识、应用版本和操作系统，用于估计活跃安装量，不包含图像、路径、硬件信息或日志。可在“设置 → 高级设置 → 分享使用统计”关闭并确定，停止后续报告并删除本地标识；取消则放弃修改。已经发出的请求仍可能完成。",
             "retention": "使用记录最多保留 90 个 UTC 日历日；系统故障可能延迟删除。首页和下载汇总保留到管理员删除为止。统计数据库不保存 IP 地址、用户代理或硬件标识。Cloudflare 可能另行保存包含网络信息的请求日志。"
         },

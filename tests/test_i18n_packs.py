@@ -189,11 +189,16 @@ def test_extra_source_pack_is_still_discovered(monkeypatch):
     def import_pack(name, package=None):
         if name == ".xx" and package == "locales":
             return SimpleNamespace(PACK={"menu_file": "Example"})
+        if name == '.yy' and package == 'locales':
+            return SimpleNamespace(PACK={})
         return original_import(name, package)
 
-    monkeypatch.setattr(locales.os, "listdir", lambda _: ["xx.py", "_x.py", "long.py"])
+    monkeypatch.setattr(locales.os, 'listdir', lambda _: ['xx.py', 'yy.py', '_x.py', 'long.py'])
     monkeypatch.setattr(importlib, "import_module", import_pack)
     manager = TranslationManager()
+    offered = dict(manager.menu_languages())
+    assert 'xx' in offered
+    assert 'yy' not in offered
     assert manager.translations["xx"]["menu_file"] == "Example"
     assert "xx" in dict(manager.available_languages())
 

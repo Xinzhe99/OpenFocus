@@ -396,7 +396,7 @@ def test_native_rgb_tiff_region_skips_full_decode_and_snapshot(qapp, tmp_path, m
 def test_previews_publish_each_completed_thumbnail_without_waiting_for_batch(qapp, monkeypatch):
     from core import source_previews
     slow_started, release = threading.Event(), threading.Event()
-    frames = [object(), object()]
+    frames = [object(), object(), object()]
     owner = threading.get_ident()
     threads = []
 
@@ -414,16 +414,18 @@ def test_previews_publish_each_completed_thumbnail_without_waiting_for_batch(qap
     worker.start()
     try:
         assert slow_started.wait(2)
-        if not received:
+        # The third thumbnail must replace the free slot while the first is blocked.
+        while len(received) < 2:
             assert received.wait(2000)
-        assert len(received) == 1
-        assert received[0][:3] == ['stack', 1, id(frames[1])]
-        assert received[0][3].shape == (27, 40, 3)
+        assert [entry[:3] for entry in received] == [
+            ['stack', 1, id(frames[1])], ['stack', 2, id(frames[2])],
+        ]
+        assert all(entry[3].shape == (27, 40, 3) for entry in received)
         assert all(thread != owner for thread in threads)
         release.set()
         assert worker.wait(2000)
         qapp.processEvents()
-        assert sorted(item[1] for item in received) == [0, 1]
+        assert sorted(item[1] for item in received) == [0, 1, 2]
     finally:
         release.set()
         worker.request_cancel()
@@ -507,11 +509,13 @@ def test_preview_parallelism_respects_memory_and_cpu_budget(monkeypatch):
     monkeypatch.setattr(resource_policy, 'probe_resources', lambda: snapshot)
     for budget, expected in [(0, 1), (source_previews._PREVIEW_WORKING_BYTES, 1),
                              (2 * source_previews._PREVIEW_WORKING_BYTES, 2),
-                             (20 * source_previews._PREVIEW_WORKING_BYTES, 2)]:
+                             (20 * source_previews._PREVIEW_WORKING_BYTES, 4)]:
         monkeypatch.setattr(resource_policy, 'ram_budget', lambda unused, value=budget: value)
         assert source_previews._preview_parallelism() == expected
     monkeypatch.setattr(resource_policy, 'cpu_capacity', lambda unused, preference: 1)
     assert source_previews._preview_parallelism() == 1
+    monkeypatch.setattr(resource_policy, 'cpu_capacity', lambda unused, preference: 8)
+    assert source_previews._preview_parallelism() == 6
 
 
 def test_selected_preview_takes_turn_before_next_batch(qapp, monkeypatch):

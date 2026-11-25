@@ -3,10 +3,11 @@
 The wide detector uses float32 evaluation order. Plans retain immutable source
 identities, never decoded frame stacks.
 """
+from collections import deque
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor, wait
 from contextvars import copy_context
-from contextlib import nullcontext
+from contextlib import closing, nullcontext
 import hashlib
 import math
 import mmap
@@ -18,7 +19,7 @@ import numpy as np
 
 from core import resource_policy
 from core import _alignment_kernels as _native_kernels
-from core.source_frames import resolve_frame, without_source_cache_growth
+from core.source_frames import resolve_frame, source_cache_growth_bytes, without_source_cache_growth
 from core.registration_errors import AlignmentEstimationError, RejectedAlignmentFrame
 
 _F32 = np.float32
@@ -1997,10 +1998,12 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
     if not isinstance(reference_frame, (int, np.integer)) or not 1 <= reference_frame <= len(sources):
         raise ValueError(f'OpenFocus reference frame {reference_frame} is outside the stack of {len(sources)} frames')
     low_ram_spill = False
+    snapshot = resource_policy.probe_resources()
     try:
         plan = resource_policy.plan_execution(resource_policy.Workload(
             algorithm='openfocus_alignment', frames=len(sources), height=h, width=w,
-            fixed_bytes=needed, per_worker_bytes=0, outer_tasks=1), user_threads=1)
+            fixed_bytes=needed, per_worker_bytes=0, outer_tasks=1),
+            snapshot=snapshot, user_threads=1)
     except resource_policy.ResourceLimitError:
         import gc
         from core.source_frames import SOURCE_CACHE
@@ -2027,13 +2030,25 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
         log_action('openfocus_alignment_low_ram_degrade',
                    required_bytes=min_needed, budget_bytes=ceiling_now)
     host_budget = getattr(plan, 'ram_budget', 0) or 0
-    gray_bytes = int(h) * int(w) * 2
-    use_prefetch = (
-        not low_ram_spill
-        and len(sources) >= 2
-        and _alignment_workers(h * w, min_items=1) > 1
-        and (needed + decode_peak + gray_bytes) <= host_budget
-    )
+    gray_bytes = h * w * 2
+    prefetch_workers = 0
+    search_threads = nullcontext()
+    if not low_ram_spill and len(sources) >= 2 and host_budget > needed:
+        align_workers = min(_alignment_workers(h * w, min_items=1),
+                            resource_policy.cpu_capacity(snapshot, resource_policy.PREFERENCE_BALANCED))
+        if align_workers > 1:
+            # In-flight preparations also own hashing and gray-conversion scratch.
+            scratch_bytes = max(_HASH_CHUNK_BYTES, w * 16)
+            if any(np.dtype(frame.dtype).kind == 'f' for frame in sources):
+                scratch_bytes = max(2 * _HASH_CHUNK_BYTES, w * 512)
+            per_prefetch_bytes = decode_peak + gray_bytes + scratch_bytes
+            spare = host_budget - needed - source_cache_growth_bytes(sources)
+            prefetch_workers = max(0, min(4, len(sources) - 1, align_workers // 2,
+                                          spare // per_prefetch_bytes))
+            if prefetch_workers:
+                from core.registration import deferred_warp_threads
+
+                search_threads = deferred_warp_threads(align_workers - prefetch_workers)
     ref = reference_frame - 1
     has_right_chain = 0 < ref < len(sources) - 1
     order = (ref, *range(ref - 1, -1, -1), *range(ref + 1, len(sources)))
@@ -2064,7 +2079,7 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
         return identity, gray
 
     def iter_prepared():
-        if not use_prefetch:
+        if prefetch_workers <= 0:
             for source_index in order:
                 _check_cancel(should_cancel)
                 yield prepare_source(source_index, should_cancel)
@@ -2074,27 +2089,36 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
         def cancelled():
             return stop.is_set() or (should_cancel is not None and should_cancel())
 
-        with ThreadPoolExecutor(max_workers=1, thread_name_prefix='openfocus-align-io') as pool:
-            pending = pool.submit(copy_context().run, prepare_source, order[0], cancelled)
+        def prepare_in_worker(index):
+            with deferred_warp_threads(1):
+                return prepare_source(index, cancelled)
+
+        with ThreadPoolExecutor(max_workers=prefetch_workers, thread_name_prefix='openfocus-align-io') as pool:
+            pending = deque()
+            next_pos = 0
             try:
-                for pos in range(len(order)):
-                    while not pending.done():
-                        _check_cancel(should_cancel)
-                        wait((pending,), timeout=0.05)
-                    _check_cancel(should_cancel)
-                    prepared = pending.result()
-                    pending = None
-                    if pos + 1 < len(order):
-                        pending = pool.submit(copy_context().run, prepare_source, order[pos + 1], cancelled)
+                for _ in range(prefetch_workers):
+                    _check_cancel(cancelled)
+                    pending.append(pool.submit(copy_context().run, prepare_in_worker, order[next_pos]))
+                    next_pos += 1
+                while pending:
+                    _check_cancel(cancelled)
+                    if not pending[0].done():
+                        wait((pending[0],), timeout=0.05)
+                        continue
+                    prepared = pending.popleft().result()
+                    if next_pos < len(order):
+                        pending.append(pool.submit(copy_context().run, prepare_in_worker, order[next_pos]))
+                        next_pos += 1
                     yield prepared
                     del prepared
             finally:
                 stop.set()
-                if pending is not None:
-                    pending.cancel()
+                for fut in pending:
+                    fut.cancel()
+                pending.clear()
 
-    prepared_stream = iter_prepared()
-    try:
+    with search_threads, closing(iter_prepared()) as prepared_stream:
         for done, index in enumerate(order):
             _check_cancel(should_cancel)
             if has_right_chain and index == ref + 1:
@@ -2143,8 +2167,6 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
             previous_index = index
             if progress_callback is not None:
                 progress_callback(done + 1, len(sources))
-    finally:
-        prepared_stream.close()
     _check_cancel(should_cancel)
     return AlignmentPlan(tuple(transforms), ref, order, ratio, needed, failure_policy,
                          rotation, magnification)
