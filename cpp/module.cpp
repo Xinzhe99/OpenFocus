@@ -1086,6 +1086,10 @@ NB_MODULE(_openfocus_native, m) {
           nb::arg("acc"), nb::arg("weight_acc"), nb::arg("tile"), nb::arg("weight2d"),
           nb::arg("x0"), nb::arg("y0"), nb::arg("num_threads") = 4);
     m.def("of_tile_finalize", &of_tile_finalize_py);
+    m.def("of_u16_to_display_u8", &of_u16_to_display_u8_py,
+          nb::arg("src"), nb::arg("dst"), nb::arg("bgr_rev") = false, nb::arg("num_threads") = 8);
+    m.def("of_bgr_to_rgb", &of_bgr_to_rgb_py,
+          nb::arg("src"), nb::arg("dst"), nb::arg("num_threads") = 8);
     m.def("of_align_swap_rgb_to_bgr_rows", &of_align_swap_rgb_to_bgr_rows_py);
     m.def("of_align_swap_bgr_inplace_rows", &of_align_swap_bgr_inplace_rows_py);
     m.def("of_align_gray16_rows", &of_align_gray16_rows_py);
@@ -1103,9 +1107,5 @@ NB_MODULE(_openfocus_native, m) {
     m.def("of_align_warp_alignment_region_float_rows", &of_align_warp_alignment_region_float_rows_py);
     m.def("of_align_warp_translation_region_int_rows", &of_align_warp_translation_region_int_rows_py);
     m.def("pack_png_scanlines", &pack_png_scanlines_py,
-          nb::arg("src"), nb::arg("dst"), nb::arg("num_threads") = 8);
-    m.def("of_u16_to_display_u8", &of_u16_to_display_u8_py,
-          nb::arg("src"), nb::arg("dst"), nb::arg("bgr_rev") = false, nb::arg("num_threads") = 8);
-    m.def("of_bgr_to_rgb", &of_bgr_to_rgb_py,
           nb::arg("src"), nb::arg("dst"), nb::arg("num_threads") = 8);
 }
