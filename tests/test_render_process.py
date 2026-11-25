@@ -1314,3 +1314,39 @@ def test_render_retry_after_memory_rejection_starts_new_child(qapp, tmp_path, sc
         assert retry.child_pid != failed.child_pid
     finally:
         render_process.shutdown_persistent_worker()
+
+
+def test_shutdown_cancels_prewarm_while_process_is_starting(tmp_path, monkeypatch):
+    from threading import Event
+    from types import SimpleNamespace
+    from core import render_process, resource_policy
+
+    entered_start = Event()
+    release_start = Event()
+    closed = []
+
+    def start():
+        entered_start.set()
+        assert release_start.wait(10)
+
+    handle = SimpleNamespace(process=SimpleNamespace(start=start),
+                             close=lambda *, bounded: closed.append(('handle', bounded)))
+    child = SimpleNamespace(close=lambda: closed.append(('child', True)))
+    monkeypatch.delenv('OPENFOCUS_DISABLE_PERSISTENT_RENDER_WORKER', raising=False)
+    monkeypatch.setattr(render_process, '_create_persistent_worker', lambda *_: (handle, child))
+    monkeypatch.setattr(resource_policy, 'probe_memory', lambda: None)
+    monkeypatch.setattr(resource_policy, 'ram_budget', lambda _: 1024**3)
+    render_process.shutdown_persistent_worker()
+    try:
+        assert render_process.prewarm_persistent_worker(tmp_path)
+        _, finished = render_process._PREWARM
+        assert entered_start.wait(5)
+        render_process.shutdown_persistent_worker()
+        assert not finished.is_set()
+        assert render_process._PERSISTENT_HANDLE is None
+    finally:
+        release_start.set()
+        render_process.shutdown_persistent_worker()
+    assert finished.is_set()
+    assert closed == [('child', True), ('handle', True)]
+    assert render_process._PERSISTENT_HANDLE is None

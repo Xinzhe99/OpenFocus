@@ -12,8 +12,6 @@ from utils.image_utils import cv2_to_pixmap
 from utils.output_sharpen import DEFAULT_SHARPEN_STRENGTH
 from core.multi_focus_fusion import is_ai_fusion_available
 from core.render_context import RegistrationDetails, build_render_context
-from core.render_process import RenderProcessWorker
-from dialogs import ROIRenderOptionsDialog  # Import the new dialog
 from locales import trans
 from core.algorithms import fusion_algorithms, get_fusion, get_registration, alignment_steps
 from core.experimental import alignment_is_locked
@@ -27,6 +25,18 @@ _RENDER_STAGE_KEYS = {
     'align': 'render_stage_align', 'fuse': 'render_stage_fuse',
     'finalize': 'render_stage_finalize', 'publish': 'render_stage_publish',
 }
+
+
+def __getattr__(name):
+    """Keep render dependencies importable without loading them at GUI startup."""
+    if name == 'RenderProcessWorker':
+        from core.render_process import RenderProcessWorker as dependency
+    elif name == 'ROIRenderOptionsDialog':
+        from dialogs import ROIRenderOptionsDialog as dependency
+    else:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    globals()[name] = dependency
+    return dependency
 
 
 def _base_frame(method, enabled):
@@ -102,7 +112,7 @@ class RenderManager:
 
     def __init__(self, window: Any):
         self.window = window
-        self.worker: Optional[RenderProcessWorker] = None
+        self.worker: Optional[Any] = None
         self.context_worker = None
         self._context_candidate = None
         self._retiring_context_workers = set()
@@ -1213,7 +1223,10 @@ class RenderManager:
                     self._abort_compare_run()
                     return
                 else:
-                    dialog = ROIRenderOptionsDialog(
+                    dialog_cls = globals().get('ROIRenderOptionsDialog')
+                    if dialog_cls is None:
+                        dialog_cls = __getattr__('ROIRenderOptionsDialog')
+                    dialog = dialog_cls(
                         len(window.roi_aligned_images), window,
                         frame_names=names, roi_size=roi_size,
                         output_size=output_size, frames=window.roi_aligned_images,
@@ -1507,7 +1520,10 @@ class RenderManager:
             self._render_context['live_source_rows'] = tuple(
                 reversed(included_idx) if getattr(window, 'stack_reverse_order', False)
                 else included_idx)
-        self.worker = RenderProcessWorker(
+        worker_cls = globals().get('RenderProcessWorker')
+        if worker_cls is None:
+            worker_cls = __getattr__('RenderProcessWorker')
+        self.worker = worker_cls(
             source_images,
             effective_aligned_images,
             effective_is_aligned,

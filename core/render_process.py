@@ -342,18 +342,21 @@ _DEFAULT_GET_CONTEXT = multiprocessing.get_context
 _DEFAULT_RENDER_CHILD = _render_child
 _PERSISTENT_LOCK = threading.Lock()
 _PERSISTENT_HANDLE = None
+_PERSISTENT_GENERATION = 0
+_PREWARM = None
 
 
 class _PersistentWorkerHandle:
     """Long-lived isolated render child reused across compatible GUI renders."""
 
-    def __init__(self, process, parent_conn, cancel_event, directory, source_revision, mailbox):
+    def __init__(self, process, parent_conn, cancel_event, directory, source_revision, mailbox, generation):
         self.process = process
         self.parent_conn = parent_conn
         self.cancel_event = cancel_event
         self.directory = directory
         self.source_revision = source_revision
         self.mailbox = mailbox
+        self.generation = generation
 
     def compatible(self, directory, source_revision):
         return (self.process is not None
@@ -361,7 +364,7 @@ class _PersistentWorkerHandle:
                 and self.directory == directory
                 and self.source_revision == source_revision)
 
-    def close(self):
+    def close(self, *, bounded=False):
         proc = self.process
         conn = self.parent_conn
         cancel_event = self.cancel_event
@@ -376,7 +379,7 @@ class _PersistentWorkerHandle:
                 except (BrokenPipeError, EOFError, OSError):
                     pass
                 proc.join(1.0)
-            if proc.is_alive() and cancel_event is not None:
+            if not bounded and proc.is_alive() and cancel_event is not None:
                 try:
                     cancel_event.set()
                 except Exception:
@@ -387,7 +390,7 @@ class _PersistentWorkerHandle:
                 proc.join(1.0)
             if proc.is_alive():
                 proc.kill()
-                proc.join()
+                proc.join(1.0 if bounded else None)
         if conn is not None:
             try:
                 conn.close()
@@ -400,14 +403,142 @@ class _PersistentWorkerHandle:
                 pass
 
 
+def _create_persistent_worker(context, directory, source_revision, generation):
+    cancel_event = context.Event()
+    parent, child = context.Pipe()
+    try:
+        mailbox = _LivePreviewMailbox.create(context)
+        process = context.Process(
+            target=_persistent_render_child,
+            args=(child, cancel_event, directory, mailbox.shared),
+            name='OpenFocus render',
+            daemon=True,
+        )
+        return _PersistentWorkerHandle(process, parent, cancel_event, directory,
+                                       source_revision, mailbox, generation), child
+    except BaseException:
+        child.close()
+        parent.close()
+        raise
+
+
 def shutdown_persistent_worker():
-    """Shut down the cached isolated render worker process if running."""
-    global _PERSISTENT_HANDLE
+    """Retire the cached child and cancel any background warmup."""
+    global _PERSISTENT_HANDLE, _PERSISTENT_GENERATION
     with _PERSISTENT_LOCK:
+        _PERSISTENT_GENERATION += 1
         handle = _PERSISTENT_HANDLE
         _PERSISTENT_HANDLE = None
-    if handle is not None:
-        handle.close()
+        prewarm = _PREWARM
+    try:
+        if handle is not None:
+            handle.close(bounded=True)
+    finally:
+        if prewarm is not None:
+            owner, finished = prewarm
+            if owner is not threading.current_thread():
+                # Process.start() can still be inside the OS. Warmup owns its
+                # child until it exits and cannot publish it after shutdown.
+                finished.wait(1.0)
+
+
+def prewarm_persistent_worker(directory=None, *, min_ram_bytes=512 * 1024**2, block: bool = False) -> bool:
+    """Schedule an idle render-child warmup, or report its result if blocking."""
+    global _PREWARM
+    if not _persistent_worker_enabled():
+        return False
+    scratch = storage.capture_scratch()
+    if directory is None and scratch is not None:
+        directory = scratch.explicit_directory
+    elif directory is not None:
+        directory = os.path.abspath(os.fsdecode(directory))
+    inherit_directory = directory is None and scratch is None
+    warmed = False
+
+    def cancelled():
+        with _PERSISTENT_LOCK:
+            return generation != _PERSISTENT_GENERATION
+
+    def run():
+        global _PREWARM
+        nonlocal warmed
+        try:
+            # Share render/load admission so a user job cannot start a second
+            # child while this one is warming and holding its RAM budget.
+            with heavy_job(cancelled):
+                with _PERSISTENT_LOCK:
+                    if _PERSISTENT_HANDLE is not None:
+                        return
+                source_revision = None
+                if _windows_source_run():
+                    source_revision = _LOADED_SOURCE_REVISION
+                    if source_revision is None or _render_source_revision() != source_revision:
+                        return
+                from core.resource_policy import probe_memory, ram_budget
+                if ram_budget(probe_memory()) < int(min_ram_bytes) or cancelled():
+                    return
+                target_dir = directory
+                if inherit_directory:
+                    with storage.scratch_directory() as scratch_dir:
+                        target_dir = scratch_dir.explicit_directory
+                warmed = _warm_persistent_worker(target_dir, source_revision, generation, cancelled)
+        except RegistrationCancelled:
+            pass
+        except Exception:
+            logger.debug('could not prewarm isolated render worker', exc_info=True)
+        finally:
+            with _PERSISTENT_LOCK:
+                _PREWARM = None
+                finished.set()
+
+    with _PERSISTENT_LOCK:
+        if _PERSISTENT_HANDLE is not None or _PREWARM is not None:
+            return False
+        generation = _PERSISTENT_GENERATION
+        finished = threading.Event()
+        if block:
+            _PREWARM = threading.current_thread(), finished
+        else:
+            thread = threading.Thread(target=run, name='openfocus-render-prewarm', daemon=True)
+            _PREWARM = thread, finished
+            try:
+                thread.start()
+            except RuntimeError:
+                _PREWARM = None
+                return False
+    if block:
+        run()
+        return warmed
+    return True
+
+
+def _warm_persistent_worker(directory, source_revision, generation, cancelled):
+    handle, child = _create_persistent_worker(multiprocessing.get_context('spawn'), directory,
+                                             source_revision, generation)
+    try:
+        if cancelled():
+            return False
+        handle.process.start()
+        child.close()
+        child = None
+        if cancelled():
+            return False
+        parent = handle.parent_conn
+        parent.send('warmup')
+        deadline = time.monotonic() + 15.0
+        while not cancelled() and time.monotonic() < deadline and handle.process.is_alive():
+            if parent.poll(0.1):
+                if parent.recv() == ('idle',):
+                    checked_in = _checkin_persistent_worker(handle, bounded=True)
+                    handle = None
+                    return checked_in
+                break
+        return False
+    finally:
+        if child is not None:
+            child.close()
+        if handle is not None:
+            handle.close(bounded=True)
 
 
 atexit.register(shutdown_persistent_worker)
@@ -432,16 +563,15 @@ def _checkout_persistent_worker(directory, source_revision):
     return None
 
 
-def _checkin_persistent_worker(handle):
+def _checkin_persistent_worker(handle, *, bounded=False):
     global _PERSISTENT_HANDLE
-    old = None
     with _PERSISTENT_LOCK:
-        if _PERSISTENT_HANDLE is None and handle.process is not None and handle.process.is_alive():
+        if (handle.generation == _PERSISTENT_GENERATION and _PERSISTENT_HANDLE is None
+                and handle.process is not None and handle.process.is_alive()):
             _PERSISTENT_HANDLE = handle
-            return
-        old = handle
-    if old is not None:
-        old.close()
+            return True
+    handle.close(bounded=bounded)
+    return False
 
 
 def _run_one_persistent_job(connection, cancel_event, request, budget, job_directory, language,
@@ -538,6 +668,14 @@ def _persistent_render_child(connection, cancel_event, directory, mailbox_shared
                 break
             if command is None or command == 'shutdown':
                 break
+            if command == 'warmup':
+                import core.openfocus_alignment  # noqa: F401
+                import fusion_methods.openfocus_bc  # noqa: F401
+                try:
+                    connection.send(('idle',))
+                except (EOFError, OSError):
+                    break
+                continue
             _, request, budget, job_directory, language, live_preview_requested = command
             _run_one_persistent_job(
                 connection, cancel_event, request, budget, job_directory,
@@ -842,24 +980,16 @@ class RenderProcessWorker(RenderWorker):
         context = multiprocessing.get_context('spawn')
         scratch = storage.capture_scratch()
         directory = scratch.explicit_directory if scratch is not None else None
+        with _PERSISTENT_LOCK:
+            generation = _PERSISTENT_GENERATION
         handle = _checkout_persistent_worker(directory, source_revision)
         child = None
         if handle is None:
-            cancel_event = context.Event()
-            parent, child = context.Pipe()
-            mailbox = _LivePreviewMailbox.create(context)
-            process = context.Process(
-                target=_persistent_render_child,
-                args=(child, cancel_event, directory, mailbox.shared),
-                name='OpenFocus render',
-                daemon=True,
-            )
-            handle = _PersistentWorkerHandle(process, parent, cancel_event, directory, source_revision, mailbox)
-        else:
-            parent = handle.parent_conn
-            process = handle.process
-            cancel_event = handle.cancel_event
-            mailbox = handle.mailbox
+            handle, child = _create_persistent_worker(context, directory, source_revision, generation)
+        parent = handle.parent_conn
+        process = handle.process
+        cancel_event = handle.cancel_event
+        mailbox = handle.mailbox
         mailbox.reset()
         self._live_preview_mailbox = mailbox if self.live_preview_requested else None
         self._cancel_event = cancel_event

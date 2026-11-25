@@ -101,6 +101,13 @@ class MagnifierLabel(QLabel):
         
         # Cache for smooth panning
         self._composite_key = None
+        self._backing_pixmaps = [None, None]
+        self._backing_index = 0
+        self._interactive_transform = False
+        self._refine_timer = QTimer(self)
+        self._refine_timer.setSingleShot(True)
+        self._refine_timer.setInterval(90)
+        self._refine_timer.timeout.connect(self._refine_transform)
 
         # ROI Selection State
         self._roi_mode = False
@@ -138,6 +145,18 @@ class MagnifierLabel(QLabel):
             self.update()
         self._last_cursor_state = None
         self.unsetCursor()
+        self._refine_timer.stop()
+        self._interactive_transform = False
+
+    def _begin_interactive_transform(self):
+        self._interactive_transform = True
+        self._refine_timer.start()
+
+    def _refine_transform(self):
+        self._refine_timer.stop()
+        self._interactive_transform = False
+        if self._base_pixmap is not None and not self._base_pixmap.isNull():
+            self._update_scaled_pixmap(clamp=False)
 
     def get_roi_rect(self) -> Optional[QRectF]:
         """Returns the current ROI in base image coordinates."""
@@ -243,6 +262,7 @@ class MagnifierLabel(QLabel):
         self._source_key = source_key
         self._composite_key = None
         if pixmap is None or pixmap.isNull():
+            self._backing_pixmaps = [None, None]
             self._source_pixmap = None
             self._source_size = QSizeF()
             super().clear()
@@ -257,7 +277,11 @@ class MagnifierLabel(QLabel):
             self._ensure_native_loupe()
         self._update_scaled_pixmap()
         self.viewStateChanged.emit()
-        self._request_source_regions()
+
+    def pixmap(self) -> QPixmap:
+        canvas = self._backing_pixmaps[self._backing_index]
+        # Keep QLabel's QIcon cache out of the mutable backing buffers.
+        return QPixmap(canvas) if canvas is not None else super().pixmap()
 
     def set_source_region(self, pixmap, rect, *, source_key, request) -> bool:
         """Accept only the latest region of the current source generation."""
@@ -314,17 +338,18 @@ class MagnifierLabel(QLabel):
     def _request_source_regions(self):
         if self._source_pixmap is not None or self._base_pixmap is None or self._source_region_failed:
             return
-        scale, x, y = self._get_layout_params()
         dpr = self.devicePixelRatioF()
-        # A fit preview suffices until its actual pixels would be enlarged.
-        preview_scale = min(self._base_pixmap.width() / self._source_size.width(),
-                            self._base_pixmap.height() / self._source_size.height())
-        if scale * dpr > preview_scale:
-            visible = QRectF(x, y, *self._display_size()).intersected(QRectF(self.rect()))
-            if not visible.isEmpty():
-                rect = QRectF((visible.x() - x) / scale, (visible.y() - y) / scale,
-                              visible.width() / scale, visible.height() / scale)
-                self._request_region('view', rect, (visible.width() * dpr, visible.height() * dpr))
+        if not (self._is_panning and self._interactive_transform):
+            scale, x, y = self._get_layout_params()
+            # A fit preview suffices until its actual pixels would be enlarged.
+            preview_scale = min(self._base_pixmap.width() / self._source_size.width(),
+                                self._base_pixmap.height() / self._source_size.height())
+            if scale * dpr > preview_scale:
+                visible = QRectF(x, y, *self._display_size()).intersected(QRectF(self.rect()))
+                if not visible.isEmpty():
+                    rect = QRectF((visible.x() - x) / scale, (visible.y() - y) / scale,
+                                  visible.width() / scale, visible.height() / scale)
+                    self._request_region('view', rect, (visible.width() * dpr, visible.height() * dpr))
         if self._magnifier_active:
             source, target = self._magnifier_rects()
             self._request_region('loupe', source, (target.width() * dpr, target.height() * dpr))
@@ -359,6 +384,8 @@ class MagnifierLabel(QLabel):
         self.viewStateChanged.emit()
 
     def reset_view(self):
+        self._refine_timer.stop()
+        self._interactive_transform = False
         self._zoom_factor = 1.0
         self._pan_offset = QPointF(0, 0)
         self.viewStateChanged.emit()
@@ -382,6 +409,7 @@ class MagnifierLabel(QLabel):
         self._region_requests.clear()
         self._source_region_failed = False
         self._composite_key = None
+        self._backing_pixmaps = [None, None]
         self._zoom_factor = 1.0
         self._pan_offset = QPointF(0, 0)
         self._magnifier_active = False
@@ -427,9 +455,12 @@ class MagnifierLabel(QLabel):
         # the touchpad while a key is held.
         if (_is_touchpad_gesture(event)
                 and not event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+            previous = QPointF(self._pan_offset)
             self._pan_offset += _gesture_pan(event)
             self._clamp_pan_offset()
-            self._update_scaled_pixmap()
+            if self._pan_offset != previous:
+                self._begin_interactive_transform()
+                self._update_scaled_pixmap(clamp=False)
             event.accept()
             return
 
@@ -485,6 +516,7 @@ class MagnifierLabel(QLabel):
             # hold (measured 30 px). Centre explicitly in that case so the
             # result is predictable instead of "almost anchored".
             scaled_w, scaled_h = self._display_size()
+            self._begin_interactive_transform()
             if scaled_w <= self.width() and scaled_h <= self.height():
                 self._pan_offset = QPointF(0, 0)
                 self._update_scaled_pixmap()
@@ -614,8 +646,8 @@ class MagnifierLabel(QLabel):
 
         if (
             event.button() == Qt.MouseButton.LeftButton
-            and self.pixmap() is not None
-            and not self.pixmap().isNull()
+            and self._base_pixmap is not None
+            and not self._base_pixmap.isNull()
         ):
             if self._space_pressed:
                 self._is_panning = True
@@ -644,11 +676,13 @@ class MagnifierLabel(QLabel):
                     self._last_mouse_pos = event.position()
                 else:
                     delta = event.position() - self._last_mouse_pos
-                    self._pan_offset.setX(self._pan_offset.x() + delta.x())
-                    self._pan_offset.setY(self._pan_offset.y() + delta.y())
+                    previous = QPointF(self._pan_offset)
+                    self._pan_offset += delta
                     self._clamp_pan_offset()
                     self._last_mouse_pos = event.position()
-                    self._update_scaled_pixmap()
+                    if self._pan_offset != previous:
+                        self._begin_interactive_transform()
+                        self._update_scaled_pixmap(clamp=False)
             event.accept()
             return
         if self._roi_mode:
@@ -728,6 +762,8 @@ class MagnifierLabel(QLabel):
         if self._is_panning and event.button() == self._pan_button:
             self._reset_interaction()
             self._update_cursor()
+            if self._base_pixmap is not None and not self._base_pixmap.isNull():
+                self._update_scaled_pixmap(clamp=False)
             event.accept()
             return
         if self._roi_mode:
@@ -783,6 +819,7 @@ class MagnifierLabel(QLabel):
             self._is_panning = False
             self._pan_button = Qt.MouseButton.NoButton
             self._last_mouse_pos = QPointF()
+            self._refine_transform()
             
         self._update_cursor()
 
@@ -806,8 +843,7 @@ class MagnifierLabel(QLabel):
             return
         self._update_scaled_pixmap(clamp=False)
         painter = QPainter(self)
-        painter.drawPixmap(QPointF(0, 0), self.pixmap())
-        self._request_source_regions()
+        painter.drawPixmap(QPointF(0, 0), self._backing_pixmaps[self._backing_index])
 
         if self._magnifier_active:
             source, target = self._magnifier_rects()
@@ -1024,6 +1060,7 @@ class MagnifierLabel(QLabel):
         dpr = self.devicePixelRatioF()
         self._request_source_regions()
         key = (x, y, scaled_w, scaled_h, self.width(), self.height(), dpr,
+               self._interactive_transform,
                self._base_pixmap.cacheKey(),
                self._source_regions.get('view', (None,))[0].cacheKey()
                if 'view' in self._source_regions else None,
@@ -1031,22 +1068,38 @@ class MagnifierLabel(QLabel):
         if self._composite_key == key:
             return
 
-        # A widget-sized backing image avoids Qt's large-pixmap draw limits.
-        # Explicit target/source rectangles avoid both DPR-dependent sizing
-        # and integer blits disagreeing with the mouse transform.
-        result = QPixmap(max(1, round(self.width() * dpr)),
-                         max(1, round(self.height() * dpr)))
-        result.setDevicePixelRatio(dpr)
-        result.fill(Qt.GlobalColor.transparent)
-        painter = QPainter(result)
-        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        # Render into the other slot before presenting the new widget-sized canvas.
+        physical_width = self.width() * dpr
+        physical_height = self.height() * dpr
+        pw = max(1, round(physical_width))
+        ph = max(1, round(physical_height))
+        slot = self._backing_index ^ 1
+        result = self._backing_pixmaps[slot]
+        if (result is None or result.width() != pw or result.height() != ph
+                or result.devicePixelRatio() != dpr):
+            result = QPixmap(pw, ph)
+            result.setDevicePixelRatio(dpr)
+            self._backing_pixmaps[slot] = result
         visible = QRectF(x, y, scaled_w, scaled_h).intersected(QRectF(self.rect()))
+        # Fractional DPR can round the buffer beyond the painted rectangle.
+        full_opaque = (not self._base_pixmap.hasAlphaChannel()
+                       and visible == QRectF(self.rect())
+                       and pw <= physical_width and ph <= physical_height)
+        if not full_opaque:
+            result.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(result)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform,
+                              not self._interactive_transform)
         if not visible.isEmpty():
+            if full_opaque:
+                painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
             sx = self._base_pixmap.width() / scaled_w
             sy = self._base_pixmap.height() / scaled_h
             source = QRectF((visible.x() - x) * sx, (visible.y() - y) * sy,
                             visible.width() * sx, visible.height() * sy)
             painter.drawPixmap(visible, self._base_pixmap, source)
+            if full_opaque:
+                painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
             pixels = self._source_pixmap
             region = QRectF(0, 0, self._source_size.width(), self._source_size.height())
             if pixels is None and 'view' in self._source_regions:
@@ -1060,11 +1113,12 @@ class MagnifierLabel(QLabel):
                     sx, sy = pixels.width() / tile_target.width(), pixels.height() / tile_target.height()
                     sample = QRectF((drawn.x() - tile_target.x()) * sx, (drawn.y() - tile_target.y()) * sy,
                                     drawn.width() * sx, drawn.height() * sy)
-                    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, scale * dpr < 1)
+                    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform,
+                                          (not self._interactive_transform) and scale * dpr < 1)
                     painter.drawPixmap(drawn, pixels, sample)
         painter.end()
+        self._backing_index = slot
         self._composite_key = key
-        super().setPixmap(result)
         self.update()
 
     def _clamp_pan_offset(self, scaled_width: int = None, scaled_height: int = None):

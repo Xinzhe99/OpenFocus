@@ -1680,6 +1680,7 @@ class ImageStackLoader:
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 pending_paths = iter(sources)
                 window = deque()
+                first_preview_future = None
                 try:
                     for path in islice(pending_paths, workers):
                         if self.should_cancel():
@@ -1715,6 +1716,12 @@ class ImageStackLoader:
                             paths.extend([path] * len(frames))
                             names.extend(f'{stem}_page_{index + 1:03d}.tif' if len(frames) > 1
                                          else os.path.basename(path) for index, frame in enumerate(frames))
+                            # RAW display can fall back to unpacking the full sensor.
+                            if (first_preview_future is None and workers >= 2 and done < len(sources)
+                                    and not getattr(images[0], 'raw_sensor_shape', ())):
+                                first_preview_future = pool.submit(
+                                    ensure_display_preview, images[0], should_cancel=scan_cancelled,
+                                )
                         if self.progress_callback is not None:
                             self.progress_callback(done, len(sources))
                         if self.should_cancel():
@@ -1722,18 +1729,28 @@ class ImageStackLoader:
                         next_path = next(pending_paths, None)
                         if next_path is not None:
                             window.append(pool.submit(inspect, next_path))
+                    if first_preview_future is not None:
+                        while not first_preview_future.done():
+                            if self.should_cancel():
+                                raise _DecodeCancelled()
+                            wait((first_preview_future,), timeout=.05)
                 except _DecodeCancelled:
                     return False, 'CANCELLED', [], []
                 finally:
                     stop_scans.set()
                     for future in window:
                         future.cancel()
+                    if first_preview_future is not None:
+                        first_preview_future.cancel()
         if not images:
             return False, 'Could not load any image files', [], []
         if self.should_cancel():
             return False, 'CANCELLED', [], []
         try:
-            ensure_display_preview(images[0], should_cancel=self.should_cancel)
+            if first_preview_future is not None:
+                first_preview_future.result()
+            else:
+                ensure_display_preview(images[0], should_cancel=self.should_cancel)
         except InterruptedError:
             return False, 'CANCELLED', [], []
         except UnsupportedTransparency:
