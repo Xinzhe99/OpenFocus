@@ -1757,14 +1757,20 @@ def _replace_background(frames: Sequence[np.ndarray], fused: np.ndarray, *,
         raise BackgroundFillCancelled()
     decode = max(frame_resolution_bytes(f, metadata_only=True) for f in frames)
     stack_bytes = _gray_stack_bytes(H, W, N)
-    resident = background_working_set_bytes(H, W, N, use_gpu=use_gpu, decode_bytes=decode)
+    # Budget a full focus energy stack only when its GPU reduction has a
+    # device to try. Otherwise focus analysis takes bounded CPU stripes.
+    gpu_focus = use_gpu and stack_bytes >= _GPU_FOCUS_MIN_BYTES
+    if gpu_focus:
+        from ._background_focus_gpu import device_available
+        gpu_focus = device_available()
+    resident = background_working_set_bytes(H, W, N, use_gpu=gpu_focus, decode_bytes=decode)
     disk_backed = resident > ram_budget(probe_memory())
     required = (background_working_set_bytes(H, W, N, disk_backed=True,
-                                             use_gpu=use_gpu, decode_bytes=decode)
+                                             use_gpu=gpu_focus, decode_bytes=decode)
                 if disk_backed else resident)
     require_memory(required)
     scratch_bytes = stack_bytes if disk_backed else 0
-    if disk_backed and use_gpu and stack_bytes >= _GPU_FOCUS_MIN_BYTES:
+    if disk_backed and gpu_focus:
         scratch_bytes += stack_bytes
     log.info('Background working set: %d admitted RAM bytes, %d focus table scratch bytes, %d frames',
              required, scratch_bytes, N)
@@ -1835,7 +1841,7 @@ def _replace_background(frames: Sequence[np.ndarray], fused: np.ndarray, *,
     del g
     step("analysing focus")
     measures, idx = focus_measures(
-        G, cancelled=cancelled, use_gpu=use_gpu,
+        G, cancelled=cancelled, use_gpu=gpu_focus,
         progress=None if progress is None else advance)
     sub_half, thresh = subject_mask(measures, ["ratio", "peak"], None, min_island)
     peak = measures["peak"]

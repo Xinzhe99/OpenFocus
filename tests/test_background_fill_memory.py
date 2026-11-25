@@ -1,5 +1,6 @@
 """Memory admission, cancellation and exact source preservation for background fill."""
 
+import logging
 import tracemalloc
 
 import cv2
@@ -147,6 +148,76 @@ def test_deep_stack_keeps_pixels_and_diagnostics_with_disk_backed_focus(preserva
             actual.missing.layers(), expected.missing.layers(), strict=True):
         np.testing.assert_array_equal(actual_mask, expected_mask)
     assert not list(tmp_path.glob('openfocus-frame-*.bin'))
+
+
+@pytest.fixture(scope="module")
+def deep_cpu_scene(preservation_scene):
+    frames, fused, _ = preservation_scene
+    frames = [frame for frame in frames for _ in range(10)]
+    return frames, fused, bf.replace_background(frames, fused, use_gpu=False)
+
+
+def _assert_same_result(actual, expected):
+    assert actual.changed and actual.background_frame == expected.background_frame
+    np.testing.assert_array_equal(actual.image, expected.image)
+    for (_, actual_mask, _), (_, expected_mask, _) in zip(
+            actual.missing.layers(), expected.missing.layers(), strict=True):
+        np.testing.assert_array_equal(actual_mask, expected_mask)
+
+
+def test_gpu_focus_without_a_device_is_admitted_for_cpu_stripes(deep_cpu_scene, monkeypatch):
+    from core import _background_focus_gpu as gpu
+    from core import frame_storage
+    from core.resource_policy import ProcessBudget, process_budget
+
+    frames, fused, expected = deep_cpu_scene
+    height, width = fused.shape[:2]
+    # GPU acceleration is on and the gray stack counts as large, but OpenCL
+    # offers no device for the focus reduction.
+    monkeypatch.setattr(bf, "_GPU_FOCUS_MIN_BYTES", 0)
+    monkeypatch.setattr(gpu, "_device", lambda cl: None)
+    stripes = bf.background_working_set_bytes(height, width, len(frames), use_gpu=False)
+    assert bf.background_working_set_bytes(height, width, len(frames), use_gpu=True) > stripes
+
+    def no_scratch(size, directory=None):
+        raise frame_storage.ScratchSpaceError(directory, size, 0)
+
+    # RAM for the CPU focus stripes but not for a full energy stack, and no
+    # scratch space to move the focus tables to.
+    monkeypatch.setattr(frame_storage, "require_disk_space", no_scratch)
+    with process_budget(ProcessBudget(comfortable_ram=stripes, maximum_ram=stripes)):
+        actual = bf.replace_background(frames, fused)
+
+    _assert_same_result(actual, expected)
+
+
+def test_gpu_focus_declined_after_admission_reduces_energies_on_cpu(deep_cpu_scene, monkeypatch,
+                                                                    caplog):
+    from core import _background_focus_gpu as gpu
+    from core.resource_policy import ProcessBudget, process_budget
+
+    frames, fused, expected = deep_cpu_scene
+    height, width = fused.shape[:2]
+    monkeypatch.setattr(bf, "_GPU_FOCUS_MIN_BYTES", 0)
+    monkeypatch.setattr(gpu, "device_available", lambda: True)
+    offered = []
+
+    def decline(energy, check_cancel):
+        offered.append(energy.shape)
+        raise gpu.GpuError("Focus energy reduction exceeds the resource budget")
+
+    monkeypatch.setattr(gpu, "reduce_focus", decline)
+    caplog.set_level(logging.INFO, logger=bf.__name__)
+    # The device declines only after the full energy stack exists, so the
+    # admitted RAM must hold it beside the gray stack.
+    limit = bf.background_working_set_bytes(height, width, len(frames), use_gpu=True)
+    with process_budget(ProcessBudget(comfortable_ram=limit, maximum_ram=limit)):
+        actual = bf.replace_background(frames, fused)
+
+    assert (f"Background working set: {limit} admitted RAM bytes, 0 focus table scratch bytes"
+            in caplog.text)
+    assert offered == [(len(frames), height // 2, width // 2)]
+    _assert_same_result(actual, expected)
 
 
 def _source_layout(image, dtype, layout):
