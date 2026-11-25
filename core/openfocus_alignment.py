@@ -2076,8 +2076,7 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
         from utils.logging_setup import log_action
 
         snap = resource_policy.probe_memory()
-        ceiling_now = resource_policy.ram_ceiling(snap)
-        if ceiling_now <= 0:
+        if not snap.ram_known:
             raise
         SOURCE_CACHE.clear()
         gc.collect()

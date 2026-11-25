@@ -285,6 +285,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   pixels during estimation and staging the resolved frames during fusion.
 - Release the isolated render worker after a memory error so the next render
   starts with fresh native memory and device contexts.
+- Free cached source frames and retry at reduced memory before refusing
+  OpenFocus alignment or OpenFocus A, B, or C fusion when free memory has
+  fallen to the amount kept for the rest of the system.
 - Default new watermarks to fusion results. Apply removes unchecked watermark
   scopes, scale bars on the selected target, and unchecked labels.
 - Retain OpenFocus B's prepared images when switching fusion methods with
