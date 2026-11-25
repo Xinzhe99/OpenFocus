@@ -212,7 +212,7 @@ def test_tour_starts_even_if_demo_cannot_load(tour_window, monkeypatch, load_in_
     monkeypatch.setattr(win, "load_demo_stack", failed_load)
     with monkeypatch.context() as scope:
         if load_in_progress:
-            scope.setattr(win.source_manager, "_load_worker", object())
+            scope.setattr(win.source_manager, "_load_worker", object(), raising=False)
         win.start_guided_tour(load_demo_if_empty=True)
         assert win._onboarding_tour.is_active
 
