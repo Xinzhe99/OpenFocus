@@ -669,12 +669,34 @@ async function r2Download(request, env, key, name) {
   return new Response(object.body, { status, headers });
 }
 
+function recordWebsiteTraffic(db, ctx, pageViews, downloadStarts) {
+  if (!ctx?.waitUntil) return;
+  const now = Math.floor(Date.now() / 1000);
+  try {
+    ctx.waitUntil(Promise.resolve().then(() => db.prepare(`INSERT INTO website_traffic_daily
+      (day, page_views, download_starts) VALUES (date(?, 'unixepoch', '+8 hours'), ?, ?)
+      ON CONFLICT(day) DO UPDATE SET page_views = page_views + excluded.page_views,
+      download_starts = download_starts + excluded.download_starts`)
+      .bind(now, pageViews, downloadStarts).run()).catch(() => {}));
+  } catch {
+    // Statistics must not delay or break the page or file response.
+  }
+}
+
+function isPrefetch(request) {
+  return request.headers.get("Sec-Purpose")?.includes("prefetch") || request.headers.get("Purpose") === "prefetch";
+}
+
 // Analytics is optional and must never interfere with serving a download.
 function recordDownload(request, response, env, ctx, version, kind, channel, source) {
-  if (request.method !== "GET" || !env?.ANALYTICS || !ctx?.waitUntil ||
-      typeof version !== "string" || !/^v[0-9A-Za-z._+-]{1,80}$/.test(version)) return;
+  const siteAnalytics = channel === "website" && env?.SITE_ANALYTICS;
+  if ((!siteAnalytics && !env?.ANALYTICS) || request.method !== "GET" || !ctx?.waitUntil) return;
   if (response.status !== 200 && response.status !== 302 &&
       !(response.status === 206 && /^bytes 0-\d+\/\d+$/.test(response.headers.get("Content-Range") || ""))) return;
+  if (siteAnalytics && new URL(request.url).hostname === "openfocus.top" && !isPrefetch(request)) {
+    recordWebsiteTraffic(siteAnalytics, ctx, 0, 1);
+  }
+  if (!env.ANALYTICS || typeof version !== "string" || !/^v[0-9A-Za-z._+-]{1,80}$/.test(version)) return;
   try {
     const operation = Promise.resolve().then(() => env.ANALYTICS.prepare(
       "INSERT INTO download_counts (day, version, kind, channel, source, count) VALUES (date('now'), ?, ?, ?, ?, 1) " +
@@ -934,7 +956,8 @@ export default {
     }
 
     let languageHeaders = null;
-    if ((url.pathname === "/" || url.pathname === "/zh/") && (method === "GET" || method === "HEAD")) {
+    const homepage = url.pathname === "/" || url.pathname === "/zh/";
+    if (homepage && (method === "GET" || method === "HEAD")) {
       const query = url.searchParams.get("lang");
       const explicit = query === "en" || query === "zh";
       const lang = explicit ? query : url.pathname === "/zh/" ? "zh" : preferredLanguage(request);
@@ -959,6 +982,11 @@ export default {
     }
 
     const response = await env.ASSETS.fetch(request);
+    if (env.SITE_ANALYTICS && homepage && url.hostname === "openfocus.top" && method === "GET" &&
+        (response.status === 304 || (response.status === 200 && response.headers.get("Content-Type")?.startsWith("text/html"))) &&
+        !isPrefetch(request)) {
+      recordWebsiteTraffic(env.SITE_ANALYTICS, ctx, 1, 0);
+    }
     if (!languageHeaders) return response;
     const headers = new Headers(response.headers);
     for (const [key, value] of languageHeaders) headers.set(key, value);
