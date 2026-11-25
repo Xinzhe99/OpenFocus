@@ -401,13 +401,13 @@ def test_fusion_busy_session_fence_and_no_can_hide_gallery_in_ui(integrated_wind
     # 5a. Compute avoidance: set_fusion_busy(True) pauses background downloads & remote fetches.
     fetched_urls = []
     gc._media_fetcher = lambda url: fetched_urls.append(url) or _make_webp_bytes()
+    gc.set_fusion_busy(True)
     gc.showcase.set_works(
         [
             {"id": "cached_1", "title": "Cached", "pixmap": _make_pixmap()},
             {"id": "remote_2", "title": "Remote", "image_url": "https://cdn.example.com/r2.webp"},
         ]
     )
-    gc.set_fusion_busy(True)
     assert gc.fusion_busy is True
     assert gc.state_store.fusion_busy is True
     assert gc.showcase.fusion_busy is True

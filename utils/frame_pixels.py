@@ -378,6 +378,8 @@ def run_pixel_worker(parent, title, operation, *, show_progress=True,
         dialog.finish()
         dialog.deleteLater()
     result, error = worker.result, worker.error
+    worker.result = None
+    worker.error = None
     worker.deleteLater()
     waiter.deleteLater()
     if blocker is not None:

@@ -722,20 +722,22 @@ def test_control_channel_statuses_and_storage_in_replies(window, fake_worker, mo
         assert reply['error']['code'] == 'confirm_required'
         assert reply['error']['details']['storage']['status'] == 'advisory'
         assert not fake_worker.created
-        reply = call('render.start', confirm=True)
-        assert reply['result']['started'] is True
-        assert reply['result']['storage']['status'] == 'advisory'
         _assess_as(monkeypatch, 'critical')
         reply = call('render.start', confirm=True)
         assert reply['error']['code'] == 'insufficient_storage'
         assert reply['error']['details']['storage']['status'] == 'critical'
-        assert len(fake_worker.created) == 1
+        assert not fake_worker.created
         # An agent fixes it by choosing another directory.
         bad = call('option.set', name='storage_directory', value=str(tmp_path / 'missing'))
         assert bad['error']['code'] == 'invalid_argument'
         good = call('option.set', name='storage_directory', value=str(tmp_path))
         assert good['ok'] and frame_storage._storage_directory == str(tmp_path)
         assert call('app.state')['result']['options']['storage_directory'] == str(tmp_path)
+        _assess_as(monkeypatch, 'advisory')
+        reply = call('render.start', confirm=True)
+        assert reply['result']['started'] is True
+        assert reply['result']['storage']['status'] == 'advisory'
+        assert len(fake_worker.created) == 1
     finally:
         server.close()
         frame_storage.configure_storage_directory(None)

@@ -221,43 +221,37 @@ def _source_file_identity(frame):
             tuple(getattr(frame, 'fingerprint', ())))
 
 
-def _fast_file_digest(path: str, shape: tuple, dtype_str: str, page: int, file_stamp: tuple,
-                      should_cancel=None) -> str:
-    """Compute a 64-hex SHA-256 identity from file size, stamp, geometry, and head/tail bytes."""
+def _file_digest(path, should_cancel):
+    """Hash the complete encoded file with bounded, cancellable reads."""
     _check_cancel(should_cancel)
-    chunk = 65536
     digest = hashlib.sha256()
-    digest.update(f'{shape!r}:{dtype_str}:{int(page)}:{file_stamp!r}'.encode('utf-8'))
-    with open(path, 'rb') as fh:
-        fh.seek(0, os.SEEK_END)
-        size = fh.tell()
-        digest.update(str(size).encode('ascii'))
-        fh.seek(0)
-        digest.update(fh.read(chunk))
-        if size > chunk:
-            fh.seek(max(chunk, size - chunk))
-            digest.update(fh.read(chunk))
+    buffer = memoryview(bytearray(64 * 1024))
+    with open(path, 'rb', buffering=0) as stream:
+        while count := stream.readinto(buffer):
+            _check_cancel(should_cancel)
+            digest.update(buffer[:count])
     _check_cancel(should_cancel)
     return digest.hexdigest()
 
 
-def _can_use_file_digest(frame):
-    from core.source_frames import SourceFrame
+def _can_use_file_digest(frame, *, allow_mapped_tiff=False):
+    from core.source_frames import SourceFrame, is_direct_rgb_tiff
 
     return (type(frame) is SourceFrame and not frame.transforms and not frame.raw_sensor_shape
             and frame.linear_metadata is None and frame.scale == 1.0
-            and bool(frame.path) and bool(frame.fingerprint))
+            and bool(frame.path) and bool(frame.fingerprint)
+            and (allow_mapped_tiff or not is_direct_rgb_tiff(frame)))
 
 
 def _build_source_fingerprint(frame, image, should_cancel, *, include_context=True):
-    """Build a SourceFingerprint, using fast file digest for unmodified file-backed SourceFrames."""
+    """Build a pixel identity or use encoded bytes for an unmodified file source."""
     use_file_digest = _can_use_file_digest(frame)
     path, page, file_stamp = _source_file_identity(frame)
     shape = tuple(image.shape)
     dtype_str = image.dtype.str
     context = _source_context(frame) if include_context or use_file_digest else ''
     if use_file_digest:
-        digest = _fast_file_digest(path, shape, dtype_str, page, file_stamp, should_cancel)
+        digest = _file_digest(path, should_cancel)
         identity = SourceFingerprint(shape, dtype_str, digest, path, page, file_stamp,
                                      context, digest_kind='file')
     else:
@@ -288,13 +282,12 @@ class SourceFingerprint:
                 raise OSError(f'Source changed since alignment: {self.path}')
 
     def _validate_file_digest(self, should_cancel):
-        if _fast_file_digest(self.path, self.shape, self.dtype, self.page, self.file_stamp,
-                             should_cancel) != self.sha256:
-            raise ValueError('Alignment source file changed')
+        if _file_digest(self.path, should_cancel) != self.sha256:
+            raise ValueError('Alignment source pixels changed')
         self.validate_file()
 
     def _validate_file_descriptor(self, source, should_cancel):
-        if (not _can_use_file_digest(source) or tuple(source.shape) != self.shape
+        if (not _can_use_file_digest(source, allow_mapped_tiff=True) or tuple(source.shape) != self.shape
                 or np.dtype(source.dtype).str != self.dtype
                 or _source_file_identity(source) != (self.path, self.page, self.file_stamp)
                 or (self.context and _source_context(source) != self.context)):

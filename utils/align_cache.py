@@ -441,7 +441,7 @@ def save_aligned(folder: str, filenames: List[str], aligned_images: List[np.ndar
         pass
 
 
-PLAN_CACHE_VERSION = 2
+PLAN_CACHE_VERSION = 3  # Complete encoded-file SHA-256 replaces sampled file digests.
 
 
 def _plan_backend(identity):

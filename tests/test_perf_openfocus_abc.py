@@ -360,13 +360,10 @@ def test_get_transfer_queue_caches_and_invalidates():
 
 
 def test_gpu_separable_detail_smooth_and_confidence_hist_bit_exact():
-    try:
-        import pyopencl as cl
-    except Exception:
-        pytest.skip("pyopencl not available")
+    if not _openfocus_gpu.gpu_available():
+        pytest.skip("No OpenCL GPU is available")
+    import pyopencl as cl
     device = _openfocus_gpu._device(cl)
-    if device is None:
-        pytest.skip("OpenCL GPU not available")
     ctx, queue, _, _ = _openfocus_gpu._get_or_build_merge_program(cl, device)
     _, dk, _, _, _ = _openfocus_gpu._get_or_build_depth_program(cl, device, ctx)
 

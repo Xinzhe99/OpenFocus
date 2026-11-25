@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 from contextlib import nullcontext
 
@@ -296,6 +297,9 @@ def test_jpeg_ecc_dct_fast_path_and_file_fingerprint_roundtrip(tmp_path, monkeyp
     assert len(out) == 2 and len(plan.stages) == 1
     assert cache_entries == 0
     assert all(src_fp.digest_kind == 'file' for src_fp in plan.stages[0].sources)
+    for frame, identity in zip(frames, plan.stages[0].sources, strict=True):
+        with open(frame.path, 'rb') as stream:
+            assert identity.sha256 == hashlib.sha256(stream.read()).hexdigest()
     assert report[1]['status'] == 'aligned'
     err = _corner_error(np.linalg.inv(report[1]['transform']), M_true, 2000, 1500)
     assert err < 0.25

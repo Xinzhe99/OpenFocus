@@ -561,15 +561,16 @@ def _check_cancel(should_cancel):
         raise RegistrationCancelled()
 
 
-def _perspective_source_file(frame, should_cancel):
+def _perspective_source_file(frame, should_cancel, *, sha256=None):
     """Build a file-backed SourceFingerprint without decoding full-resolution pixels."""
-    from core.openfocus_alignment import (SourceFingerprint, _fast_file_digest,
-                                        _source_context, _source_file_identity)
+    from core.openfocus_alignment import (SourceFingerprint, _file_digest,
+                                          _source_context, _source_file_identity)
     path, page, stamp = _source_file_identity(frame)
     dtype_str = np.dtype(frame.dtype).str
     shape = tuple(frame.shape)
-    digest = _fast_file_digest(path, shape, dtype_str, page, stamp, should_cancel)
-    source = SourceFingerprint(shape, dtype_str, digest, path, page,
+    if sha256 is None:
+        sha256 = _file_digest(path, should_cancel)
+    source = SourceFingerprint(shape, dtype_str, sha256, path, page,
                                stamp, _source_context(frame), digest_kind='file')
     source.validate_file()
     return source
@@ -643,6 +644,10 @@ def _decode_jpeg_ecc(source, plan, should_cancel):
         if len(encoded) != plan.encoded_bytes:
             raise OSError(f'Source changed since it was opened; reopen the stack: {source.path}')
         _check_cancel(should_cancel)
+        # Bind the fingerprint to the same encoded bytes used for estimation.
+        identity = _perspective_source_file(source, should_cancel,
+                                            sha256=hashlib.sha256(encoded).hexdigest())
+        _check_cancel(should_cancel)
         gray = cv2.imdecode(np.frombuffer(encoded, dtype=np.uint8),
                             plan.flags | cv2.IMREAD_IGNORE_ORIENTATION | cv2.IMREAD_ANYDEPTH)
         del encoded
@@ -653,7 +658,7 @@ def _decode_jpeg_ecc(source, plan, should_cancel):
         if gray.shape[::-1] != plan.size:
             gray = cv2.resize(gray, plan.size, interpolation=cv2.INTER_AREA)
         _check_cancel(should_cancel)
-    return gray
+    return gray, identity
 
 
 def _perspective_source(frame, image, should_cancel):
@@ -1811,9 +1816,8 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
         jpeg = (stage_budget.jpeg_inputs.get(id(source)) if stage_budget is not None
                 else _plan_jpeg_ecc(source, downscale_width))
         if jpeg is not None:
-            pixels = _decode_jpeg_ecc(source, jpeg, should_cancel)
+            pixels, identity = _decode_jpeg_ecc(source, jpeg, should_cancel)
             scale = jpeg.scale
-            identity = _perspective_source_file(source, should_cancel)
         else:
             # Replace each intermediate so a deferred full-size decode can be
             # released as soon as resize or color conversion no longer needs it.
