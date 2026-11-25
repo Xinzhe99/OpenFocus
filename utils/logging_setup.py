@@ -119,20 +119,21 @@ def _prune_old_logs(directory):
     cutoff = time.time() - RETENTION_DAYS * 86400
     active = {os.getpid(): True}
     try:
-        for path in directory.iterdir():
-            match = _SESSION_FILE.fullmatch(path.name)
-            if not match or path.is_symlink():
-                continue
-            try:
-                if path.stat().st_mtime >= cutoff:
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                match = _SESSION_FILE.fullmatch(entry.name)
+                if not match or entry.is_symlink():
                     continue
-                pid = int(match.group(1))
-                if pid not in active:
-                    active[pid] = _process_alive(pid)
-                if not active[pid]:
-                    path.unlink()
-            except OSError:
-                continue  # Retention cannot prevent the application starting.
+                try:
+                    if entry.stat(follow_symlinks=False).st_mtime >= cutoff:
+                        continue
+                    pid = int(match.group(1))
+                    if pid not in active:
+                        active[pid] = _process_alive(pid)
+                    if not active[pid]:
+                        os.unlink(entry.path)
+                except OSError:
+                    continue  # Retention cannot prevent the application starting.
     except OSError:
         pass
 
@@ -396,12 +397,13 @@ def all_log_files():
     directory = logs_dir()
     try:
         files = []
-        for path in directory.iterdir():
-            if (_SESSION_FILE.fullmatch(path.name) or re.fullmatch(r"openfocus\.log(?:\.\d+)?", path.name)) and path.is_file():
-                try:
-                    files.append((path.stat().st_mtime, path))
-                except OSError:
-                    continue
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                if (_SESSION_FILE.fullmatch(entry.name) or re.fullmatch(r"openfocus\.log(?:\.\d+)?", entry.name)) and entry.is_file():
+                    try:
+                        files.append((entry.stat().st_mtime, Path(entry.path)))
+                    except OSError:
+                        continue
         return [path for _, path in sorted(files, key=lambda pair: pair[0], reverse=True)]
     except OSError:
         return []

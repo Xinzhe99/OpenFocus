@@ -292,13 +292,12 @@ def _self_check(cl, device, program):
 
 def _verified_program(cl, device):
     global _program
-    from fusion_methods._openfocus_gpu import _build_cached_program
+    from fusion_methods._openfocus_gpu import _build_cached_program, _get_shared_context
 
+    context, queue = _get_shared_context(cl, device)
     key = _device_cache_key(device)
-    if _program is not None and _program[0] == key:
+    if _program is not None and _program[0] == key and _program[1][0] is context:
         return _program[1]
-    context = cl.Context(devices=[device])
-    queue = cl.CommandQueue(context)
     program = _build_cached_program(
         cl, device, context, _SOURCE, options=[f'-DREPAIR_LIMIT={_REPAIR_LIMIT}'],
     )
@@ -436,7 +435,9 @@ class ExactPerspectiveGpu:
                     try:
                         queue.finish()
                     except Exception:
+                        from fusion_methods._openfocus_gpu import _invalidate_shared_context
                         _program = None
+                        _invalidate_shared_context()
                 if isinstance(exc, RegistrationCancelled):
                     raise
                 self.close()

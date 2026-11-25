@@ -32,14 +32,15 @@ _PROGRAM_CACHE = None
 
 def _get_or_build_program(cl, device):
     global _PROGRAM_CACHE
-    from fusion_methods._openfocus_gpu import _PREVIEW_KERNEL, _build_filter_program, _device_cache_key
+    from fusion_methods._openfocus_gpu import (
+        _PREVIEW_KERNEL, _build_filter_program, _device_cache_key, _get_shared_context,
+    )
 
+    ctx, queue = _get_shared_context(cl, device)
     key = _device_cache_key(device)
     with _cache_lock:
-        if _PROGRAM_CACHE is not None and _PROGRAM_CACHE[0] == key:
+        if _PROGRAM_CACHE is not None and _PROGRAM_CACHE[0] == key and _PROGRAM_CACHE[1] is ctx:
             return _PROGRAM_CACHE[1:]
-        ctx = cl.Context(devices=[device])
-        queue = cl.CommandQueue(ctx, device=device)
         program, tiled_transpose = _build_filter_program(
             cl, device, ctx, _C_K + _PREVIEW_KERNEL.format(type='ushort'),
             options=['-cl-fp32-correctly-rounded-divide-sqrt'],
@@ -51,8 +52,11 @@ def _get_or_build_program(cl, device):
 
 def _invalidate_program_cache():
     global _PROGRAM_CACHE
+    from fusion_methods._openfocus_gpu import _invalidate_shared_context
+
     with _cache_lock:
         _PROGRAM_CACHE = None
+    _invalidate_shared_context()
 
 _C_K = r'''
 #pragma OPENCL FP_CONTRACT OFF

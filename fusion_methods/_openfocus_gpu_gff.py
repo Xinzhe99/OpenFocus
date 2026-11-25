@@ -599,14 +599,17 @@ def _device_cache_key(device):
 
 def _get_or_build_program(cl, device):
     global _PROGRAM_CACHE
+    from fusion_methods._openfocus_gpu import _build_cached_program, _get_shared_context
+
+    ctx, q = _get_shared_context(cl, device)
     key = _device_cache_key(device)
     with _cache_lock:
-        if _PROGRAM_CACHE is not None and _PROGRAM_CACHE[0] == key:
+        if _PROGRAM_CACHE is not None and _PROGRAM_CACHE[0] == key and _PROGRAM_CACHE[1] is ctx:
             return _PROGRAM_CACHE[1:]
-        ctx = cl.Context(devices=[device])
-        q = cl.CommandQueue(ctx, device=device)
-        prog = cl.Program(ctx, _GFF_K).build(
-            options=['-cl-fp32-correctly-rounded-divide-sqrt'])
+        prog = _build_cached_program(
+            cl, device, ctx, _GFF_K,
+            options=['-cl-fp32-correctly-rounded-divide-sqrt'],
+        )
         kernels = {name: cl.Kernel(prog, name) for name in _KERNEL_NAMES}
         _PROGRAM_CACHE = (key, ctx, q, kernels)
         return ctx, q, kernels
@@ -614,8 +617,11 @@ def _get_or_build_program(cl, device):
 
 def _invalidate_program_cache():
     global _PROGRAM_CACHE
+    from fusion_methods._openfocus_gpu import _invalidate_shared_context
+
     with _cache_lock:
         _PROGRAM_CACHE = None
+    _invalidate_shared_context()
 
 
 class GpuGff:

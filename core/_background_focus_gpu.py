@@ -89,13 +89,15 @@ def _band_pixels(device, frames, index_bytes):
 
 def _get_or_build_kernel(cl, device):
     """Return cached (ctx, queue, kernel) for this OpenCL device."""
+    from fusion_methods._openfocus_gpu import _build_cached_program, _get_shared_context
+
+    ctx, queue = _get_shared_context(cl, device)
     key = device.int_ptr
     cached = _PROGRAM_CACHE.get(key)
-    if cached is not None:
+    if cached is not None and cached[0] is ctx:
         return cached
-    ctx = cl.Context(devices=[device])
-    queue = cl.CommandQueue(ctx, device=device)
-    kernel = cl.Kernel(cl.Program(ctx, _KERNEL).build(), 'reduce_focus')
+    program = _build_cached_program(cl, device, ctx, _KERNEL)
+    kernel = cl.Kernel(program, 'reduce_focus')
     entry = (ctx, queue, kernel)
     _PROGRAM_CACHE[key] = entry
     return entry
@@ -130,6 +132,8 @@ def reduce_focus(energy, check_cancel):
         except Exception as exc:
             if device is not None:
                 _PROGRAM_CACHE.pop(device.int_ptr, None)
+            from fusion_methods._openfocus_gpu import _invalidate_shared_context
+            _invalidate_shared_context()
             raise GpuError('Could not initialize background focus reduction') from exc
         completed = False
         try:
@@ -146,6 +150,8 @@ def reduce_focus(energy, check_cancel):
                         cl.enqueue_copy(queue, array[start:start + count], buf)
                 except Exception as exc:
                     _PROGRAM_CACHE.pop(device.int_ptr, None)
+                    from fusion_methods._openfocus_gpu import _invalidate_shared_context
+                    _invalidate_shared_context()
                     raise GpuError('OpenCL background focus reduction failed') from exc
             completed = True
         finally:
@@ -153,6 +159,8 @@ def reduce_focus(energy, check_cancel):
                 queue.finish()
             except Exception as exc:
                 _PROGRAM_CACHE.pop(device.int_ptr, None)
+                from fusion_methods._openfocus_gpu import _invalidate_shared_context
+                _invalidate_shared_context()
                 if completed:
                     raise GpuError('OpenCL background focus synchronization failed') from exc
             finally:

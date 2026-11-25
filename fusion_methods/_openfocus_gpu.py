@@ -9,11 +9,13 @@ import os
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from threading import Event, Lock
+import weakref
 
 import numpy as np
 
 _device_lock = Lock()
 _cache_lock = Lock()
+_SHARED_CONTEXT = None
 _PROGRAM_CACHE = None
 _DEPTH_PROGRAM_CACHE = None
 
@@ -325,14 +327,55 @@ def _device_cache_key(device):
     )
 
 
+def _weak_ref(obj):
+    try:
+        return weakref.ref(obj)
+    except TypeError:
+        return lambda o=obj: o
+
+
+def _get_shared_context_locked(cl, device):
+    global _SHARED_CONTEXT
+    key = _device_cache_key(device)
+    ctx_cls = getattr(cl, 'Context', None)
+    queue_cls = getattr(cl, 'CommandQueue', None)
+    if _SHARED_CONTEXT is not None:
+        cached_key, cl_ref, dev_ref, ctx_cls_ref, queue_cls_ref, ctx, queue = _SHARED_CONTEXT
+        if (cached_key == key and cl_ref() is cl
+                and ctx_cls_ref() is ctx_cls and queue_cls_ref() is queue_cls
+                and (key[0] is not None or dev_ref() is device)):
+            return ctx, queue
+    try:
+        ctx = cl.Context([device])
+    except TypeError:
+        ctx = cl.Context(devices=[device])
+    queue = cl.CommandQueue(ctx, device=device)
+    _SHARED_CONTEXT = (
+        key, _weak_ref(cl), _weak_ref(device),
+        _weak_ref(ctx_cls), _weak_ref(queue_cls), ctx, queue,
+    )
+    return ctx, queue
+
+
+def _get_shared_context(cl, device):
+    """Return the process-wide OpenCL (context, queue) shared across GPU stages."""
+    with _cache_lock:
+        return _get_shared_context_locked(cl, device)
+
+
+def _invalidate_shared_context():
+    global _SHARED_CONTEXT
+    with _cache_lock:
+        _SHARED_CONTEXT = None
+
+
 def _get_or_build_merge_program(cl, device):
     global _PROGRAM_CACHE, _DEPTH_PROGRAM_CACHE
     key = _device_cache_key(device)
     with _cache_lock:
-        if _PROGRAM_CACHE is not None and _PROGRAM_CACHE[0] == key:
+        ctx, queue = _get_shared_context_locked(cl, device)
+        if _PROGRAM_CACHE is not None and _PROGRAM_CACHE[0] == key and _PROGRAM_CACHE[1] is ctx:
             return _PROGRAM_CACHE[1:]
-        ctx = cl.Context(devices=[device])
-        queue = cl.CommandQueue(ctx, device=device)
         program = _build_cached_program(cl, device, ctx, _MERGE_KERNEL)
         kernels = {name: cl.Kernel(program, name) for name in _MERGE_KERNEL_NAMES}
         _PROGRAM_CACHE = (key, ctx, queue, program, kernels)
@@ -358,10 +401,11 @@ def _get_or_build_depth_program(cl, device, context):
 
 
 def _invalidate_program_cache():
-    global _PROGRAM_CACHE, _DEPTH_PROGRAM_CACHE
+    global _PROGRAM_CACHE, _DEPTH_PROGRAM_CACHE, _SHARED_CONTEXT
     with _cache_lock:
         _PROGRAM_CACHE = None
         _DEPTH_PROGRAM_CACHE = None
+        _SHARED_CONTEXT = None
 
 _MERGE_KERNEL = r'''
 __kernel void activity(__global const ushort *gray, __global const ushort *fine,
