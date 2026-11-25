@@ -45,6 +45,38 @@ void depth_axis_iir_y_guided_avx2(
     int64_t h, int64_t left, int64_t cols, int64_t cnt,
     uint32_t tm, uint32_t tl);
 
+void depth_axis_iir_x_unguided_avx2(
+    const uint16_t* src, int64_t src_sy,
+    uint16_t* out, int64_t out_sy,
+    int64_t start, int64_t stop, int64_t w, int64_t cnt,
+    uint32_t q, uint32_t t);
+
+void depth_axis_iir_x_guided_avx2(
+    const uint16_t* src, int64_t src_sy,
+    const uint16_t* guide, int64_t guide_sy,
+    uint16_t* out, int64_t out_sy,
+    int64_t start, int64_t stop, int64_t w, int64_t cnt,
+    uint32_t tm, uint32_t tl);
+
+void burt_laplacian_row_i32_avx2(
+    const int32_t* gray_row, const int32_t* r0, const int32_t* r1,
+    int32_t* out_row, int64_t width, int64_t fine_width, int32_t wy0, int32_t wy1);
+
+void select_a_blend_pair_i32_avx2(
+    const int32_t* r0, const int32_t* r1, uint32_t* dst,
+    int64_t count, uint32_t wy0, uint32_t wy1);
+
+int select_a_with_bg_packed_row_avx2(
+    int32_t* b_row, const int32_t* response, int64_t width,
+    const void* irow, bool src_u8, void* orow, bool dst_u16,
+    int64_t is1, int64_t is2, int64_t os1, int64_t os2,
+    float* bg_row, uint32_t* st_row,
+    int64_t scale, bool first, int state);
+
+void pyr_down_horiz_raw_3c_row_avx2(
+    const void* sr, bool raw_is_u8, float* h_row, int64_t ix_stop,
+    float factor, float d0, float d1);
+
 void select_a_combine_m2_to_m5_avx2(
     const uint32_t* da2, const uint32_t* db2, uint32_t* m2, uint32_t wy2, uint32_t fy2,
     const uint32_t* da3, const uint32_t* db3, uint32_t* m3, uint32_t wy3, uint32_t fy3,

@@ -358,7 +358,9 @@ class GpuA:
     """Device-resident OpenFocus A fusion with exact integer Burt responses."""
 
     def __init__(self):
-        from fusion_methods._openfocus_gpu import GpuError, _device, opencl_device_name
+        from fusion_methods._openfocus_gpu import (
+            GpuError, _device, _get_transfer_queue, opencl_device_name,
+        )
         try:
             import pyopencl as cl
             device = _device(cl)
@@ -369,21 +371,26 @@ class GpuA:
             self.device_name = opencl_device_name(device)
             self.mf = cl.mem_flags
             self.ctx, self.q, self.k = _get_or_build_program(cl, device)
+            self.tq = _get_transfer_queue(cl, device, self.ctx)
         except GpuError:
             raise
         except Exception as exc:
             raise GpuError('OpenCL GPU A initialization failed') from exc
 
-    def _run(self, kernel, gsize, *args):
-        return kernel(self.q, gsize if isinstance(gsize, tuple) else (gsize,), None, *args)
+    def _run(self, kernel, gsize, *args, wait_for=None):
+        from fusion_methods._openfocus_gpu import _enqueue_kernel
+        return _enqueue_kernel(
+            kernel, self.q, gsize if isinstance(gsize, tuple) else (gsize,), None,
+            *args, wait_for=wait_for,
+        )
 
     def _drain_queue(self):
-        q = getattr(self, 'q', None)
-        if q is not None:
-            try:
-                q.finish()
-            except Exception:
-                _invalidate_program_cache(getattr(self, 'ctx', None))
+        for q in (getattr(self, 'tq', None), getattr(self, 'q', None)):
+            if q is not None:
+                try:
+                    q.finish()
+                except Exception:
+                    _invalidate_program_cache(getattr(self, 'ctx', None))
 
     def fuse(self, frames, img_resize, radius, should_cancel=None, progress_callback=None,
              *, live_preview=None):
@@ -418,6 +425,7 @@ class GpuA:
                 raise
         finally:
             self.k = None
+            self.tq = None
             self.q = None
             self.ctx = None
             _device_lock.release()
@@ -500,10 +508,12 @@ class GpuA:
 
         gray_bufs = lap_buf = best_buf = out_buf = acc_buf = wt_buf = stat_buf = dst_buf = None
         src_bufs = ()
-        reader = prepared_iter = None
+        reader = prepared_iter = uploader = None
         in_flight = False
         try:
-            from fusion_methods._openfocus_gpu import _prefetch_window, _wait_event
+            from fusion_methods._openfocus_gpu import (
+                _PinnedUploader, _event_wait_list, _prefetch_window, _wait_event,
+            )
 
             gray_bufs = [self.cl.Buffer(self.ctx, self.mf.READ_WRITE, size) for size in gray_sizes]
             lap_buf = (self.cl.Buffer(self.ctx, self.mf.READ_WRITE, lap_bytes)
@@ -528,6 +538,11 @@ class GpuA:
                 self.cl.Buffer(self.ctx, self.mf.READ_ONLY, src_bytes)
                 for _ in range(2 if ping_pong else 1)
             )
+            if ping_pong:
+                uploader = _PinnedUploader(
+                    self.cl, self.ctx, self.q, getattr(self, 'tq', None),
+                    2, src_bytes,
+                )
             if live_preview is not None:
                 reader = _PreviewPlaneReader(self.cl, self.ctx, self.q, self.k['sample_focus_plane'],
                                              (height, width), np.int32)
@@ -559,22 +574,33 @@ class GpuA:
             )
             slot_events = [None, None]
             slot_hosts = [None, None]
+            cancel_fn = lambda: _check_cancel(should_cancel)
             for index, (host_src, src_is_u8, u8_gray, bgr_rev) in prepared_iter:
                 slot = index & 1 if ping_pong else 0
-                if slot_events[slot] is not None:
-                    _wait_event(slot_events[slot], lambda: _check_cancel(should_cancel))
+                prev_slot_ev = slot_events[slot]
+                if prev_slot_ev is not None and (uploader is None or not uploader.separate_queue):
+                    _wait_event(prev_slot_ev, cancel_fn)
                     slot_events[slot] = None
                     slot_hosts[slot] = None
+                    prev_slot_ev = None
                 _check_cancel(should_cancel)
                 src_buf = src_bufs[slot]
                 in_flight = True
-                upload = self.cl.enqueue_copy(self.q, src_buf, host_src, is_blocking=False)
+                if uploader is not None:
+                    upload = uploader.upload(
+                        slot, src_buf, host_src,
+                        wait_for=_event_wait_list(prev_slot_ev), cancel=cancel_fn,
+                    )
+                    wait_upload = _event_wait_list(upload) if uploader.separate_queue else None
+                else:
+                    upload = self.cl.enqueue_copy(self.q, src_buf, host_src, is_blocking=False)
+                    wait_upload = None
                 _check_cancel(should_cancel)
                 rh, rw = pyr_shapes[1]
                 down2 = self.k['a_down2_u8'] if src_is_u8 else self.k['a_down2_u16']
                 self._run(down2, (rw, rh), src_buf, gray_bufs[0], np.int32(height),
                           np.int32(width), np.int32(rh), np.int32(rw), np.int32(channels),
-                          np.int32(u8_gray))
+                          np.int32(u8_gray), wait_for=wait_upload)
 
                 offset = 0
                 gray_slot = 0
@@ -604,10 +630,14 @@ class GpuA:
                     np.int32(index == 0), np.int32(u8_gray),
                 )
                 if ping_pong and last_event is not None and hasattr(last_event, 'wait'):
+                    if hasattr(self.q, 'flush'):
+                        self.q.flush()
                     slot_events[slot] = last_event
-                    slot_hosts[slot] = (host_src, upload)
+                    slot_hosts[slot] = (
+                        (upload,) if (uploader is not None and uploader.pinned) else (host_src, upload)
+                    )
                     if reader is not None and live_preview.tracks():
-                        _wait_event(last_event, lambda: _check_cancel(should_cancel))
+                        _wait_event(last_event, cancel_fn)
                         slot_events[slot] = None
                         slot_hosts[slot] = None
                         sample = reader.read(best_buf, live_preview)
@@ -626,13 +656,18 @@ class GpuA:
                     progress_callback(index + 1, total)
 
             if ping_pong:
+                if uploader is not None:
+                    uploader.finish(cancel_fn)
                 for slot in (0, 1):
                     if slot_events[slot] is not None:
-                        _wait_event(slot_events[slot], lambda: _check_cancel(should_cancel))
+                        _wait_event(slot_events[slot], cancel_fn)
                         slot_events[slot] = None
                     slot_hosts[slot] = None
                 self.q.finish()
                 in_flight = False
+            if uploader is not None:
+                uploader.close()
+                uploader = None
 
             _release_buffers(src_bufs, gray_bufs, lap_buf)
             src_bufs = gray_bufs = lap_buf = None
@@ -661,6 +696,8 @@ class GpuA:
                 self._drain_queue()
             raise
         finally:
+            if uploader is not None:
+                uploader.close()
             if prepared_iter is not None:
                 prepared_iter.close()
             if reader is not None:

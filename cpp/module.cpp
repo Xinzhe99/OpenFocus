@@ -1108,4 +1108,9 @@ NB_MODULE(_openfocus_native, m) {
     m.def("of_align_warp_translation_region_int_rows", &of_align_warp_translation_region_int_rows_py);
     m.def("pack_png_scanlines", &pack_png_scanlines_py,
           nb::arg("src"), nb::arg("dst"), nb::arg("num_threads") = 8);
+    m.def("_shutdown_thread_pool", &openfocus::shutdown_thread_pool);
+    try {
+        nb::module_::import_("atexit").attr("register")(m.attr("_shutdown_thread_pool"));
+    } catch (...) {
+    }
 }
