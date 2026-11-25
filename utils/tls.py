@@ -56,14 +56,60 @@ def create_ssl_context() -> ssl.SSLContext:
     return ctx
 
 
+def _is_supported_http_proxy(value: str) -> bool:
+    stripped = value.strip()
+    if not stripped:
+        return False
+    if "://" in stripped:
+        scheme = stripped.split("://", 1)[0].strip().lower()
+        return scheme in ("http", "https")
+    return True
+
+
+def _sanitized_proxies(proxies=None) -> dict:
+    raw = urllib.request.getproxies() if proxies is None else proxies
+    return {
+        k.lower(): v
+        for k, v in raw.items()
+        if isinstance(k, str)
+        and isinstance(v, str)
+        and k.lower() in ("http", "https")
+        and _is_supported_http_proxy(v)
+    }
+
+
+def _has_unsupported_http_proxy(proxies: dict) -> bool:
+    return any(
+        isinstance(k, str)
+        and k.lower() in ("http", "https")
+        and (not isinstance(v, str) or not _is_supported_http_proxy(v))
+        for k, v in proxies.items()
+    )
+
+
+def proxy_handler(proxies=None) -> urllib.request.ProxyHandler:
+    """Return a ProxyHandler retaining only HTTP/HTTPS proxy entries."""
+    return urllib.request.ProxyHandler(_sanitized_proxies(proxies))
+
+
 def https_handler() -> urllib.request.HTTPSHandler:
     """Return an urllib HTTPSHandler using OpenFocus's verified TLS context."""
     return urllib.request.HTTPSHandler(context=create_ssl_context())
 
 
+def https_handlers() -> tuple:
+    """Return sanitized proxy and verified HTTPS handlers for urllib build_opener."""
+    return (proxy_handler(), https_handler())
+
+
 def open_url(opener_fn, request, *, timeout):
-    """Open a Request, passing the bundled TLS context when calling stdlib urlopen."""
+    """Open a Request, using sanitized proxies and the bundled TLS context."""
     if opener_fn is _STDLIB_URLOPEN:
+        raw_proxies = urllib.request.getproxies()
+        if _has_unsupported_http_proxy(raw_proxies):
+            return urllib.request.build_opener(
+                proxy_handler(raw_proxies), https_handler()
+            ).open(request, timeout=timeout)
         return opener_fn(request, timeout=timeout, context=create_ssl_context())
     return opener_fn(request, timeout=timeout)
 
