@@ -361,36 +361,44 @@ class TokenStore:
         except (OSError, ValueError, UnicodeError, subprocess.SubprocessError):
             return None
 
+    def _write_keychain(self, raw):
+        encoded = base64.b64encode(raw).decode("ascii")
+        command = ('add-generic-password -U -s "OpenFocus Account" -a '
+                   + self._keychain_account + ' -w ' + encoded + '\n')
+        try:
+            subprocess.run(["/usr/bin/security", "-i"], input=command.encode(),
+                           capture_output=True, timeout=10, check=True)
+        except (OSError, subprocess.SubprocessError):
+            raise AccountError("storage") from None
+
     def save(self, session):
         if not _valid_session(session):
             raise AccountError("invalid_response")
         raw = json.dumps(session, separators=(",", ":"), allow_nan=False).encode("utf-8")
         if self._keychain:
-            encoded = base64.b64encode(raw).decode("ascii")
-            command = 'add-generic-password -U -s "OpenFocus Account" -a ' + self._keychain_account + ' -w ' + encoded + '\n'
-            for attempt in range(2):
+            self._write_keychain(raw)
+            previous = self.load()
+            if previous == session:
+                return
+            if previous is None:
+                raise AccountError("storage")
+            # An interactive update can succeed while leaving an older item in place.
+            try:
+                previous_raw = json.dumps(previous, separators=(",", ":"), allow_nan=False).encode("utf-8")
+            except (ValueError, UnicodeError):
+                raise AccountError("storage") from None
+            self.clear()
+            try:
+                self._write_keychain(raw)
+                if self.load() != session:
+                    raise AccountError("storage")
+            except AccountError:
                 try:
-                    result = subprocess.run(
-                        ["/usr/bin/security", "-i"],
-                        input=command.encode(),
-                        capture_output=True,
-                        timeout=10,
-                        check=True,
-                    )
-                    if result.returncode == 0 and self.load() == session:
-                        return
-                except (OSError, subprocess.SubprocessError):
+                    self._write_keychain(previous_raw)
+                except AccountError:
                     pass
-                if attempt == 0:
-                    try:
-                        subprocess.run(
-                            ["/usr/bin/security", "delete-generic-password", "-s", "OpenFocus Account", "-a", self._keychain_account],
-                            capture_output=True,
-                            timeout=10,
-                        )
-                    except (OSError, subprocess.SubprocessError):
-                        pass
-            raise AccountError("storage")
+                raise
+            return
         try:
             if os.name == "nt":
                 raw = _dpapi(raw)
@@ -477,6 +485,10 @@ class _CallbackServer(http.server.ThreadingHTTPServer):
     daemon_threads = True
     block_on_close = False
 
+    def __init__(self, server_address, handler, bind_and_activate=True):
+        self.result_lock = threading.Lock()
+        super().__init__(server_address, handler, bind_and_activate)
+
     def server_bind(self):
         # HTTPServer resolves the bound IP through getfqdn(), which can block
         # on reverse DNS even though this listener only accepts loopback.
@@ -537,12 +549,18 @@ class _HandoffHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        if not self._allowed() or self.server.proof_served:
+        if not self._allowed():
             self.send_error(403)
             return
-        self.server.proof_served = True
-        body = json.dumps({"proof": self.server.handoff_proof}, separators=(",", ":")).encode("ascii")
-        self.server.handoff_proof = None
+        with self.server.result_lock:
+            proof = self.server.handoff_proof
+            self.server.handoff_proof = None
+            if proof is not None:
+                self.server.proof_served = True
+        if proof is None:
+            self.send_error(403)
+            return
+        body = json.dumps({"proof": proof}, separators=(",", ":")).encode("ascii")
         self.send_response(200)
         self._cors()
         self.send_header("Content-Type", "application/json")
@@ -579,13 +597,21 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
                        "account_disabled", "sign_in_cancelled", "sign_in_expired")
             if expected_state is not None:
                 allowed += ("not_signed_in",)
-            self.server.error = errors[0] if not codes and len(errors) == 1 and errors[0] in allowed else "provider_error"
-            outcome = "not_signed_in" if self.server.error == "not_signed_in" else "error"
+            error = errors[0] if not codes and len(errors) == 1 and errors[0] in allowed else "provider_error"
+            code = None
+            outcome = "not_signed_in" if error == "not_signed_in" else "error"
         elif len(codes) == 1 and codes[0] and len(codes[0]) <= 4096:
-            self.server.code = codes[0]
+            code, error = codes[0], None
             outcome = "received"
         else:
             self.send_error(400)
+            return
+        with self.server.result_lock:
+            accepted = self.server.code is None and self.server.error is None
+            if accepted:
+                self.server.code, self.server.error = code, error
+        if not accepted:
+            self.send_error(409)
             return
         from utils._account_callback_page import render
 

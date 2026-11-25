@@ -247,10 +247,12 @@ def test_proxy_handler_strips_socks_and_preserves_http_proxies(monkeypatch):
     assert any(isinstance(h, urllib.request.HTTPSHandler) for h in seen_handlers)
 
 
-def test_keychain_save_deletes_and_retries_on_stale_acl(monkeypatch, tmp_path):
+@pytest.mark.parametrize("replacement_succeeds", [True, False])
+def test_keychain_recovers_stale_updates(monkeypatch, tmp_path, replacement_succeeds):
     import base64
     import json
     import shlex
+    import subprocess
 
     stale_session = {"token": "old-token", "token_type": "Bearer", "expires_at": 9999999999, "user": {"id": "user"}}
     new_session = {"token": "new-token", "token_type": "Bearer", "expires_at": 9999999999, "user": {"id": "user"}}
@@ -266,6 +268,8 @@ def test_keychain_save_deletes_and_retries_on_stale_acl(monkeypatch, tmp_path):
             encoded = parsed[parsed.index("-w") + 1]
             assert "new-token" not in " ".join(args)
             if state["deleted"]:
+                if not replacement_succeeds and encoded != stale_encoded:
+                    raise subprocess.TimeoutExpired(args, 10)
                 state["encoded"] = encoded
             return SimpleNamespace(returncode=0, stdout=b"")
         if "find-generic-password" in args:
@@ -281,17 +285,60 @@ def test_keychain_save_deletes_and_retries_on_stale_acl(monkeypatch, tmp_path):
     monkeypatch.setenv("OPENFOCUS_DATA_DIR", str(tmp_path))
 
     store = account_client.TokenStore()
-    store.save(new_session)
+    if replacement_succeeds:
+        store.save(new_session)
+        assert store.load() == new_session
+    else:
+        with pytest.raises(account_client.AccountError, match="storage"):
+            store.save(new_session)
+        assert store.load() == stale_session
     assert state["deleted"] is True
-    assert store.load() == new_session
     assert any("delete-generic-password" in cmd for cmd in commands)
+
+
+@pytest.mark.parametrize("failure", ["write", "readback"])
+def test_keychain_timeout_preserves_existing_session(monkeypatch, tmp_path, failure):
+    import base64
+    import json
+    import subprocess
+
+    old = {"token": "old-token", "token_type": "Bearer", "expires_at": 9999999999, "user": {"id": "user"}}
+    new = {**old, "token": "new-token"}
+    failed = False
+
+    def security(args, **kwargs):
+        nonlocal failed
+        if args[-1] == "-i" and failure == "readback":
+            return SimpleNamespace(returncode=0)
+        if "find-generic-password" in args and failed:
+            return SimpleNamespace(stdout=base64.b64encode(json.dumps(old).encode("utf-8")))
+        assert "delete-generic-password" not in args
+        failed = True
+        raise subprocess.TimeoutExpired(args, 10)
+
+    monkeypatch.setattr(account_client.sys, "platform", "darwin")
+    monkeypatch.setattr(account_client.subprocess, "run", security)
+    monkeypatch.setenv("OPENFOCUS_DATA_DIR", str(tmp_path))
+    store = account_client.TokenStore()
+    with pytest.raises(account_client.AccountError, match="storage"):
+        store.save(new)
+    assert store.load() == old
 
 
 def test_callback_server_handles_callback_while_idle_preconnect_open():
     import threading
-    import time
 
-    with account_client._CallbackServer(("127.0.0.1", 0), account_client._CallbackHandler) as server:
+    first_accepted = threading.Event()
+
+    class Listener(account_client._CallbackServer):
+        def get_request(self):
+            connection, address = super().get_request()
+            connection.settimeout(10)
+            first_accepted.set()
+            return connection, address
+
+
+    with Listener(("127.0.0.1", 0), account_client._CallbackHandler) as server:
         server.code = None
         server.error = None
         server.timeout = 0.2
@@ -305,12 +352,10 @@ def test_callback_server_handles_callback_while_idle_preconnect_open():
         thread.start()
         idle_preconnect = socket.create_connection(("127.0.0.1", server.server_port), timeout=2)
         try:
-            started = time.monotonic()
+            assert first_accepted.wait(timeout=4)
             opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-            with opener.open(f"http://127.0.0.1:{server.server_port}/callback?code=concurrent-ok", timeout=2) as response:
-                elapsed = time.monotonic() - started
+            with opener.open(f"http://127.0.0.1:{server.server_port}/callback?code=concurrent-ok", timeout=4) as response:
                 assert response.status == 200
-            assert elapsed < 0.8
             assert server.code == "concurrent-ok"
         finally:
             stop.set()
