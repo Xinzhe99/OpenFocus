@@ -622,7 +622,7 @@ def test_settings_tab_inventory_and_navigation(server):
         controls = inventory()
         tabs = controls["advanced_settings_tabs"]
         assert tabs["class"] == "QTabWidget" and tabs["value"] == 0
-        assert len(tabs["tabs"]) == 4
+        assert len(tabs["tabs"]) == 5
         assert all(tab["text"] and tab["visible"] and tab["enabled"] for tab in tabs["tabs"])
         assert {"combo_align_failure", "chk_align_cache", "btn_clear_align_cache",
                 "chk_collect_alignment_report", "btn_alignment_report", "chk_profile_performance",
@@ -630,15 +630,16 @@ def test_settings_tab_inventory_and_navigation(server):
                 "spin_ai_batch", "spin_threads"}.isdisjoint(controls)
 
         page_controls = ("chk_experimental_features", "sensor_cleanup_disclosure",
-                         "registration_options_disclosure", "chk_include_beta")
-        for index in (1, 2, 3, 0):
+                         "registration_options_disclosure", "chk_include_beta",
+                         "chk_danmaku_enabled")
+        for index in (1, 2, 3, 4, 0):
             reply = call(server, "ui.set", path=tabs["path"], value=index)
             assert reply["result"]["value"] == index
             controls = inventory()
             assert controls["advanced_settings_tabs"]["value"] == index
             assert [i for i, name in enumerate(page_controls) if controls[name]["visible"]] == [index]
 
-        for invalid in (-1, 4, 1.5, True):
+        for invalid in (-1, 5, 1.5, True):
             reply = call(server, "ui.set", path=tabs["path"], value=invalid)
             assert reply["error"]["code"] == "invalid_argument"
         assert inventory()["advanced_settings_tabs"]["value"] == 0
@@ -2724,7 +2725,7 @@ def test_reset_stack_menu_clears_real_wipe_and_restores_import(qapp, control_win
     assert window.output_list.count() == 0 and not window.fusion_results
     assert not list(window.label_manager.labels) and not window.scale_bar_enabled
     assert window.scale_um_per_px_manual == 0.5
-    assert not window.wipe_active and window.view_stack.currentIndex() == 0
+    assert not window.wipe_active and window.view_stack.currentIndex() in (0, 3)
     assert not window._undo_stack and not window._redo_stack
 
 

@@ -84,6 +84,17 @@ def live_view(qapp, monkeypatch):
     panel.widget.deleteLater()
 
 
+@pytest.mark.parametrize('method', ['openfocus_a', 'openfocus_b', 'openfocus_c'])
+def test_openfocus_abc_live_preview_disabled_for_gallery_showcase(live_view, method):
+    """Spec 3.1a: A/B/C process live visualization stays disabled so Gallery showcase owns wait time."""
+    manager, panel, _ = live_view
+    window = manager.window
+    window.set_fusion_method(method)
+    assert manager.start_render() == 'started'
+    assert manager._live_preview_timer is None
+    assert panel.view_stack.currentWidget() is not panel.live_preview_page
+
+
 @pytest.mark.parametrize('outcome', ['finish', 'stale', 'cancel', 'error'])
 def test_live_canvas_keeps_previews_out_of_output_history(live_view, outcome):
     manager, panel, previous = live_view
@@ -91,6 +102,10 @@ def test_live_canvas_keeps_previews_out_of_output_history(live_view, outcome):
     page, stack = panel.live_preview_page, panel.view_stack
     normal_page = stack.currentWidget()
     assert manager.start_render() == 'started'
+    # Legacy live preview is commented out by default; explicitly activate the
+    # preserved helper to verify dismiss_live_preview() and live_preview_page.
+    manager._render_context['live_source_rows'] = (0, 1)
+    manager._start_live_preview()
     worker = manager.worker
     gray = bytes([135]) * 6
     frames = iter([None, (gray, 3, 2, 1, 2, False), (gray, 3, 2, 2, 2, True)])
@@ -171,6 +186,8 @@ def test_live_preview_follows_included_layers_after_ecc_and_history_browsing(liv
     window.output_list.setCurrentRow(1)
     window.output_list.currentRowChanged.connect(manager.inspect_previous_output)
     assert manager.start_render(confirmed=True) == 'started'
+    manager._render_context['live_source_rows'] = (2, 0)
+    manager._start_live_preview()
 
     gray = bytes([80]) * 6
     frames = iter((None, (gray, 3, 2, 1, 2, False), (gray, 3, 2, 2, 2, False),
@@ -221,6 +238,8 @@ def test_switching_to_wipe_dismisses_live_preview(live_view):
     window._update_wipe_images = lambda: None
 
     assert manager.start_render() == 'started'
+    manager._render_context['live_source_rows'] = (0, 1)
+    manager._start_live_preview()
     manager.worker.take_live_preview = lambda: (bytes(6), 3, 2, 1, 2, False)
     manager._poll_live_preview()
     assert panel.view_stack.currentWidget() is panel.live_preview_page
