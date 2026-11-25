@@ -93,9 +93,14 @@ class AlgorithmParameterPanel(QWidget):
             raise ValueError(f"Unknown parameters: {', '.join(sorted(unknown))}")
         resolved = {spec.key: validate_parameter(spec, supplied.get(spec.key, spec.default))
                     for spec in specs}
-        self._hidden_values = {spec.key: resolved[spec.key] for spec in specs
-                               if spec.key in self._hidden_parameters}
-        specs = tuple(spec for spec in specs if spec.key not in self._hidden_parameters)
+        self._hidden_values = {
+            spec.key: resolved[spec.key] for spec in specs
+            if spec.key in self._hidden_parameters or spec.hint_key == 'label_of_smoothing_a_hint'
+        }
+        specs = tuple(
+            spec for spec in specs
+            if spec.key not in self._hidden_parameters and spec.hint_key != 'label_of_smoothing_a_hint'
+        )
         if specs == self._specs:
             for spec in specs:
                 editor = self.editors[spec.key]

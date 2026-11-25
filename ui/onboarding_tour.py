@@ -117,8 +117,16 @@ def _try_render_action(tour: "OnboardingTour") -> None:
         btn.click()
 
 
+def _has_compare_output(window: QWidget) -> bool:
+    return (
+        getattr(window, "fusion_result", None) is not None
+        or bool(getattr(window, "fusion_results", None))
+        or bool(getattr(window, "registration_results", None))
+    )
+
+
 def _try_toggle_wipe_action(tour: "OnboardingTour") -> None:
-    if not tour.is_active:
+    if not tour.is_active or not _has_compare_output(tour.window):
         return
     btn = getattr(tour.window, "btn_wipe", None)
     if btn is not None and not sip.isdeleted(btn) and btn.isEnabled():
@@ -443,6 +451,7 @@ class OnboardingTour(QObject):
         self._active = False
         self._completed_keys: set[str] = set()
         self._seen_render_result = None
+        self._busy_rendering = False
         self._backdrop: Optional[_SpotlightBackdrop] = None
         self._card: Optional[_CoachCard] = None
         self._connections: list[tuple[object, object]] = []
@@ -551,6 +560,7 @@ class OnboardingTour(QObject):
 
     def stop(self) -> None:
         self._active = False
+        self._busy_rendering = False
         self._ui_timer.stop()
         self._geometry_timer.stop()
         self._auto_advance_timer.stop()
@@ -614,6 +624,9 @@ class OnboardingTour(QObject):
     def reapply_theme(self) -> None:
         self._sync_ui()
 
+    def retranslate(self) -> None:
+        self._sync_ui()
+
     def _current_theme(self) -> str:
         return getattr(self.window, "ui_theme", "dark") or "dark"
 
@@ -635,10 +648,42 @@ class OnboardingTour(QObject):
         self._connect(trans, "languageChanged", self._sync_ui)
         self._connect(getattr(self.window, "btn_render", None), "clicked", self._queue_ui_sync)
         self._connect(getattr(self.window, "btn_wipe", None), "toggled", self._queue_ui_sync)
+        manager = getattr(self.window, "render_manager", None)
+        signals = getattr(manager, "signals", None)
+        if signals is not None:
+            self._connect(signals, "render_started", self._on_render_started)
+            self._connect(signals, "render_finished", self._on_render_finished)
         out_list = getattr(self.window, "output_list", None)
         if out_list is not None and not sip.isdeleted(out_list):
             # Cached alignment can publish synchronously through the output model.
             self._connect(out_list.model(), "rowsInserted", self._queue_ui_sync)
+
+    def _on_render_started(self) -> None:
+        if not self._active:
+            return
+        self._busy_rendering = True
+        if self.steps[self._index].key == "render":
+            self._auto_advance_timer.stop()
+            self._completed_keys.discard("render")
+            self._sync_ui()
+
+    def _on_render_finished(self, produced_output: bool) -> None:
+        self._busy_rendering = False
+        if not self._active:
+            return
+        step_key = self.steps[self._index].key
+        if step_key == "render":
+            if produced_output:
+                manager = getattr(self.window, "render_manager", None)
+                self._seen_render_result = getattr(manager, "last_result", None)
+                self._completed_keys.add("render")
+                self._auto_advance_timer.start(350)
+            else:
+                self._auto_advance_timer.stop()
+                self._completed_keys.discard("render")
+            self._sync_ui()
+        elif step_key == "compare":
+            self._sync_ui()
 
     def _on_slider_moved(self, *_args) -> None:
         if self._active and self.steps[self._index].key == "source_browse":
@@ -657,6 +702,8 @@ class OnboardingTour(QObject):
     def _is_rendering(self) -> bool:
         if self.steps[self._index].key != "render":
             return False
+        if self._busy_rendering:
+            return True
         manager = getattr(self.window, "render_manager", None)
         progress = getattr(manager, "_status_bar_progress", None)
         # Explicit visibility follows render progress even when the window is hidden.
@@ -737,8 +784,11 @@ class OnboardingTour(QObject):
             else:
                 self._completed_keys.discard("compare")
         completed = step.key in self._completed_keys
+        compare_ready = _has_compare_output(self.window) if step.key == "compare" else True
         if busy:
             status_text = trans.t("tour_rendering_wait")
+        elif step.key == "compare" and not compare_ready:
+            status_text = trans.t("wipe_need_result")
         elif completed and step.done_key:
             status_text = trans.t(step.done_key)
         else:
@@ -748,6 +798,8 @@ class OnboardingTour(QObject):
         if step.action_label_key:
             if step.key == "render" and not getattr(self.window, "raw_images", None):
                 action_label = trans.t("tour_btn_load_demo")
+            elif step.key == "compare" and not compare_ready:
+                action_label = None
             else:
                 action_label = trans.t(step.action_label_key)
 

@@ -103,6 +103,14 @@ class _StorageCancellation:
         self.manager.cancel_storage_preflight(self.request)
 
 
+class RenderSignals(QObject):
+    """Lightweight render lifecycle notifications for UI observers."""
+
+    render_started = pyqtSignal()
+    # True when the run produced a result the user can look at.
+    render_finished = pyqtSignal(bool)
+
+
 class RenderManager:
     """Encapsulates render pipeline orchestration for the main window."""
 
@@ -112,6 +120,8 @@ class RenderManager:
 
     def __init__(self, window: Any):
         self.window = window
+        self.signals = RenderSignals()
+        self._render_active = False
         self.worker: Optional[Any] = None
         self.context_worker = None
         self._context_candidate = None
@@ -839,7 +849,7 @@ class RenderManager:
                 if context_worker is not None:
                     context_worker.cancel()
                 else:
-                    self.worker.is_cancelled = True
+                    self._cancel_worker()
                 self.refresh_action_labels()
                 self._show_progress_bar(trans.t('depth_cancelling'))
             else:
@@ -968,12 +978,11 @@ class RenderManager:
         if self.worker is not None and self.worker.isRunning():
             self._start_status = "busy"
             if interactive:
-                self.worker.is_cancelled = True
+                self._cancel_worker()
                 self.dismiss_live_preview()
                 window.btn_render.setEnabled(False)
                 window.btn_render.setText(trans.t('depth_cancelling'))
                 self._show_progress_bar(trans.t('depth_cancelling'))
-                QApplication.processEvents()
             return
         if self._render_after_load is not None:
             if not interactive:
@@ -1587,6 +1596,8 @@ class RenderManager:
             self._start_live_preview()
 
     def _start_live_preview(self):
+        self._live_preview_row = None
+        self._live_preview_user_selected = False
         if self._live_preview_timer is None:
             timer = self._live_preview_timer = QTimer(self.window.live_preview_page)
             timer.setInterval(80)
@@ -1617,7 +1628,14 @@ class RenderManager:
             if 0 <= index < len(rows) and not QApplication.mouseButtons():
                 row = rows[index]
                 item = source_list.item(row)
-                if item is not None and row != source_list.currentRow():
+                follow = getattr(self, '_live_preview_row', None)
+                # Once the user picks another source row, stop following.
+                user_moved = follow is not None and source_list.currentRow() not in (follow, -1)
+                if user_moved:
+                    self._live_preview_user_selected = True
+                if (item is not None and row != source_list.currentRow()
+                        and not getattr(self, '_live_preview_user_selected', False)):
+                    self._live_preview_row = row
                     source_list.setCurrentRow(row)
                     source_list.scrollToItem(item)
 
@@ -1630,6 +1648,8 @@ class RenderManager:
 
     def dismiss_live_preview(self):
         """Restore the current output and keep it visible for this job."""
+        self._live_preview_row = None
+        self._live_preview_user_selected = False
         timer = self._live_preview_timer
         if timer is None or not timer.isActive():
             return
@@ -2233,6 +2253,11 @@ class RenderManager:
         return bar, self._status_bar_label
 
     def _show_progress_bar(self, text: str) -> None:
+        if not getattr(self, "_render_active", False):
+            self._render_active = True
+            signals = getattr(self, "signals", None)
+            if signals is not None:
+                signals.render_started.emit()
         try:
             bar, label = self._progress_widgets()
             bar.setRange(0, 0)  # indeterminate until a stage reports counts
@@ -2245,11 +2270,31 @@ class RenderManager:
         except Exception:
             pass
 
-    def _hide_progress_bar(self) -> None:
+    def _hide_progress_bar(self, *, produced_output: Optional[bool] = None) -> None:
         bar = getattr(self, "_status_bar_progress", None)
         if bar is not None:
             bar.hide()
             self._status_bar_label.hide()
+        if getattr(self, "_render_active", False):
+            self._render_active = False
+            if produced_output is None:
+                # Cancel, error, quick preview and alignment-only runs all end up
+                # here; only a completed run counts as having produced output.
+                produced_output = self.last_state == "done" and self.last_result is not None
+            signals = getattr(self, "signals", None)
+            if signals is not None:
+                signals.render_finished.emit(bool(produced_output))
+
+    def _cancel_worker(self) -> None:
+        """Ask the running worker to stop, waking its cancel event at once."""
+        worker = self.worker
+        if worker is None:
+            return
+        cancel = getattr(worker, "cancel", None)
+        if callable(cancel):
+            cancel()
+        else:
+            worker.is_cancelled = True
 
 
     def on_render_stage(self, stage: str) -> None:
@@ -2281,12 +2326,14 @@ class RenderManager:
         self._control_progress = (int(done), int(total))
         now = monotonic()
         last = getattr(self, '_progress_last_t', None)
-        if last is None or now - last > 1.0 or (total > 0 and done >= total):
+        if last is None or now - last > 0.25 or (total > 0 and done >= total):
             self._progress_last_t = now
             pct = int(done * 100 / max(1, total))
             eta = ''
             first = getattr(self, '_progress_first_t', None)
-            if first is not None and 0 < done < total:
+            # The first frame carries worker/OpenCL start-up time, so an ETA
+            # derived from it would flash a wildly inflated estimate.
+            if first is not None and 2 <= done < total and now - first >= 0.8:
                 remaining = (now - first) / done * (total - done)
                 eta = f" · ~{ceil(remaining)}s"
             key = _RENDER_STAGE_KEYS.get(getattr(self, '_render_progress_stage', None), 'render_progress')
@@ -2347,7 +2394,7 @@ class RenderManager:
         self._preview_mode = False
         self._render_context = None
         self._dispose_worker()
-        self._hide_progress_bar()
+        self._hide_progress_bar(produced_output=False)
 
         if (getattr(self, '_compare_mode', False)
                 and not error_message.startswith("CANCELLED") and stack_changed):

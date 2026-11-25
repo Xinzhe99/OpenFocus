@@ -62,11 +62,10 @@ def test_experimental_default_toggle_and_preserved_selection(window):
     dialog.chk_experimental_features.setChecked(False)
     dialog._apply()
     assert not w.experimental_features and not settings.value('ui/experimental_features', type=bool)
-    assert w.current_fusion_method() == 'guided_filter'
-    assert not w.btn_render.isEnabled()
-    assert w.btn_render.toolTip() == trans.t('experimental_locked_hint')
-    with pytest.raises(ValueError, match=trans.t('experimental_locked_hint')):
-        w.render_manager.start_render(interactive=False)
+    # Turning off experimental features falls back to Stable defaults instead of stranding the user.
+    assert w.current_fusion_method() == 'openfocus_b'
+    assert w.current_alignment_method() == 'ecc'
+    assert w.btn_render.isEnabled()
     assert not w.ui_objs['mosaic_title'].isEnabled()
     assert not w.ui_objs['menu_dust_map'].isEnabled()
     with pytest.raises(ValueError) as error:
@@ -76,6 +75,7 @@ def test_experimental_default_toggle_and_preserved_selection(window):
     dialog = AdvancedSettingsDialog(w)
     dialog.chk_experimental_features.setChecked(True)
     dialog._apply()
+    w.set_fusion_method('guided_filter')
     assert w.current_fusion_method() == 'guided_filter'
     assert w.btn_render.isEnabled()
 

@@ -285,6 +285,7 @@ def test_settings_pages_expose_translated_controls_and_privacy_defaults(settings
 def test_registration_page_fits_collapsed_and_expanded_controls(qapp, settings_window):
     from dialogs.advanced_settings import AdvancedSettingsDialog
 
+    settings_window.experimental_features = True
     dialog = AdvancedSettingsDialog(settings_window)
     try:
         dialog.show()
@@ -311,6 +312,7 @@ def test_collapsing_optional_settings_preserves_edits(settings_window):
     from dialogs.advanced_settings import AdvancedSettingsDialog
     from locales import trans
 
+    settings_window.experimental_features = True
     settings_window.current_fusion_method = lambda: 'stackmffv3'
     dialog = AdvancedSettingsDialog(settings_window)
     dialog.show()

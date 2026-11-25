@@ -13,6 +13,7 @@ from constants import (
 )
 from core.algorithms import (FUSION_DEFAULT, get_fusion, get_registration, registration_parameter_specs,
                              resolve_registration_parameters)
+from core.experimental import alignment_is_experimental, experimental_enabled
 from core.multi_focus_fusion import _DEFAULT_TILE_THRESHOLD
 from core.frame_storage import configure_storage_directory, restore_storage_directory
 from locales import trans
@@ -211,6 +212,7 @@ class AdvancedSettingsDialog(QDialog):
         tile_layout.setContentsMargins(0, 0, 0, 0)
         self.manual_tile_disclosure = _disclosure(
             page_lay, trans.t('advanced_tile_manual'), 'manual_tile_disclosure', self.manual_tile_panel)
+        self.manual_tile_scope_note = _note(tile_layout, trans.t('advanced_tile_experimental_only_note'))
         tiles = _section(tile_layout)
         self.chk_tile = QCheckBox(trans.t('advanced_tile_enabled'))
         self.chk_tile.setChecked(bool(getattr(w, 'tile_enabled', True)))
@@ -241,6 +243,8 @@ class AdvancedSettingsDialog(QDialog):
         spec = None if method == 'none' else get_fusion(method)
         supported = (spec is not None and spec.external_tiling_supported and
                      method not in ('openfocus_a', 'openfocus_b', 'openfocus_c'))
+
+        self.manual_tile_scope_note.setVisible(not supported)
 
         def update_tile_controls(*_args):
             enabled = self.chk_tile.isChecked()
@@ -296,10 +300,24 @@ class AdvancedSettingsDialog(QDialog):
         self.openfocus_registration_panel.setProperty("controlId", "openfocus_registration_panel")
         self.openfocus_registration_panel.set_parameters(
             registration_parameter_specs('openfocus'), self._initial_openfocus)
+        reg_title = trans.t(get_registration('openfocus').label_key)
+        if alignment_is_experimental('openfocus'):
+            reg_title = f"{reg_title} ({trans.t('experimental_label')})"
         self.registration_options_disclosure = _disclosure(
-            page_lay, trans.t(get_registration('openfocus').label_key),
+            page_lay, reg_title,
             'registration_options_disclosure', self.openfocus_registration_panel)
         self._initial_registration_fields = self.openfocus_registration_panel.values()
+        self._sync_experimental_controls()
+        self.chk_experimental_features.toggled.connect(self._sync_experimental_controls)
+
+    def _sync_experimental_controls(self, *_args):
+        enabled = self.chk_experimental_features.isChecked()
+        self.registration_options_disclosure.setEnabled(enabled)
+        self.openfocus_registration_panel.setEnabled(enabled)
+        hint = '' if enabled else trans.t('experimental_locked_hint')
+        self.registration_options_disclosure.setToolTip(hint)
+        if not enabled and self.registration_options_disclosure.isChecked():
+            self.registration_options_disclosure.setChecked(False)
 
     def _build_startup(self, page_lay):
         w = self.window_main
@@ -521,7 +539,11 @@ class AdvancedSettingsDialog(QDialog):
             return
         apply_experimental = getattr(w, "apply_experimental_features", None)
         if 'experimental_features' in draft and callable(apply_experimental):
-            apply_experimental()
+            turned_off = bool(previous.get('experimental_features')) and not bool(draft['experimental_features'])
+            try:
+                apply_experimental(fallback_to_stable=turned_off)
+            except TypeError:
+                apply_experimental()
         if draft.get('auto_error_reports') is False:
             from ui.report_retry import discard_automatic_reports
             discard_automatic_reports()

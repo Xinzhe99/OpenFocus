@@ -660,6 +660,9 @@ def test_settings_disclosures_via_control(server, index, disclosure, panel):
             return node
 
         tabs = find(control_id="advanced_settings_tabs")
+        if disclosure == "registration_options_disclosure":
+            exp = find(control_id="chk_experimental_features")
+            assert call(server, "ui.set", path=exp["path"], value=True)["ok"]
         assert call(server, "ui.set", path=tabs["path"], value=index)["ok"]
         button = find(control_id=disclosure)
         assert button["class"] == "QToolButton" and button["visible"] and button["enabled"]
