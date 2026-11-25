@@ -9,7 +9,6 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from utils.file_dialogs import FileDialog
 from PyQt6.QtWidgets import QMessageBox, QProgressDialog, QInputDialog
 
-from dialogs import DurationDialog
 from ui import styles as ui_styles
 from utils import (
     show_error_box,
@@ -17,8 +16,28 @@ from utils import (
     show_success_box,
     show_warning_box,
 )
-from core.workers import GifSaverWorker
 from locales import trans
+
+_LAZY_IMPORTS = {
+    'GifSaverWorker': ('core.workers', 'GifSaverWorker'),
+    'DurationDialog': ('dialogs', 'DurationDialog'),
+}
+
+
+def _resolve_lazy(name: str):
+    value = globals().get(name)
+    if value is not None:
+        return value
+    module_name, attr = _LAZY_IMPORTS[name]
+    value = getattr(__import__(module_name, fromlist=[attr]), attr)
+    globals()[name] = value
+    return value
+
+
+def __getattr__(name: str):
+    if name in _LAZY_IMPORTS:
+        return _resolve_lazy(name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 from utils.image_utils import ImageWriteError, imwrite_auto
 from utils import scalebar
 from utils.export_paths import create_stack_directory, frame_export_name
@@ -179,7 +198,7 @@ class ExportManager:
     def __init__(self, window: Any) -> None:
         self.window = window
         self.gif_progress_dialog: Optional[QProgressDialog] = None
-        self.gif_worker: Optional[GifSaverWorker] = None
+        self.gif_worker: Optional[Any] = None
         self.layered_worker: Optional[LayeredTiffWorker] = None
         self.layered_progress_dialog: Optional[QProgressDialog] = None
         self._layered_record = None
@@ -781,7 +800,7 @@ class ExportManager:
                       window, target='source' if target_type == 'input' else 'registered',
                       record=record))
 
-        duration_dialog = DurationDialog(window)
+        duration_dialog = _resolve_lazy('DurationDialog')(window)
         if not duration_dialog.exec():
             return
 
@@ -824,7 +843,7 @@ class ExportManager:
         self.gif_progress_dialog.show()
 
         duration_sec = duration_ms / 1000.0
-        self.gif_worker = GifSaverWorker(
+        self.gif_worker = _resolve_lazy('GifSaverWorker')(
             images_to_save, file_path, duration_sec, labels,
             target_type, scale_cfg=scale_cfg, watermark_cfg=wm_cfg,
             linear_dng_metadata=metadata)

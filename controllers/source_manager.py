@@ -9,11 +9,30 @@ from PyQt6.QtGui import QAction, QIcon, QKeySequence, QDragEnterEvent, QDropEven
 from utils.file_dialogs import FileDialog
 from PyQt6.QtWidgets import QListWidgetItem, QMenu, QMessageBox, QDialog
 
-from core.workers import StackLoadWorker
-from dialogs import DownsampleDialog
 from utils import show_message_box, show_warning_box
 from ui import styles as ui_styles
 from locales import trans
+
+_LAZY_IMPORTS = {
+    'StackLoadWorker': ('core.workers', 'StackLoadWorker'),
+    'DownsampleDialog': ('dialogs', 'DownsampleDialog'),
+}
+
+
+def _resolve_lazy(name: str):
+    value = globals().get(name)
+    if value is not None:
+        return value
+    module_name, attr = _LAZY_IMPORTS[name]
+    value = getattr(__import__(module_name, fromlist=[attr]), attr)
+    globals()[name] = value
+    return value
+
+
+def __getattr__(name: str):
+    if name in _LAZY_IMPORTS:
+        return _resolve_lazy(name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 class StackReviewWorker(QThread):
@@ -463,7 +482,7 @@ class SourceManager(QObject):
                 show_warning_box(window, trans.t("msg_load_failed"), message)
             return True
 
-        self._load_worker = StackLoadWorker(
+        self._load_worker = _resolve_lazy('StackLoadWorker')(
             window.image_loader, folder=folder, video=video,
             filepaths=filepaths, scale=scale,
             thread_count=getattr(window, "thread_count", 0),
@@ -848,7 +867,7 @@ class SourceManager(QObject):
         if not getattr(window, "ask_load_scale", True):
             return float(getattr(window, "load_scale_default", 1.0) or 1.0)
         current_scale = getattr(window, "current_scale_factor", 1.0)
-        dlg = DownsampleDialog(window, initial_scale=current_scale,
+        dlg = _resolve_lazy('DownsampleDialog')(window, initial_scale=current_scale,
                                show_dont_ask=True, source_paths=paths,
                                source_folder=folder, source_video=video,
                                linear_raw=linear_raw)
