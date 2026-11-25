@@ -36,7 +36,7 @@ def test_batch_worker_emits_folder_loaded_progressively_with_bounded_previews(qa
     orig_decode = loader_mod.decode_image
     monkeypatch.setattr(loader_mod, "decode_image", lambda p: full_decodes.append(p) or orig_decode(p))
 
-    worker = BatchImportWorker("thumbnails", folder_paths=folders)
+    worker = BatchImportWorker('thumbnails', folder_paths=folders, scale_factor=0.25)
     per_folder = []
     final_batch = []
     worker.folder_loaded.connect(lambda folder, img: per_folder.append((folder, img)))
@@ -44,8 +44,9 @@ def test_batch_worker_emits_folder_loaded_progressively_with_bounded_previews(qa
     worker.run()
 
     assert [f for f, _ in per_folder] == folders
-    assert all(img is not None and max(img.shape[:2]) <= 60 for _, img in per_folder)
+    assert all(img is not None and max(img.shape[:2]) == 40 for _, img in per_folder)
     assert len(final_batch) == 3
+    assert [int(img[0, 0, 0]) for _, img in per_folder] == [40, 80, 120]
     assert full_decodes == []
 
 
@@ -64,6 +65,7 @@ def test_batch_dialog_keeps_start_and_add_enabled_for_thumbnails_and_shows_busy_
         def __init__(self, mode, **kwargs):
             super().__init__()
             self.mode = mode
+            self.folder_paths = kwargs.get('folder_paths')
 
         def start(self):
             pass
@@ -88,10 +90,25 @@ def test_batch_dialog_keeps_start_and_add_enabled_for_thumbnails_and_shows_busy_
         assert dialog.folder_list.item(1).icon().isNull()
         assert "1/2" in dialog._thumbnail_status_label.text()
 
+        dialog.add_folders_to_list(['f3'])
+        assert dialog._start_import('stack', folder_path='split')
+        assert cancelled == ['thumbnails']
+        stack_worker = dialog._import_worker
+        worker.folder_loaded.emit('f2', np.full((40, 40, 3), 90, np.uint8))
+        worker.finished.emit()
+        assert dialog._import_worker is stack_worker
+        assert dialog.folder_list.item(1).icon().isNull()
+        stack_worker.finished.emit()
+        worker = dialog._import_worker
+        assert worker.mode == 'thumbnails'
+        assert worker.folder_paths == ['f2', 'f3']
+        assert not dialog.folder_list.item(0).icon().isNull()
+
         # Accepting cancels thumbnail worker cleanly instead of blocking.
         dialog.accept()
-        assert cancelled == ["thumbnails"]
+        assert cancelled == ['thumbnails', 'thumbnails']
         assert not dialog._import_busy
+        worker.finished.emit()
     finally:
         dialog.close()
         dialog.deleteLater()
@@ -154,6 +171,8 @@ def test_video_import_reports_determinate_progress_and_source_manager_displays_i
     )
     assert ok, msg
     assert len(frames) == 6
+    np.testing.assert_allclose([frame.mean() for frame in frames],
+                               [20, 50, 80, 110, 140, 170], atol=3)
     assert events
     assert events[-1][0] == 6 and events[-1][1] == 6
 
@@ -178,6 +197,10 @@ def test_video_import_reports_determinate_progress_and_source_manager_displays_i
         assert manager._load_progress_bar.maximum() == 6
         assert manager._load_progress_bar.value() == 3
         assert "(3/6)" in manager._load_status_label.text()
+        worker.progress.emit(7, 6)
+        assert manager._load_progress_bar.maximum() == 7
+        assert manager._load_progress_bar.value() == 7
+        assert '(7/7)' in manager._load_status_label.text()
     finally:
         window.close()
         window.deleteLater()
@@ -205,8 +228,9 @@ def test_workspace_status_bar_inline_show_in_folder_tracks_message_lifetime(qapp
         bar._reveal_button.click()
         assert revealed == [str(saved)]
 
-        # A plain message without a path hides the button.
-        bar.showMessage("Other message", 4000)
+        # Qt skips messageChanged for the same text, but a plain message
+        # still takes ownership of the status bar.
+        bar.showMessage('Saved file', 4000)
         assert bar._reveal_button.isHidden()
 
         # Re-showing via notify_saved_path re-enables it; clearMessage hides it.

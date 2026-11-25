@@ -113,7 +113,7 @@ class BatchProcessingDialog(QDialog):
         self._pending_thumbnails = []
         self._invalid_thumbnail_paths = set()
         self._applied_thumbnail_paths = set()
-        self._thumbnail_total = 0
+        self._active_thumbnail_paths = ()
         self._thumbnail_done = 0
 
         
@@ -802,7 +802,13 @@ class BatchProcessingDialog(QDialog):
             return False
         if self._import_busy:
             if mode == 'stack' and self._import_mode == 'thumbnails':
+                unfinished = [path for path in self._active_thumbnail_paths
+                              if path in self.folder_paths
+                              and path not in self._invalid_thumbnail_paths
+                              and path not in self._applied_thumbnail_paths]
+                pending = unfinished + self._pending_thumbnails
                 self.cancel_imports()
+                self._pending_thumbnails = pending
             else:
                 return False
         from core.workers import BatchImportWorker
@@ -825,7 +831,7 @@ class BatchProcessingDialog(QDialog):
         self._import_busy = True
         self._import_mode = mode
         self._applied_thumbnail_paths = set()
-        self._thumbnail_total = len(folder_paths or []) if mode == 'thumbnails' else 0
+        self._active_thumbnail_paths = tuple(folder_paths or ()) if mode == 'thumbnails' else ()
         self._thumbnail_done = 0
         self._import_callbacks = {'thumbnails': on_thumbnails,
                                   'stack': on_stack}
@@ -851,15 +857,13 @@ class BatchProcessingDialog(QDialog):
                 getattr(worker, 'import_generation', None) == self._import_generation)
 
     def _on_import_folder_ready(self, folder_path, image) -> None:
-        if not self._active_import_sender():
-            return
-        self._thumbnail_done += 1
-        self._update_import_status_labels()
-        if folder_path in self._invalid_thumbnail_paths:
+        if not self._active_import_sender() or folder_path in self._applied_thumbnail_paths:
             return
         self._applied_thumbnail_paths.add(folder_path)
+        self._thumbnail_done += 1
+        self._update_import_status_labels()
         callback = self._import_callbacks.get('thumbnails')
-        if callback is not None:
+        if callback is not None and folder_path not in self._invalid_thumbnail_paths:
             callback([(folder_path, image)])
 
     def _on_import_folders_ready(self, results) -> None:
@@ -873,6 +877,7 @@ class BatchProcessingDialog(QDialog):
                 and path not in self._applied_thumbnail_paths
             ]
             if remaining:
+                self._applied_thumbnail_paths.update(path for path, _ in remaining)
                 callback(remaining)
 
     def _on_import_stack_ready(self, folder, entries, message) -> None:
@@ -891,7 +896,7 @@ class BatchProcessingDialog(QDialog):
         self._import_mode = None
         self._invalid_thumbnail_paths.clear()
         self._applied_thumbnail_paths.clear()
-        self._thumbnail_total = 0
+        self._active_thumbnail_paths = ()
         self._thumbnail_done = 0
         self._pump_folder_thumbnails()
         self._set_import_busy(self._import_busy)
@@ -899,11 +904,10 @@ class BatchProcessingDialog(QDialog):
     def _update_import_status_labels(self) -> None:
         thumb_label = getattr(self, '_thumbnail_status_label', None)
         if thumb_label is not None:
-            if self._import_busy and self._import_mode == 'thumbnails' and self._thumbnail_total > 0:
-                done = min(self._thumbnail_done, self._thumbnail_total)
-                thumb_label.setText(
-                    trans.t('batch_loading_thumbnails').format(
-                        done=done, total=self._thumbnail_total))
+            if self._import_busy and self._import_mode == 'thumbnails' and self._active_thumbnail_paths:
+                total = len(self._active_thumbnail_paths)
+                done = min(self._thumbnail_done, total)
+                thumb_label.setText(trans.t('batch_loading_thumbnails').format(done=done, total=total))
                 thumb_label.show()
             else:
                 thumb_label.clear()
@@ -941,7 +945,7 @@ class BatchProcessingDialog(QDialog):
         self._pending_thumbnails.clear()
         self._invalid_thumbnail_paths.clear()
         self._applied_thumbnail_paths.clear()
-        self._thumbnail_total = 0
+        self._active_thumbnail_paths = ()
         self._thumbnail_done = 0
         self._set_import_busy(False)
         if worker is not None:

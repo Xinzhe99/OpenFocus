@@ -4,6 +4,7 @@ import json
 import os
 from unicodedata import category
 
+from PyQt6 import sip
 from PyQt6.QtCore import QEvent, QSize, Qt, QTimer, QUrl
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
@@ -175,7 +176,7 @@ class WorkspaceStatusBar(QStatusBar):
                                           QSizePolicy.Policy.Preferred)
         self._row.addWidget(self._message_label, 1)
         self._reveal_path = ''
-        self._pending_reveal_path = ''
+        self._reveal_message = ''
         self._reveal_button = QPushButton(trans.t('share_reveal'), content)
         self._reveal_button.setObjectName('statusRevealButton')
         self._reveal_button.setFlat(True)
@@ -215,12 +216,14 @@ class WorkspaceStatusBar(QStatusBar):
 
     def show_path_message(self, message: str, path: str, timeout: int = 8000) -> None:
         """Show a transient message paired with an inline Show in Folder button."""
-        reveal = os.fspath(path) if path else ''
-        self._pending_reveal_path = reveal
-        self.showMessage(message, timeout)
-        if self._pending_reveal_path and self.currentMessage() == message:
-            self._bind_reveal_path(self._pending_reveal_path)
-            self._pending_reveal_path = ''
+        self._reveal_message = message
+        self._bind_reveal_path(os.fspath(path) if path and message else '')
+        super().showMessage(message, timeout)
+
+    def showMessage(self, message: str, timeout: int = 0) -> None:
+        self._reveal_message = ''
+        self._bind_reveal_path('')
+        super().showMessage(message, timeout)
 
     def _bind_reveal_path(self, path: str) -> None:
         self._reveal_path = path
@@ -237,14 +240,15 @@ class WorkspaceStatusBar(QStatusBar):
             return
         from utils.file_manager import select_in_file_manager
         from utils.ui_utils import show_error_box
+        window = self.window()
 
         def finished(opened, error=None):
-            if not opened:
-                show_error_box(self.window(), trans.t('msg_share_failed_title'),
+            if not opened and not sip.isdeleted(window) and not getattr(window, '_shutting_down', False):
+                show_error_box(window, trans.t('msg_share_failed_title'),
                                trans.t('msg_share_reveal_failed'), error or path)
 
         try:
-            select_in_file_manager(path, parent=self.window(), on_finished=finished)
+            select_in_file_manager(path, parent=window, on_finished=finished)
         except Exception as exc:
             finished(False, str(exc))
 
@@ -253,11 +257,8 @@ class WorkspaceStatusBar(QStatusBar):
         self._message_label.setText(text)
         self._message_label.setToolTip(text)
         self._message_label.setAccessibleName(text)
-        if message and self._pending_reveal_path:
-            self._bind_reveal_path(self._pending_reveal_path)
-            self._pending_reveal_path = ''
-        else:
-            self._pending_reveal_path = ''
+        if not message or message != self._reveal_message:
+            self._reveal_message = ''
             self._bind_reveal_path('')
 
     def paintEvent(self, event):

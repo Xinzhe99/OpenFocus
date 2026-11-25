@@ -5,10 +5,11 @@ from typing import Any, Iterable, Optional
 
 from PyQt6 import sip
 from PyQt6.QtCore import QObject, QThread, Qt
-from PyQt6.QtWidgets import QMessageBox, QProgressDialog
+from PyQt6.QtWidgets import QMessageBox
 
 from ui import styles as ui_styles
 from locales import trans
+from utils.frame_pixels import _PixelProgress
 from utils.platform_utils import configure_native_worker_stack
 
 
@@ -39,7 +40,8 @@ class BatchManager:
         self.window = window
         self._thread: Optional[QThread] = None
         self._worker: Optional[Any] = None
-        self._progress_dialog: Optional[QProgressDialog] = None
+        self._progress_dialog: Optional[_PixelProgress] = None
+        self._finishing_batch = False
 
     def add_folder(self, folder_path: str) -> None:
         """Add a folder to the batch processing dialog when it opens."""
@@ -63,7 +65,7 @@ class BatchManager:
         split_param: float = None,
         single_folder_images_with_times: list = None,
     ) -> None:
-        if self._thread and self._thread.isRunning():
+        if self._thread is not None or self._finishing_batch:
             self._show_message(
                 title=trans.t("batch_running_title"),
                 text=trans.t("batch_running_text"),
@@ -128,15 +130,9 @@ class BatchManager:
         self._thread.start()
 
     def _initialise_progress_dialog(self, total: int) -> None:
-        dialog = QProgressDialog(
-            trans.t("batch_title"), trans.t("btn_cancel"), 0, total, self.window)
-        dialog.setWindowTitle(trans.t("batch_title"))
+        dialog = _PixelProgress(self.window, trans.t("batch_title"), cancellable=True)
+        dialog.setRange(0, total)
         dialog.setWindowModality(Qt.WindowModality.WindowModal)
-        # Read through the module: the constants are rebound on theme
-        dialog.setAutoClose(False)
-        dialog.setAutoReset(False)
-        # change, so a from-import here would freeze the dark sheet.
-        dialog.setStyleSheet(ui_styles.PROGRESS_DIALOG_STYLE)
         dialog.canceled.connect(self._cancel_running_batch)
         dialog.show()
         self._progress_dialog = dialog
@@ -154,14 +150,7 @@ class BatchManager:
         if not self._progress_dialog:
             return
 
-        if self._progress_dialog.maximum() != total:
-            self._progress_dialog.setRange(0, total)
-
-        self._progress_dialog.setValue(current)
-        self._progress_dialog.setLabelText(message)
-
-        if self._progress_dialog.wasCanceled() and self._worker:
-            self._worker.cancel()
+        self._progress_dialog.set_progress(current, total, message)
 
 
     def _handle_finished(self, results: dict) -> None:
@@ -171,7 +160,8 @@ class BatchManager:
         from utils.logging_setup import log_action
         log_action("batch_finished", **{k: results.get(k) for k in
                    ("success", "total", "cancelled")})
-        progress_dialog = self._progress_dialog
+        self._finishing_batch = True
+        self._close_progress_dialog()
         try:
             success_count = results.get("success", 0)
             total_count = results.get("total", 0)
@@ -180,17 +170,20 @@ class BatchManager:
             self.last_results = results
 
             outputs = results.get("outputs") or []
+            stacks = results.get('aligned_stacks') or []
+            first_output = next((path for path in outputs if os.path.isfile(path)), '')
             if outputs and getattr(self.window, "output_manager", None) is not None:
                 # Only fused files enter pixel history; aligned stacks remain directories.
                 shown = self.window.output_manager.add_batch_outputs(
                     outputs, watermark_baked=bool(results.get("watermark_outputs", False)))
+                if self._window_unavailable():
+                    return
                 if shown:
                     from utils.output_share import show_status_path_message
                     show_status_path_message(
                         self.window,
                         trans.t("batch_added_to_outputs").format(n=shown),
-                        outputs[0], 8000)
-            stacks = results.get('aligned_stacks') or []
+                        first_output, 8000)
             # The output panel answers "what can I inspect and export from this
             # run". A fused stack already has its result there, so listing its
             # aligned frames too only buried it under per-stack folders. The
@@ -214,13 +207,9 @@ class BatchManager:
             if failed_folders:
                 info_lines.append("")
                 info_lines.extend(failed_folders)
-            self._close_progress_dialog()
             problems = (counts.get("partial", 0) + counts.get("failed", 0))
-            reveal_path = ""
-            if outputs:
-                reveal_path = outputs[0]
-            elif stacks and isinstance(stacks[0], dict):
-                reveal_path = stacks[0].get("path", "") or ""
+            reveal_path = first_output or next((stack['path'] for stack in stacks
+                                                if os.path.isdir(stack.get('path') or '')), '')
             self._show_message(
                 title=(trans.t('compare_cancelled') if was_cancelled else
                        trans.t('batch_partial_title') if problems else trans.t('batch_done_title')),
@@ -232,8 +221,7 @@ class BatchManager:
                 reveal_path=reveal_path,
             )
         finally:
-            if self._progress_dialog is progress_dialog:
-                self._close_progress_dialog()
+            self._finishing_batch = False
 
     def _render_owns_controls(self) -> bool:
         """True while a render/compare run owns the fusion controls."""
@@ -298,7 +286,7 @@ class BatchManager:
                 QMessageBox.ButtonRole.ActionRole,
             )
         msg_box.exec()
-        if open_btn is not None and msg_box.clickedButton() is open_btn:
+        if open_btn is not None and not self._window_unavailable() and msg_box.clickedButton() is open_btn:
             from utils.file_manager import select_in_file_manager
             select_in_file_manager(
                 reveal_path, parent=self.window, on_finished=lambda _ok: None)
@@ -307,14 +295,13 @@ class BatchManager:
         if self._worker:
             self._worker.cancel()
         if self._progress_dialog:
-            self._progress_dialog.setLabelText(trans.t('depth_cancelling'))
-            self._progress_dialog.setCancelButton(None)
-            self._progress_dialog.show()
+            self._progress_dialog.mark_cancelling()
 
     def _close_progress_dialog(self) -> None:
         dialog, self._progress_dialog = self._progress_dialog, None
         if dialog is not None and not (isinstance(dialog, QObject) and sip.isdeleted(dialog)):
-            dialog.close()
+            dialog.finish()
+            dialog.deleteLater()
 
     def _thread_finished(self) -> None:
         thread, worker = self._thread, self._worker

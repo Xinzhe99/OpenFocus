@@ -194,12 +194,14 @@ def test_aligned_stack_click_uses_loading_title_not_retouch(qapp, tmp_path, monk
 def test_drag_reuses_persistent_export_and_resolves_source_frames_off_ui_thread(qapp, tmp_path, monkeypatch):
     import utils.frame_pixels as frame_pixels
     import widgets.output_list as output_list_mod
-    from core.source_frames import scan_source
+    from core.source_frames import PREVIEW_CACHE, ensure_preview, scan_source
     from utils import scalebar
 
     src_png = tmp_path / "batch_out.png"
-    assert cv2.imwrite(str(src_png), np.full((24, 24, 3), 140, np.uint8))
+    assert cv2.imwrite(str(src_png), np.full((800, 1000, 3), 140, np.uint8))
     frame = scan_source(str(src_png))[0]
+    preview = ensure_preview(frame)
+    assert preview.shape[:2] != frame.shape[:2]
 
     # Case 1: up-to-date PNG matches drag_export_format='.png' -> reused directly without temp file.
     record_reuse = OutputRecord.create(frame, "batch_out.png", kind="batch", exported=True)
@@ -230,8 +232,8 @@ def test_drag_reuses_persistent_export_and_resolves_source_frames_off_ui_thread(
         def setMimeData(self, mime):
             dragged.extend(url.toLocalFile() for url in mime.urls())
 
-        def exec(self, _actions):
-            pass
+        def exec(self, actions):
+            assert actions == Qt.DropAction.CopyAction
 
     monkeypatch.setattr(output_list_mod, "QDrag", FakeDrag)
 
@@ -245,12 +247,13 @@ def test_drag_reuses_persistent_export_and_resolves_source_frames_off_ui_thread(
         output_manager=SimpleNamespace(
             record_for_item=lambda _it: record_reuse,
             record_for_row=lambda _r: record_reuse,
-            _share_persistent_path=lambda rec: rec.export_path if rec.exported else "",
         ),
     )
+    manager = OutputManager(window)
+    window.output_manager._share_persistent_path = manager._share_persistent_path
     widget.set_window(window)
     widget.item(0).setSelected(True)
-    widget.startDrag(Qt.DropAction.CopyAction)
+    widget.startDrag(Qt.DropAction.CopyAction | Qt.DropAction.MoveAction)
     assert [os.path.normpath(p) for p in dragged] == [os.path.normpath(str(src_png))]
     assert widget._temp_files == []
 
@@ -270,26 +273,75 @@ def test_drag_reuses_persistent_export_and_resolves_source_frames_off_ui_thread(
     window.output_manager = SimpleNamespace(
         record_for_item=lambda _it: record_encode,
         record_for_row=lambda _r: record_encode,
-        _share_persistent_path=lambda rec: rec.export_path if rec.exported else "",
+        _share_persistent_path=manager._share_persistent_path,
     )
+    window.fusion_results = [preview]
+    PREVIEW_CACHE.clear()
     try:
         widget.startDrag(Qt.DropAction.CopyAction)
         assert len(dragged) == 1
         assert dragged[0].lower().endswith(".jpg")
         assert os.path.isfile(dragged[0])
+        saved = cv2.imdecode(np.fromfile(dragged[0], dtype=np.uint8), cv2.IMREAD_COLOR)
+        assert saved.shape == frame.shape
+        np.testing.assert_array_equal(saved, np.full(frame.shape, 140, np.uint8))
         assert threads == [True]
         assert [os.path.normpath(p) for p in widget._temp_files] == [os.path.normpath(dragged[0])]
     finally:
         widget.cleanup_temp_files()
         assert not os.path.isfile(dragged[0])
         assert os.path.isfile(src_png)
+    src_png.write_bytes(b'externally replaced')
+    assert manager._share_persistent_path(record_reuse) == ''
+
+
+@pytest.mark.parametrize('button_released', [False, True])
+def test_drag_cleanup_waits_for_native_handoff(qapp, tmp_path, monkeypatch, button_released):
+    from PyQt6.QtCore import QUrl
+    import widgets.output_list as output_list_mod
+
+    path = tmp_path / 'drag.png'
+    path.touch()
+    widget = OutputListWidget()
+    widget.set_window(SimpleNamespace())
+    widget.addItem('drag')
+    widget.item(0).setSelected(True)
+    prepared = []
+
+    def prepare(_items):
+        prepared.append(True)
+        assert len(prepared) == 1
+        widget._temp_files.append(str(path))
+        return [QUrl.fromLocalFile(str(path))]
+
+    class Drag:
+        def __init__(self, _widget):
+            assert not button_released
+
+        def setMimeData(self, mime):
+            assert os.path.samefile(mime.urls()[0].toLocalFile(), path)
+
+        def exec(self, actions):
+            widget.startDrag(actions)
+            widget.cleanup_temp_files()
+            assert path.is_file()
+
+    monkeypatch.setattr(widget, '_prepare_drag_urls', prepare)
+    monkeypatch.setattr(output_list_mod, 'QDrag', Drag)
+    if button_released:
+        buttons = iter((Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton))
+        monkeypatch.setattr(output_list_mod, 'QApplication', SimpleNamespace(mouseButtons=lambda: next(buttons)))
+    widget.startDrag(Qt.DropAction.CopyAction)
+    assert not path.exists()
 
 
 def test_drag_unexported_aligned_stack_stages_to_temp_without_modal_picker(qapp, tmp_path):
     calls = []
 
     class FakeExporter:
-        def save_aligned_frames_as(self, frames, names, label, *, destination=None, extension=None, record=None):
+        def save_aligned_frames_as(self, frames, names, label, *, destination=None, extension=None,
+                                   record=None, progress=None, show_status=True):
+            assert not show_status
             calls.append((destination, extension))
             assert destination is not None, "unexported aligned drag must stage to temp dir, not prompt"
             out = os.path.join(destination, f"{label}_aligned")
@@ -299,12 +351,11 @@ def test_drag_unexported_aligned_stack_stages_to_temp_without_modal_picker(qapp,
 
     widget = OutputListWidget()
     widget.set_window(SimpleNamespace(export_manager=FakeExporter()))
-    item = QListWidgetItem("aligned_mem")
     record = OutputRecord.create(None, "aligned_mem", kind="aligned", exported=False)
     record.aligned_frames = (np.full((12, 12, 3), 90, np.uint8),)
     record.aligned_names = ("f0.png",)
 
-    folder = widget._aligned_drag_folder(item, record)
+    folder = widget._aligned_drag_folder(None, record)
     try:
         assert folder and os.path.isdir(folder)
         assert len(widget._temp_dirs) == 1
@@ -313,6 +364,20 @@ def test_drag_unexported_aligned_stack_stages_to_temp_without_modal_picker(qapp,
         stage = widget._temp_dirs[0]
         widget.cleanup_temp_files()
         assert not os.path.exists(stage)
+
+    stale_export = tmp_path / 'old_export'
+    current_export = tmp_path / 'current_export'
+    stale_export.mkdir()
+    current_export.mkdir()
+    record.exported = True
+    record.export_path = str(current_export)
+    assert widget._aligned_drag_folder(str(stale_export), record) == str(current_export)
+    record.annotations_changed = True
+    try:
+        assert widget._aligned_drag_folder(str(stale_export), record) != str(current_export)
+        assert len(widget._temp_dirs) == 1
+    finally:
+        widget.cleanup_temp_files()
 
 
 def test_file_list_uniform_item_sizes_and_updates_batching(qapp):
@@ -356,11 +421,13 @@ def test_pixel_progress_cancel_disables_button_and_blocks_repeated_reject(qapp):
 
     dialog.canceled.connect(_on_canceled)
     try:
+        dialog.show()
         btn = dialog._cancel_btn
         assert btn is not None and btn.isEnabled()
         btn.click()
         qapp.processEvents()
         # Cancel button stays alive (no mid-signal deletion) and is disabled.
+        assert dialog.isVisible()
         assert not sip.isdeleted(btn)
         assert not btn.isEnabled()
         assert dialog.labelText() == trans.t("depth_cancelling")
@@ -371,6 +438,8 @@ def test_pixel_progress_cancel_disables_button_and_blocks_repeated_reject(qapp):
         dialog.set_progress(2, 5)
         assert len(canceled_count) == 1
         assert dialog.labelText() == trans.t("depth_cancelling")
+        dialog.set_progress(6, 5)
+        assert dialog.maximum() == dialog.value() == 6
     finally:
         dialog.finish()
         dialog.deleteLater()

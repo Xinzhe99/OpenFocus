@@ -3,9 +3,10 @@ import threading
 from copy import copy
 
 import numpy as np
-
+from PyQt6 import sip
 from PyQt6.QtCore import QEvent, QEventLoop, QObject, QThread, QTimer, Qt, pyqtSlot
-from PyQt6.QtWidgets import QApplication, QProgressDialog, QPushButton, QWidget
+from PyQt6.QtGui import QShortcut
+from PyQt6.QtWidgets import QApplication, QProgressBar, QProgressDialog, QPushButton, QWidget
 
 from utils.platform_utils import configure_native_worker_stack
 
@@ -212,6 +213,8 @@ class _PixelProgress(QProgressDialog):
         self.setStyleSheet(ui_styles.PROGRESS_DIALOG_STYLE)
         self.setWindowTitle(title)
         self.setLabelText(title)
+        self._bar = QProgressBar(self)
+        self.setBar(self._bar)
         self.setRange(0, 0)
         self.setMinimumWidth(320)
         self.setMinimumDuration(2 ** 31 - 1)
@@ -219,11 +222,15 @@ class _PixelProgress(QProgressDialog):
         self.setAutoReset(False)
         self.setWindowModality(Qt.WindowModality.ApplicationModal)
         self.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, False)
+        self.setCancelButton(None)
         if self._cancellable:
             self._cancel_btn = QPushButton(trans.t("btn_cancel"))
             self.setCancelButton(self._cancel_btn)
-        else:
-            self.setCancelButton(None)
+            # Qt's default canceled() slot hides and resets the dialog even
+            # with auto-close disabled. Keep ownership until the worker exits.
+            self.canceled.disconnect()
+            self.canceled.connect(self.mark_cancelling)
+        self._cancel_shortcut = self.findChild(QShortcut)
 
     def mark_cancelling(self):
         if self._cancelling:
@@ -233,6 +240,8 @@ class _PixelProgress(QProgressDialog):
         self.setLabelText(trans.t("depth_cancelling"))
         if self._cancel_btn is not None:
             self._cancel_btn.setEnabled(False)
+        if self._cancel_shortcut is not None:
+            self._cancel_shortcut.setEnabled(False)
 
     def finish(self):
         self._finished = True
@@ -240,21 +249,24 @@ class _PixelProgress(QProgressDialog):
 
     def reject(self):
         # The caller owns its transaction until the worker completes.
-        if self._cancellable and not self._cancelling:
+        if self._cancellable and not self._cancelling and not self._finished:
             self.canceled.emit()
 
     def closeEvent(self, event):
         event.ignore() if not self._finished else event.accept()
 
-    def set_progress(self, done, total):
+    def set_progress(self, done, total, message=None):
         if total > 0:
+            total = max(done, total)
             if self.maximum() != total:
                 self.setRange(0, total)
-            self.setValue(min(done, total))
-            if not self._cancelling:
-                self.setLabelText(f"{self._base_title} ({min(done, total)}/{total})")
+            self._bar.setValue(max(0, done))
         elif self.maximum() != 0:
             self.setRange(0, 0)
+        if not self._cancelling:
+            if message is None:
+                message = f"{self._base_title} ({done}/{total})" if total > 0 else self._base_title
+            self.setLabelText(message)
 
 
 def run_pixel_worker(parent, title, operation, *, show_progress=True,
@@ -286,19 +298,16 @@ def run_pixel_worker(parent, title, operation, *, show_progress=True,
         dialog = _PixelProgress(parent if isinstance(parent, QWidget) else None,
                                 title, cancellable=cancellable)
         if cancellable:
-            def _on_cancel():
-                progress.cancel()
-                dialog.mark_cancelling()
-            dialog.canceled.connect(_on_cancel)
+            dialog.canceled.connect(progress.cancel)
         blocker = _InputBlocker()
         application.installEventFilter(blocker)
 
         def reveal():
             if completed:
                 return
-            application.removeEventFilter(blocker)
-            if not worker.isFinished():
+            if not worker.isFinished() and not sip.isdeleted(dialog):
                 dialog.show()
+            application.removeEventFilter(blocker)
 
         reveal_timer = QTimer()
         reveal_timer.setSingleShot(True)
@@ -308,10 +317,14 @@ def run_pixel_worker(parent, title, operation, *, show_progress=True,
         if progress is not None:
             poll = QTimer()
             poll.setInterval(100)
-            poll.timeout.connect(lambda: dialog.set_progress(*progress.snapshot()))
+            def update_dialog():
+                if not sip.isdeleted(dialog):
+                    dialog.set_progress(*progress.snapshot())
+
+            poll.timeout.connect(update_dialog)
             poll.start()
     worker.finished.connect(waiter.quit)
-    QTimer.singleShot(0, worker.start)
+    worker.start()
     waiter.exec()
     completed = True
     worker.wait()
@@ -323,7 +336,7 @@ def run_pixel_worker(parent, title, operation, *, show_progress=True,
         poll.deleteLater()
     if blocker is not None:
         application.removeEventFilter(blocker)
-    if dialog is not None:
+    if dialog is not None and not sip.isdeleted(dialog):
         dialog.finish()
         dialog.deleteLater()
     result, error = worker.result, worker.error

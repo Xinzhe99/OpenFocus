@@ -690,7 +690,8 @@ class SourceManager(QObject):
                     from utils import recovery
                     recovery.write_snapshot(window)
                 self._show_linear_profile_notice(getattr(window, "linear_dng_metadata", None))
-                self._show_load_issues_notice(worker, len(images))
+                if load_is_current():
+                    self._show_load_issues_notice(worker, len(images))
                 worker._load_applied = load_is_current()
             except Exception as exc:  # pylint: disable=broad-except
                 result_error = str(exc) or "Load failed"
@@ -738,12 +739,6 @@ class SourceManager(QObject):
                 self._build_load_options(images, names, scale), lambda: worker.is_cancelled)
             worker.preparing.connect(self._show_restore_progress)
         worker.progress.connect(self._on_load_progress)
-        if video:
-            from core.video_import import bind_video_progress_callback
-            bind_video_progress_callback(
-                getattr(window.image_loader, "should_cancel", None),
-                worker.progress.emit,
-            )
         worker.finished_load.connect(on_done)
         worker.finished.connect(on_thread_finished)
         self._show_load_status()
@@ -889,8 +884,8 @@ class SourceManager(QObject):
             return
         text = trans.t("msg_loading_stack")
         if total > 0:
-            bar_total = max(total, done)
-            self._load_progress_bar.setRange(0, bar_total)
+            total = max(total, done)
+            self._load_progress_bar.setRange(0, total)
             self._load_progress_bar.setValue(done)
             text = f"{text} ({done}/{total})"
         else:
@@ -1462,16 +1457,17 @@ class SourceManager(QObject):
             self._source_hover = SourceHover(self, self.window.file_list)
         self._source_hover.invalidate()
         window = self.window
-        has_updates_toggle = hasattr(window.file_list, "setUpdatesEnabled")
-        if has_updates_toggle:
-            window.file_list.setUpdatesEnabled(False)
-        window.file_list.blockSignals(True)
-        window.file_list.clear()
-
+        file_list = window.file_list
+        pause_updates = (hasattr(file_list, 'setUpdatesEnabled')
+                         and getattr(file_list, 'updatesEnabled', lambda: True)())
+        if pause_updates:
+            file_list.setUpdatesEnabled(False)
+        signals_blocked = bool(file_list.blockSignals(True))
         try:
+            file_list.clear()
             for filename, thumbnail in zip(filenames, thumbnails):
                 item = QListWidgetItem(QIcon(thumbnail), filename)
-                window.file_list.addItem(item)
+                file_list.addItem(item)
         except Exception as exc:  # pylint: disable=broad-exception-caught
             show_message_box(
                 window,
@@ -1481,10 +1477,12 @@ class SourceManager(QObject):
                 QMessageBox.Icon.Critical,
             )
         finally:
-            self.decorate_source_items()
-            window.file_list.blockSignals(False)
-            if has_updates_toggle:
-                window.file_list.setUpdatesEnabled(True)
+            try:
+                self.decorate_source_items()
+            finally:
+                file_list.blockSignals(signals_blocked)
+                if pause_updates:
+                    file_list.setUpdatesEnabled(True)
 
         self.update_source_images_count()
 

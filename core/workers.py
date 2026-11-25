@@ -96,7 +96,7 @@ def _downscale_for_preview(img):
 
 _LOADER_STATE_FIELDS = ('images', 'image_paths', 'px_size_um', 'source_exif',
                         'source_exifs', 'source_icc_profile', 'source_icc_profiles',
-                        'linear_dng_metadata', 'failed_count')
+                        'linear_dng_metadata', 'failed_count', 'skipped_derived_count')
 _MISSING_LOADER_FIELD = object()
 
 
@@ -212,6 +212,8 @@ class StackLoadWorker(QThread):
                         return
                     options = dict(thread_count=self.thread_count,
                                    resource_preference=self.resource_preference)
+                    if not self.folder or self.linear_raw:
+                        self.loader.skipped_derived_count = 0
                     if self.linear_raw:
                         from core.image_loader import is_raw_source
                         from utils.path_identity import same_path
@@ -241,7 +243,9 @@ class StackLoadWorker(QThread):
                             self.folder, scale_factor=self.scale, exclude_paths=self.exclude_paths, **options)
                     elif self.video:
                         from core.video_import import load_video
-                        ok, msg, imgs = load_video(self.video, self.scale, self.loader.should_cancel)
+                        ok, msg, imgs = load_video(
+                            self.video, self.scale, self.loader.should_cancel,
+                            progress_callback=self.progress.emit)
                         names = self.loader._set_video_frames(self.video, imgs) if ok else []
                     else:
                         from utils.path_identity import same_path
@@ -1391,10 +1395,12 @@ class BatchImportWorker(QThread):
 
         cancelled = lambda: self.is_cancelled
         first = None
+        full_edge = None
         try:
             frames = scan_source(path, page_index=0, should_cancel=cancelled)
             if frames:
                 frame = frames[0]
+                full_edge = max(frame.shape[:2])
                 if getattr(frame, 'preview_is_available', True):
                     first = ensure_preview(frame, should_cancel=cancelled)
         except InterruptedError:
@@ -1419,7 +1425,10 @@ class BatchImportWorker(QThread):
         if first is None:
             return None
         height, width = first.shape[:2]
-        ratio = min(1.0, 60.0 / max(height, width))
+        full_edge = full_edge or max(height, width)
+        factor = self.scale_factor if 0 < self.scale_factor < 1.0 else 1.0
+        edge = min(60, max(1, round(full_edge * factor)))
+        ratio = min(1.0, edge / max(height, width))
         if ratio < 1.0:
             first = cv2.resize(
                 first, (max(1, round(width * ratio)), max(1, round(height * ratio))),
@@ -1427,6 +1436,7 @@ class BatchImportWorker(QThread):
         return first
 
     def _load_thumbnails(self):
+        from utils.path_identity import same_path
         from utils.sorting import natural_sort_key
         loader = self._loader()
         results = []
@@ -1437,10 +1447,9 @@ class BatchImportWorker(QThread):
             try:
                 files = [(name, os.path.join(folder, name)) for name in os.listdir(folder)
                          if os.path.splitext(name)[1].lower() in loader.SUPPORTED_FORMATS]
-                files = loader._drop_derived_aligned_copies(files)
-                from utils.path_identity import same_path
                 files = [(name, path) for name, path in files if not any(
                     same_path(path, excluded) for excluded in self.exclude_paths)]
+                files = loader._drop_derived_aligned_copies(files)
                 files.sort(key=lambda item: natural_sort_key(item[0]))
                 first = None
                 for _, path in files:

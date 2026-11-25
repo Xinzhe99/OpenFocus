@@ -11,13 +11,14 @@ from typing import Any, Optional
 
 import cv2
 import numpy as np
+from PyQt6 import sip
 from PyQt6.QtCore import QItemSelectionModel, QPoint, Qt, QThread, QSignalBlocker, pyqtSignal
 from PyQt6.QtGui import QAction, QActionGroup, QIcon, QPixmap, QImage
 from utils.file_dialogs import FileDialog
 from PyQt6.QtWidgets import (QListWidgetItem, QMenu, QMessageBox,
                              QProgressDialog)
 
-from controllers.export_manager import get_imwrite_params, image_write_error_text
+from controllers.export_manager import _window_unavailable, get_imwrite_params, image_write_error_text
 from utils import (show_error_box, show_message_box, show_success_box,
                    show_warning_box)
 from utils.settings_store import get_drag_export_format, set_drag_export_format
@@ -839,7 +840,7 @@ class OutputManager:
             total = len(valid_paths)
             for idx, path in enumerate(valid_paths):
                 try:
-                    loaded.append((path, scan_source(path)[0]))
+                    loaded.append((path, scan_source(path, page_index=0)[0]))
                 except Exception:
                     pass
                 if progress is not None:
@@ -849,6 +850,8 @@ class OutputManager:
         scanned = invoke_pixel_worker(
             run_pixel_worker, window, trans.t('msg_loading_stack'),
             scan_all, progress=progress)
+        if _window_unavailable(window):
+            return 0
         added = 0
         for path, image in scanned:
             try:
@@ -1094,12 +1097,15 @@ class OutputManager:
         if not records:
             return True
         window = self.window
-        snapshots = [(record, replace(record, scale_bar_config=deepcopy(record.scale_bar_config))) for record in records]
+        snapshots = [(record, replace(record, scale_bar_config=deepcopy(record.scale_bar_config),
+                                      watermark_config=deepcopy(record.watermark_config)))
+                     for record in records]
         labels = window.label_manager.snapshot()
         folder = FileDialog.getExistingDirectory(
             window, trans.t('action_save'), get_last_dialog_dir(), FileDialog.Option.ShowDirsOnly)
-        if not folder:
+        if not folder or _window_unavailable(window):
             return False
+        from utils.frame_pixels import PixelProgress, invoke_pixel_worker
         set_last_dialog_dir(folder)
         written, failed = [], []
         prepared_images = []
@@ -1126,10 +1132,10 @@ class OutputManager:
 
         if prepared_images:
             from utils.export_paths import publish_unique
-            from utils.frame_pixels import PixelProgress, invoke_pixel_worker
 
             progress = PixelProgress()
             cancellable = len(prepared_images) > 1
+            should_cancel = (lambda: progress.cancelled) if cancellable else None
 
             def write_all_images():
                 outcomes = []
@@ -1141,8 +1147,9 @@ class OutputManager:
                         saved_path = publish_unique(
                             path,
                             lambda staged, r=record, c=cfg, cal=calibration, s=state:
-                                self._write_record_pixels(r, staged, labels, c, cal, s),
-                            should_cancel=lambda: progress.cancelled,
+                                self._write_record_pixels(r, staged, labels, c, cal, s,
+                                                          should_cancel=should_cancel),
+                            should_cancel=should_cancel,
                         )
                         outcomes.append((original, record, saved_path, state, None))
                     except Exception as exc:
@@ -1153,6 +1160,8 @@ class OutputManager:
             outcomes = invoke_pixel_worker(
                 run_pixel_worker, window, trans.t('action_save'),
                 write_all_images, progress=progress, cancellable=cancellable)
+            if _window_unavailable(window):
+                return False
             for original, record, saved_path, state, error in outcomes:
                 if error is not None:
                     failed.append((saved_path or record.label, image_write_error_text(error)))
@@ -1164,16 +1173,22 @@ class OutputManager:
                 return False
 
         for original, record, path, annotation_state in aligned_entries:
+            progress = PixelProgress()
             try:
                 exported_path = self._export_aligned_record(
-                    record, destination=folder, labels_snapshot=labels)
-                if not exported_path:
+                    record, destination=folder, labels_snapshot=labels, progress=progress)
+                if _window_unavailable(window):
+                    return False
+                if exported_path:
+                    self._mark_record_exported(
+                        original, record.image, exported_path, annotation_state)
+                    written.append(exported_path)
+                elif not progress.cancelled:
                     raise OSError(trans.t('msg_save_failed_info_write'))
-                self._mark_record_exported(
-                    original, record.image, exported_path, annotation_state)
-                written.append(exported_path)
             except Exception as exc:
                 failed.append((path or record.label, image_write_error_text(exc)))
+            if progress.cancelled:
+                return False
         self._report_export_result(written, failed, folder)
         return not failed
 
@@ -1189,8 +1204,8 @@ class OutputManager:
         return run_pixel_worker(self.window, trans.t('action_save'),
                                 lambda: self._write_record_pixels(record, path, labels, cfg, calibration, state))
 
-    def _write_record_pixels(self, record, path, labels, cfg, calibration, state):
-        image = resolve_frame(record.image)
+    def _write_record_pixels(self, record, path, labels, cfg, calibration, state, *, should_cancel=None):
+        image = resolve_frame(record.image, should_cancel=should_cancel)
         if image is None:
             raise ValueError(trans.t('msg_no_valid_image_text'))
         metadata = record.linear_dng_metadata
@@ -1250,16 +1265,16 @@ class OutputManager:
                 self._refresh_output_tooltip(row)
                 break
 
-    def _export_aligned_record(self, record, *, destination=None, labels_snapshot=None):
+    def _export_aligned_record(self, record, *, destination=None, labels_snapshot=None, progress=None):
         exporter = self.window.export_manager
         if record.aligned_frames:
             return exporter.save_aligned_frames_as(record.aligned_frames, record.aligned_names,
                                                     record.label, destination=destination, record=record,
-                                                    labels_snapshot=labels_snapshot)
+                                                    labels_snapshot=labels_snapshot, progress=progress)
         if not record.export_path or not os.path.isdir(record.export_path):
             raise OSError(record.export_path or record.label)
         return exporter.save_aligned_stack_as(record.export_path, record.label,
-                                              destination=destination, record=record)
+                                              destination=destination, record=record, progress=progress)
 
     def _report_export_result(self, written, failed, folder) -> None:
         """One summary for a multi-file export, with the failing paths."""
@@ -1387,6 +1402,16 @@ class OutputManager:
             # An export with no recorded annotation state cannot be proven
             # current; write a fresh file instead of sharing a stale one.
             return ""
+        # A deferred batch result can be backed by the exported file itself.
+        # Do not pass on a file that was replaced after that record was opened.
+        from core.source_frames import SourceFrame
+        if isinstance(record.image, SourceFrame):
+            from utils.path_identity import same_path
+            if same_path(path, record.image.path):
+                try:
+                    record.image.validate_source()
+                except OSError:
+                    return ""
         return path
 
     def _share_preview_pixels(self, record, labels):
@@ -1794,7 +1819,7 @@ class OutputManager:
             labels = window.label_manager.snapshot()
             if record.kind == 'aligned':
                 path = self._export_aligned_record(record, labels_snapshot=labels)
-                if path:
+                if path and not _window_unavailable(window) and not sip.isdeleted(item):
                     self._mark_record_exported(original, record.image, path, self._annotation_state(record, labels))
                     item.setData(ALIGNED_DIR_ROLE, path)
                 return
@@ -1932,6 +1957,13 @@ class OutputManager:
         self._release_registration_regions(self._registration_region_key)
         record = self.record_for_item(item)
         if record is not None and record.kind == 'aligned':
+            generation = self._registration_preview_generation
+
+            def is_current():
+                return (not _window_unavailable(window)
+                        and generation == self._registration_preview_generation
+                        and window.output_list.currentItem() is item)
+
             window.fusion_result = None
             window.registration_results = []
             try:
@@ -1939,11 +1971,12 @@ class OutputManager:
                     images = record.aligned_frames
                 else:
                     from core.source_frames import scan_source
+                    folder, names = record.export_path, record.aligned_names
                     def read_stack():
-                        return [scan_source(os.path.join(record.export_path, name))[0]
-                                for name in record.aligned_names]
+                        return [scan_source(os.path.join(folder, name), page_index=0)[0]
+                                for name in names]
                     images = run_pixel_worker(window, trans.t('msg_loading_stack'), read_stack)
-                if window.output_list.currentItem() is not item:
+                if not is_current():
                     return
                 window.registration_results = list(images)
                 window.registration_filenames = list(record.aligned_names)
@@ -1956,8 +1989,9 @@ class OutputManager:
                 window.result_control_bar.setVisible(bool(images))
                 self.show_registration_result(0)
             except Exception as exc:
-                show_error_box(window, trans.t('msg_display_error_title'),
-                               trans.t('msg_display_registration_failed_text'), str(exc))
+                if is_current():
+                    show_error_box(window, trans.t('msg_display_error_title'),
+                                   trans.t('msg_display_registration_failed_text'), str(exc))
             return
         if row < len(window.fusion_results):
             window.fusion_result = window.fusion_results[row]

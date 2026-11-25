@@ -3,8 +3,6 @@ import json
 import multiprocessing
 from pathlib import Path
 import tempfile
-import threading
-import weakref
 
 import cv2
 import numpy as np
@@ -15,29 +13,6 @@ from utils.logging_setup import get_logger
 
 logger = get_logger(__name__)
 _SPAWN = multiprocessing.get_context('spawn')
-_PROGRESS_LOCK = threading.Lock()
-_PROGRESS_CALLBACKS: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
-
-
-def bind_video_progress_callback(should_cancel, progress_callback) -> None:
-    """Associate a progress callback with a loader's ``should_cancel`` callable."""
-    if should_cancel is None or progress_callback is None:
-        return
-    with _PROGRESS_LOCK:
-        try:
-            _PROGRESS_CALLBACKS[should_cancel] = progress_callback
-        except TypeError:
-            pass
-
-
-def _lookup_progress_callback(should_cancel):
-    if should_cancel is None:
-        return None
-    with _PROGRESS_LOCK:
-        try:
-            return _PROGRESS_CALLBACKS.get(should_cancel)
-        except TypeError:
-            return None
 
 
 def _run_child(target, args, should_cancel, *, on_poll=None):
@@ -67,15 +42,13 @@ def _run_child(target, args, should_cancel, *, on_poll=None):
 def _decode_video_child(video_path, scale, pixels_path, result_path, progress=None):
     from core.image_loader import ImageStackLoader
 
+    loader = ImageStackLoader()
     if progress is not None:
-        capture = cv2.VideoCapture(video_path)
-        try:
-            if capture.isOpened():
-                total = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
-                if total > 0:
-                    progress[1] = total
-        finally:
-            capture.release()
+        def report_progress(done, total):
+            progress[1] = max(0, total)
+            progress[0] = done
+
+        loader.progress_callback = report_progress
 
     layouts = []
     try:
@@ -84,10 +57,10 @@ def _decode_video_child(video_path, scale, pixels_path, result_path, progress=No
                 frame_storage.require_disk_space(frame.nbytes, pixels_path.parent)
                 frame_storage.write_frame(stream.fileno(), frame)
                 layouts.append((frame.shape, frame.dtype.str))
-                if progress is not None:
-                    progress[0] = len(layouts)
 
-            ok, message = ImageStackLoader()._decode_video(video_path, scale, append_frame)
+            ok, message = loader._decode_video(video_path, scale, append_frame)
+        if ok and progress is not None:
+            progress[1] = len(layouts)
     except Exception as exc:
         ok, message = False, str(exc)
     with result_path.open('w', encoding='utf-8') as stream:
@@ -101,32 +74,33 @@ def load_video(video_path, scale, should_cancel, progress_callback=None):
     result_path = directory / 'openfocus-video-result.json'
     images = []
     adopted = False
-    callback = progress_callback if progress_callback is not None else _lookup_progress_callback(should_cancel)
-    progress = _SPAWN.Array('i', 2, lock=False)
+    progress = None
     last_reported = (-1, -1)
 
     def poll_progress():
         nonlocal last_reported
-        if callback is None:
+        if progress is None:
             return
         done, total = int(progress[0]), int(progress[1])
         if (done > 0 or total > 0) and (done, total) != last_reported:
             last_reported = (done, total)
             try:
-                callback(done, total)
+                progress_callback(done, total)
             except Exception:
                 pass
 
     try:
         for path in (directory, pixels_path, result_path):
             scratch_registry.register(path)
+        if progress_callback is not None:
+            progress = _SPAWN.Array('i', 2, lock=False)
         # Wait for the child before reading the manifest or mapping pixels. A
         # blocked decoder cannot leave the supervising thread reading a pipe.
         code = _run_child(
             _decode_video_child,
             (video_path, scale, pixels_path, result_path, progress),
             should_cancel,
-            on_poll=poll_progress if callback is not None else None,
+            on_poll=poll_progress if progress is not None else None,
         )
         if code is None or should_cancel():
             return False, 'CANCELLED', []
@@ -153,6 +127,8 @@ def load_video(video_path, scale, should_cancel, progress_callback=None):
                 'strides': strides, 'cleanup_directory': directory,
             }, owned=True))
             offset += frame_size
+        if should_cancel():
+            return False, 'CANCELLED', []
         adopted = True
         return True, message, images
     finally:

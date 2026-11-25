@@ -1741,13 +1741,17 @@ def test_stack_load_reports_a_failed_decode(server, tmp_path):
     assert frames["count"] == 0
 
 
-def _decode_video_with_controlled_reader(path, scale, pixels_path, result_path):
+def _decode_video_with_controlled_reader(path, scale, pixels_path, result_path, progress=None):
     """Spawn target that runs the real decoder around a controllable read()."""
     import cv2
     from core.video_import import _decode_video_child
 
     class Capture:
+        instances = 0
+
         def __init__(self, path):
+            Capture.instances += 1
+            assert Capture.instances == 1, 'progress must use the decoder already reading frames'
             self.path = Path(path)
             self.index = 0
 
@@ -1772,7 +1776,7 @@ def _decode_video_with_controlled_reader(path, scale, pixels_path, result_path):
             pass
 
     cv2.VideoCapture = Capture  # This replacement is confined to the spawned process.
-    _decode_video_child(path, scale, pixels_path, result_path)
+    _decode_video_child(path, scale, pixels_path, result_path, progress)
 
 
 def test_cancel_blocked_video_import_allows_retry(server, stack_frames, tmp_path, monkeypatch):
