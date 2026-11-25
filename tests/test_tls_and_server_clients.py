@@ -54,6 +54,16 @@ def test_create_ssl_context_respects_explicit_env_ca(monkeypatch, tmp_path):
     assert loaded == []
 
 
+def test_create_ssl_context_preserves_lazy_ca_directory(monkeypatch, tmp_path):
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.load_verify_locations(capath=str(tmp_path))
+    monkeypatch.delenv("SSL_CERT_FILE", raising=False)
+    monkeypatch.setenv("SSL_CERT_DIR", str(tmp_path))
+    monkeypatch.setattr(ssl, "create_default_context", lambda: ctx)
+
+    assert tls.create_ssl_context().get_ca_certs() == []
+
+
 def test_classify_network_error_allowlisted_categories():
     ssl_err = urllib.error.URLError(ssl.SSLCertVerificationError(1, "unable to get local issuer"))
     dns_err = urllib.error.URLError(socket.gaierror(-2, "name not resolved"))

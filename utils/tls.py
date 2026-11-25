@@ -43,15 +43,16 @@ def _has_explicit_env_ca() -> bool:
 def create_ssl_context() -> ssl.SSLContext:
     """Build a default TLS context backed by the bundled CA roots when needed."""
     ctx = ssl.create_default_context()
-    loaded_ca = ctx.cert_store_stats().get("x509_ca", 0)
-    if not _has_explicit_env_ca() or loaded_ca == 0:
-        bundle = ca_bundle_path()
-        if bundle:
-            try:
-                ctx.load_verify_locations(cafile=bundle)
-            except (OSError, ssl.SSLError):
-                if loaded_ca == 0:
-                    raise
+    # OpenSSL loads hashed CA directories on demand during certificate verification.
+    if _has_explicit_env_ca():
+        return ctx
+    bundle = ca_bundle_path()
+    if bundle:
+        try:
+            ctx.load_verify_locations(cafile=bundle)
+        except (OSError, ssl.SSLError):
+            if ctx.cert_store_stats().get("x509_ca", 0) == 0:
+                raise
     return ctx
 
 

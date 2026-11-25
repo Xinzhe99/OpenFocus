@@ -214,6 +214,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   destination, including exports from large image stacks.
 
 ### Fixed
+- Bundle trusted CA roots with the desktop app so sign-in and other HTTPS
+  requests can verify server certificates on macOS.
 - Use the Darwin C ABI for system memory and CPU topology probes, including
   64-bit page sizes and validated system counter lengths.
 - Admit large JPEG stacks for ECC using reduced grayscale decodes, including
