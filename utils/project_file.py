@@ -346,7 +346,7 @@ def _multipage_container_for(name: str, folder: str) -> str:
     m = re.match(r"^(.*)_page_\d{3,}\.(tif|tiff)$", name, re.IGNORECASE)
     if not m:
         return ""
-    for ext in (m.group(2), m.group(2).lower(), m.group(2).upper(), "tif", "tiff"):
+    for ext in dict.fromkeys((m.group(2), m.group(2).lower(), m.group(2).upper(), "tif", "tiff", "TIF", "TIFF")):
         cand = os.path.join(folder, f"{m.group(1)}.{ext}")
         if os.path.isfile(cand):
             return cand
