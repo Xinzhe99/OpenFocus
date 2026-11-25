@@ -468,14 +468,15 @@ class ExactPerspectiveGpu:
                 _log.info('Deferred Lanczos4 warp using OpenCV: %s', exc)
                 return None
 
-    def _plan_bands(self, inverse, rect, src_size, channels, itemsize, fixed_bytes):
+    def _plan_bands(self, inverse, rect, src_size, channels, itemsize, fixed_bytes, *,
+                    allocate_output=True):
         from core import resource_policy as policy
 
         if getattr(self._device, 'host_unified_memory', False):
             snapshot = policy.probe_memory()
             dev_mem = int(self._device.global_mem_size)
             budget = min(_MAX_WORKSPACE_BYTES, policy.frame_ram_budget(snapshot), dev_mem // 4)
-            output_bytes = rect[2] * rect[3] * channels * itemsize
+            output_bytes = rect[2] * rect[3] * channels * itemsize if allocate_output else 0
             shared_budget = policy.ram_ceiling(snapshot) - output_bytes
             if budget <= 0 or shared_budget <= 0:
                 return None
@@ -514,7 +515,8 @@ class ExactPerspectiveGpu:
         itemsize = image.dtype.itemsize
         weights = weights8 if itemsize == 1 else weights16
         plan = self._plan_bands(inverse, rect, (src_h, src_w), channels, itemsize,
-                                weights8.size + weights16.size + _REPAIR_BYTES)
+                                weights8.size + weights16.size + _REPAIR_BYTES,
+                                allocate_output=destination is None)
         if plan is None:
             self._disabled = True
             return None
@@ -560,4 +562,5 @@ class ExactPerspectiveGpu:
         if edges[0]:
             _repair_rounding_edges(image, inverse, result, edges[1:1 + edges[0]], rect,
                                    dsize, should_cancel, bgr_rev=bgr_rev)
+            _check_cancel(should_cancel)
         return result

@@ -241,17 +241,22 @@ def _fast_file_digest(path: str, shape: tuple, dtype_str: str, page: int, file_s
     return digest.hexdigest()
 
 
-def _build_source_fingerprint(frame, image, should_cancel, *, include_context=True):
-    """Build a SourceFingerprint, using fast file digest for unmodified file-backed SourceFrames."""
+def _can_use_file_digest(frame):
     from core.source_frames import SourceFrame
 
+    return (type(frame) is SourceFrame and not frame.transforms and not frame.raw_sensor_shape
+            and frame.linear_metadata is None and frame.scale == 1.0
+            and bool(frame.path) and bool(frame.fingerprint))
+
+
+def _build_source_fingerprint(frame, image, should_cancel, *, include_context=True):
+    """Build a SourceFingerprint, using fast file digest for unmodified file-backed SourceFrames."""
+    use_file_digest = _can_use_file_digest(frame)
     path, page, file_stamp = _source_file_identity(frame)
     shape = tuple(image.shape)
     dtype_str = image.dtype.str
-    context = _source_context(frame) if include_context else ''
-    if (type(frame) is SourceFrame and not frame.transforms
-            and frame.linear_metadata is None and frame.scale == 1.0
-            and path and file_stamp):
+    context = _source_context(frame) if include_context or use_file_digest else ''
+    if use_file_digest:
         digest = _fast_file_digest(path, shape, dtype_str, page, file_stamp, should_cancel)
         identity = SourceFingerprint(shape, dtype_str, digest, path, page, file_stamp,
                                      context, digest_kind='file')
@@ -282,6 +287,21 @@ class SourceFingerprint:
             if (stat.st_size, stat.st_mtime_ns) != self.file_stamp:
                 raise OSError(f'Source changed since alignment: {self.path}')
 
+    def _validate_file_digest(self, should_cancel):
+        if _fast_file_digest(self.path, self.shape, self.dtype, self.page, self.file_stamp,
+                             should_cancel) != self.sha256:
+            raise ValueError('Alignment source file changed')
+        self.validate_file()
+
+    def _validate_file_descriptor(self, source, should_cancel):
+        if (not _can_use_file_digest(source) or tuple(source.shape) != self.shape
+                or np.dtype(source.dtype).str != self.dtype
+                or _source_file_identity(source) != (self.path, self.page, self.file_stamp)
+                or (self.context and _source_context(source) != self.context)):
+            raise ValueError('Alignment source identity changed')
+        source.validate_source()
+        self._validate_file_digest(should_cancel)
+
     def validate_direct_source(self, source_frame, should_cancel=None):
         """Validate a direct-mapped RGB TIFF source via render-scope digest if cached."""
         _check_cancel(should_cancel)
@@ -294,6 +314,9 @@ class SourceFingerprint:
                 or _source_file_identity(source_frame) != (self.path, self.page, self.file_stamp)
                 or (self.context and _source_context(source_frame) != self.context)):
             raise ValueError('Alignment source identity changed')
+        if self.digest_kind == 'file':
+            self._validate_file_descriptor(source_frame, should_cancel)
+            return True
         digest = frame_resolution_cache.get_source_digest(source_frame)
         if digest is None:
             return False
@@ -307,20 +330,29 @@ class SourceFingerprint:
         if tuple(image.shape) != self.shape or np.dtype(image.dtype).str != self.dtype:
             raise ValueError('Alignment source shape or dtype changed')
         if self.digest_kind == 'file' and self.path:
-            if _fast_file_digest(self.path, self.shape, self.dtype, self.page, self.file_stamp,
-                                 should_cancel) != self.sha256:
-                raise ValueError('Alignment source file changed')
-            if source is None:
-                from core.frame_storage import is_mapped_frame
-                if not is_mapped_frame(image):
-                    from core.image_loader import decode_image, decode_tiff_page
-                    disk_pixels = (decode_tiff_page(self.path, self.page)
-                                   if self.page else decode_image(self.path))
-                    if (disk_pixels is None or tuple(disk_pixels.shape) != self.shape
-                            or np.dtype(disk_pixels.dtype).str != self.dtype
-                            or not np.array_equal(image, disk_pixels)):
-                        raise ValueError('Alignment source pixels changed')
-            self.validate_file()
+            if source is not None:
+                self._validate_file_descriptor(source, should_cancel)
+            else:
+                from core.image_loader import decode_image, decode_tiff_page
+
+                self._validate_file_digest(should_cancel)
+                resource_policy.require_memory(math.prod(self.shape[:2]) * 32 + self.file_stamp[0] * 2)
+                gray = len(self.shape) == 2
+                if os.path.splitext(self.path)[1].lower() in ('.tif', '.tiff'):
+                    disk_pixels = decode_tiff_page(self.path, self.page, preserve_grayscale=gray)
+                else:
+                    disk_pixels = decode_image(self.path, allow_transparent_png=True,
+                                               preserve_grayscale=gray)
+                _check_cancel(should_cancel)
+                if disk_pixels is not None and self.shape[2:] == (4,) and disk_pixels.shape[2:] == (3,):
+                    import cv2
+
+                    disk_pixels = cv2.cvtColor(disk_pixels, cv2.COLOR_BGR2BGRA)
+                if (disk_pixels is None or disk_pixels.shape != self.shape
+                        or disk_pixels.dtype.str != self.dtype
+                        or not _alignment_pixels_equal(image, disk_pixels, should_cancel)):
+                    raise ValueError('Alignment source pixels changed')
+                self.validate_file()
             return
         if _pixel_digest(image, should_cancel, source=source) != self.sha256:
             raise ValueError('Alignment source pixels changed')
@@ -761,7 +793,7 @@ def estimate_translation_plan(sources, *, max_shift_ratio=0.05,
     return TranslationPlan(tuple(transforms), 0, tuple(range(len(sources))), ratio, needed)
 
 
-def apply_translation(image, transform, *, should_cancel=None):
+def apply_translation(image, transform, *, should_cancel=None, source=None):
     """Validate source identity and apply a reusable full-resolution transform.
 
     Identity returns the original borrowed array exactly. Other translations
@@ -774,7 +806,7 @@ def apply_translation(image, transform, *, should_cancel=None):
     if not isinstance(transform, TranslationTransform):
         raise TypeError('transform must be a TranslationTransform')
     resource_policy.require_memory(translation_resolution_bytes(image))
-    transform.source.validate_pixels(image, should_cancel)
+    transform.source.validate_pixels(image, should_cancel, source=source)
     result = _warp(image, transform.dx, transform.dy, should_cancel)
     _check_cancel(should_cancel)
     return result
@@ -1296,17 +1328,9 @@ def grid_level_4d(img_a, img_b, base8, ranges4, coef=1.0, grid_half=8,
     for rnd in range(max_rounds):
         _check_cancel(should_cancel)
         rounds = rnd + 1
-        # When all 4 dimensions (tx, ty, mag, rot) are active simultaneously,
-        # a full 17^4 grid evaluates 83,521 candidates per round. Using a tighter
-        # 9x9x7x7 stencil (3,969 candidates, 21x fewer) converges to the same
-        # subpixel precision in nearly the same number of rounds.
-        active_4d = (grid_half > 4
-                     and rng[0] > divs[0] and rng[1] > divs[1]
-                     and rng[2] > divs[2] and rng[3] > divs[3])
-        axis_halves = (4, 4, 3, 3) if active_4d else (grid_half,) * 4
         cnts, steps = [], []
         for k in range(4):
-            c, st = _cnt_step(rng[k], divs[k], axis_halves[k])
+            c, st = _cnt_step(rng[k], divs[k], grid_half)
             cnts.append(c)
             steps.append(st)
         N = cnts[0] * cnts[1] * cnts[2] * cnts[3]
@@ -1716,17 +1740,21 @@ def _alignment_memory(height, width, decode_peak, plane_limit=None):
     return planes + decode_peak + width * 1024 + 16 * 1024 * 1024
 
 
+def _alignment_pyramid_bytes(height, width):
+    total = height * width * 2
+    while min(height, width) >= 64:
+        height, width = (height + 1) // 2, (width + 1) // 2
+        total += height * width * 2
+    return total
+
+
 def _alignment_spill_bytes(height, width, count, reference_frame):
     plane = height * width * 2
     if count == 1:
         return plane
     # A retained anchor overlaps the current pair only on a longer chain.
     pyramids = 3 if count > 3 and reference_frame not in (1, count) else 2
-    reduced = 0
-    while min(height, width) >= 64:
-        height, width = (height + 1) // 2, (width + 1) // 2
-        reduced += height * width * 2
-    return (pyramids + 1) * plane + pyramids * reduced
+    return plane + pyramids * _alignment_pyramid_bytes(height, width)
 
 
 def estimate_alignment_bytes(sources):
@@ -2010,53 +2038,14 @@ def _alignment_pixels_equal(first, second, should_cancel):
     return True
 
 
-def _is_identity_f8(f8) -> bool:
-    """True when an 8-float similarity slot maps every pixel to itself."""
-    vals = np.asarray(f8, dtype=np.float32)
-    return (float(vals[0]) == float(vals[2]) and float(vals[1]) == float(vals[3])
-            and float(vals[4]) == 0.0 and float(vals[5]) == 1.0 and float(vals[6]) == 1.0)
-
-
-def _compose_alignment_f8(prev_f8, delta_f8):
-    """Compose two inverse-map similarity transforms: T_total(x) = T_delta(T_prev(x)).
-
-    Allows aligning adjacent unwarped frames directly and accumulating the
-    exact similarity transform without warping the full-resolution reference
-    grayscale plane or rebuilding its pyramid on every frame.
-    """
-    prev = np.asarray(prev_f8, dtype=np.float32)
-    delta = np.asarray(delta_f8, dtype=np.float32)
-    if _is_identity_f8(prev):
-        return delta.copy()
-    if _is_identity_f8(delta):
-        return prev.copy()
-    fields = gpu_params(delta)
-    # Use float64 intermediate for accumulated translation so deep stacks avoid rounding drift.
-    dx_ = float(prev[0]) - float(fields["cx"])
-    dy_ = float(prev[1]) - float(fields["cy"])
-    tx_new = dx_ * float(fields["P18"]) + dy_ * float(fields["P0C"]) + float(fields["tx"])
-    ty_new = dy_ * float(fields["P1C"]) - dx_ * float(fields["P08"]) + float(fields["ty"])
-    out = prev.copy()
-    out[0] = F32(tx_new)
-    out[1] = F32(ty_new)
-    out[2] = prev[2]
-    out[3] = prev[3]
-    out[4] = F32(float(prev[4]) + float(delta[4]))
-    out[5] = F32(float(prev[5]) * float(delta[5]))
-    out[6] = F32(float(prev[6]) * float(delta[6]))
-    out[7] = F32(float(prev[7]) * float(delta[7]))
-    return out
-
-
 def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
                             rotation=0., magnification=3., should_cancel=None,
                             progress_callback=None, failure_policy='fail'):
     """Sequential wide search; rotation in degrees, magnification in percent.
 
-    Source one follows the previous aligned reference. Each estimate maps to
-    the anchor and starts from the previous absolute transform, so the local
-    search can follow cumulative focus breathing across a long stack. A later
-    reference anchors two independent chains, one on either side.
+    Each estimate matches the current frame to the previous aligned reference
+    and starts from its absolute transform. An interior reference anchors
+    independent chains in both directions.
     """
     _check_cancel(should_cancel)
     ratio = float(max_shift_ratio)
@@ -2107,7 +2096,6 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
         log_action('openfocus_alignment_low_ram_degrade',
                    required_bytes=min_needed, budget_bytes=ceiling_now)
     host_budget = getattr(plan, 'ram_budget', 0) or 0
-    gray_bytes = h * w * 2
     prefetch_workers = 0
     search_threads = nullcontext()
     if not low_ram_spill and len(sources) >= 2 and host_budget > needed:
@@ -2118,7 +2106,10 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
             scratch_bytes = max(_HASH_CHUNK_BYTES, w * 16)
             if any(np.dtype(frame.dtype).kind == 'f' for frame in sources):
                 scratch_bytes = max(2 * _HASH_CHUNK_BYTES, w * 512)
-            per_prefetch_bytes = decode_peak + gray_bytes + scratch_bytes
+            gray_bytes = h * w * 2
+            pyramid_bytes = _alignment_pyramid_bytes(h, w)
+            per_prefetch_bytes = max(decode_peak + gray_bytes + scratch_bytes,
+                                     pyramid_bytes + w * 64)
             spare = host_budget - needed - source_cache_growth_bytes(sources)
             prefetch_workers = max(0, min(4, len(sources) - 1, align_workers // 2,
                                           spare // per_prefetch_bytes))
@@ -2150,7 +2141,7 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
         gray = _alignment_gray16(image, cancelled, spillable=low_ram_spill)
         del image
         pyr = (build_pyramid(gray, 64, cancelled, spillable=False)
-               if (not low_ram_spill and (ratio or rotation or magnification) and min(gray.shape) >= 2)
+               if (prefetch_workers and (ratio or rotation or magnification) and min(gray.shape) >= 2)
                else None)
         return identity, gray, pyr
 
@@ -2200,45 +2191,39 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
             if has_right_chain and index == ref + 1:
                 previous, previous_index = anchor, ref
                 prev_pyr = anchor_pyr
+                anchor = anchor_pyr = None
             identity, gray, curr_pyr = next(prepared_stream)
             pair = np.array(_IDENTITY_F8, np.float32)
             rounds, failure = 0, ''
-            if index == ref:
-                total = pair.copy()
-            else:
-                prev_total = transforms[previous_index].f8
-                if ((ratio or rotation or magnification)
-                        and not _alignment_pixels_equal(previous, gray, should_cancel)):
-                    if prev_pyr is None and min(previous.shape) >= 2:
-                        prev_pyr = build_pyramid(previous, 64, should_cancel, spillable=low_ram_spill)
-                    if has_right_chain and index == ref - 1 and previous_index == ref:
-                        anchor_pyr = prev_pyr
-                    if curr_pyr is None and min(gray.shape) >= 2:
-                        curr_pyr = build_pyramid(gray, 64, should_cancel, spillable=low_ram_spill)
-                    try:
-                        pair, rounds = align_pair_wide(previous, gray, h_pct=ratio * 100,
-                            v_pct=ratio * 100, rot_deg=rotation, mag_pct=magnification,
-                            should_cancel=should_cancel, initial_f8=None,
-                            _a_pyr=prev_pyr, _b_pyr=curr_pyr)
-                    except AlignmentEstimationError as error:
-                        if failure_policy == 'fail':
-                            failure = RejectedAlignmentFrame('OpenFocus', index, str(error))
-                            failure.completed_transforms = tuple(t for t in transforms if t is not None)
-                            raise failure from error
-                        failure = str(error)
-                        pair = np.array(_IDENTITY_F8, np.float32)
-                total = _compose_alignment_f8(prev_total, pair)
+            if (index != ref and (ratio or rotation or magnification)
+                    and not _alignment_pixels_equal(previous, gray, should_cancel)):
+                if prev_pyr is None:
+                    prev_pyr = build_pyramid(previous, 64, should_cancel, spillable=low_ram_spill)
+                if has_right_chain and index == ref - 1 and previous_index == ref:
+                    anchor_pyr = prev_pyr
+                if curr_pyr is None:
+                    curr_pyr = build_pyramid(gray, 64, should_cancel, spillable=low_ram_spill)
+                try:
+                    pair, rounds = align_pair_wide(previous, gray, h_pct=ratio * 100,
+                        v_pct=ratio * 100, rot_deg=rotation, mag_pct=magnification,
+                        should_cancel=should_cancel, initial_f8=transforms[previous_index].f8,
+                        _a_pyr=prev_pyr, _b_pyr=curr_pyr)
+                except AlignmentEstimationError as error:
+                    if failure_policy == 'fail':
+                        failure = RejectedAlignmentFrame('OpenFocus', index, str(error))
+                        failure.completed_transforms = tuple(t for t in transforms if t is not None)
+                        raise failure from error
+                    failure = str(error)
+                    pair = np.array(_IDENTITY_F8, np.float32)
+            total = pair.copy()
             if (not failure and previous_index != ref
                     and transforms[previous_index].failure):
                 failure = 'reference alignment fell back'
             transform = AlignmentTransform(index, tuple(float(v) for v in total),
                 tuple(float(v) for v in pair), identity, previous_index, rounds, failure)
             transforms[index] = transform
-            # Keep unwarped gray + prebuilt pyramid for the next adjacent pair:
-            # avoids N-1 full-res gray warps and pyramid rebuilds and prevents
-            # cumulative bilinear softening across deep stacks.
-            previous = gray
-            prev_pyr = curr_pyr
+            previous = _warp_alignment(gray, total, should_cancel, spillable=low_ram_spill)
+            prev_pyr = curr_pyr if previous is gray else None
             if index == ref and has_right_chain:
                 anchor = previous
                 anchor_pyr = prev_pyr

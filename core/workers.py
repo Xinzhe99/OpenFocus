@@ -1280,7 +1280,8 @@ class RenderWorker(QThread):
         if self.sharpen_output and result is not None:
             from utils.output_sharpen import sharpen_output
             with profile.stage('sharpen'):
-                result = sharpen_output(result, should_cancel, strength=self.sharpen_strength)
+                result = sharpen_output(result, should_cancel, strength=self.sharpen_strength,
+                                        thread_count=self.thread_count)
         device = fusion.get_info()['device'] if (get_fusion(self.algorithm).neural or self.algorithm in OPENCL_FUSION_ALGORITHMS) else 'CPU'
         with profile.stage('finalize_output'):
             quantized = quantize_fuse_output(result, is_16bit)
@@ -1915,7 +1916,7 @@ class BatchWorker(QThread):
                     if runtime.get('sharpen_output', False) and result is not None:
                         from utils.output_sharpen import sharpen_output
                         result = sharpen_output(result, lambda: self.is_cancelled,
-                                                strength=self.sharpen_strength)
+                                                strength=self.sharpen_strength, thread_count=self.thread_count)
                     result = quantize_fuse_output(result, is_16bit)
                     result = restore_transparent_canvas(result, transparent)
                 else:
@@ -2130,7 +2131,8 @@ class BatchWorker(QThread):
             from utils.output_sharpen import sharpen_output
             frames, is_16bit = normalize_fuse_input([result])
             result = quantize_fuse_output(sharpen_output(
-                frames[0], lambda: self.is_cancelled, strength=self.sharpen_strength), is_16bit)
+                frames[0], lambda: self.is_cancelled, strength=self.sharpen_strength,
+                thread_count=self.thread_count), is_16bit)
         output_format = settings.get('format', 'png').lstrip('.').lower()
         name = os.path.basename(os.path.normpath(folder_path))
         output = os.path.join(self._get_output_path_for_single_folder(folder_path), f'{name}.{output_format}')

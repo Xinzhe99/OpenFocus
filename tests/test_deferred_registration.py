@@ -815,3 +815,111 @@ def test_lent_warp_restores_thread_state_after_error(monkeypatch):
     with registration.deferred_warp_threads(2), pytest.raises(RuntimeError, match='warp failed'):
         warp(np.zeros((4, 4), np.uint8))
     assert settings == [2, 0]
+
+
+@pytest.mark.parametrize('shift', [3., 3.375])
+@pytest.mark.parametrize('black_path', [False, True])
+def test_render_alignment_mask_keeps_interpolation_and_black_edges(shift, black_path):
+    from core.render_context import RenderAlignmentMask, _alignment_valid_mask
+
+    image = np.full((24, 32, 3), 96, np.uint8)
+    image[12, 8] = 0
+    if black_path:
+        for col in range(9):
+            image[4 + col, col] = 0
+    identity = registration._perspective_source(image, image, None)
+    matrix = (1., 0., shift, 0., 1., 0., 0., 0., 1.)
+    warp = registration.PerspectiveWarp(identity, matrix, '<f8', (32, 24))
+    aligned = source_frames.process_frame(image, warp)
+    cropped = source_frames.crop_frame(aligned, 1, 2, 28, 18)
+    roi = (1, 1, 22, 14)
+    expected = _alignment_valid_mask(source_frames.resolve_frame(cropped)[1:15, 1:23])
+    actual, failed = RenderAlignmentMask([cropped], roi, None).complete()
+    assert not failed
+    np.testing.assert_array_equal(actual, expected)
+    if shift == 3.:
+        assert actual[9, 9] == (not black_path)
+
+
+def test_render_alignment_mask_keeps_clamped_last_translation_column():
+    from functools import partial
+    from core.openfocus_alignment import TranslationTransform, apply_translation
+    from core.render_context import RenderAlignmentMask
+
+    image = np.full((8, 9), 120, np.uint8)
+    identity = registration._perspective_source(image, image, None)
+    transform = TranslationTransform(0, -.75, 0., -.75, 0., identity)
+    aligned = source_frames.process_frame(image, partial(apply_translation, transform=transform))
+    assert RenderAlignmentMask([aligned], None, None).complete() == (None, False)
+
+
+def test_native_grayscale_tiff_validates_file_without_a_second_decode(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from core import image_loader
+
+    path = tmp_path / 'gray.tif'
+    image = _pixels(np.uint16, 1)[0]
+    assert cv2.imwrite(str(path), image)
+    source = source_frames.scan_source(str(path), header_only=True)[0]
+    source = replace(source, shape=image.shape)
+    identity = registration._perspective_source_file(source, None)
+    matrix = (1., 0., 0., 0., 1., 0., 0., 0., 1.)
+    warp = registration.PerspectiveWarp(identity, matrix, '<f8', image.shape[::-1])
+    aligned = source_frames.process_frame(source, warp)
+    real_decode = image_loader.decode_tiff_page
+    decode_modes = []
+
+    def decode(*args, **kwargs):
+        decode_modes.append(kwargs.get('preserve_grayscale', False))
+        return real_decode(*args, **kwargs)
+
+    monkeypatch.setattr(image_loader, 'decode_tiff_page', decode)
+    with source_frames.without_source_cache_growth():
+        np.testing.assert_array_equal(source_frames.resolve_frame(aligned), image)
+    assert decode_modes == [True]
+    np.testing.assert_array_equal(warp(image), image)
+    modified = image.copy()
+    modified[0, 0] ^= 1
+    with pytest.raises(ValueError, match='source pixels changed'):
+        warp(modified)
+
+
+@pytest.mark.parametrize('cancel', [False, True])
+def test_mapped_perspective_gpu_partial_result_cannot_escape(tmp_path, monkeypatch, cancel):
+    from core import frame_storage
+
+    image = _pixels(np.uint8, 3)[0]
+    source = _sources(tmp_path, [image])[0]
+    identity = registration._perspective_source_file(source, None)
+    matrix = np.array([[1., .01, .25], [0., 1., 0.], [0., 0., 1.]])
+    warp = registration.PerspectiveWarp(identity, tuple(matrix.flat), '<f8', image.shape[1::-1])
+    expected = warp(image)
+    cancelled = Event()
+    calls = []
+
+    class Backend:
+        def warp(self, *args, destination, **kwargs):
+            assert frame_storage.is_mapped_frame(destination)
+            destination[:2] = 255
+            if cancel:
+                cancelled.set()
+            return None
+
+        def note_cpu_warp(self, method):
+            calls.append(method)
+
+    token = registration._deferred_ecc_gpu.set(Backend())
+    try:
+        with frame_storage.scratch_directory(explicit_directory=str(tmp_path)):
+            if cancel:
+                monkeypatch.setattr(cv2, 'warpPerspective', lambda *a, **kw: pytest.fail('CPU warp after cancellation'))
+                with pytest.raises(registration.RegistrationCancelled):
+                    warp._call_mapped_jpeg(source, image, should_cancel=cancelled.is_set)
+                assert not calls
+            else:
+                mapped = warp._call_mapped_jpeg(source, image)
+                assert frame_storage.is_mapped_frame(mapped)
+                np.testing.assert_array_equal(mapped, expected)
+                assert calls == [warp.method]
+    finally:
+        registration._deferred_ecc_gpu.reset(token)

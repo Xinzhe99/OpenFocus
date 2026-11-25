@@ -393,6 +393,7 @@ def _align_homography_impl(input_source, output_path=None, img_filenames=None, d
 
     def get_features_task(img):
         from core.source_frames import resolve_frame
+        from core.openfocus_alignment import _can_use_file_digest
         source = img
         img = resolve_frame(img, should_cancel=should_cancel)
         identity = (_perspective_source_file(source, should_cancel)
@@ -558,15 +559,6 @@ class RegistrationCancelled(Exception):
 def _check_cancel(should_cancel):
     if should_cancel is not None and should_cancel():
         raise RegistrationCancelled()
-
-
-def _can_use_file_digest(frame):
-    """True when ``frame`` is an unmodified file-backed SourceFrame eligible for fast digest."""
-    from core.source_frames import SourceFrame
-
-    return (type(frame) is SourceFrame and not frame.transforms
-            and frame.linear_metadata is None and frame.scale == 1.0
-            and bool(frame.path) and bool(frame.fingerprint))
 
 
 def _perspective_source_file(frame, should_cancel):
@@ -772,6 +764,7 @@ class PerspectiveWarp:
         from core import _alignment_kernels as _native_kernels
         from core.openfocus_alignment import _is_bgr_rev, _run_row_bands
         cancel_fn = self.should_cancel if should_cancel is None else should_cancel
+        _check_cancel(cancel_fn)
         width, height = self.dsize
         if self._is_integer_crop(image.shape, image.dtype):
             _, _, tx, _, _, ty, _, _, _ = self.matrix
@@ -806,12 +799,10 @@ class PerspectiveWarp:
                 result = backend.warp(warp_src, matrix, self.dsize,
                                       cancel_fn, bgr_rev=bgr_rev, method=self.method)
             else:
-                try:
-                    result = backend.warp(warp_src, matrix, self.dsize,
-                                          cancel_fn, bgr_rev=bgr_rev, method=self.method,
-                                          destination=destination)
-                except TypeError:
-                    result = None
+                result = backend.warp(warp_src, matrix, self.dsize,
+                                      cancel_fn, bgr_rev=bgr_rev, method=self.method,
+                                      destination=destination)
+            _check_cancel(cancel_fn)
             if result is not None:
                 return result
         bgr_rev = _is_bgr_rev(image) and _native_kernels.available()
@@ -819,6 +810,7 @@ class PerspectiveWarp:
         threads = _warp_thread_budget()
         warped = self._run_cv_warp(src, matrix, self.dsize, cv2.INTER_LANCZOS4, threads,
                                    destination=destination)
+        _check_cancel(cancel_fn)
         if bgr_rev:
             swap_fn = (_native_kernels.swap_bgr_inplace_rows_u8 if warped.dtype == np.uint8
                        else _native_kernels.swap_bgr_inplace_rows_u16)
@@ -835,12 +827,12 @@ class PerspectiveWarp:
         return self._apply_to_image(image)
 
     def call_with_source(self, source_frame, image, *, should_cancel=None):
-        """Apply warp passing original descriptor so direct-RGB TIFF hash reuses render scope."""
+        """Validate against the original source descriptor before applying the warp."""
         cancel_fn = _merge_cancel_callbacks(self.should_cancel, should_cancel)
         self.source.validate_pixels(image, cancel_fn, source=source_frame)
         return self._apply_to_image(image, should_cancel=cancel_fn)
 
-    def _call_mapped_jpeg(self, image, *, should_cancel=None):
+    def _call_mapped_jpeg(self, source_frame, image, *, should_cancel=None):
         """Warp packed BGR pixels into an owned mapping with bounded CPU workspace."""
         from core.frame_storage import create_frame, frame_region
         from core.resource_policy import require_memory
@@ -849,12 +841,14 @@ class PerspectiveWarp:
         integer_crop = self._is_integer_crop(image.shape, image.dtype)
         require_memory(128 * 1024 + (0 if integer_crop else _perspective_cpu_tile_bytes(self.dsize)))
         with frame_region(image) as pixels:
-            self.source.validate_pixels(pixels, cancel_fn)
+            self.source.validate_pixels(pixels, cancel_fn, source=source_frame)
             output = create_frame(_perspective_output_shape(image.shape, self.dsize), image.dtype)
             # Close the written view before the root mapping enters the staged stack.
             with frame_region(output, write=True) as destination:
                 _check_cancel(cancel_fn)
-                self._apply_to_image(pixels, should_cancel=cancel_fn, destination=destination)
+                warped = self._apply_to_image(pixels, should_cancel=cancel_fn, destination=destination)
+                if warped is not destination:
+                    np.copyto(destination, warped)
         _check_cancel(cancel_fn)
         return output
 
@@ -902,7 +896,7 @@ class PerspectiveWarp:
             self.source.validate_pixels(image, cancel_fn)
         else:
             image = resolve_frame(source_or_image, should_cancel=cancel_fn)
-            self.source.validate_pixels(image, cancel_fn)
+            self.source.validate_pixels(image, cancel_fn, source=source_or_image)
 
         src_shape = tuple(source_or_image.shape)
         src_dtype = np.dtype(source_or_image.dtype)
@@ -1390,6 +1384,7 @@ def _prepare_and_estimate_pairs(values, prepare, estimate, workers, should_cance
                     completed_estimates += 1
                     if progress_callback is not None:
                         progress_callback(completed_estimates, count - 1)
+                        _check_cancel(should_cancel)
                 if batch_prepares and not estimates and next_estimate == prepare_until:
                     prepare_until = min(count, prepare_until + window - 1)
                 work_left = task_bytes - solve_bytes * len(estimates)
@@ -1809,7 +1804,7 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
 
     # 预处理函数：转灰度 + 降采样 + 高斯模糊 + 归一化
     def preprocess(source):
-        from core.openfocus_alignment import _is_bgr_rev
+        from core.openfocus_alignment import _can_use_file_digest, _is_bgr_rev
         from core.source_frames import resolve_frame, source_area_resizer
         # Resizing during JPEG decode avoids loading and transferring full-size
         # color pixels. Keep OpenCL area resizing for sources that need it.
@@ -1951,6 +1946,7 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
                 warp_matrix[0, 2] /= scale_factor
                 warp_matrix[1, 2] /= scale_factor
         except cv2.error as exc:
+            _check_cancel(should_cancel)
             if failure_policy == 'fail':
                 raise RejectedAlignmentFrame('ECC', idx, 'ECC failed to converge') from exc
             cc = None
@@ -1984,6 +1980,7 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
                 pair_transforms.append(transform)
                 if progress_callback is not None:
                     progress_callback(len(pair_transforms), len(images) - 1)
+                    _check_cancel(should_cancel)
                 del pair  # Release the old gray before decoding the next frame.
         else:
             def prepare_frame(image):
