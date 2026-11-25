@@ -229,16 +229,220 @@ class RenderedDepth:
     valid_mask: Optional[np.ndarray] = None
 
 
+def _analytic_frame_valid_polygon(frame, crop):
+    """Return ('all_valid', None), ('poly', Nx2 float32), or ('fallback', None).
+
+    Computes the exact valid-pixel convex polygon from a deferred alignment
+    transform descriptor so ``RenderAlignmentMask`` does not need to scan and
+    flood-fill every full-resolution frame. Returns ``('fallback', None)`` for
+    unrecognized processors, non-invertible warps, or raw pixel arrays.
+    """
+    from functools import partial
+    from core.registration import PerspectiveWarp
+    from core.openfocus_alignment import (
+        AlignmentTransform,
+        TranslationTransform,
+        _is_identity_f8,
+        gpu_params,
+        map_coords,
+    )
+
+    if not isinstance(frame, ProcessedFrame):
+        return 'fallback', None
+
+    # Unwrap optional crop_frame or positive exposure gain wrappers on top of alignment.
+    cur = frame
+    eff_x, eff_y = 0, 0
+    if crop is not None:
+        cx, cy, cw, ch = crop
+        eff_x, eff_y = int(cx), int(cy)
+        out_w, out_h = int(cw), int(ch)
+    else:
+        out_h, out_w = int(frame.shape[0]), int(frame.shape[1])
+
+    while isinstance(cur, ProcessedFrame):
+        proc = cur.processor
+        if isinstance(proc, PerspectiveWarp):
+            src_shape = getattr(getattr(proc, 'source', None), 'shape', None)
+            if not src_shape or len(src_shape) < 2:
+                return 'fallback', None
+            src_h, src_w = int(src_shape[0]), int(src_shape[1])
+            dst_w, dst_h = int(proc.dsize[0]), int(proc.dsize[1])
+            if src_h <= 0 or src_w <= 0 or dst_w <= 0 or dst_h <= 0:
+                return 'fallback', None
+            # Only trust analytic geometry if the underlying source has no prior
+            # registration warp (i.e. raw SourceFrame or ndarray with no warp fill).
+            if isinstance(cur.source, ProcessedFrame):
+                return 'fallback', None
+            M = np.asarray(proc.matrix, dtype=np.float64).reshape(3, 3)
+            if not np.all(np.isfinite(M)):
+                return 'fallback', None
+            det = float(np.linalg.det(M))
+            if abs(det) < 1e-12:
+                return 'fallback', None
+            inv_M = np.linalg.inv(M)
+            # Check whether all 4 corners of the target crop map inside the source bounds.
+            dst_corners = np.array([
+                [eff_x, eff_y, 1.0],
+                [eff_x + out_w - 1, eff_y, 1.0],
+                [eff_x + out_w - 1, eff_y + out_h - 1, 1.0],
+                [eff_x, eff_y + out_h - 1, 1.0],
+            ], dtype=np.float64)
+            mapped = dst_corners @ inv_M.T
+            if np.all(mapped[:, 2] > 1e-7):
+                sx = mapped[:, 0] / mapped[:, 2]
+                sy = mapped[:, 1] / mapped[:, 2]
+                if (np.all(sx >= 0.0) and np.all(sx <= src_w - 1.0)
+                        and np.all(sy >= 0.0) and np.all(sy <= src_h - 1.0)):
+                    return 'all_valid', None
+            # Map the 4 source corners into crop coordinates.
+            src_corners = np.array([
+                [0.0, 0.0, 1.0],
+                [src_w - 1.0, 0.0, 1.0],
+                [src_w - 1.0, src_h - 1.0, 1.0],
+                [0.0, src_h - 1.0, 1.0],
+            ], dtype=np.float64)
+            fwd = src_corners @ M.T
+            if not np.all(fwd[:, 2] > 1e-7):
+                return 'fallback', None
+            pts = np.empty((4, 2), dtype=np.float32)
+            pts[:, 0] = (fwd[:, 0] / fwd[:, 2]) - eff_x
+            pts[:, 1] = (fwd[:, 1] / fwd[:, 2]) - eff_y
+            return 'poly', pts
+
+        if isinstance(proc, partial):
+            transform = proc.keywords.get('transform') if proc.keywords else None
+            if transform is None and proc.args:
+                for arg in proc.args:
+                    if isinstance(arg, (AlignmentTransform, TranslationTransform)):
+                        transform = arg
+                        break
+            if isinstance(transform, (AlignmentTransform, TranslationTransform)):
+                if isinstance(cur.source, ProcessedFrame):
+                    return 'fallback', None
+                src_shape = getattr(getattr(transform, 'source', None), 'shape', None)
+                if not src_shape or len(src_shape) < 2:
+                    return 'fallback', None
+                src_h, src_w = int(src_shape[0]), int(src_shape[1])
+                if isinstance(transform, TranslationTransform):
+                    dx, dy = float(transform.dx), float(transform.dy)
+                    if dx == 0.0 and dy == 0.0:
+                        return 'all_valid', None
+                    # Valid output coordinates satisfy 0 <= x - dx <= src_w - 1.001
+                    x0 = max(0.0, dx) - eff_x
+                    y0 = max(0.0, dy) - eff_y
+                    x1 = min(float(cur.shape[1] - 1), src_w - 1.001 + dx) - eff_x
+                    y1 = min(float(cur.shape[0] - 1), src_h - 1.001 + dy) - eff_y
+                    if x0 <= 0.0 and y0 <= 0.0 and x1 >= out_w - 1.0 and y1 >= out_h - 1.0:
+                        return 'all_valid', None
+                    if x1 < x0 or y1 < y0:
+                        return 'fallback', None
+                    pts = np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1]], dtype=np.float32)
+                    return 'poly', pts
+                else:
+                    if _is_identity_f8(transform.f8):
+                        return 'all_valid', None
+                    params = gpu_params(np.asarray(transform.f8, dtype=np.float32))
+                    # Check inverse mapping of the 4 crop corners (map_coords maps dst -> src).
+                    xs = np.array([eff_x, eff_x + out_w - 1, eff_x + out_w - 1, eff_x], dtype=np.float32)
+                    ys = np.array([eff_y, eff_y, eff_y + out_h - 1, eff_y + out_h - 1], dtype=np.float32)
+                    u, v = map_coords(params, xs, ys)
+                    if (np.all(u >= 0.0) and np.all(u <= src_w - 1.001)
+                            and np.all(v >= 0.0) and np.all(v <= src_h - 1.001)):
+                        return 'all_valid', None
+                    # Invert the similarity transform to map source corners into dst coords.
+                    tx, ty, cx_p, cy_p, p08, p0c, p18, p1c = (float(val) for val in params)
+                    A = np.array([[p08, p0c], [p18, p1c]], dtype=np.float64)
+                    det = float(A[0, 0] * A[1, 1] - A[0, 1] * A[1, 0])
+                    if abs(det) < 1e-12:
+                        return 'fallback', None
+                    inv_A = np.linalg.inv(A)
+                    src_corners = np.array([
+                        [0.0, 0.0],
+                        [src_w - 1.001, 0.0],
+                        [src_w - 1.001, src_h - 1.001],
+                        [0.0, src_h - 1.001],
+                    ], dtype=np.float64)
+                    rhs = src_corners - np.array([tx, ty], dtype=np.float64)
+                    dst_pts = (rhs @ inv_A.T) + np.array([cx_p - eff_x, cy_p - eff_y], dtype=np.float64)
+                    return 'poly', dst_pts.astype(np.float32)
+
+        # Unwrap _CropProcessor or positive _ExposureGain if present.
+        proc_name = type(proc).__name__
+        if proc_name == '_CropProcessor' and hasattr(proc, 'x') and hasattr(proc, 'y'):
+            eff_x += int(proc.x)
+            eff_y += int(proc.y)
+            cur = cur.source
+            continue
+        if proc_name == '_ExposureGain' and getattr(proc, 'gain', None) is not None:
+            if float(proc.gain) > 0.0:
+                cur = cur.source
+                continue
+        return 'fallback', None
+    return 'fallback', None
+
+
 class RenderAlignmentMask:
     """Accumulate exact aligned validity while fusion borrows source pixels."""
 
     def __init__(self, frames, crop, should_cancel):
-        self._pending = {id(frame): frame for frame in frames}
         self._crop = crop
         self._should_cancel = should_cancel
         self._lock = Lock()
         self._mask = None
         self._failed = False
+        self._pending = {}
+        self._analytic_polys = []
+        self._domain_shape = None
+        for frame in frames:
+            if self._domain_shape is None:
+                if crop is not None:
+                    self._domain_shape = (int(crop[3]), int(crop[2]))
+                else:
+                    self._domain_shape = (int(frame.shape[0]), int(frame.shape[1]))
+            kind, poly = _analytic_frame_valid_polygon(frame, crop)
+            if kind == 'all_valid':
+                continue
+            if kind == 'poly':
+                self._analytic_polys.append(poly)
+                continue
+            self._pending[id(frame)] = frame
+
+    def _apply_analytic_polys(self):
+        if not self._analytic_polys or self._domain_shape is None or self._failed:
+            return
+        h, w = self._domain_shape
+        if h <= 0 or w <= 0:
+            return
+        _check_cancel(self._should_cancel)
+        # Intersect all convex valid quads in 2D geometry, then rasterize once.
+        clipped = np.array(
+            [[0.0, 0.0], [float(w - 1), 0.0], [float(w - 1), float(h - 1)], [0.0, float(h - 1)]],
+            dtype=np.float32,
+        )
+        for poly in self._analytic_polys:
+            area, inter = cv2.intersectConvexConvex(clipped, poly)
+            if area <= 0.0 or inter is None or len(inter) < 3:
+                clipped = None
+                break
+            clipped = inter.reshape(-1, 2).astype(np.float32)
+        self._analytic_polys.clear()
+        try:
+            mask_u8 = np.zeros((h, w), dtype=np.uint8)
+            if clipped is not None:
+                pts = np.round(clipped).astype(np.int32)
+                cv2.fillConvexPoly(mask_u8, pts, 255)
+            valid = mask_u8 != 0
+            if valid.all():
+                return
+            if self._mask is None:
+                self._mask = create_frame(valid.shape, np.bool_)
+                self._mask[:] = valid
+            else:
+                np.logical_and(self._mask, valid, out=self._mask)
+        except (OSError, MemoryError):
+            self._failed = True
+            self._mask = None
 
     def capture(self, frame, pixels):
         key = id(frame)
@@ -264,6 +468,8 @@ class RenderAlignmentMask:
 
     def complete(self):
         """Visit only sources a tiled or cached backend never borrowed whole."""
+        with self._lock:
+            self._apply_analytic_polys()
         for frame in list(self._pending.values()):
             if self._failed:
                 break

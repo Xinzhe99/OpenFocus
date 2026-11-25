@@ -592,14 +592,37 @@ class MultiFocusFusion:
         if base.ndim == 3 and base.shape[2] == 1:
             base = base[:, :, 0]
         out = fused if fused.dtype == np.float32 else fused.astype(np.float32)
-        sigma = self.BASE_CORRECTION_SIGMA
-        low_out = cv2.GaussianBlur(out, (0, 0), sigma)
-        low_base = cv2.GaussianBlur(base, (0, 0), sigma)
-        if low_base.ndim == 2 and low_out.ndim == 3:
-            low_base = low_base[:, :, None]
-        elif low_base.ndim == 3 and low_out.ndim == 2:
-            low_base = low_base[:, :, 0]
-        corrected = out + (low_base - low_out).reshape(out.shape)
+        sigma = float(self.BASE_CORRECTION_SIGMA)
+        h, w = out.shape[:2]
+        from utils.memory import scoped_opencv_threads
+
+        with scoped_opencv_threads():
+            if sigma >= 8.0 and min(h, w) >= 64:
+                # Low-pass difference LP(base) - LP(out) with large sigma is
+                # smooth and linear: compute on an 8x downsampled grid with one
+                # Gaussian blur (sigma / ds) and bilinearly upsample.
+                ds = min(8, max(2, int(round(sigma / 4.0))))
+                dw = max(1, w // ds)
+                dh = max(1, h // ds)
+                base_f = base if base.dtype == np.float32 else base.astype(np.float32)
+                out_ds = cv2.resize(out, (dw, dh), interpolation=cv2.INTER_AREA)
+                base_ds = cv2.resize(base_f, (dw, dh), interpolation=cv2.INTER_AREA)
+                if base_ds.ndim == 2 and out_ds.ndim == 3:
+                    base_ds = base_ds[:, :, None]
+                elif base_ds.ndim == 3 and out_ds.ndim == 2:
+                    base_ds = base_ds[:, :, 0]
+                diff_ds = base_ds - out_ds.reshape(base_ds.shape)
+                diff_low = cv2.GaussianBlur(diff_ds, (0, 0), sigma / ds)
+                diff_up = cv2.resize(diff_low, (w, h), interpolation=cv2.INTER_LINEAR)
+                corrected = out + diff_up.reshape(out.shape)
+            else:
+                low_out = cv2.GaussianBlur(out, (0, 0), sigma)
+                low_base = cv2.GaussianBlur(base, (0, 0), sigma)
+                if low_base.ndim == 2 and low_out.ndim == 3:
+                    low_base = low_base[:, :, None]
+                elif low_base.ndim == 3 and low_out.ndim == 2:
+                    low_base = low_base[:, :, 0]
+                corrected = out + (low_base - low_out).reshape(out.shape)
         return np.clip(corrected, 0, 255).astype(fused.dtype)
 
     def _validate_dct_environment(self) -> None:

@@ -1128,7 +1128,8 @@ class RenderWorker(QThread):
         try:
             images = _registration_process(registration, images, self._reverse_registration,
                 thread_count=self.thread_count, resource_preference=self.resource_preference,
-                should_cancel=should_cancel)
+                should_cancel=should_cancel,
+                progress_callback=self.progress_signal.emit)
         except RejectedAlignmentFrame as error:
             if self.alignment_report is None:
                 self.alignment_report = [{'method': error.method.lower(), 'status': 'failed',

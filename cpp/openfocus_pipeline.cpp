@@ -968,4 +968,172 @@ void pack_png_scanlines_cpp(
     }
 }
 
+void of_u16_to_display_u8_cpp(
+    const ArrayView& src,
+    const ArrayView& dst,
+    bool bgr_rev,
+    int num_threads
+) {
+    if (src.is_float || dst.is_float || src.itemsize != 2 || dst.itemsize != 1
+            || (src.ndim != 2 && src.ndim != 3) || dst.ndim != src.ndim) {
+        throw std::invalid_argument("Unsupported array layout for of_u16_to_display_u8");
+    }
+    const int64_t height = src.shape[0];
+    const int64_t width = src.shape[1];
+    if (height <= 0 || width <= 0) {
+        return;
+    }
+    const int64_t channels = (src.ndim == 2) ? 1 : src.shape[2];
+    if (dst.shape[0] != height || dst.shape[1] != width
+            || (dst.ndim == 3 && dst.shape[2] != channels)) {
+        throw std::invalid_argument("Destination shape mismatch for of_u16_to_display_u8");
+    }
+    if (bgr_rev && (src.ndim != 3 || channels != 3)) {
+        throw std::invalid_argument("bgr_rev requires 3-channel 3D arrays");
+    }
+    const int64_t count = height * width * channels;
+    const int threads = (count >= 65536) ? std::max(1, num_threads) : 1;
+    const bool packed = ((src.ndim == 2 && src.stride[1] == 1 && dst.stride[1] == 1)
+                         || (src.ndim == 3 && src.stride[2] == 1 && src.stride[1] == channels
+                             && dst.stride[2] == 1 && dst.stride[1] == channels));
+    const int64_t row_elems = width * channels;
+
+    // Exact identity for all v in [0, 65535]: (v + 128) / 257 == ((v + 128) * 65281) >> 24
+    // because 257 * 65281 = 16777217 = 2^24 + 1.
+    parallel_bands(height, 128, threads, [&](int64_t start, int64_t stop) {
+        for (int64_t y = start; y < stop; ++y) {
+            if (packed && !bgr_rev) {
+                const uint16_t* sr = static_cast<const uint16_t*>(src.data) + y * src.stride[0];
+                uint8_t* dr = static_cast<uint8_t*>(dst.data) + y * dst.stride[0];
+                int64_t i = 0;
+#ifdef OPENFOCUS_HAS_SSE2
+                const __m128i v_128 = _mm_set1_epi32(128);
+                const __m128i v_mul = _mm_set1_epi32(65281);
+                const __m128i v_zero = _mm_setzero_si128();
+                for (; i + 8 <= row_elems; i += 8) {
+                    __m128i x = _mm_loadu_si128(reinterpret_cast<const __m128i*>(sr + i));
+                    __m128i lo = _mm_add_epi32(_mm_unpacklo_epi16(x, v_zero), v_128);
+                    __m128i hi = _mm_add_epi32(_mm_unpackhi_epi16(x, v_zero), v_128);
+                    // Unsigned 32-bit multiply via mullo/mul_epu32 (all values < 65664).
+                    // Use SSE2-only _mm_mul_epu32 on even/odd lanes for maximum portability.
+                    __m128i lo_e = _mm_srli_epi64(_mm_mul_epu32(lo, v_mul), 24);
+                    __m128i lo_o = _mm_srli_epi64(_mm_mul_epu32(_mm_srli_si128(lo, 4), v_mul), 24);
+                    __m128i lo_q = _mm_or_si128(
+                        _mm_and_si128(lo_e, _mm_set1_epi64x(0x00000000FFFFFFFFLL)),
+                        _mm_slli_si128(_mm_and_si128(lo_o, _mm_set1_epi64x(0x00000000FFFFFFFFLL)), 4));
+                    __m128i hi_e = _mm_srli_epi64(_mm_mul_epu32(hi, v_mul), 24);
+                    __m128i hi_o = _mm_srli_epi64(_mm_mul_epu32(_mm_srli_si128(hi, 4), v_mul), 24);
+                    __m128i hi_q = _mm_or_si128(
+                        _mm_and_si128(hi_e, _mm_set1_epi64x(0x00000000FFFFFFFFLL)),
+                        _mm_slli_si128(_mm_and_si128(hi_o, _mm_set1_epi64x(0x00000000FFFFFFFFLL)), 4));
+                    __m128i p16 = _mm_packs_epi32(lo_q, hi_q);
+                    __m128i p8 = _mm_packus_epi16(p16, p16);
+                    _mm_storel_epi64(reinterpret_cast<__m128i*>(dr + i), p8);
+                }
+#endif
+                for (; i < row_elems; ++i) {
+                    dr[i] = static_cast<uint8_t>(((static_cast<uint32_t>(sr[i]) + 128u) * 65281u) >> 24);
+                }
+            } else if (packed && bgr_rev) {
+                const uint16_t* sr = static_cast<const uint16_t*>(src.data) + y * src.stride[0];
+                uint8_t* dr = static_cast<uint8_t*>(dst.data) + y * dst.stride[0];
+                for (int64_t x = 0; x < width; ++x) {
+                    const int64_t o = x * 3;
+                    dr[o] = static_cast<uint8_t>(((static_cast<uint32_t>(sr[o + 2]) + 128u) * 65281u) >> 24);
+                    dr[o + 1] = static_cast<uint8_t>(((static_cast<uint32_t>(sr[o + 1]) + 128u) * 65281u) >> 24);
+                    dr[o + 2] = static_cast<uint8_t>(((static_cast<uint32_t>(sr[o]) + 128u) * 65281u) >> 24);
+                }
+            } else {
+                for (int64_t x = 0; x < width; ++x) {
+                    if (bgr_rev) {
+                        for (int64_t c = 0; c < 3; ++c) {
+                            const uint32_t v = static_cast<uint32_t>(read_u_idx(src, y, x, 2 - c));
+                            write_sample(dst, y, x, c, static_cast<int64_t>(((v + 128u) * 65281u) >> 24));
+                        }
+                    } else {
+                        for (int64_t c = 0; c < channels; ++c) {
+                            const uint32_t v = static_cast<uint32_t>(read_u_idx(src, y, x, c));
+                            write_sample(dst, y, x, c, static_cast<int64_t>(((v + 128u) * 65281u) >> 24));
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
+void of_bgr_to_rgb_cpp(
+    const ArrayView& src,
+    const ArrayView& dst,
+    int num_threads
+) {
+    if (src.is_float || dst.is_float || src.itemsize != dst.itemsize
+            || (src.itemsize != 1 && src.itemsize != 2)
+            || src.ndim != 3 || dst.ndim != 3 || src.shape[2] != 3 || dst.shape[2] != 3) {
+        throw std::invalid_argument("Unsupported array layout for of_bgr_to_rgb");
+    }
+    const int64_t height = src.shape[0];
+    const int64_t width = src.shape[1];
+    if (dst.shape[0] != height || dst.shape[1] != width) {
+        throw std::invalid_argument("Destination shape mismatch for of_bgr_to_rgb");
+    }
+    if (height <= 0 || width <= 0) {
+        return;
+    }
+    const int threads = (height * width >= 65536) ? std::max(1, num_threads) : 1;
+    const bool packed = (src.stride[2] == 1 && src.stride[1] == 3
+                         && dst.stride[2] == 1 && dst.stride[1] == 3);
+    parallel_bands(height, 128, threads, [&](int64_t start, int64_t stop) {
+        for (int64_t y = start; y < stop; ++y) {
+            if (src.itemsize == 1) {
+                if (packed) {
+                    const uint8_t* sr = static_cast<const uint8_t*>(src.data) + y * src.stride[0];
+                    uint8_t* dr = static_cast<uint8_t*>(dst.data) + y * dst.stride[0];
+                    for (int64_t x = 0; x < width; ++x) {
+                        const int64_t o = x * 3;
+                        const uint8_t b = sr[o];
+                        const uint8_t g = sr[o + 1];
+                        const uint8_t r = sr[o + 2];
+                        dr[o] = r;
+                        dr[o + 1] = g;
+                        dr[o + 2] = b;
+                    }
+                } else {
+                    for (int64_t x = 0; x < width; ++x) {
+                        const int64_t b = read_u_idx(src, y, x, 0);
+                        const int64_t g = read_u_idx(src, y, x, 1);
+                        const int64_t r = read_u_idx(src, y, x, 2);
+                        write_sample(dst, y, x, 0, r);
+                        write_sample(dst, y, x, 1, g);
+                        write_sample(dst, y, x, 2, b);
+                    }
+                }
+            } else {
+                if (packed) {
+                    const uint16_t* sr = static_cast<const uint16_t*>(src.data) + y * src.stride[0];
+                    uint16_t* dr = static_cast<uint16_t*>(dst.data) + y * dst.stride[0];
+                    for (int64_t x = 0; x < width; ++x) {
+                        const int64_t o = x * 3;
+                        const uint16_t b = sr[o];
+                        const uint16_t g = sr[o + 1];
+                        const uint16_t r = sr[o + 2];
+                        dr[o] = r;
+                        dr[o + 1] = g;
+                        dr[o + 2] = b;
+                    }
+                } else {
+                    for (int64_t x = 0; x < width; ++x) {
+                        const int64_t b = read_u_idx(src, y, x, 0);
+                        const int64_t g = read_u_idx(src, y, x, 1);
+                        const int64_t r = read_u_idx(src, y, x, 2);
+                        write_sample(dst, y, x, 0, r);
+                        write_sample(dst, y, x, 1, g);
+                        write_sample(dst, y, x, 2, b);
+                    }
+                }
+            }
+        }
+    });
+}
+
 }  // namespace openfocus

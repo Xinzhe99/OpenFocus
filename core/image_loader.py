@@ -1153,13 +1153,12 @@ def _collapse_repeats(paths: list) -> list:
     return out
 
 
-# Parallel decoding is limited to plain single-frame formats whose decoder
-# releases the GIL. TIFF containers, RAW and HEIF stay serial: their decoders
-# own the whole container, and running them beside another large decode only
-# doubles the peak without a measured gain.
+# Parallel decoding covers plain single-frame formats whose decoder releases
+# the GIL, plus single-page TIFF files (multi-page TIFFs, RAW and HEIF stay
+# serial to keep peak container allocations bounded).
 _PARALLEL_DECODE_FORMATS = {'.jpg', '.jpeg', '.jpe', '.jfif', '.png', '.bmp',
                             '.webp'}
-_MAX_DECODE_WORKERS = 4
+_MAX_DECODE_WORKERS = 8
 
 
 @dataclass
@@ -1172,7 +1171,15 @@ class DecodedSource:
 
 
 def _source_is_parallel(path: str) -> bool:
-    return os.path.splitext(path)[1].lower() in _PARALLEL_DECODE_FORMATS
+    ext = os.path.splitext(path)[1].lower()
+    if ext in _PARALLEL_DECODE_FORMATS:
+        return True
+    if ext in ('.tif', '.tiff') and not _is_dng_tiff(path):
+        try:
+            return count_frames(path) == 1
+        except Exception:
+            return False
+    return False
 
 
 def _decode_one_source(path: str, scale_factor: float,
@@ -1228,6 +1235,23 @@ def _peek_source_size(path: str) -> Optional[Tuple[int, int, int, int]]:
     means "do not parallelise this source", never a guessed allocation.
     """
     ext = os.path.splitext(path)[1].lower()
+    if ext in ('.tif', '.tiff') and not _is_dng_tiff(path):
+        try:
+            import tifffile
+            with tifffile.TiffFile(path) as tif:
+                pages = list(tiff_source_pages(tif))
+                if len(pages) != 1:
+                    return None
+                page = pages[0][1]
+                shape = page.shape
+                if len(shape) < 2:
+                    return None
+                height, width = int(shape[0]), int(shape[1])
+                channels = int(shape[2]) if len(shape) >= 3 else 1
+                itemsize = int(np.dtype(page.dtype).itemsize)
+                return width, height, max(3, min(4, channels)), itemsize
+        except Exception:
+            return None
     if ext not in _PARALLEL_DECODE_FORMATS or not PIL_AVAILABLE:
         return None
     try:

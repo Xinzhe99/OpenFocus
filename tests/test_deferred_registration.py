@@ -663,7 +663,11 @@ def test_render_scope_hashes_each_registration_input_once(tmp_path, monkeypatch,
     from core import frame_resolution_cache, openfocus_alignment
     from core.frame_storage import scratch_directory
     pixels = _pixels(np.uint16, 3)
-    sources = _sources(tmp_path, pixels)
+    raw_sources = _sources(tmp_path, pixels)
+    # Wrap as transformed ProcessedFrames so this test exercises pixel-digest
+    # deduplication inside render_scope (unmodified file-backed SourceFrames
+    # intentionally use fast file digests without full-pixel SHA-256).
+    sources = [source_frames.process_frame(s, lambda arr: arr.copy()) for s in raw_sources]
     expected = [np.array(frame, copy=True) for frame in
                 registration.ImageRegistration(method, downscale_width=80).process(
                     sources, thread_count=1)]
@@ -697,6 +701,14 @@ def test_render_scope_hashes_each_registration_input_once(tmp_path, monkeypatch,
             assert scope.enabled and not scope.degraded
     # Without the render's cache every warp validates its freshly resolved input.
     assert render() > stages * len(sources)
+
+    # Unmodified file-backed SourceFrames skip full-pixel SHA-256 entirely in stage 1.
+    del hashed[:]
+    source_frames.SOURCE_CACHE.clear()
+    reg_fast = registration.ImageRegistration(method, downscale_width=80, defer_warps=True)
+    reg_fast.process(raw_sources, thread_count=1)
+    assert len(hashed) == (stages - 1) * len(raw_sources)
+    assert all(fp.digest_kind == 'file' for fp in reg_fast.alignment_plan.stages[0].sources)
 
 
 @pytest.mark.parametrize('dtype,channels', [(np.uint8, None), (np.uint8, 4),

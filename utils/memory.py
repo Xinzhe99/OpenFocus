@@ -380,3 +380,50 @@ def configure_opencv_memory() -> None:
         cv2.setNumThreads(0)
     except Exception:
         pass
+
+
+import contextlib as _contextlib
+
+
+@_contextlib.contextmanager
+def scoped_opencv_threads(threads: int | None = None):
+    """Temporarily enable bounded OpenCV parallelism for a single-shot full-frame op.
+
+    No-op if called inside an active row/tile fusion scope, if OpenCV's backend
+    does not bound thread counts, or if the requested budget is <= 1.
+    """
+    try:
+        import cv2
+        from core.registration import _active_backend_bounds_threads, _warp_threads_lock
+    except Exception:
+        yield
+        return
+
+    exec_mod = sys.modules.get("fusion_methods._openfocus_execution")
+    if exec_mod is not None and getattr(exec_mod, "_current", None) is not None:
+        if exec_mod._current.get() is not None:
+            yield
+            return
+
+    if threads is None:
+        try:
+            from utils.platform_utils import cpu_limits
+            physical, logical = cpu_limits()[:2]
+            cap = physical or max(1, (logical or 1) // 2)
+        except Exception:
+            cap = max(1, (os.cpu_count() or 1) // 2)
+        target = max(1, min(16, int(cap)))
+    else:
+        target = max(1, min(16, int(threads)))
+
+    if target <= 1 or not _active_backend_bounds_threads():
+        yield
+        return
+
+    with _warp_threads_lock:
+        previous = cv2.getNumThreads()
+        cv2.setNumThreads(target)
+        try:
+            yield
+        finally:
+            cv2.setNumThreads(0 if previous == 1 else previous)

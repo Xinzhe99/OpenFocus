@@ -395,7 +395,9 @@ def _align_homography_impl(input_source, output_path=None, img_filenames=None, d
         from core.source_frames import resolve_frame
         source = img
         img = resolve_frame(img, should_cancel=should_cancel)
-        identity = _perspective_source(source, img, should_cancel)
+        identity = (_perspective_source_file(source, should_cancel)
+                    if _can_use_file_digest(source)
+                    else _perspective_source(source, img, should_cancel))
         # 在线程中创建独立的检测器，确保线程安全
         local_detector = cv2.SIFT_create()
         h, w = img.shape[:2]
@@ -556,6 +558,15 @@ class RegistrationCancelled(Exception):
 def _check_cancel(should_cancel):
     if should_cancel is not None and should_cancel():
         raise RegistrationCancelled()
+
+
+def _can_use_file_digest(frame):
+    """True when ``frame`` is an unmodified file-backed SourceFrame eligible for fast digest."""
+    from core.source_frames import SourceFrame
+
+    return (type(frame) is SourceFrame and not frame.transforms
+            and frame.linear_metadata is None and frame.scale == 1.0
+            and bool(frame.path) and bool(frame.fingerprint))
 
 
 def _perspective_source_file(frame, should_cancel):
@@ -787,11 +798,20 @@ class PerspectiveWarp:
             return crop.copy(order='C')
         matrix = np.asarray(self.matrix, dtype=self.matrix_dtype).reshape(3, 3)
         backend = _deferred_ecc_gpu.get()
-        if backend is not None and destination is None:
+        if backend is not None:
             # Direct RGB TIFF frames arrive as a reversed view of contiguous storage.
             bgr_rev = _is_bgr_rev(image)
-            result = backend.warp(image[..., ::-1] if bgr_rev else image, matrix, self.dsize,
-                                  cancel_fn, bgr_rev=bgr_rev, method=self.method)
+            warp_src = image[..., ::-1] if bgr_rev else image
+            if destination is None:
+                result = backend.warp(warp_src, matrix, self.dsize,
+                                      cancel_fn, bgr_rev=bgr_rev, method=self.method)
+            else:
+                try:
+                    result = backend.warp(warp_src, matrix, self.dsize,
+                                          cancel_fn, bgr_rev=bgr_rev, method=self.method,
+                                          destination=destination)
+                except TypeError:
+                    result = None
             if result is not None:
                 return result
         bgr_rev = _is_bgr_rev(image) and _native_kernels.available()
@@ -1283,7 +1303,8 @@ def _bounded_registration_map(function, values, workers, should_cancel=None, *,
 
 
 def _prepare_and_estimate_pairs(values, prepare, estimate, workers, should_cancel=None, *,
-                                on_prepared=None, window=None, budget=None):
+                                on_prepared=None, window=None, budget=None,
+                                progress_callback=None):
     """Prepare each value and estimate each adjacent pair in one bounded pool.
 
     ``prepare(value)`` returns a tuple whose last item is the source identity;
@@ -1355,6 +1376,7 @@ def _prepare_and_estimate_pairs(values, prepare, estimate, workers, should_cance
         estimates = {}
         identities = [None] * count
         results = [None] * (count - 1)
+        completed_estimates = 0
         next_prepare = 0
         next_estimate = 1
         try:
@@ -1365,6 +1387,9 @@ def _prepare_and_estimate_pairs(values, prepare, estimate, workers, should_cance
                         future.result()
                 for index in [index for index, future in estimates.items() if future.done()]:
                     results[index - 1] = estimates.pop(index).result()
+                    completed_estimates += 1
+                    if progress_callback is not None:
+                        progress_callback(completed_estimates, count - 1)
                 if batch_prepares and not estimates and next_estimate == prepare_until:
                     prepare_until = min(count, prepare_until + window - 1)
                 work_left = task_bytes - solve_bytes * len(estimates)
@@ -1716,7 +1741,8 @@ def _plan_deferred_ecc(images, downscale_width, accelerate_ecc, preference, thre
 def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscale_width=1000,
                     thread_count: int = 4, should_cancel=None, use_gpu: bool = False,
                     failure_policy='continue', *, defer_warps=False, plan_callback=None,
-                    accelerate_ecc=True, stage_budget=None, dispatch_callback=None):
+                    accelerate_ecc=True, stage_budget=None, dispatch_callback=None,
+                    progress_callback=None):
     """
     基于 ECC (增强相关系数) 的高精度图像栈对齐算法
     适用于：显微摄影、微距摄影中伴随呼吸效应的图像栈
@@ -1796,14 +1822,22 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
         else:
             # Replace each intermediate so a deferred full-size decode can be
             # released as soon as resize or color conversion no longer needs it.
+            use_file_digest = _can_use_file_digest(source)
+            identity = _perspective_source_file(source, should_cancel) if use_file_digest else None
             with source_area_resizer(area_gpu):
                 pixels = resolve_frame(source, should_cancel=should_cancel)
-            identity = _perspective_source(source, pixels, should_cancel)
+            if identity is None:
+                identity = _perspective_source(source, pixels, should_cancel)
             target_height, _, scale = _ecc_resize_geometry(pixels.shape, downscale_width)
             is_rgb = False
             if scale < 1.0:
                 resized = None
-                if area_gpu is not None and target_height > 0 and target_height / pixels.shape[0] == scale:
+                # ExactAreaGpu only beats parallel CPU INTER_AREA on >=16MP 8-bit inputs;
+                # smaller or 16-bit stacks incur OpenCL compile + queue-lock overhead.
+                if (area_gpu is not None and target_height > 0
+                        and target_height / pixels.shape[0] == scale
+                        and pixels.dtype == np.uint8
+                        and pixels.shape[0] * pixels.shape[1] >= 16_000_000):
                     # An explicit size preserves OpenCV's scale only at this geometry.
                     resized = area_gpu.resize(pixels, (downscale_width, target_height))
                 if resized is not None:
@@ -1812,7 +1846,7 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
                     is_rgb = _is_bgr_rev(pixels)
                     if is_rgb:
                         pixels = pixels[..., ::-1]
-                    # Resize color first to preserve integer rounding in the ECC inputs.
+                    # Resize color first to preserve exact integer rounding in the ECC inputs.
                     pixels = cv2.resize(pixels, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
                 del resized
             pixels = _registration_gray(pixels, is_rgb=is_rgb)
@@ -1824,7 +1858,7 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
         del pixels
         key = None
         if recent_pairs is not None:
-            key = gray.shape, hashlib.sha256(memoryview(gray)).digest()
+            key = gray.shape, hashlib.blake2b(memoryview(gray), digest_size=16).digest()
         prepared_data = pyr_builder(gray) if use_pyr_reuse else gray
         return prepared_data, scale, key, identity
 
@@ -1890,6 +1924,7 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
                     eps=termination_eps,
                 )
             if cc is None or warp_matrix is None:
+                _check_cancel(should_cancel)
                 tpl_full = prev_gray[0] if use_pyr_reuse else prev_gray
                 src_full = curr_gray[0] if use_pyr_reuse else curr_gray
                 rows = 3 if warp_mode == cv2.MOTION_HOMOGRAPHY else 2
@@ -1947,6 +1982,8 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
                     transform = _compute_pair_transform(pair)
                 _check_cancel(should_cancel)
                 pair_transforms.append(transform)
+                if progress_callback is not None:
+                    progress_callback(len(pair_transforms), len(images) - 1)
                 del pair  # Release the old gray before decoding the next frame.
         else:
             def prepare_frame(image):
@@ -1965,7 +2002,8 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
 
             pair_transforms, prepared_identities = _prepare_and_estimate_pairs(
                 images, prepare_frame, estimate_pair, max_workers, should_cancel,
-                on_prepared=remember_scale, budget=stage_budget)
+                on_prepared=remember_scale, budget=stage_budget,
+                progress_callback=progress_callback)
             source_identities.extend(prepared_identities)
 
         if area_gpu is not None:
@@ -2302,7 +2340,8 @@ class ImageRegistration:
                 input_source: Union[str, List[np.ndarray]], 
                 output_path: Optional[str] = None,
                 thread_count: int = 4,
-                should_cancel=None, resource_preference="balanced") -> List[np.ndarray]:
+                should_cancel=None, resource_preference="balanced",
+                progress_callback=None) -> List[np.ndarray]:
         """
         执行图像配准
         
@@ -2456,6 +2495,8 @@ class ImageRegistration:
                         _profile().stage(f'step.{step}'):
                     try:
                         execution = {'thread_count': workers, 'should_cancel': should_cancel}
+                        if step == 'ecc' and progress_callback is not None:
+                            execution['progress_callback'] = progress_callback
                         if deferred and step == 'ecc':
                             budget = _plan_deferred_ecc(result, self.downscale_width,
                                 self.accelerate_ecc, resource_preference, thread_count, should_cancel)
@@ -2499,7 +2540,8 @@ class ImageRegistration:
                     input_source: Union[str, List[np.ndarray]], 
                     output_path: Optional[str] = None,
                     thread_count: int = 4,
-                    should_cancel=None, failure_policy='continue', *, stage_budget=None) -> List[np.ndarray]:
+                    should_cancel=None, failure_policy='continue', *, stage_budget=None,
+                    progress_callback=None) -> List[np.ndarray]:
         """
         ECC对齐配准（高精度、亚像素级）
         
@@ -2516,7 +2558,8 @@ class ImageRegistration:
                     thread_count=thread_count, should_cancel=should_cancel, use_gpu=self.use_gpu,
                     failure_policy=failure_policy, defer_warps=self.defer_warps,
                     plan_callback=self._perspective_stages.append, accelerate_ecc=self.accelerate_ecc,
-                    stage_budget=stage_budget, dispatch_callback=self._record_dispatch)
+                    stage_budget=stage_budget, dispatch_callback=self._record_dispatch,
+                    progress_callback=progress_callback)
         except RejectedAlignmentFrame as error:
             # Pair estimation may run on a pool thread. Record it in the caller's report.
             _report_alignment(error.frame_index, 'ecc', 'failed', reason=error.reason,

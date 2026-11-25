@@ -390,11 +390,13 @@ class ExactPerspectiveGpu:
             self.cpu_warps += 1
             self._cpu_by_method[method] += 1
 
-    def warp(self, image, matrix, dsize, should_cancel, *, bgr_rev=False, region=None, method=''):
+    def warp(self, image, matrix, dsize, should_cancel, *, bgr_rev=False, region=None, method='',
+             destination=None):
         """Return exact pixels when the device, layout and geometry are admitted.
 
         ``bgr_rev`` reads a contiguous RGB frame as its reversed BGR view.
         ``region`` selects a rectangle of the full-frame warp.
+        ``destination`` optionally receives the output directly (avoiding a full-frame allocation).
         """
         global _program
         from core.registration import RegistrationCancelled, _check_cancel
@@ -409,6 +411,14 @@ class ExactPerspectiveGpu:
                 or max(width, height, rw, rh, *image.shape[:2]) > _MAX_SIDE
                 or x0 < 0 or y0 < 0 or x0 + rw > width or y0 + rh > height):
             return None
+        if destination is not None:
+            expected_shape = (rh, rw) if channels == 1 else (rh, rw, channels)
+            if (not isinstance(destination, np.ndarray)
+                    or destination.shape != expected_shape
+                    or destination.dtype != image.dtype
+                    or not destination.flags.writeable
+                    or not destination.flags.c_contiguous):
+                return None
         geometry = _warp_geometry(matrix, x0, y0, rw, rh)
         if geometry is None:
             return None
@@ -433,7 +443,8 @@ class ExactPerspectiveGpu:
                 program = _verified_program(self._cl, self._device)
                 queue = program[1]
                 result = self._dispatch(program, image, inverse, tolerance, bgr_rev,
-                                        (x0, y0, rw, rh), (width, height), should_cancel)
+                                        (x0, y0, rw, rh), (width, height), should_cancel,
+                                        destination=destination)
                 if result is None:
                     return None
                 if self.gpu_warps == 0:
@@ -490,7 +501,8 @@ class ExactPerspectiveGpu:
                 return plan
             cached = False
 
-    def _dispatch(self, program, image, inverse, tolerance, bgr_rev, rect, dsize, should_cancel):
+    def _dispatch(self, program, image, inverse, tolerance, bgr_rev, rect, dsize, should_cancel,
+                  *, destination=None):
         from core import resource_policy as policy
         from core.registration import _check_cancel
 
@@ -508,9 +520,12 @@ class ExactPerspectiveGpu:
             return None
         bands, src_bytes, dst_bytes, staged = plan
         if not getattr(self._device, 'host_unified_memory', False):
-            policy.require_memory(width * height * channels * itemsize + staged * itemsize)
+            output_bytes = 0 if destination is not None else width * height * channels * itemsize
+            if output_bytes + staged * itemsize:
+                policy.require_memory(output_bytes + staged * itemsize)
         _check_cancel(should_cancel)
-        result = np.empty((height, width) if channels == 1 else (height, width, channels), image.dtype)
+        result = (destination if destination is not None
+                  else np.empty((height, width) if channels == 1 else (height, width, channels), image.dtype))
         stage = np.empty(staged, image.dtype) if staged else None
         d_src, d_dst, d_repair = self._workspace(context, cl, src_bytes, dst_bytes)
         kernel = kernels[(itemsize, channels, bgr_rev)]

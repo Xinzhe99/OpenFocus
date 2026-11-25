@@ -2,12 +2,83 @@
 from dataclasses import fields, is_dataclass
 from functools import partial
 from importlib import import_module
+from multiprocessing.shared_memory import SharedMemory
+import os
 from types import FunctionType
 
 import numpy as np
 
 from core import frame_storage as storage
 from core.source_frames import PreviewPixels
+
+
+# Minimum array size worth transferring through SharedMemory vs disk-backed memmap,
+# and maximum single-buffer size allowed through SharedMemory (requires >= 2x RAM headroom).
+_SHM_MIN_BYTES = 256 * 1024
+_SHM_MAX_BYTES = 512 * 1024 * 1024
+
+
+def _try_shm_encode(array: np.ndarray):
+    """Copy an unmapped array into a POSIX/Windows SharedMemory block when RAM permits.
+
+    Returns ``(SharedMemory, metadata)`` on success, or ``None`` to fall back to
+    disk-backed ``store_frame(..., prefer_ram=False)``.
+    """
+    nbytes = int(array.nbytes)
+    if nbytes < _SHM_MIN_BYTES or nbytes > _SHM_MAX_BYTES or array.dtype.hasobject:
+        return None
+    try:
+        from core import resource_policy as policy
+        snapshot = policy.probe_memory()
+        if not snapshot.ram_known:
+            return None
+        ceiling = policy.ram_ceiling(snapshot)
+        if ceiling < nbytes * 2:
+            return None
+    except Exception:
+        return None
+    shm = None
+    try:
+        shm = SharedMemory(create=True, size=nbytes)
+        dst = np.ndarray(array.shape, dtype=array.dtype, buffer=shm.buf)
+        np.copyto(dst, array)
+        del dst
+        return shm, (shm.name, tuple(int(v) for v in array.shape), array.dtype.str, nbytes)
+    except Exception:
+        if shm is not None:
+            try:
+                shm.close()
+            except Exception:
+                pass
+            try:
+                shm.unlink()
+            except Exception:
+                pass
+        return None
+
+
+def _shm_decode(data) -> np.ndarray:
+    """Attach to a SharedMemory segment, copy into an owned ndarray, and release immediately."""
+    name, shape, dtype_str, _nbytes = data
+    shm = SharedMemory(name=name)
+    try:
+        if os.name != 'nt':
+            # Unlink immediately on POSIX so /dev/shm never leaks even on SIGKILL.
+            try:
+                shm.unlink()
+            except FileNotFoundError:
+                pass
+        dtype = np.dtype(dtype_str)
+        view = np.ndarray(shape, dtype=dtype, buffer=shm.buf)
+        result = np.empty(shape, dtype=dtype)
+        np.copyto(result, view)
+        del view
+        return result
+    finally:
+        try:
+            shm.close()
+        except Exception:
+            pass
 
 
 _SOURCE_REQUEST_KIND = 'render_source_request'
@@ -49,6 +120,27 @@ class FrameEncoder:
         self.paths = set()
         self._memo = {}
         self._keep = []
+        self._shm_handles = []
+
+    def close(self, *, unlink=False):
+        """Release any SharedMemory handles created by this encoder."""
+        handles = self._shm_handles
+        self._shm_handles = []
+        for shm in handles:
+            try:
+                shm.close()
+            except Exception:
+                pass
+            if unlink and os.name != 'nt':
+                try:
+                    shm.unlink()
+                except FileNotFoundError:
+                    pass
+                except Exception:
+                    pass
+
+    def __del__(self):
+        self.close(unlink=True)
 
     @property
     def owned_paths(self):
@@ -79,6 +171,12 @@ class FrameEncoder:
         if isinstance(value, np.ndarray):
             description = storage.describe_frame(value)
             if description is None:
+                shm_encoded = _try_shm_encode(value)
+                if shm_encoded is not None:
+                    shm, shm_data = shm_encoded
+                    self._shm_handles.append(shm)
+                    kind, data = 'shm', shm_data
+                    return ('value', index, kind, data)
                 mapped = storage.store_frame(value, prefer_ram=False)
                 self._keep.append(mapped)
                 description = storage.describe_frame(mapped)
@@ -151,6 +249,8 @@ class FrameDecoder:
         if kind == 'frame':
             description = dict(data, cleanup_directory=self._directory(data['path']))
             result = storage.open_frame(description, owned=self._owns(data['path']))
+        elif kind == 'shm':
+            result = _shm_decode(data)
         elif kind == 'preview':
             path, shape, dtype = data
             result = PreviewPixels.__new__(PreviewPixels)

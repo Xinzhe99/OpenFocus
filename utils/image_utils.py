@@ -208,6 +208,23 @@ def to_display_uint8(img: np.ndarray) -> np.ndarray:
     """
     if img.dtype == np.uint16:
         if img.ndim in (2, 3) and img.size >= 262144 and img.dtype.isnative:
+            # Prefer native C++ SSE2/multi-threaded conversion to avoid Numba JIT stall.
+            from core._native import load_native as _get_native
+            native_mod = _get_native()
+            if native_mod is not None and hasattr(native_mod, "of_u16_to_display_u8"):
+                out = np.empty(img.shape, dtype=np.uint8)
+                bgr_rev = (img.ndim == 3 and img.shape[2] == 3
+                           and not img.flags.c_contiguous
+                           and img[..., ::-1].flags.c_contiguous)
+                src = img[..., ::-1] if bgr_rev else img
+                try:
+                    from utils.platform_utils import cpu_limits
+                    physical = cpu_limits()[0]
+                    threads = max(1, min(8, int(physical or 4)))
+                except Exception:
+                    threads = 4
+                native_mod.of_u16_to_display_u8(src, out, bgr_rev, threads)
+                return out
             kernels = _load_image_kernels()
             if kernels is not None:
                 height = img.shape[0]
