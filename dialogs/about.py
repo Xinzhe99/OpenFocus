@@ -26,7 +26,6 @@ from dialogs._community_download import CommunityDownloads
 from locales import trans
 from utils.account_client import BASE_URL
 from utils.license_info import (
-    OSS_LICENSE_NAME,
     format_oss_license_document,
     get_license_summary,
 )
@@ -356,7 +355,6 @@ class ContactInfoDialog(QDialog):
         super().__init__(parent)
         self._contact_cards = QGridLayout()
         self._contact_columns = 0
-        self._license_search_dirs = license_search_dirs
         self._license_info = get_license_summary(
             search_dirs=license_search_dirs,
         )
@@ -437,7 +435,6 @@ class ContactInfoDialog(QDialog):
         self._discord_status.show()
         self._contact_request += 1
         request = self._contact_request
-        self._refresh_license_bar()
         query = urlencode({'lang': trans.current_lang})
         self._requests.get(f'{self._CONTACT_INFO_URL}?{query}', 'application/json',
                            self._MAX_CONTACT_INFO_BYTES,
@@ -459,13 +456,13 @@ class ContactInfoDialog(QDialog):
         self._license_label.setSizePolicy(policy)
         row.addWidget(self._license_label, 1)
 
-        self._license_button = QPushButton('License', bar)
+        self._license_button = QPushButton(trans.t('about_license'), bar)
         self._license_button.setObjectName('aboutLicenseButton')
         self._license_button.setAutoDefault(False)
         self._license_button.clicked.connect(self._show_license_dialog)
         row.addWidget(self._license_button)
 
-        self._eula_button = QPushButton('EULA', bar)
+        self._eula_button = QPushButton(trans.t('about_eula'), bar)
         self._eula_button.setObjectName('aboutEulaButton')
         self._eula_button.setAutoDefault(False)
         self._eula_button.clicked.connect(self._show_eula_dialog)
@@ -474,21 +471,12 @@ class ContactInfoDialog(QDialog):
         self._apply_license_info()
         return bar
 
-    def _refresh_license_bar(self):
-        self._license_info = get_license_summary(
-            search_dirs=self._license_search_dirs,
-        )
-        self._apply_license_info()
-
     def _apply_license_info(self):
+        title = self._license_info.oss_license_name
         if self._license_info.has_eula:
-            self._license_label.setText(
-                f'License: {self._license_info.oss_license_name} · Official Release EULA'
-            )
-            self._eula_button.setVisible(True)
-        else:
-            self._license_label.setText(f'License: {self._license_info.oss_license_name}')
-            self._eula_button.setVisible(False)
+            title = f"{title} · {trans.t('about_eula')}"
+        self._license_label.setText(title)
+        self._eula_button.setVisible(self._license_info.has_eula)
 
     def _show_license_dialog(self):
         dialog = LicenseTextDialog(
@@ -655,10 +643,9 @@ class AboutDialog(QDialog):
 
         super().__init__(parent)
         self.setObjectName('aboutDialog')
-        self.setWindowTitle('About OpenFocus')
+        self.setWindowTitle(trans.t('menu_about'))
         self.resize(520, 320)
 
-        self._license_search_dirs = license_search_dirs
         self._license_info = get_license_summary(
             search_dirs=license_search_dirs,
         )
@@ -686,7 +673,7 @@ class AboutDialog(QDialog):
         layout.addWidget(self.notice_label)
 
         self.license_label = QLabel(
-            f'License: {self._license_info.oss_license_name}',
+            self._license_info.oss_license_name,
             self,
         )
         self.license_label.setObjectName('aboutLicenseLabel')
@@ -700,7 +687,7 @@ class AboutDialog(QDialog):
         eula_layout.setContentsMargins(0, 4, 0, 0)
         eula_layout.setSpacing(4)
         self.eula_label = QLabel(
-            'Official Release End-User License Agreement (EULA) applies to this build.',
+            trans.t('about_eula'),
             self.eula_section,
         )
         self.eula_label.setObjectName('aboutEulaLabel')
@@ -713,13 +700,13 @@ class AboutDialog(QDialog):
         layout.addStretch()
 
         buttons = QHBoxLayout()
-        self.license_button = QPushButton(OSS_LICENSE_NAME, self)
+        self.license_button = QPushButton(trans.t('about_license'), self)
         self.license_button.setObjectName('aboutLicenseButton')
         self.license_button.setAutoDefault(False)
         self.license_button.clicked.connect(self._show_license_dialog)
         buttons.addWidget(self.license_button)
 
-        self.eula_button = QPushButton('View EULA', self)
+        self.eula_button = QPushButton(trans.t('about_eula'), self)
         self.eula_button.setObjectName('aboutEulaButton')
         self.eula_button.setAutoDefault(False)
         self.eula_button.clicked.connect(self._show_eula_dialog)

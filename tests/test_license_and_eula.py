@@ -1,6 +1,7 @@
 """Tests for Apache 2.0 LICENSE, NOTICE, installer fallback, and optional EULA hook."""
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -15,26 +16,10 @@ except ModuleNotFoundError:  # pragma: no cover - Python 3.10 fallback
 
 def test_root_license_is_exact_apache_2_0():
     text = (ROOT / "LICENSE").read_text(encoding="utf-8")
-    assert "Apache License" in text
-    assert "Version 2.0, January 2004" in text
-    assert "http://www.apache.org/licenses/" in text
-    assert "TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION" in text
-    for section in (
-        "1. Definitions.",
-        "2. Grant of Copyright License.",
-        "3. Grant of Patent License.",
-        "4. Redistribution.",
-        "5. Submission of Contributions.",
-        "6. Trademarks.",
-        "7. Disclaimer of Warranty.",
-        "8. Limitation of Liability.",
-        "9. Accepting Warranty or Additional Liability.",
-    ):
-        assert section in text
-    assert "END OF TERMS AND CONDITIONS" in text
-    assert "APPENDIX: How to apply the Apache License to your work." in text
-    assert "http://www.apache.org/licenses/LICENSE-2.0" in text
-    assert not text.lstrip().startswith("MIT License")
+    # Canonical Apache text from https://www.apache.org/licenses/LICENSE-2.0.txt.
+    assert hashlib.sha256(text.encode("utf-8")).hexdigest() == (
+        "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    )
 
 
 def test_root_notice_has_required_attribution():
@@ -148,6 +133,33 @@ def test_frozen_search_dirs_check_executable_dir_before_meipass(tmp_path, monkey
     assert info.has_eula is True
     assert info.eula_text == "Executable-beside EULA\n"
     assert info.eula_path == exe_dir.resolve() / "EULA.txt"
+
+
+def test_help_menu_opens_the_installed_license_viewer(qapp, tmp_path, monkeypatch):
+    from PyQt6.QtCore import QTimer
+    from dialogs.about import AboutDialog, LicenseTextDialog
+    from tests.test_control_channel import _destroy_main_window, _new_main_window
+
+    window = _new_main_window(qapp, tmp_path, monkeypatch)
+    try:
+        window.ui_objs["menu_about"].trigger()
+        dialog = window.findChild(AboutDialog)
+        assert dialog is not None and dialog.isVisible()
+        opened = []
+
+        def read_document():
+            viewer = qapp.activeModalWidget()
+            if isinstance(viewer, LicenseTextDialog):
+                opened.append(viewer.text_edit.toPlainText())
+                viewer.accept()
+
+        QTimer.singleShot(0, read_document)
+        dialog.license_button.click()
+        assert len(opened) == 1
+        assert (ROOT / "LICENSE").read_text(encoding="utf-8").strip() in opened[0]
+        assert dialog.eula_button.isHidden()
+    finally:
+        _destroy_main_window(qapp, window)
 
 
 def test_about_dialog_pure_oss_vs_bundled_eula(qapp, tmp_path, monkeypatch):

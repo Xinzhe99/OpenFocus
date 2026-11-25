@@ -23,6 +23,21 @@ _MANUAL_TITLES = {
     'it': 'Manuale utente', 'nl': 'Gebruikershandleiding', 'pl': 'Podręcznik użytkownika',
 }
 
+_ABOUT_LABELS = {
+    'en': ('About OpenFocus', 'License', 'Release Terms (EULA)'),
+    'zh': ('关于 OpenFocus', '许可证', '发行版使用条款（EULA）'),
+    'ja': ('OpenFocus について', 'ライセンス', 'リリース利用規約（EULA）'),
+    'es': ('Acerca de OpenFocus', 'Licencia', 'Condiciones de la versión (EULA)'),
+    'de': ('Über OpenFocus', 'Lizenz', 'Nutzungsbedingungen der Ausgabe (EULA)'),
+    'fr': ('À propos d’OpenFocus', 'Licence', 'Conditions de la version (EULA)'),
+    'ru': ('Об OpenFocus', 'Лицензия', 'Условия выпуска (EULA)'),
+    'ko': ('OpenFocus 정보', '라이선스', '배포판 이용 약관(EULA)'),
+    'pt': ('Sobre o OpenFocus', 'Licença', 'Termos da versão (EULA)'),
+    'it': ('Informazioni su OpenFocus', 'Licenza', 'Condizioni della versione (EULA)'),
+    'nl': ('Over OpenFocus', 'Licentie', 'Gebruiksvoorwaarden van de versie (EULA)'),
+    'pl': ('O OpenFocus', 'Licencja', 'Warunki wersji (EULA)'),
+}
+
 _SUPPORT_KEYS = (
     'support_title', 'support_heading', 'support_message', 'status_credit', 'status_sponsor',
     'support_acknowledgments', 'support_roster_loading', 'support_roster_empty',
@@ -278,6 +293,9 @@ def _apply_pack_overlays(code: str, table: dict) -> dict:
     title = _MANUAL_TITLES.get(code)
     if title is not None:
         table['menu_github_manual'] = f'{title} (GitHub)'
+    about = _ABOUT_LABELS.get(code)
+    if about is not None:
+        table.update(zip(('menu_about', 'about_license', 'about_eula'), about))
     support = _SUPPORT_TEXT.get(code)
     if support is not None:
         table.update(zip(_SUPPORT_KEYS, support))

@@ -82,7 +82,7 @@ def _read_nonempty_text(path: Path | None) -> str | None:
         return None
     try:
         text = path.read_text(encoding="utf-8-sig")
-    except OSError:
+    except (OSError, UnicodeError):
         return None
     if not text.strip():
         return None
