@@ -108,9 +108,13 @@ class BatchProcessingDialog(QDialog):
         self._import_worker = None
         self._import_generation = 0
         self._import_busy = False
+        self._import_mode = None
         self._import_callbacks = {}
         self._pending_thumbnails = []
         self._invalid_thumbnail_paths = set()
+        self._applied_thumbnail_paths = set()
+        self._active_thumbnail_paths = ()
+        self._thumbnail_done = 0
 
         
         # Dark palette only in dark mode: hard-coding it showed a dark slab in
@@ -217,7 +221,11 @@ class BatchProcessingDialog(QDialog):
         self.folder_list.itemSelectionChanged.connect(
             lambda: self.remove_folder_btn.setEnabled(
                 bool(self.folder_list.selectedItems())))
+        self._thumbnail_status_label = QLabel("")
+        self._thumbnail_status_label.setObjectName("mutedLabel")
+        self._thumbnail_status_label.hide()
         remove_row = QHBoxLayout()
+        remove_row.addWidget(self._thumbnail_status_label)
         remove_row.addStretch()
         remove_row.addWidget(self.remove_folder_btn)
         folder_layout.addLayout(remove_row)
@@ -263,6 +271,11 @@ class BatchProcessingDialog(QDialog):
         self.preview_label = QLabel(trans.t('batch_preview_default'))
         self.preview_label.setObjectName("mutedLabel")
         single_folder_layout.addWidget(self.preview_label)
+
+        self._stack_import_status_label = QLabel("")
+        self._stack_import_status_label.setObjectName("mutedLabel")
+        self._stack_import_status_label.hide()
+        single_folder_layout.addWidget(self._stack_import_status_label)
 
         add_single_folder_btn = QPushButton(trans.t('batch_btn_select_split'))
         add_single_folder_btn.clicked.connect(self.add_single_folder)
@@ -788,7 +801,16 @@ class BatchProcessingDialog(QDialog):
             QMessageBox.warning(self, trans.t('msg_error'), trans.t('batch_group_split_error'))
             return False
         if self._import_busy:
-            return False
+            if mode == 'stack' and self._import_mode == 'thumbnails':
+                unfinished = [path for path in self._active_thumbnail_paths
+                              if path in self.folder_paths
+                              and path not in self._invalid_thumbnail_paths
+                              and path not in self._applied_thumbnail_paths]
+                pending = unfinished + self._pending_thumbnails
+                self.cancel_imports()
+                self._pending_thumbnails = pending
+            else:
+                return False
         from core.workers import BatchImportWorker
         self._import_generation += 1
         worker = BatchImportWorker(
@@ -807,6 +829,10 @@ class BatchProcessingDialog(QDialog):
         worker.import_generation = self._import_generation
         self._import_worker = worker
         self._import_busy = True
+        self._import_mode = mode
+        self._applied_thumbnail_paths = set()
+        self._active_thumbnail_paths = tuple(folder_paths or ()) if mode == 'thumbnails' else ()
+        self._thumbnail_done = 0
         self._import_callbacks = {'thumbnails': on_thumbnails,
                                   'stack': on_stack}
         _track_import_worker(worker)
@@ -818,6 +844,8 @@ class BatchProcessingDialog(QDialog):
         if mode == 'stack':
             worker.stack_loaded.connect(self._on_import_stack_ready)
         else:
+            if hasattr(worker, 'folder_loaded'):
+                worker.folder_loaded.connect(self._on_import_folder_ready)
             worker.folders_loaded.connect(self._on_import_folders_ready)
         worker.finished.connect(self._on_import_finished)
         worker.start()
@@ -828,13 +856,29 @@ class BatchProcessingDialog(QDialog):
         return (worker is not None and worker is self._import_worker and
                 getattr(worker, 'import_generation', None) == self._import_generation)
 
+    def _on_import_folder_ready(self, folder_path, image) -> None:
+        if not self._active_import_sender() or folder_path in self._applied_thumbnail_paths:
+            return
+        self._applied_thumbnail_paths.add(folder_path)
+        self._thumbnail_done += 1
+        self._update_import_status_labels()
+        callback = self._import_callbacks.get('thumbnails')
+        if callback is not None and folder_path not in self._invalid_thumbnail_paths:
+            callback([(folder_path, image)])
+
     def _on_import_folders_ready(self, results) -> None:
         if not self._active_import_sender():
             return
         callback = self._import_callbacks.pop('thumbnails', None)
         if callback is not None:
-            callback([(path, image) for path, image in results
-                      if path not in self._invalid_thumbnail_paths])
+            remaining = [
+                (path, image) for path, image in results
+                if path not in self._invalid_thumbnail_paths
+                and path not in self._applied_thumbnail_paths
+            ]
+            if remaining:
+                self._applied_thumbnail_paths.update(path for path, _ in remaining)
+                callback(remaining)
 
     def _on_import_stack_ready(self, folder, entries, message) -> None:
         if not self._active_import_sender():
@@ -849,30 +893,60 @@ class BatchProcessingDialog(QDialog):
         self._import_worker = None
         self._import_callbacks = {}
         self._import_busy = False
+        self._import_mode = None
         self._invalid_thumbnail_paths.clear()
+        self._applied_thumbnail_paths.clear()
+        self._active_thumbnail_paths = ()
+        self._thumbnail_done = 0
         self._pump_folder_thumbnails()
         self._set_import_busy(self._import_busy)
 
+    def _update_import_status_labels(self) -> None:
+        thumb_label = getattr(self, '_thumbnail_status_label', None)
+        if thumb_label is not None:
+            if self._import_busy and self._import_mode == 'thumbnails' and self._active_thumbnail_paths:
+                total = len(self._active_thumbnail_paths)
+                done = min(self._thumbnail_done, total)
+                thumb_label.setText(trans.t('batch_loading_thumbnails').format(done=done, total=total))
+                thumb_label.show()
+            else:
+                thumb_label.clear()
+                thumb_label.hide()
+        stack_label = getattr(self, '_stack_import_status_label', None)
+        if stack_label is not None:
+            if self._import_busy and self._import_mode == 'stack':
+                stack_label.setText(trans.t('msg_loading_stack'))
+                stack_label.show()
+            else:
+                stack_label.clear()
+                stack_label.hide()
+
     def _set_import_busy(self, busy: bool) -> None:
-        """Disable the actions that would need the data still decoding."""
+        """Disable only actions that require a single-folder stack scan."""
+        stack_busy = bool(busy and self._import_mode == 'stack')
         if hasattr(self, 'chk_grouping'):
             # Recompute rather than blanket-enable: an incompatible mode must
             # keep grouping disabled once the import finishes.
             self._sync_option_states()
-        for name in ("btn_start", "btn_add_folder", "btn_add_single_folder"):
+        for name in ("btn_start", "btn_add_single_folder"):
             button = getattr(self, name, None)
             if button is not None:
-                button.setEnabled(not busy)
+                button.setEnabled(not stack_busy)
+        self._update_import_status_labels()
 
     def cancel_imports(self) -> None:
         """Ask the live import to stop and drop its result."""
         worker = self._import_worker
         self._import_generation += 1
         self._import_busy = False
+        self._import_mode = None
         self._import_worker = None
         self._import_callbacks = {}
         self._pending_thumbnails.clear()
         self._invalid_thumbnail_paths.clear()
+        self._applied_thumbnail_paths.clear()
+        self._active_thumbnail_paths = ()
+        self._thumbnail_done = 0
         self._set_import_busy(False)
         if worker is not None:
             # The worker is tracked at module level, so it stays alive until
@@ -888,7 +962,7 @@ class BatchProcessingDialog(QDialog):
         super().reject()
 
     def accept(self):
-        if self._import_busy:
+        if self._import_busy and self._import_mode == 'stack':
             from PyQt6.QtWidgets import QMessageBox
             QMessageBox.information(self, trans.t('batch_title'),
                                     trans.t('batch_import_in_progress'))
@@ -1300,18 +1374,19 @@ class BatchProcessingDialog(QDialog):
         else:
             grouping_reason = ''
 
+        stack_busy = bool(self._import_busy and self._import_mode == 'stack')
         if grouping_reason:
             if self.chk_grouping.isChecked():
                 self._grouping_pref = True
             self._set_grouping_checked(False)
-        elif (not self._import_busy and self._grouping_pref
+        elif (not stack_busy and self._grouping_pref
               and not self.chk_grouping.isChecked()):
             self._set_grouping_checked(True)
 
         grouping_on = self.chk_grouping.isChecked()
-        self.chk_grouping.setEnabled(not grouping_reason and not self._import_busy)
+        self.chk_grouping.setEnabled(not grouping_reason and not stack_busy)
         self.group_controls.setVisible(grouping_on)
-        self.group_controls.setEnabled(not self._import_busy)
+        self.group_controls.setEnabled(not stack_busy)
         self.chk_grouping.setToolTip(
             grouping_reason or trans.t('batch_group_hint'))
         self.group_note.setText(grouping_reason)

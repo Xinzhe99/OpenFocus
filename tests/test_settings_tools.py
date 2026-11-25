@@ -285,6 +285,7 @@ def test_settings_pages_expose_translated_controls_and_privacy_defaults(settings
 def test_registration_page_fits_collapsed_and_expanded_controls(qapp, settings_window):
     from dialogs.advanced_settings import AdvancedSettingsDialog
 
+    settings_window.experimental_features = True
     dialog = AdvancedSettingsDialog(settings_window)
     try:
         dialog.show()
@@ -311,6 +312,7 @@ def test_collapsing_optional_settings_preserves_edits(settings_window):
     from dialogs.advanced_settings import AdvancedSettingsDialog
     from locales import trans
 
+    settings_window.experimental_features = True
     settings_window.current_fusion_method = lambda: 'stackmffv3'
     dialog = AdvancedSettingsDialog(settings_window)
     dialog.show()
@@ -540,6 +542,7 @@ def test_openfocus_advanced_draft_accept_and_persistence(settings_window, tmp_pa
     store = QSettings(str(tmp_path / 'settings.ini'), QSettings.Format.IniFormat)
     monkeypatch.setattr(settings_store, 'get_settings', lambda: store)
     window = settings_window
+    window.experimental_features = True
     window._registration_parameters_by_method = {
         'openfocus': {'max_shift_ratio': .12, 'reference_frame': 4, 'failure_policy': 'fail'},
         'ecc': {'failure_policy': 'continue'},
@@ -579,6 +582,7 @@ def test_openfocus_advanced_invalid_and_save_failure_roll_back(settings_window):
     from dialogs.advanced_settings import AdvancedSettingsDialog
 
     window = settings_window
+    window.experimental_features = True
     original = {'openfocus': {'reference_frame': 3}, 'ecc': {'failure_policy': 'continue'}}
     window._registration_parameters_by_method = original
     window.current_alignment_method = lambda: 'ecc'

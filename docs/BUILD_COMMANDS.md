@@ -143,6 +143,12 @@ and `OpenFocus.portable` when upgrading an existing portable installation.
 Pass the versioned runtime directory to `tools/frozen_cli_smoke.py --resources`;
 without that option the smoke helper uses the macOS or legacy Windows layout.
 
+The Windows installer displays the Apache 2.0 license by default. For a
+release that includes a separate EULA, place the UTF-8 `EULA.txt` beside the
+built executable in `dist/OpenFocus` before creating the portable archive and
+compiling the installer. The installer and Help → About OpenFocus use that
+file, and the bundle also includes `LICENSE` and `NOTICE`.
+
 On Windows 10/11, run the release job's pruning step after PyInstaller: remove
 `dist/OpenFocus/_openfocus_runtime_<label>/icuuc.dll` if it was collected. Qt
 uses the Windows ICU API; a Conda DLL with the same name but version-suffixed

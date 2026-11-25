@@ -100,7 +100,9 @@ def _exercise_wheel_delivery():
     assert scrollbar.value() == 0
     combo.hidePopup()
 
-    settings = AdvancedSettingsDialog(QWidget())
+    settings_host = QWidget()
+    settings_host.experimental_features = True
+    settings = AdvancedSettingsDialog(settings_host)
     settings.show()
     app.processEvents()
     settings.registration_options_disclosure.setChecked(True)

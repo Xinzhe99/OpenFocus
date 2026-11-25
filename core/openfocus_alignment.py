@@ -27,7 +27,7 @@ _WEIGHTS = (12, 64, 37, 2)
 _HASH_CHUNK_BYTES = 4 * 1024 * 1024
 _BGR_HASH_CHUNK_BYTES = _HASH_CHUNK_BYTES // 2
 _PARALLEL_PIXEL_THRESHOLD = 512 * 512
-_MAX_ALIGNMENT_WORKERS = 8
+_MAX_ALIGNMENT_WORKERS = 16
 _PARALLEL_BATCH_LOCK = threading.Lock()
 _ALIGNMENT_POOL = None
 
@@ -241,6 +241,33 @@ def _fast_file_digest(path: str, shape: tuple, dtype_str: str, page: int, file_s
     return digest.hexdigest()
 
 
+def _can_use_file_digest(frame):
+    from core.source_frames import SourceFrame
+
+    return (type(frame) is SourceFrame and not frame.transforms and not frame.raw_sensor_shape
+            and frame.linear_metadata is None and frame.scale == 1.0
+            and bool(frame.path) and bool(frame.fingerprint))
+
+
+def _build_source_fingerprint(frame, image, should_cancel, *, include_context=True):
+    """Build a SourceFingerprint, using fast file digest for unmodified file-backed SourceFrames."""
+    use_file_digest = _can_use_file_digest(frame)
+    path, page, file_stamp = _source_file_identity(frame)
+    shape = tuple(image.shape)
+    dtype_str = image.dtype.str
+    context = _source_context(frame) if include_context or use_file_digest else ''
+    if use_file_digest:
+        digest = _fast_file_digest(path, shape, dtype_str, page, file_stamp, should_cancel)
+        identity = SourceFingerprint(shape, dtype_str, digest, path, page, file_stamp,
+                                     context, digest_kind='file')
+    else:
+        identity = SourceFingerprint(shape, dtype_str,
+                                     _pixel_digest(image, should_cancel, source=frame),
+                                     path, page, file_stamp, context)
+    identity.validate_file()
+    return identity
+
+
 @dataclass(frozen=True)
 class SourceFingerprint:
     """Decoded pixel identity plus the descriptor's file identity, if present."""
@@ -260,6 +287,21 @@ class SourceFingerprint:
             if (stat.st_size, stat.st_mtime_ns) != self.file_stamp:
                 raise OSError(f'Source changed since alignment: {self.path}')
 
+    def _validate_file_digest(self, should_cancel):
+        if _fast_file_digest(self.path, self.shape, self.dtype, self.page, self.file_stamp,
+                             should_cancel) != self.sha256:
+            raise ValueError('Alignment source file changed')
+        self.validate_file()
+
+    def _validate_file_descriptor(self, source, should_cancel):
+        if (not _can_use_file_digest(source) or tuple(source.shape) != self.shape
+                or np.dtype(source.dtype).str != self.dtype
+                or _source_file_identity(source) != (self.path, self.page, self.file_stamp)
+                or (self.context and _source_context(source) != self.context)):
+            raise ValueError('Alignment source identity changed')
+        source.validate_source()
+        self._validate_file_digest(should_cancel)
+
     def validate_direct_source(self, source_frame, should_cancel=None):
         """Validate a direct-mapped RGB TIFF source via render-scope digest if cached."""
         _check_cancel(should_cancel)
@@ -272,6 +314,9 @@ class SourceFingerprint:
                 or _source_file_identity(source_frame) != (self.path, self.page, self.file_stamp)
                 or (self.context and _source_context(source_frame) != self.context)):
             raise ValueError('Alignment source identity changed')
+        if self.digest_kind == 'file':
+            self._validate_file_descriptor(source_frame, should_cancel)
+            return True
         digest = frame_resolution_cache.get_source_digest(source_frame)
         if digest is None:
             return False
@@ -285,10 +330,29 @@ class SourceFingerprint:
         if tuple(image.shape) != self.shape or np.dtype(image.dtype).str != self.dtype:
             raise ValueError('Alignment source shape or dtype changed')
         if self.digest_kind == 'file' and self.path:
-            if _fast_file_digest(self.path, self.shape, self.dtype, self.page, self.file_stamp,
-                                 should_cancel) != self.sha256:
-                raise ValueError('Alignment source file changed')
-            self.validate_file()
+            if source is not None:
+                self._validate_file_descriptor(source, should_cancel)
+            else:
+                from core.image_loader import decode_image, decode_tiff_page
+
+                self._validate_file_digest(should_cancel)
+                resource_policy.require_memory(math.prod(self.shape[:2]) * 32 + self.file_stamp[0] * 2)
+                gray = len(self.shape) == 2
+                if os.path.splitext(self.path)[1].lower() in ('.tif', '.tiff'):
+                    disk_pixels = decode_tiff_page(self.path, self.page, preserve_grayscale=gray)
+                else:
+                    disk_pixels = decode_image(self.path, allow_transparent_png=True,
+                                               preserve_grayscale=gray)
+                _check_cancel(should_cancel)
+                if disk_pixels is not None and self.shape[2:] == (4,) and disk_pixels.shape[2:] == (3,):
+                    import cv2
+
+                    disk_pixels = cv2.cvtColor(disk_pixels, cv2.COLOR_BGR2BGRA)
+                if (disk_pixels is None or disk_pixels.shape != self.shape
+                        or disk_pixels.dtype.str != self.dtype
+                        or not _alignment_pixels_equal(image, disk_pixels, should_cancel)):
+                    raise ValueError('Alignment source pixels changed')
+                self.validate_file()
             return
         if _pixel_digest(image, should_cancel, source=source) != self.sha256:
             raise ValueError('Alignment source pixels changed')
@@ -710,10 +774,7 @@ def estimate_translation_plan(sources, *, max_shift_ratio=0.05,
         _check_cancel(should_cancel)
         if not isinstance(image, np.ndarray) or _geometry(image) != _geometry(frame):
             raise ValueError('Alignment source metadata does not match decoded pixels')
-        path, page, file_stamp = _source_file_identity(frame)
-        identity = SourceFingerprint(shape, image.dtype.str,
-                                     _pixel_digest(image, should_cancel, source=frame), path, page, file_stamp)
-        identity.validate_file()
+        identity = _build_source_fingerprint(frame, image, should_cancel, include_context=False)
         gray = _gray16(image, should_cancel)
         del image
         pair_x = pair_y = 0.0
@@ -732,7 +793,7 @@ def estimate_translation_plan(sources, *, max_shift_ratio=0.05,
     return TranslationPlan(tuple(transforms), 0, tuple(range(len(sources))), ratio, needed)
 
 
-def apply_translation(image, transform, *, should_cancel=None):
+def apply_translation(image, transform, *, should_cancel=None, source=None):
     """Validate source identity and apply a reusable full-resolution transform.
 
     Identity returns the original borrowed array exactly. Other translations
@@ -745,7 +806,7 @@ def apply_translation(image, transform, *, should_cancel=None):
     if not isinstance(transform, TranslationTransform):
         raise TypeError('transform must be a TranslationTransform')
     resource_policy.require_memory(translation_resolution_bytes(image))
-    transform.source.validate_pixels(image, should_cancel)
+    transform.source.validate_pixels(image, should_cancel, source=source)
     result = _warp(image, transform.dx, transform.dy, should_cancel)
     _check_cancel(should_cancel)
     return result
@@ -816,7 +877,8 @@ def apply_translation_region(source_or_image, transform, x, y, width, height, *,
         image = (source_or_image if isinstance(source_or_image, np.ndarray)
                  else resolve_frame(source_or_image, should_cancel=should_cancel))
         _geometry(image)
-        transform.source.validate_pixels(image, should_cancel)
+        src_obj = None if isinstance(source_or_image, np.ndarray) else source_or_image
+        transform.source.validate_pixels(image, should_cancel, source=src_obj)
         src_shape = tuple(image.shape)
         src_dtype = np.dtype(image.dtype)
 
@@ -1678,17 +1740,21 @@ def _alignment_memory(height, width, decode_peak, plane_limit=None):
     return planes + decode_peak + width * 1024 + 16 * 1024 * 1024
 
 
+def _alignment_pyramid_bytes(height, width):
+    total = height * width * 2
+    while min(height, width) >= 64:
+        height, width = (height + 1) // 2, (width + 1) // 2
+        total += height * width * 2
+    return total
+
+
 def _alignment_spill_bytes(height, width, count, reference_frame):
     plane = height * width * 2
     if count == 1:
         return plane
     # A retained anchor overlaps the current pair only on a longer chain.
     pyramids = 3 if count > 3 and reference_frame not in (1, count) else 2
-    reduced = 0
-    while min(height, width) >= 64:
-        height, width = (height + 1) // 2, (width + 1) // 2
-        reduced += height * width * 2
-    return (pyramids + 1) * plane + pyramids * reduced
+    return plane + pyramids * _alignment_pyramid_bytes(height, width)
 
 
 def estimate_alignment_bytes(sources):
@@ -1830,7 +1896,8 @@ def apply_alignment_region(source_or_image, transform, x, y, width, height, *,
                  else resolve_frame(source_or_image, should_cancel=should_cancel))
         _alignment_geometry(image)
         _validate_internal_float(image, should_cancel)
-        transform.source.validate_pixels(image, should_cancel)
+        src_obj = None if isinstance(source_or_image, np.ndarray) else source_or_image
+        transform.source.validate_pixels(image, should_cancel, source=src_obj)
         src_shape = tuple(image.shape)
         src_dtype = np.dtype(image.dtype)
 
@@ -1976,10 +2043,9 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
                             progress_callback=None, failure_policy='fail'):
     """Sequential wide search; rotation in degrees, magnification in percent.
 
-    Source one follows the previous aligned reference. Each estimate maps to
-    the anchor and starts from the previous absolute transform, so the local
-    search can follow cumulative focus breathing across a long stack. A later
-    reference anchors two independent chains, one on either side.
+    Each estimate matches the current frame to the previous aligned reference
+    and starts from its absolute transform. An interior reference anchors
+    independent chains in both directions.
     """
     _check_cancel(should_cancel)
     ratio = float(max_shift_ratio)
@@ -2030,7 +2096,6 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
         log_action('openfocus_alignment_low_ram_degrade',
                    required_bytes=min_needed, budget_bytes=ceiling_now)
     host_budget = getattr(plan, 'ram_budget', 0) or 0
-    gray_bytes = h * w * 2
     prefetch_workers = 0
     search_threads = nullcontext()
     if not low_ram_spill and len(sources) >= 2 and host_budget > needed:
@@ -2041,7 +2106,10 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
             scratch_bytes = max(_HASH_CHUNK_BYTES, w * 16)
             if any(np.dtype(frame.dtype).kind == 'f' for frame in sources):
                 scratch_bytes = max(2 * _HASH_CHUNK_BYTES, w * 512)
-            per_prefetch_bytes = decode_peak + gray_bytes + scratch_bytes
+            gray_bytes = h * w * 2
+            pyramid_bytes = _alignment_pyramid_bytes(h, w)
+            per_prefetch_bytes = max(decode_peak + gray_bytes + scratch_bytes,
+                                     pyramid_bytes + w * 64)
             spare = host_budget - needed - source_cache_growth_bytes(sources)
             prefetch_workers = max(0, min(4, len(sources) - 1, align_workers // 2,
                                           spare // per_prefetch_bytes))
@@ -2069,14 +2137,13 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
             from core.image_loader import _has_transparency, UnsupportedTransparency
             if _has_transparency(image):
                 raise UnsupportedTransparency('Registration of transparent images is unsupported')
-        path, page, file_stamp = _source_file_identity(frame)
-        identity = SourceFingerprint(tuple(image.shape), image.dtype.str,
-            _pixel_digest(image, cancelled, source=frame), path, page, file_stamp,
-            _source_context(frame))
-        identity.validate_file()
+        identity = _build_source_fingerprint(frame, image, cancelled, include_context=True)
         gray = _alignment_gray16(image, cancelled, spillable=low_ram_spill)
         del image
-        return identity, gray
+        pyr = (build_pyramid(gray, 64, cancelled, spillable=False)
+               if (prefetch_workers and (ratio or rotation or magnification) and min(gray.shape) >= 2)
+               else None)
+        return identity, gray, pyr
 
     def iter_prepared():
         if prefetch_workers <= 0:
@@ -2124,17 +2191,18 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
             if has_right_chain and index == ref + 1:
                 previous, previous_index = anchor, ref
                 prev_pyr = anchor_pyr
-            identity, gray = next(prepared_stream)
+                anchor = anchor_pyr = None
+            identity, gray, curr_pyr = next(prepared_stream)
             pair = np.array(_IDENTITY_F8, np.float32)
             rounds, failure = 0, ''
-            curr_pyr = None
             if (index != ref and (ratio or rotation or magnification)
                     and not _alignment_pixels_equal(previous, gray, should_cancel)):
                 if prev_pyr is None:
                     prev_pyr = build_pyramid(previous, 64, should_cancel, spillable=low_ram_spill)
                 if has_right_chain and index == ref - 1 and previous_index == ref:
                     anchor_pyr = prev_pyr
-                curr_pyr = build_pyramid(gray, 64, should_cancel, spillable=low_ram_spill)
+                if curr_pyr is None:
+                    curr_pyr = build_pyramid(gray, 64, should_cancel, spillable=low_ram_spill)
                 try:
                     pair, rounds = align_pair_wide(previous, gray, h_pct=ratio * 100,
                         v_pct=ratio * 100, rot_deg=rotation, mag_pct=magnification,
@@ -2155,15 +2223,11 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
                 tuple(float(v) for v in pair), identity, previous_index, rounds, failure)
             transforms[index] = transform
             previous = _warp_alignment(gray, total, should_cancel, spillable=low_ram_spill)
-            if previous is gray:
-                prev_pyr = curr_pyr
-            else:
-                prev_pyr = None
-            del curr_pyr
+            prev_pyr = curr_pyr if previous is gray else None
             if index == ref and has_right_chain:
                 anchor = previous
                 anchor_pyr = prev_pyr
-            del gray
+            del gray, curr_pyr
             previous_index = index
             if progress_callback is not None:
                 progress_callback(done + 1, len(sources))

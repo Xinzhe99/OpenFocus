@@ -76,4 +76,17 @@ void pack_png_scanlines_cpp(
     int num_threads
 );
 
+void of_u16_to_display_u8_cpp(
+    const ArrayView& src,
+    const ArrayView& dst,
+    bool bgr_rev,
+    int num_threads
+);
+
+void of_bgr_to_rgb_cpp(
+    const ArrayView& src,
+    const ArrayView& dst,
+    int num_threads
+);
+
 }  // namespace openfocus
