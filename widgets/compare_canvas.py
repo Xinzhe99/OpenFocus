@@ -1,4 +1,5 @@
 """Source selection and exact result crops for the comparison workbench."""
+from itertools import chain
 import math
 
 from PyQt6.QtCore import QPointF, QRect, QRectF, Qt, QTimer, pyqtSignal
@@ -105,17 +106,24 @@ class SourceCanvas(_Canvas):
         else:
             self._viewport_timer.start()
 
-    def set_pixmap(self, pixmap, reset=False, *, source_size=None, preview_only=False):
+    def set_pixmap(self, pixmap, reset=False, *, source_size=None, preview_only=False,
+                   preserve_tiles=False):
+        size = (tuple(source_size) if source_size is not None else
+                (pixmap.width(), pixmap.height()) if pixmap is not None else (0, 0))
+        if not preserve_tiles or reset or size != self._source_size:
+            self._drag_region = False
+            if self._pan_from is not None:
+                self._pan_from = None
+                self.setCursor(Qt.CursorShape.CrossCursor if self._region_enabled
+                               else Qt.CursorShape.ArrowCursor)
+            self._tiles.clear()
+            self._retained_tiles.clear()
+            self._native_status = ''
         self._pixmap = pixmap
-        self._tiles.clear()
-        self._retained_tiles.clear()
         self._preview_only = preview_only
-        self._source_size = (tuple(source_size) if source_size is not None else
-                             (pixmap.width(), pixmap.height()) if pixmap is not None else (0, 0))
+        self._source_size = size
         if not self.has_image():
             self._native_status = ''
-            self._drag_region = False
-            self._pan_from = None
             self._set_region(None)
         elif reset or self._camera_size != self._source_size:
             self._camera_size = self._source_size
@@ -124,6 +132,7 @@ class SourceCanvas(_Canvas):
                                           self._source_size[1] / 2))
             if self.isVisible():
                 self.fit()
+                return
         elif self._region is None:
             self.set_region_centre(QPointF(self._source_size[0] / 2, self._source_size[1] / 2))
         self.update()
@@ -167,7 +176,8 @@ class SourceCanvas(_Canvas):
     def stash_tiles(self):
         """Retain the current tiles underneath until replacement tiles arrive."""
         if self._tiles:
-            self._retained_tiles = self._tiles
+            if not self._retained_tiles:
+                self._retained_tiles = self._tiles
             self._tiles = []
 
     def clear_retained_tiles(self):
@@ -269,7 +279,8 @@ class SourceCanvas(_Canvas):
 
     def resizeEvent(self, event):  # noqa: N802
         super().resizeEvent(event)
-        self._emit_viewport_changed(immediate=False)
+        if self.isVisible() and self.has_image() and not self._fit_pending:
+            self._emit_viewport_changed(immediate=False)
 
     def _image_transform(self):
         if not self.has_image():
@@ -307,10 +318,12 @@ class SourceCanvas(_Canvas):
             self.set_region_centre(self.widget_to_image(event.position()))
             event.accept()
         elif self._pan_from is not None:
-            self._pan += event.position() - self._pan_from
-            self._pan_from = QPointF(event.position())
-            self.update()
-            self._emit_viewport_changed(immediate=False)
+            delta = event.position() - self._pan_from
+            if not delta.isNull():
+                self._pan += delta
+                self._pan_from = QPointF(event.position())
+                self.update()
+                self._emit_viewport_changed(immediate=False)
             event.accept()
         else:
             super().mouseMoveEvent(event)
@@ -326,7 +339,8 @@ class SourceCanvas(_Canvas):
               and self._pan_from is not None):
             self._pan += event.position() - self._pan_from
             self._pan_from = None
-            self.setCursor(Qt.CursorShape.CrossCursor)
+            self.setCursor(Qt.CursorShape.CrossCursor if self._region_enabled
+                           else Qt.CursorShape.ArrowCursor)
             self.update()
             self._emit_viewport_changed(immediate=True)
             event.accept()
@@ -340,12 +354,14 @@ class SourceCanvas(_Canvas):
             return
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             self._actual = False
-            anchor = self.widget_to_image(event.position())
             factor = 1.15 if delta > 0 else 1 / 1.15
-            self._zoom = max(0.000001, min(12.0, self._zoom * factor))
-            self._pan += event.position() - self.image_to_widget(anchor)
-            self.update()
-            self._emit_viewport_changed(immediate=False)
+            zoom = max(0.000001, min(12.0, self._zoom * factor))
+            if zoom != self._zoom:
+                anchor = self.widget_to_image(event.position())
+                self._zoom = zoom
+                self._pan += event.position() - self.image_to_widget(anchor)
+                self.update()
+                self._emit_viewport_changed(immediate=False)
         elif self._region_enabled:
             factor = 1.2 if delta > 0 else 1 / 1.2
             self.set_magnification(self._magnification * factor)
@@ -365,7 +381,7 @@ class SourceCanvas(_Canvas):
                 source = QRectF(self._pixmap.rect())
                 painter.drawPixmap(transform.mapRect(QRectF(0, 0, *self._source_size)),
                                    self._pixmap, source)
-            for bounds, pixmap in (*self._retained_tiles, *self._tiles):
+            for bounds, pixmap in chain(self._retained_tiles, self._tiles):
                 painter.drawPixmap(transform.mapRect(bounds), pixmap, QRectF(pixmap.rect()))
             if self._region is not None and self._region_enabled:
                 painter.setPen(QPen(QColor(255, 255, 255), 2))

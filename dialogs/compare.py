@@ -707,7 +707,8 @@ class CompareDialog(QDialog):
         size = (frame.shape[1], frame.shape[0])
         with QSignalBlocker(self.ref_canvas):
             self.ref_canvas.set_pixmap(cv2_to_pixmap(image) if image is not None else None,
-                                       source_size=size, preview_only=isinstance(frame, (SourceFrame, ProcessedFrame)))
+                                       source_size=size, preview_only=isinstance(frame, (SourceFrame, ProcessedFrame)),
+                                       preserve_tiles=True)
         self._refresh_reference_viewport()
 
     def _source_preview_ready(self, request, index, identity, _thumbnail):
@@ -729,7 +730,6 @@ class CompareDialog(QDialog):
 
     def _source_preview_failed(self, request, message):
         if not self._closing and request == self._source_preview_generation:
-            self.ref_canvas.clear_retained_tiles()
             self.ref_canvas.set_native_status(trans.t('msg_display_error_title'))
             self.ref_canvas.setToolTip(message)
 

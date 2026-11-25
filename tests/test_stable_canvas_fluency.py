@@ -4,7 +4,7 @@ import pytest
 
 pytest.importorskip("PyQt6")
 
-from PyQt6.QtCore import QEvent, QPoint, QPointF, QRectF, Qt
+from PyQt6.QtCore import QEvent, QPoint, QPointF, QRectF, QSignalBlocker, Qt
 from PyQt6.QtGui import QColor, QMouseEvent, QPainter, QPixmap, QWheelEvent
 from PyQt6.QtWidgets import QApplication
 
@@ -57,6 +57,25 @@ def test_magnifier_skips_redundant_base_draw_when_source_pixmap_present(qapp, mo
     label.close()
 
 
+def test_magnifier_preserves_preview_under_transparent_detail(qapp):
+    label = MagnifierLabel()
+    label.resize(40, 40)
+    preview = QPixmap(40, 40)
+    preview.fill(QColor('magenta'))
+    transparent = QPixmap(40, 40)
+    transparent.fill(Qt.GlobalColor.transparent)
+
+    label.set_display_pixmap(preview, source_size=(40, 40), source_pixmap=transparent)
+    assert label.pixmap().toImage().pixelColor(4, 4) == QColor('magenta')
+
+    label.set_display_pixmap(preview, source_size=(40, 40), source_pixmap=QPixmap())
+    assert label.pixmap().toImage().pixelColor(4, 4) == QColor('magenta')
+
+    label.set_display_pixmap(transparent)
+    assert label.pixmap().toImage().pixelColor(4, 4).alpha() == 0
+    label.close()
+
+
 def test_magnifier_coalesces_wheel_pan_and_resize_into_paint(qapp):
     class CountingLabel(MagnifierLabel):
         rebuilds = 0
@@ -85,19 +104,22 @@ def test_magnifier_coalesces_wheel_pan_and_resize_into_paint(qapp):
     assert not label._interactive_transform
     label.rebuilds = 0
 
-    _mouse(label, QEvent.Type.MouseButtonPress, (200, 150),
+    start_pan = QPointF(label._pan_offset)
+    _mouse(label, QEvent.Type.MouseButtonPress, (0, 0),
            Qt.MouseButton.RightButton, Qt.MouseButton.RightButton)
     for step in range(1, 6):
-        _mouse(label, QEvent.Type.MouseMove, (200 + step * 5, 150 + step * 3),
+        _mouse(label, QEvent.Type.MouseMove, (step * 5, step * 3),
                Qt.MouseButton.NoButton, Qt.MouseButton.RightButton)
+    assert label._pan_offset == start_pan + QPointF(25, 15)
     assert label.rebuilds == 0
     assert label._interactive_transform
     label.grab()
     assert label.rebuilds == 1
-    _mouse(label, QEvent.Type.MouseButtonRelease, (225, 165),
+    _mouse(label, QEvent.Type.MouseButtonRelease, (31, 19),
            Qt.MouseButton.RightButton, Qt.MouseButton.NoButton)
+    assert label._pan_offset == start_pan + QPointF(31, 19)
+    assert not label._interactive_transform
 
-    label._refine_timer.timeout.emit()
     label.rebuilds = 0
     label.resize(460, 340)
     assert label.rebuilds == 0
@@ -192,14 +214,17 @@ def test_magnifier_roi_space_pan_bounds_clamping_and_delete_edge_clamp(qapp):
     label.reset_view()
     _mouse(label, QEvent.Type.MouseButtonPress, (350, 250),
            Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton)
-    _mouse(label, QEvent.Type.MouseMove, (600, 500),
-           Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton)
     _mouse(label, QEvent.Type.MouseButtonRelease, (600, 500),
            Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton)
     roi = label.get_roi_rect()
     assert roi is not None
     assert 0.0 <= roi.left() <= roi.right() <= 400.0
     assert 0.0 <= roi.top() <= roi.bottom() <= 300.0
+    _mouse(label, QEvent.Type.MouseButtonPress, (250, 200),
+           Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton)
+    _mouse(label, QEvent.Type.MouseButtonRelease, (250, 200),
+           Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton)
+    assert label.get_roi_rect() is None
 
     # Moving an ROI past the left/top edge preserves its size and clamps inside bounds.
     label.set_roi_rect(QRectF(20, 20, 100, 80))
@@ -215,8 +240,24 @@ def test_magnifier_roi_space_pan_bounds_clamping_and_delete_edge_clamp(qapp):
     # Delete button stays completely inside widget rect even at the top-right edge.
     label.set_roi_rect(QRectF(300, 0, 100, 80))
     screen_roi = label._roi_in_widget(label.get_roi_rect())
-    del_rect = label._get_handle_rects(screen_roi)["del"]
-    assert QRectF(label.rect()).contains(del_rect)
+    handles = label._get_handle_rects(screen_roi)
+    assert QRectF(label.rect()).contains(handles["del"])
+    _mouse(label, QEvent.Type.MouseButtonPress, (399, 1),
+           Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton)
+    _mouse(label, QEvent.Type.MouseButtonRelease, (379, 21),
+           Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton)
+    assert label.get_roi_rect() == QRectF(300, 20, 80, 60)
+
+    label.roi_mode = False
+    label.set_space_pressed(True)
+    label.set_display_pixmap(None)
+    label.set_space_pressed(False)
+    label.set_display_pixmap(pix)
+    _mouse(label, QEvent.Type.MouseButtonPress, (200, 150),
+           Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton)
+    assert label._magnifier_active and not label._is_panning
+    _mouse(label, QEvent.Type.MouseButtonRelease, (200, 150),
+           Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton)
     label.close()
 
 
@@ -231,9 +272,6 @@ def test_wipe_divider_drag_reuses_tiles_and_pan_debounces_clamps_and_keeps_tiles
 
     class Worker(RegionWorker):
         instances = []
-
-        def request_cancel(self):
-            self.cancelled = True
 
         def isRunning(self):
             return False
@@ -281,9 +319,10 @@ def test_wipe_divider_drag_reuses_tiles_and_pan_debounces_clamps_and_keeps_tiles
     assert left_side.request is None  # debounced while dragging
 
     # Releasing flushes immediately and retains prior tiles until the new tile arrives.
-    _mouse(widget, QEvent.Type.MouseButtonRelease, (50, 130),
+    _mouse(widget, QEvent.Type.MouseButtonRelease, (58, 136),
            Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton)
     assert widget.cursor().shape() == Qt.CursorShape.OpenHandCursor
+    assert widget._pan == QPointF(28, 26)
     widget.grab()
     second_req = left_side.request
     assert second_req is not None and second_req != first_req
@@ -291,6 +330,14 @@ def test_wipe_divider_drag_reuses_tiles_and_pan_debounces_clamps_and_keeps_tiles
     worker.ready.emit(worker.key, second_req, tile_pixels, second_req[2])
     assert len(left_side.tiles) == 1
     assert not left_side._retained_tiles
+
+    widget.resize(250, 220)
+    widget.grab()
+    assert left_side.request is None
+    assert widget._detail_timer.isActive()
+    widget._detail_timer.timeout.emit()
+    widget.grab()
+    assert left_side.request is not None and left_side.request != second_req
 
     # Extreme pan drag is clamped so at least 40 px of the image stays on screen.
     _mouse(widget, QEvent.Type.MouseButtonPress, (30, 110),
@@ -316,7 +363,7 @@ def test_compare_source_canvas_debounces_pan_zoom_and_retains_prior_tiles(qapp):
     qapp.processEvents()
 
     emissions = []
-    canvas.viewportChanged.connect(lambda: emissions.append(1))
+    canvas.viewportChanged.connect(lambda: emissions.append(canvas._pan.x()))
 
     # Ctrl+wheel debounces viewportChanged instead of emitting synchronously per tick.
     for _ in range(4):
@@ -333,8 +380,16 @@ def test_compare_source_canvas_debounces_pan_zoom_and_retains_prior_tiles(qapp):
     _mouse(canvas, QEvent.Type.MouseMove, (180, 140),
            Qt.MouseButton.NoButton, Qt.MouseButton.RightButton)
     assert emissions == []
-    _mouse(canvas, QEvent.Type.MouseButtonRelease, (180, 140),
+    before_release = canvas._pan.x()
+    _mouse(canvas, QEvent.Type.MouseButtonRelease, (190, 145),
            Qt.MouseButton.RightButton, Qt.MouseButton.NoButton)
+    assert emissions == [before_release + 10]
+
+    emissions.clear()
+    canvas.resize(320, 260)
+    canvas.resize(340, 280)
+    assert not emissions and canvas._viewport_timer.isActive()
+    canvas._viewport_timer.timeout.emit()
     assert len(emissions) == 1
 
     # stash_tiles retains prior tiles until clear_retained_tiles; clear_tiles wipes both.
@@ -346,11 +401,26 @@ def test_compare_source_canvas_debounces_pan_zoom_and_retains_prior_tiles(qapp):
     assert canvas._tiles == []
     assert len(canvas._retained_tiles) == 1
     canvas.add_tile((10, 10, 64, 64), tile)
+    canvas.stash_tiles()
+    assert canvas._retained_tiles[0][0] == QRectF(0, 0, 64, 64)
+    canvas.set_pixmap(pix, source_size=(1200, 900), preview_only=True, preserve_tiles=True)
+    assert len(canvas._retained_tiles) == 1
+    canvas.add_tile((10, 10, 64, 64), tile)
     canvas.clear_retained_tiles()
     assert canvas._retained_tiles == []
     assert len(canvas._tiles) == 1
-    canvas.clear_tiles()
+    canvas.stash_tiles()
+    _mouse(canvas, QEvent.Type.MouseButtonPress, (150, 120),
+           Qt.MouseButton.RightButton, Qt.MouseButton.RightButton)
+    _mouse(canvas, QEvent.Type.MouseMove, (180, 140),
+           Qt.MouseButton.NoButton, Qt.MouseButton.RightButton)
+    canvas.set_pixmap(pix, source_size=(1200, 900), preview_only=True)
     assert canvas._tiles == [] and canvas._retained_tiles == []
+    assert not canvas._viewport_timer.isActive()
+    before_release = canvas._pan.x()
+    _mouse(canvas, QEvent.Type.MouseButtonRelease, (200, 140),
+           Qt.MouseButton.RightButton, Qt.MouseButton.NoButton)
+    assert canvas._pan.x() == before_release
     canvas.close()
 
 
@@ -359,13 +429,12 @@ def test_compare_source_canvas_debounces_pan_zoom_and_retains_prior_tiles(qapp):
 # ---------------------------------------------------------------------------
 
 
-def test_brush_mask_memoized_and_read_only():
-    m1 = brush_mask(33, 0.5)
-    m2 = brush_mask(33, 0.50001)
-    assert m1 is m2
-    assert not m1.flags.writeable
-    with pytest.raises(ValueError):
-        m1[0, 0] = 0.0
+def test_brush_mask_preserves_exact_hardness_and_independent_writes():
+    soft = brush_mask(129, 0.99996)
+    hard = brush_mask(129, 1.0)
+    assert 0 < soft[72, 128] < hard[72, 128] == 1
+    hard[64, 64] = 0
+    assert brush_mask(129, 1.0)[64, 64] == 1
 
 
 def test_retouch_document_undo_redo_return_dirty_rect():
@@ -380,18 +449,20 @@ def test_retouch_document_undo_redo_return_dirty_rect():
     doc.begin_stroke(20, 20)
     doc.end_stroke()
 
-    undo_rect = doc.undo()
+    undo_rect = doc.undo(return_rect=True)
     assert isinstance(undo_rect, tuple) and len(undo_rect) == 4
     x0, y0, x1, y1 = undo_rect
     assert (x0, y0, x1, y1) == (0, 0, 128, 128)
     assert np.array_equal(doc.working, base)
 
-    redo_rect = doc.redo()
+    redo_rect = doc.redo(return_rect=True)
     assert redo_rect == (0, 0, 128, 128)
     assert doc.working[20, 20, 0] > 100
+    assert doc.undo() is True and doc.redo() is True
 
 
 def test_retouch_dialog_incremental_undo_redo_and_non_blanking_source_and_apply(qapp, monkeypatch):
+    from dataclasses import replace
     from PyQt6.QtTest import QTest
     from controllers.output_manager import OutputRecord
     from core.render_context import build_render_context
@@ -399,10 +470,14 @@ def test_retouch_dialog_incremental_undo_redo_and_non_blanking_source_and_apply(
 
     base = np.full((300, 300, 3), 60, np.uint8)
     frames = [
-        np.full((300, 300, 3), 180, np.uint8),
-        np.full((300, 300, 3), 220, np.uint8),
+        np.full((280, 270, 3), 180, np.uint8),
+        np.full((260, 250, 3), 220, np.uint8),
     ]
-    context = build_render_context(frames, base, filenames=["f0.png", "f1.png"], algorithm="test")
+    context = build_render_context([base, base], base, filenames=["f0.png", "f1.png"], algorithm="test")
+    context = replace(context, frames=(
+        replace(context.frames[0], image=frames[0], offset_x=10, offset_y=10),
+        replace(context.frames[1], image=frames[1], offset_x=50, offset_y=40),
+    ))
     record = OutputRecord.create(base, "result.png", context=context)
     dialog = RetouchDialog(None, record=record, apply_callback=lambda *_: (True, ""))
     dialog.show()
@@ -416,11 +491,7 @@ def test_retouch_dialog_incremental_undo_redo_and_non_blanking_source_and_apply(
         assert dialog.begin_stroke(20, 20)
         dialog.end_stroke()
 
-        # Verify _can_apply() stays True even while another source frame is loading.
-        dialog._source_loading = True
-        assert dialog._can_apply()
-        dialog._source_loading = False
-
+        assert dialog.btn_apply.isEnabled()
         # Verify switching to an uncached frame keeps prior source preview visible.
         prior_img = dialog._source_qimage
         assert prior_img is not None
@@ -428,25 +499,47 @@ def test_retouch_dialog_incremental_undo_redo_and_non_blanking_source_and_apply(
         dialog._select_frame(1)
         assert dialog._source_loading
         assert dialog._source_qimage is prior_img
-        assert dialog._can_apply()
+        assert dialog.canvas_image("source")[1:] == (270, 280, 10, 10)
+        assert not dialog.begin_stroke(70, 75)
+        assert dialog.btn_apply.isEnabled()
+        with QSignalBlocker(dialog.chk_sharp):
+            dialog.chk_sharp.setChecked(True)
+        maps = {0: np.full((2, 2, 3), 200, np.uint8), 1: np.full((2, 2, 3), 20, np.uint8)}
+        dialog._on_sharpness_ready(dialog._sharpness_request, maps)
+        assert dialog.canvas_image("source")[0].pixelColor(0, 0).red() == 191
 
         # Verify undo/redo patch incrementally instead of full-image refresh.
         patches = []
         real_patch = dialog._patch_result
         monkeypatch.setattr(dialog, "_patch_result", lambda r: (patches.append(r), real_patch(r)))
-        monkeypatch.setattr(
-            dialog,
-            "_refresh_result_display",
-            lambda: (_ for _ in ()).throw(AssertionError("unexpected full redraw on stroke undo/redo")),
-        )
+        refreshes = []
+        real_refresh = dialog._refresh_result_display
+        monkeypatch.setattr(dialog, "_refresh_result_display",
+                            lambda: (refreshes.append(True), real_refresh()))
 
         dialog._undo()
         assert patches == [(0, 0, 128, 128)]
         assert np.array_equal(dialog.doc.working, base)
+        assert dialog.canvas_image("result")[0].pixelColor(20, 20).red() == 60
 
         dialog._redo()
         assert patches == [(0, 0, 128, 128), (0, 0, 128, 128)]
         assert dialog.doc.working[20, 20, 0] > 60
+        assert not refreshes
+        assert dialog.canvas_image("result")[0].pixelColor(20, 20).red() > 60
+
+        # Redo finalizes an active stroke. At the record limit that rolls back
+        # the live pixels even when the redo stack has no entry.
+        dialog.doc.set_tool("exposure")
+        dialog.doc._point_count = 249998
+        assert dialog.begin_stroke(220, 220)
+        dialog.stroke_to(230, 220)
+        dialog.stroke_to(240, 220)
+        assert dialog.canvas_image("result")[0].pixelColor(240, 220).red() > 60
+        dialog._redo()
+        assert not dialog.doc.stroke_active
+        assert dialog.doc.working[220, 240, 0] == 60
+        assert dialog.canvas_image("result")[0].pixelColor(240, 220).red() == 60
     finally:
         dialog._allow_close = True
         dialog.close()

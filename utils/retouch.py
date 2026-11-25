@@ -194,20 +194,12 @@ def brush_mask(diameter: int, hardness: float) -> np.ndarray:
     remainder falls off with a raised cosine.  100 % is a hard-edged disc
     and diameter 1 is a single opaque pixel.
 
-    Masks are memoized per (diameter, hardness) because a stroke stamps the
-    same brush many times; the shared arrays are read-only.
+    Returns a writable mask independent of the masks reused while stamping.
     """
     d = max(1, int(diameter))
-    h = round(float(np.clip(hardness, 0.0, 1.0)), 4)
-    return _brush_mask(d, h)
-
-
-@lru_cache(maxsize=16)
-def _brush_mask(d: int, h: float) -> np.ndarray:
     if d == 1:
-        alpha = np.ones((1, 1), np.float32)
-        alpha.setflags(write=False)
-        return alpha
+        return np.ones((1, 1), np.float32)
+    h = float(np.clip(hardness, 0.0, 1.0))
     radius = d / 2.0
     coords = np.arange(d, dtype=np.float32) - (d - 1) / 2.0
     yy, xx = np.meshgrid(coords, coords, indexing="ij")
@@ -219,6 +211,12 @@ def _brush_mask(d: int, h: float) -> np.ndarray:
         alpha = 0.5 * (1.0 + np.cos(np.pi * t))
         alpha[dist > 1.0] = 0.0
         alpha = alpha.astype(np.float32)
+    return alpha
+
+
+@lru_cache(maxsize=4)
+def _cached_brush_mask(diameter: int, hardness: float) -> np.ndarray:
+    alpha = brush_mask(diameter, hardness)
     alpha.setflags(write=False)
     return alpha
 
@@ -331,7 +329,8 @@ def apply_dab(
     if tx0 >= tx1 or ty0 >= ty1:
         return None
 
-    mask = brush_mask(d, hardness)[ty0 - y0:ty1 - y0, tx0 - x0:tx1 - x0]
+    h = float(np.clip(hardness, 0.0, 1.0))
+    mask = _cached_brush_mask(d, h)[ty0 - y0:ty1 - y0, tx0 - x0:tx1 - x0]
     alpha = mask * float(np.clip(opacity, 0.0, 1.0))
     if source_valid is not None:
         valid = source_valid[nsy0:nsy1, nsx0:nsx1]
@@ -591,9 +590,7 @@ class TileHistory:
         for tx, ty in entry:
             tile = (tx * TILE, ty * TILE, min(width, (tx + 1) * TILE),
                     min(height, (ty + 1) * TILE))
-            rect = tile if rect is None else (
-                min(rect[0], tile[0]), min(rect[1], tile[1]),
-                max(rect[2], tile[2]), max(rect[3], tile[3]))
+            rect = _union_rect(rect, tile)
         return rect
 
     def _tile_copy(self, image, key):
@@ -1256,14 +1253,14 @@ class RetouchDocument:
         )
 
     # -------------------------------------------------------- history ops
-    def _swap_history(self, undo):
+    def _swap_history(self, undo, *, return_rect):
         import copy
         if self._stroke is not None:
             self.end_stroke()
         plan = self.history._prepare_swap(self.working, undo)
         if plan is None:
             return False
-        rect = self.history.entry_rect(plan[0])
+        rect = self.history.entry_rect(plan[0]) if return_rect else None
         candidate = copy.copy(self)
         candidate.history = copy.copy(self.history)
         candidate.history._undo, candidate.history._redo = plan[2], plan[3]
@@ -1284,13 +1281,13 @@ class RetouchDocument:
         self.history._reserved_bytes = candidate.history._reserved_bytes
         return rect or True
 
-    def undo(self):
-        """Undo one step; return its dirty (x0, y0, x1, y1) rect, or False."""
-        return self._swap_history(True)
+    def undo(self, *, return_rect=False) -> bool | Tuple[int, int, int, int]:
+        """Undo one step, optionally returning the changed pixel bounds."""
+        return self._swap_history(True, return_rect=return_rect)
 
-    def redo(self):
-        """Redo one step; return its dirty (x0, y0, x1, y1) rect, or False."""
-        return self._swap_history(False)
+    def redo(self, *, return_rect=False) -> bool | Tuple[int, int, int, int]:
+        """Redo one step, optionally returning the changed pixel bounds."""
+        return self._swap_history(False, return_rect=return_rect)
 
     def restore_all(self) -> bool:
         if self._stroke is not None:

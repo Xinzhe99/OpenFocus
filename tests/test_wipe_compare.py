@@ -488,7 +488,9 @@ def test_wipe_reads_oriented_full_tiff_in_worker(qapp, tmp_path, monkeypatch):
 
 @pytest.mark.parametrize('independent', [False, True])
 def test_wipe_detail_tracks_geometry_and_discards_stale_replies(qapp, monkeypatch, independent):
-    from PyQt6.QtCore import QPointF
+    from PyQt6.QtCore import QEvent, QPointF
+    from PyQt6.QtGui import QMouseEvent
+    from PyQt6.QtWidgets import QApplication
     from core import source_previews
     from tests.test_label_native_preview import RegionWorker
 
@@ -532,7 +534,20 @@ def test_wipe_detail_tracks_geometry_and_discards_stale_replies(qapp, monkeypatc
             # dragging the divider reuses cached tiles without re-decoding.
             assert first[2] == pytest.approx((530, 220, 220, 220))
             assert first[3] == (275, 275)
-        widget._divider_ratio = .6
+        start, move, end = QPointF(110, 110), QPointF(125, 110), QPointF(132, 110)
+        left_button, no_button = Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton
+        for kind, pos, button, buttons in (
+            (QEvent.Type.MouseButtonPress, start, left_button, left_button),
+            (QEvent.Type.MouseMove, move, no_button, left_button),
+        ):
+            QApplication.sendEvent(widget, QMouseEvent(
+                kind, pos, pos, button, buttons, Qt.KeyboardModifier.NoModifier))
+        widget.grab()
+        assert a.request == first
+        QApplication.sendEvent(widget, QMouseEvent(
+            QEvent.Type.MouseButtonRelease, end, end, left_button, no_button,
+            Qt.KeyboardModifier.NoModifier))
+        assert widget._divider_x() == pytest.approx(132)
         widget.grab()
         if not independent:
             assert a.request == first
@@ -542,9 +557,15 @@ def test_wipe_detail_tracks_geometry_and_discards_stale_replies(qapp, monkeypatc
         assert a.request[3] == ((165, 275) if independent else (275, 275))
         old_worker.ready.emit(old_worker.key, first, np.zeros((2, 2), np.uint8), first[2])
         assert not a.tiles
+        ready = a.request
+        old_worker.ready.emit(old_worker.key, ready, np.full((2, 2), 255, np.uint8), ready[2])
+        widget._pan += QPointF(4, 4)
+        widget.grab()
+        assert a._retained_tiles
         select((object(), {}))
         widget.grab()
         assert old_worker.cancelled and len(Worker.instances) == 2
+        assert not a.tiles and not a._retained_tiles
         old_worker.finished.emit()
         widget.grab()
         assert a.worker is not old_worker and b.worker is b_worker
