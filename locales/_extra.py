@@ -1750,6 +1750,8 @@ EXTRA_TRANSLATIONS = {
         "msg_load_frames_failed": "{loaded} 枚のフレームを読み込みました（読み込めない {failed} 件のファイルをスキップ）。",
         "msg_load_frames_skipped_derived": "{loaded} 枚のフレームを読み込みました（位置合わせ済みコピー {skipped} 件をスキップ）。",
         "msg_load_frames_partial": "{loaded} 枚のフレームを読み込みました（読み込み不可 {failed} 件、位置合わせ済みコピー {skipped} 件をスキップ）。",
+        "advanced_tile_experimental_only_note": "外部タイル分割に対応する実験的手法にのみ適用されます。OpenFocus A/B/C は常に画像全体を処理します。",
+        "experimental_fallback_notice": "実験的機能を無効化しました — 安定版の既定設定（{methods}）に切り替えました。",
     },
     "es": {
         "menu_extensions": "Extensiones (en desarrollo)",
@@ -3490,5 +3492,7 @@ EXTRA_TRANSLATIONS = {
         "msg_load_frames_failed": "Se cargaron {loaded} fotograma(s); se omitieron {failed} archivo(s) ilegible(s).",
         "msg_load_frames_skipped_derived": "Se cargaron {loaded} fotograma(s); se omitieron {skipped} copia(s) alineada(s).",
         "msg_load_frames_partial": "Se cargaron {loaded} fotograma(s); se omitieron {failed} archivo(s) ilegible(s) y {skipped} copia(s) alineada(s).",
+        "advanced_tile_experimental_only_note": "Se aplica solo a los métodos experimentales que admiten mosaicos externos. OpenFocus A/B/C siempre procesan la imagen completa.",
+        "experimental_fallback_notice": "Funciones experimentales desactivadas — se restauraron los valores estables predeterminados ({methods}).",
     },
 }

@@ -1736,4 +1736,6 @@ PACK = {
     "msg_load_frames_failed": "{loaded} frame(s) geladen; {failed} onleesbare bestand(en) overgeslagen.",
     "msg_load_frames_skipped_derived": "{loaded} frame(s) geladen; {skipped} uitgelijnde kopie(ën) overgeslagen.",
     "msg_load_frames_partial": "{loaded} frame(s) geladen; {failed} onleesbare bestand(en) en {skipped} uitgelijnde kopie(ën) overgeslagen.",
+    "advanced_tile_experimental_only_note": "Geldt alleen voor experimentele methoden die externe tegeling ondersteunen. OpenFocus A/B/C verwerken altijd de volledige afbeelding.",
+    "experimental_fallback_notice": "Experimentele functies uitgeschakeld — teruggeschakeld naar stabiele standaardwaarden ({methods}).",
 }

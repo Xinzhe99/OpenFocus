@@ -1736,4 +1736,6 @@ PACK = {
     "msg_load_frames_failed": "Загружено кадров: {loaded}; пропущено нечитаемых файлов: {failed}.",
     "msg_load_frames_skipped_derived": "Загружено кадров: {loaded}; пропущено выровненных копий: {skipped}.",
     "msg_load_frames_partial": "Загружено кадров: {loaded}; пропущено нечитаемых: {failed}, выровненных копий: {skipped}.",
+    "advanced_tile_experimental_only_note": "Применяется только к экспериментальным методам с поддержкой внешнего разбиения на плитки. OpenFocus A/B/C всегда обрабатывают изображение целиком.",
+    "experimental_fallback_notice": "Экспериментальные функции отключены — выполнен переход на стабильные значения по умолчанию ({methods}).",
 }

@@ -1737,4 +1737,6 @@ ZH = {
     "msg_load_frames_failed": "已加载 {loaded} 帧；已跳过 {failed} 个无法读取的文件。",
     "msg_load_frames_skipped_derived": "已加载 {loaded} 帧；已跳过 {skipped} 个已对齐副本文件。",
     "msg_load_frames_partial": "已加载 {loaded} 帧；已跳过 {failed} 个无法读取文件和 {skipped} 个已对齐副本文件。",
+    "advanced_tile_experimental_only_note": "仅适用于支持外部分块的实验性方法。OpenFocus A/B/C 始终以整图方式处理。",
+    "experimental_fallback_notice": "已关闭实验性功能 — 已切回稳定默认项（{methods}）。",
 }

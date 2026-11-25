@@ -1736,4 +1736,6 @@ PACK = {
     "msg_load_frames_failed": "{loaded}개 프레임을 불러왔습니다. 읽을 수 없는 파일 {failed}개를 건너뛰었습니다.",
     "msg_load_frames_skipped_derived": "{loaded}개 프레임을 불러왔습니다. 정렬된 복사본 파일 {skipped}개를 건너뛰었습니다.",
     "msg_load_frames_partial": "{loaded}개 프레임을 불러왔습니다. 읽을 수 없는 파일 {failed}개와 정렬된 복사본 {skipped}개를 건너뛰었습니다.",
+    "advanced_tile_experimental_only_note": "외부 타일링을 지원하는 실험적 방법에만 적용됩니다. OpenFocus A/B/C는 항상 전체 이미지를 처리합니다.",
+    "experimental_fallback_notice": "실험적 기능이 비활성화되어 안정 기본값({methods})으로 전환되었습니다.",
 }

@@ -1736,4 +1736,6 @@ PACK = {
     "msg_load_frames_failed": "{loaded} quadro(s) carregado(s); {failed} arquivo(s) ilegível(is) ignorado(s).",
     "msg_load_frames_skipped_derived": "{loaded} quadro(s) carregado(s); {skipped} cópia(s) alinhada(s) ignorada(s).",
     "msg_load_frames_partial": "{loaded} quadro(s) carregado(s); {failed} arquivo(s) ilegível(is) e {skipped} cópia(s) alinhada(s) ignorado(s).",
+    "advanced_tile_experimental_only_note": "Aplica-se apenas aos métodos experimentais que suportam ladrilhamento externo. OpenFocus A/B/C sempre processam a imagem inteira.",
+    "experimental_fallback_notice": "Recursos experimentais desativados — alterado para os padrões estáveis ({methods}).",
 }

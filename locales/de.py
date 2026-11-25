@@ -1736,4 +1736,6 @@ PACK = {
     "msg_load_frames_failed": "{loaded} Bild(er) geladen; {failed} unlesbare Datei(en) übersprungen.",
     "msg_load_frames_skipped_derived": "{loaded} Bild(er) geladen; {skipped} ausgerichtete Kopie(n) übersprungen.",
     "msg_load_frames_partial": "{loaded} Bild(er) geladen; {failed} unlesbare Datei(en) und {skipped} ausgerichtete Kopie(n) übersprungen.",
+    "advanced_tile_experimental_only_note": "Gilt nur für experimentelle Methoden mit externer Kachelung. OpenFocus A/B/C verarbeiten immer das gesamte Bild.",
+    "experimental_fallback_notice": "Experimentelle Funktionen deaktiviert — auf stabile Standardwerte umgestellt ({methods}).",
 }

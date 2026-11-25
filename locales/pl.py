@@ -1736,4 +1736,6 @@ PACK = {
     "msg_load_frames_failed": "Wczytano {loaded} klatek; pominięto {failed} nieczytelnych plików.",
     "msg_load_frames_skipped_derived": "Wczytano {loaded} klatek; pominięto {skipped} wyrównanych kopii.",
     "msg_load_frames_partial": "Wczytano {loaded} klatek; pominięto {failed} nieczytelnych plików i {skipped} wyrównanych kopii.",
+    "advanced_tile_experimental_only_note": "Dotyczy wyłącznie metod eksperymentalnych obsługujących zewnętrzne kafelkowanie. OpenFocus A/B/C zawsze przetwarzają cały obraz.",
+    "experimental_fallback_notice": "Wyłączono funkcje eksperymentalne — przywrócono stabilne ustawienia domyślne ({methods}).",
 }

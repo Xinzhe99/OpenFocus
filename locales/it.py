@@ -1736,4 +1736,6 @@ PACK = {
     "msg_load_frames_failed": "Caricati {loaded} fotogrammi; saltati {failed} file illeggibili.",
     "msg_load_frames_skipped_derived": "Caricati {loaded} fotogrammi; saltate {skipped} copie allineate.",
     "msg_load_frames_partial": "Caricati {loaded} fotogrammi; saltati {failed} file illeggibili e {skipped} copie allineate.",
+    "advanced_tile_experimental_only_note": "Si applica solo ai metodi sperimentali che supportano la suddivisione esterna in riquadri. OpenFocus A/B/C elaborano sempre l’intera immagine.",
+    "experimental_fallback_notice": "Funzionalità sperimentali disattivate — ripristinati i valori predefiniti stabili ({methods}).",
 }

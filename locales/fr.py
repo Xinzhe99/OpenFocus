@@ -1736,4 +1736,6 @@ PACK = {
     "msg_load_frames_failed": "{loaded} image(s) chargée(s) ; {failed} fichier(s) illisible(s) ignoré(s).",
     "msg_load_frames_skipped_derived": "{loaded} image(s) chargée(s) ; {skipped} copie(s) alignée(s) ignorée(s).",
     "msg_load_frames_partial": "{loaded} image(s) chargée(s) ; {failed} fichier(s) illisible(s) et {skipped} copie(s) alignée(s) ignorée(s).",
+    "advanced_tile_experimental_only_note": "S’applique uniquement aux méthodes expérimentales prenant en charge le tuilage externe. OpenFocus A/B/C traitent toujours l’image entière.",
+    "experimental_fallback_notice": "Fonctionnalités expérimentales désactivées — retour aux réglages stables par défaut ({methods}).",
 }
