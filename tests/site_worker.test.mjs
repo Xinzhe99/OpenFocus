@@ -1062,7 +1062,7 @@ test("website traffic counts served homepages without redirects, prefetches or p
     ["https://preview.example.test/", {}, 200],
     ["https://www.openfocus.top/", {}, 301],
   ]) assert.equal((await run(url, { ...options, env })).status, status);
-  assert.deepEqual(stats.writes.map(({ values }) => values.slice(1)), [[1, 0], [1, 0], [1, 0]]);
+  assert.deepEqual(stats.writes.map(({ values }) => values.slice(1)), [[1, 0, 0, 0, 0], [1, 0, 0, 0, 0], [1, 0, 0, 0, 0]]);
   env.SITE_ANALYTICS = { prepare() { throw new Error("database down"); } };
   assert.equal(await (await run(`${origin}/`, { env })).text(), "page");
 });
@@ -1090,7 +1090,7 @@ test("download analytics counts only successful starts with resolved version, ro
     [TAG, "windows-zip", "in-app", "r2"],
     [TAG, "macos-dmg", "website", "github"],
   ]);
-  assert.deepEqual(stats.writes.map(({ values }) => values.slice(1)), [[0, 1], [0, 1], [0, 1]]);
+  assert.deepEqual(stats.writes.map(({ values }) => values.slice(1)), [[0, 1, 1, 0, 0], [0, 1, 1, 0, 0], [0, 1, 0, 1, 0]]);
   assert.match(db.writes[0].sql, /ON CONFLICT.*count = count \+ 1/);
   env.ANALYTICS = { prepare() { throw new Error("database down"); } };
   assert.equal((await run(latest, { env })).status, 200);
@@ -1101,6 +1101,30 @@ test("download analytics counts only successful starts with resolved version, ro
   assert.equal((await run("https://preview.example.test/download/latest/windows-zip", { env })).status, 200);
   assert.equal(stats.writes.length, 5);
   assert.equal((await run("https://openfocus.top/api/admin/stats", { env })).status, 503);
+});
+
+test("website download totals group Windows and macOS packages and Linux archives", async () => {
+  installCache();
+  const linux = `OpenFocus-${TAG}-linux-x86_64.tar.gz`;
+  const release = releaseBody();
+  release.assets.push({
+    name: linux, size: PAYLOAD.length,
+    browser_download_url: `https://github.com/Xinzhe99/OpenFocus/releases/download/${TAG}/${linux}`,
+  });
+  installReleaseFetch({ release });
+  const stats = analyticsDb();
+  const env = { ...makeEnv({ [linux]: PAYLOAD }), SITE_ANALYTICS: stats };
+  for (const [kind, status] of [["windows-setup", 302], ["windows-zip", 302], ["macos-dmg", 302], ["macos-zip", 302], ["linux-desktop", 206]]) {
+    const headers = kind === "linux-desktop" ? { Range: "bytes=0-1", "User-Agent": "Windows" } : {};
+    assert.equal((await run(`https://openfocus.top/download/latest/${kind}`, { env, headers })).status, status);
+  }
+  assert.deepEqual(stats.writes.map(({ values }) => values.slice(1)), [
+    [0, 1, 1, 0, 0], [0, 1, 1, 0, 0], [0, 1, 0, 1, 0], [0, 1, 0, 1, 0], [0, 1, 0, 0, 1],
+  ]);
+  env.SITE_ANALYTICS = { prepare() { throw new Error("database down"); } };
+  const response = await run("https://openfocus.top/download/latest/linux-desktop", { env, headers: { Range: "bytes=0-1" } });
+  assert.equal(response.status, 206);
+  assert.equal(await response.text(), "01");
 });
 
 test("usage accepts only bounded reports and stores no request metadata", async () => {
