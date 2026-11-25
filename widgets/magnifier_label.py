@@ -1,7 +1,7 @@
 from typing import Optional
 
-from PyQt6.QtCore import QPointF, QRectF, QSizeF, Qt, QTimer, QPropertyAnimation, QEasingCurve, pyqtProperty, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QInputDevice, QPainter, QPixmap, QPen, QRegion
+from PyQt6.QtCore import QEvent, QPointF, QRectF, QSizeF, Qt, QTimer, QPropertyAnimation, QEasingCurve, pyqtProperty, pyqtSignal
+from PyQt6.QtGui import QColor, QContextMenuEvent, QFont, QInputDevice, QPainter, QPixmap, QPen, QRegion
 from PyQt6.QtWidgets import QLabel
 
 from locales import trans
@@ -77,6 +77,7 @@ class MagnifierLabel(QLabel):
         self._last_mouse_pos = QPointF()
         self._right_press_pos: Optional[QPointF] = None
         self._right_drag_moved = False
+        self._suppress_mouse_context_menu = False
         self.setToolTip(trans.t("magnifier_hint"))
         trans.languageChanged.connect(self._update_magnifier_hint)
         self.setMouseTracking(True)
@@ -716,6 +717,7 @@ class MagnifierLabel(QLabel):
                 
                 if not is_inside_roi:
                     # 右键点击非ROI区域，请求退出ROI模式
+                    self._suppress_mouse_context_menu = True
                     self._roi_rect = None
                     self._reset_interaction()
                     self.roiModeExitRequested.emit()
@@ -729,9 +731,11 @@ class MagnifierLabel(QLabel):
                 self._last_mouse_pos = event.position()
                 self._right_press_pos = event.position()
                 self._right_drag_moved = False
+                self._suppress_mouse_context_menu = True
                 self.setCursor(Qt.CursorShape.ClosedHandCursor)
                 event.accept()
                 return
+            self._suppress_mouse_context_menu = False
 
         if (
             event.button() == Qt.MouseButton.LeftButton
@@ -884,6 +888,18 @@ class MagnifierLabel(QLabel):
                 self.update()
 
         super().mouseReleaseEvent(event)
+
+    def event(self, event):
+        if event.type() == QEvent.Type.ContextMenu:
+            if (
+                self._suppress_mouse_context_menu
+                and event.reason() == QContextMenuEvent.Reason.Mouse
+            ):
+                self._suppress_mouse_context_menu = False
+                event.accept()
+                return True
+            self._suppress_mouse_context_menu = False
+        return super().event(event)
 
     def enterEvent(self, event):
         self.enterPreview.emit()
