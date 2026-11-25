@@ -105,10 +105,12 @@ class _StageThread(QThread):
             digest_ok = size_ok and (not self._digest or verify_file_digest(
                 self._zip, self._digest, should_cancel=cancelled) is True)
             if not size_ok or not digest_ok:
-                os.remove(self._zip)
+                with suppress(OSError):
+                    os.remove(self._zip)
                 from locales import trans
                 self.done.emit(False, trans.t("msg_update_digest_mismatch"))
                 return
+            os.mkdir(self._root)
             if self._delta:
                 from utils.release_delta import stage_delta
                 platform = self._delta.platform
@@ -178,6 +180,7 @@ class UpdateManager(QObject):
         self._task_offer = None
         self._task_root = ""
         self._task_generation = 0
+        self._task_id = 0
         self._check_result.connect(self._on_check_result,
                                    Qt.ConnectionType.QueuedConnection)
         self._staged_zip = ""
@@ -286,7 +289,7 @@ class UpdateManager(QObject):
                                            current_version=app_display_version(),
                                            full_size=size, full_digest=digest)
                 self._offer = UpdateOffer(tag, zip_url, digest, size, delta)
-            if cached.get("setup_url") == prefix + setup_kind:
+            if setup_kind and cached.get("setup_url") == prefix + setup_kind:
                 self.setup_url = cached["setup_url"]
         except Exception:
             # Missing/corrupt cached notes must never prevent an offline update.
@@ -375,15 +378,14 @@ class UpdateManager(QObject):
             self._idle_timer.stop()
             self.tag = self.page_url = self.zip_url = self.setup_url = self.zip_digest = ""
             self._offer = None
+            was_running = self.state in (STATE_DOWNLOADING, STATE_STAGING)
             self.cancel_download()
-            if self.state in (STATE_DOWNLOADING, STATE_STAGING):
-                self._set_state(STATE_CANCELLING, "", self.percent)
             self._staged_zip = ""
             self._note_entries, self._notes_tag = [], ""
             self._emit_notes_changed()
             if self.state != STATE_CANCELLING:
                 self._set_state(STATE_IDLE, "", 0)
-            else:
+            elif not was_running:
                 self.state_changed.emit(self.state, "", 0)
         if not enabled and not self._tag_allowed(self._notes_tag):
             self._note_entries, self._notes_tag = [], ""
@@ -530,17 +532,20 @@ class UpdateManager(QObject):
         if self.state in (STATE_DOWNLOADING, STATE_STAGING, STATE_CANCELLING):
             return
         if state != "update":
-            if state == "latest" and self.tag:
-                self.tag = self.page_url = self.zip_url = self.setup_url = self.zip_digest = ""
-                self._offer = None
-                self._note_entries, self._notes_tag = [], ""
-                self._idle_timer.stop()
-                from utils.settings_store import get_settings
-                settings = get_settings()
-                settings.remove(LATEST_TAG_KEY)
-                settings.remove(NOTES_CACHE_KEY)
-                self._emit_notes_changed()
-                self._set_state(STATE_IDLE)
+            if state == "latest":
+                if self.tag:
+                    self.tag = self.page_url = self.zip_url = self.setup_url = self.zip_digest = ""
+                    self._offer = None
+                    self._note_entries, self._notes_tag = [], ""
+                    self._idle_timer.stop()
+                    from utils.settings_store import get_settings
+                    settings = get_settings()
+                    settings.remove(LATEST_TAG_KEY)
+                    settings.remove(NOTES_CACHE_KEY)
+                    self._emit_notes_changed()
+                    self._set_state(STATE_IDLE)
+                elif self.state in (STATE_CHECKING, STATE_FAILED, STATE_CANCELLED):
+                    self._set_state(STATE_IDLE, "", 0)
             elif self.state == STATE_CHECKING:
                 self._set_state(STATE_IDLE, self.tag, 0)
             self.check_finished.emit(state, tag, page_url, zip_url, setup_url)
@@ -655,9 +660,10 @@ class UpdateManager(QObject):
         self._offer = self._task_offer = offer
         self._task_root = self_update.installed_update_root() if offer.delta else ""
         self._task_generation = self._check_generation
+        self._task_id += 1
         try:
             self._start_package(safe_tag, use_delta=bool(self._task_root))
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             self._set_state(STATE_FAILED, tag, 0)
             if manual:
                 self._fail("msg_update_stage_failed", str(exc))
@@ -666,6 +672,7 @@ class UpdateManager(QObject):
 
     def _start_package(self, safe_tag: str, *, use_delta: bool, reuse: bool = True) -> None:
         offer = self._task_offer
+        task_id = self._task_id
         delta = offer.delta if use_delta else None
         if delta:
             dest = self_update.delta_package_path(delta.name)
@@ -677,10 +684,11 @@ class UpdateManager(QObject):
             self._stage_zip(dest, self_update.staging_root_for(safe_tag), safe_tag, use_delta)
             return
         thread = _DownloadThread(url, dest)
-        thread.progress.connect(self._on_download_progress)
+        thread.progress.connect(
+            lambda d, t, tid=task_id: self._on_download_progress(d, t, tid))
         thread.done.connect(
-            lambda ok, detail, generation=self._task_generation:
-                self._on_download_done(ok, detail, safe_tag, generation, use_delta))
+            lambda ok, detail, generation=self._task_generation, tid=task_id:
+                self._on_download_done(ok, detail, safe_tag, generation, use_delta, tid))
         if self._download is not None and self._download.isRunning():
             self._download.wait()  # The previous worker already emitted its last signal.
         self._download = thread
@@ -703,12 +711,16 @@ class UpdateManager(QObject):
     def cancel_download(self) -> None:
         if self.state in (STATE_DOWNLOADING, STATE_STAGING):
             thread = self._download if self.state == STATE_DOWNLOADING else self._stage
-            if thread is not None:
-                thread.cancel()
+            if thread is None:
+                self._set_state(STATE_CANCELLED, self.tag, 0)
+                return
+            thread.cancel()
             # A done signal can still be queued after the thread stopped.
             self._set_state(STATE_CANCELLING, self.tag, self.percent)
 
-    def _on_download_progress(self, done: int, total: int) -> None:
+    def _on_download_progress(self, done: int, total: int, task_id=None) -> None:
+        if task_id is not None and task_id != self._task_id:
+            return
         if self.state != STATE_CANCELLING:
             self._set_state(STATE_DOWNLOADING, self.tag,
                             int(done * 100 / total) if total else -1)
@@ -717,17 +729,32 @@ class UpdateManager(QObject):
         return (self.state == STATE_CANCELLING or not self._tag_allowed(safe_tag)
                 or (is_beta(safe_tag) and generation is not None and generation != self._check_generation))
 
+    def _fallback_to_full(self, safe_tag: str) -> bool:
+        offer = self._task_offer
+        if not offer or not offer.url:
+            return False
+        try:
+            self._start_package(safe_tag, use_delta=False, reuse=False)
+            return True
+        except (OSError, ValueError) as exc:
+            self._set_state(STATE_FAILED, self.tag, 0)
+            self._check_changed_channel()
+            if self._manual_download:
+                self._fail("msg_update_stage_failed", str(exc))
+            return True
+
     def _on_download_done(self, ok: bool, detail: str, safe_tag: str, generation=None,
-                          use_delta=False) -> None:
+                          use_delta=False, task_id=None) -> None:
         if getattr(self, "_shutting_down", False):
+            return
+        if task_id is not None and task_id != self._task_id:
             return
         if detail == "cancelled" or self._task_cancelled(safe_tag, generation):
             self._set_state(STATE_CANCELLED, self.tag, 0)
             self._check_changed_channel()
             return
         if not ok:
-            if use_delta:
-                self._start_package(safe_tag, use_delta=False, reuse=False)
+            if use_delta and self._fallback_to_full(safe_tag):
                 return
             self._set_state(STATE_FAILED, self.tag, 0)
             self._check_changed_channel()
@@ -745,30 +772,36 @@ class UpdateManager(QObject):
             return
         self_update.discard_staging(safe_tag)
         offer = self._task_offer
+        task_id = self._task_id
         delta = offer.delta if use_delta else None
         asset = delta or offer
         thread = _StageThread(zip_path, staging_root, asset.digest, size=asset.size,
                               delta=delta, installed_root=self._task_root, target_tag=offer.tag)
-        thread.progress.connect(self._on_stage_progress)
+        thread.progress.connect(
+            lambda d, t, tid=task_id: self._on_stage_progress(d, t, tid))
         thread.done.connect(
-            lambda ok, detail, generation=self._task_generation:
-                self._on_staged(ok, detail, zip_path, staging_root, safe_tag, generation, use_delta))
+            lambda ok, detail, generation=self._task_generation, tid=task_id:
+                self._on_staged(ok, detail, zip_path, staging_root, safe_tag, generation, use_delta, tid))
         if self._stage is not None and self._stage.isRunning():
             self._stage.wait()
         self._stage = thread
         self._set_state(STATE_STAGING, self.tag, 0)
         thread.start()
 
-    def _on_stage_progress(self, done: int, total: int) -> None:
+    def _on_stage_progress(self, done: int, total: int, task_id=None) -> None:
+        if task_id is not None and task_id != self._task_id:
+            return
         if self.state != STATE_CANCELLING:
             self._set_state(STATE_STAGING, self.tag,
                             int(done * 100 / total) if total else -1)
 
     def _on_staged(self, ok: bool, detail: str, zip_path: str, staging_root: str,
-                   safe_tag=None, generation=None, use_delta=False):
+                   safe_tag=None, generation=None, use_delta=False, task_id=None):
         safe_tag = safe_tag or self_update.sanitize_tag(self.tag)
         if getattr(self, "_shutting_down", False):
             self_update.discard_staging(safe_tag)
+            return
+        if task_id is not None and task_id != self._task_id:
             return
         if self._task_cancelled(safe_tag, generation):
             ok, detail = False, "cancelled"
@@ -780,8 +813,10 @@ class UpdateManager(QObject):
             # verify_staged_app only sees that the exe exists.
             self_update.discard_staging(safe_tag)
             if use_delta and detail != "cancelled":
-                self._start_package(safe_tag, use_delta=False, reuse=False)
-                return
+                if self._offer is not None and self._offer is self._task_offer and self._offer.delta is not None:
+                    self._offer = UpdateOffer(self._offer.tag, self._offer.url, self._offer.digest, self._offer.size)
+                if self._fallback_to_full(safe_tag):
+                    return
             self._set_state(STATE_CANCELLED if detail == "cancelled" else STATE_FAILED,
                             self.tag, 0)
             self._check_changed_channel()
@@ -858,11 +893,13 @@ class UpdateManager(QObject):
                               else self_update.find_staged_app_dir)
             candidate = find_candidate(staging_root)
             if not candidate:
+                recovery.clear_pending_restore()
                 self._fail("msg_update_stage_failed")
                 return False
             self_update.handoff_update(self_update.installed_update_root(), candidate, safe_tag,
                                        staging_root=staging_root, package_path=zip_path, wait_pid=os.getpid())
         except Exception as exc:
+            recovery.clear_pending_restore()
             # 脚本生成失败（路径安全校验等）曾直接死在 excepthook：
             # 应用不退出、不交换、用户毫无感知
             self._fail("update_check_failed_title", str(exc))

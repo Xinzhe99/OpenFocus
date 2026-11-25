@@ -17,10 +17,27 @@ def _running():
     if sys.platform == "win32":
         command = ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
                    "if (Get-Process -Name OpenFocus -ErrorAction SilentlyContinue) { exit 0 }; exit 1"]
-    else:
-        command = ["pgrep", "-ix", "OpenFocus"]
-    result = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                            timeout=15, check=False)
+        result = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                timeout=15, check=False)
+        if result.returncode not in (0, 1):
+            raise ValueError("Could not check whether OpenFocus is running")
+        return result.returncode == 0
+    try:
+        result = subprocess.run(["pgrep", "-ix", "OpenFocus"], stdin=subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL, timeout=15, check=False)
+    except FileNotFoundError:
+        proc = Path("/proc")
+        if not proc.is_dir():
+            raise ValueError("Could not check whether OpenFocus is running")
+        for entry in proc.iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                if (entry / "comm").read_text(encoding="utf-8", errors="ignore").strip().lower() == "openfocus":
+                    return True
+            except OSError:
+                continue
+        return False
     if result.returncode not in (0, 1):
         raise ValueError("Could not check whether OpenFocus is running")
     return result.returncode == 0
@@ -55,7 +72,13 @@ def install(patch, installed, checksum, *, restart=True):
                                               staging_root=str(staging), restart=restart)
         if process.wait() != 0:
             result = Path(self_update.result_path(tag))
-            detail = result.read_text(encoding="utf-8", errors="replace").strip() if result.is_file() else ""
+            detail = ""
+            if result.is_file():
+                detail = result.read_text(encoding="utf-8", errors="replace").strip()
+                try:
+                    result.unlink()
+                except OSError:
+                    pass
             raise ValueError(detail or "The patch could not replace the application")
     finally:
         if process is None or process.poll() is not None:
@@ -89,7 +112,7 @@ def main():
             patch = patches[0]
         installed = args.install_dir
         if installed is None:
-            value = input("Path to your existing OpenFocus folder or OpenFocus.app: ").strip().strip('"')
+            value = input("Path to your existing OpenFocus folder or OpenFocus.app: ").strip().strip('"').strip("'")
             if not value:
                 raise ValueError("No installation selected")
             installed = Path(value).expanduser()
