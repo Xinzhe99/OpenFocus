@@ -210,6 +210,24 @@ def two_focus_stack():
 
 
 @pytest.fixture(autouse=True, scope="session")
+def _test_http_servers_skip_reverse_dns():
+    """Tests serve HTTP from loopback. http.server names each new server
+    through getfqdn(), a reverse DNS lookup that blocked the first server in
+    every test process for 35 seconds on the macOS runners."""
+    import http.server
+    import socketserver
+
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
+    patch = pytest.MonkeyPatch()
+    patch.setattr(http.server.HTTPServer, "server_bind", server_bind)
+    yield
+    patch.undo()
+
+
+@pytest.fixture(autouse=True, scope="session")
 def _background_fill_at_tuned_scale():
     """Synthetic Auto background scenes are a few hundred pixels and were
     designed around the distances as tuned (scale 1); scaling to the image's
