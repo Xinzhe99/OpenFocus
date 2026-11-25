@@ -58,6 +58,23 @@ def _snap_lut(feather=0):
 # a fraction of a millisecond, so cancellation stays prompt.
 _AXIS_BLOCK_ROWS = 2048
 
+# Native recurrence threads wake a persistent pool. Below these per-thread
+# plane sizes synchronization still outweighs the rows/columns they run.
+_AXIS_COLUMN_PIXELS_PER_THREAD = 128 * 1024
+_AXIS_COLUMN_SERIAL_PIXELS = 256 * 1024
+_AXIS_ROW_PIXELS_PER_THREAD = 128 * 1024
+
+
+def _axis_threads(pixels, axis, limit):
+    """Native threads for one recurrence pass; results do not depend on it."""
+    if axis:
+        wanted = pixels // _AXIS_ROW_PIXELS_PER_THREAD
+    elif pixels < _AXIS_COLUMN_SERIAL_PIXELS:
+        wanted = 1
+    else:
+        wanted = pixels // _AXIS_COLUMN_PIXELS_PER_THREAD
+    return max(1, min(int(limit), int(wanted)))
+
 
 def _axis(src, guide, main, low, count, axis, cancel, allocate, *, output=None):
     from core._native import load_native
@@ -94,6 +111,7 @@ def _axis(src, guide, main, low, count, axis, cancel, allocate, *, output=None):
                 tl = (4096 - _weight(low)) >> 1
             job = _current.get()
             n_threads = job.workers if (job is not None and job.row_mode) else 1
+            n_threads = _axis_threads(h * w, axis, n_threads)
             cancel()
             native.of_depth_axis_iir(src_arr, guide_arr, out_pixels, q, t, tm, tl,
                                      int(count), 1 if axis else 0, max(1, int(n_threads)))
@@ -284,29 +302,74 @@ def _activity_frames(frames, img_resize, kernel_size, thread_count, should_cance
             raise ValueError('OpenFocus depth requires frames with matching shapes')
         detail = None
         if preserve_detail:
+            from core._native import load_native
+            from fusion_methods import _openfocus_resample as _resamp
+
             height, width = max(1, shape[0] // 2), max(1, shape[1] // 2)
             detail = create_frame((height, width), np.uint16)
             band = 64
             scratch_rows = min(height, band + 4)
 
-            def measure_detail(start, stop, workspace):
-                cancel()
-                pooled, columns = workspace
-                # Reflect only at image boundaries. Interior bands include
-                # the two pooled rows needed on each side by the 5x5 mean.
-                first = max(0, start - 2)
-                last = min(height, stop + 2)
-                pooled = pooled[:last - first]
-                detail_rows(gray, pooled, first)
-                cancel()
-                smooth_detail_rows(pooled, detail[first:stop], start - first,
-                                   stop - first, columns)
+            fuse_half = (
+                half_resolution and axes is not None
+                and _resamp._resample_rows is _resamp._DEFAULT_RESAMPLE_ROWS
+                and gray.dtype == np.uint16 and gray.ndim == 2 and gray.strides[1] == 2
+            )
+            native = load_native() if fuse_half else None
+            fuse_half = bool(native is not None and hasattr(native, 'of_resample_rows_u16'))
 
-            run_bands(height, band, measure_detail,
-                      scratch_bytes=width * (2 * scratch_rows + 4),
-                      workspace=lambda: (create_frame((scratch_rows, width), np.uint16),
-                                         np.empty(width, np.int32)))
-        if half_resolution:
+            if fuse_half:
+                vertical, horizontal = axes
+                half_out = create_frame((height, width), np.uint16)
+                gray_nd = gray if type(gray) is np.ndarray else gray.view(np.ndarray)
+                half_nd = half_out if type(half_out) is np.ndarray else half_out.view(np.ndarray)
+
+                def measure_detail_and_half(start, stop, workspace):
+                    cancel()
+                    pooled, columns = workspace
+                    first = max(0, start - 2)
+                    last = min(height, stop + 2)
+                    pooled = pooled[:last - first]
+                    detail_rows(gray, pooled, first)
+                    cancel()
+                    smooth_detail_rows(pooled, detail[first:stop], start - first,
+                                       stop - first, columns)
+                    cancel()
+                    native.of_resample_rows_u16(
+                        gray_nd, half_nd,
+                        vertical.indices, vertical.weights, vertical.counts,
+                        horizontal.indices, horizontal.weights, horizontal.counts,
+                        start, stop,
+                    )
+
+                run_bands(height, band, measure_detail_and_half,
+                          scratch_bytes=width * (2 * scratch_rows + 8) + gray.shape[1] * 4,
+                          workspace=lambda: (create_frame((scratch_rows, width), np.uint16),
+                                             np.empty(width, np.int32)),
+                          width=width)
+                gray = half_out
+            else:
+                def measure_detail(start, stop, workspace):
+                    cancel()
+                    pooled, columns = workspace
+                    # Reflect only at image boundaries. Interior bands include
+                    # the two pooled rows needed on each side by the 5x5 mean.
+                    first = max(0, start - 2)
+                    last = min(height, stop + 2)
+                    pooled = pooled[:last - first]
+                    detail_rows(gray, pooled, first)
+                    cancel()
+                    smooth_detail_rows(pooled, detail[first:stop], start - first,
+                                       stop - first, columns)
+
+                run_bands(height, band, measure_detail,
+                          scratch_bytes=width * (2 * scratch_rows + 4),
+                          workspace=lambda: (create_frame((scratch_rows, width), np.uint16),
+                                             np.empty(width, np.int32)),
+                          width=width)
+                if half_resolution:
+                    gray = _resamp.half_gray(gray, cancelled, axes=axes)
+        elif half_resolution:
             from fusion_methods._openfocus_resample import half_gray
             gray = half_gray(gray, cancelled, axes=axes)
         extent = np.float32(max(gray.shape))
@@ -430,22 +493,6 @@ def depth_map(frames, img_resize, kernel_size, smoothing, should_cancel,
     try:
         for index, (activity, detail) in produced:
             cancel()
-            if preserve_detail:
-                if detail_best is None:
-                    detail_best = detail
-                    detail_second = create_frame(detail.shape, np.uint16)
-                    detail_winner = create_frame(detail.shape, np.uint16)
-                    def initialize_detail(start, stop):
-                        cancel()
-                        initialize_detail_rows(detail_second, detail_winner, start, stop)
-                    run_bands(detail.shape[0], 128, initialize_detail)
-                else:
-                    def select_detail(start, stop):
-                        cancel()
-                        select_detail_rows(detail, detail_best, detail_second,
-                                           detail_winner, index * step, start, stop)
-                    run_bands(detail.shape[0], 128, select_detail)
-                del detail
             if best is None:
                 best = activity
                 depth = create_frame(activity.shape, np.uint16)
@@ -454,20 +501,56 @@ def depth_map(frames, img_resize, kernel_size, smoothing, should_cancel,
                 scale = np.float32(extent * smooth / np.float32(100))
                 if scale != 0:
                     votes = create_frame(activity.shape, np.uint16)
-                def initialize(start, stop):
-                    cancel()
-                    initialize_activity_rows(activity, depth, votes, reciprocal,
-                                             start, stop)
-                run_bands(activity.shape[0], 128, initialize)
+                if preserve_detail:
+                    detail_best = detail
+                    detail_second = create_frame(detail.shape, np.uint16)
+                    detail_winner = create_frame(detail.shape, np.uint16)
+                if preserve_detail and detail.shape == activity.shape:
+                    def initialize_both(start, stop):
+                        cancel()
+                        initialize_detail_rows(detail_second, detail_winner, start, stop)
+                        initialize_activity_rows(activity, depth, votes, reciprocal,
+                                                 start, stop)
+                    run_bands(activity.shape[0], 128, initialize_both)
+                else:
+                    if preserve_detail:
+                        def initialize_detail(start, stop):
+                            cancel()
+                            initialize_detail_rows(detail_second, detail_winner, start, stop)
+                        run_bands(detail.shape[0], 128, initialize_detail)
+                    def initialize(start, stop):
+                        cancel()
+                        initialize_activity_rows(activity, depth, votes, reciprocal,
+                                                 start, stop)
+                    run_bands(activity.shape[0], 128, initialize)
+                if preserve_detail:
+                    del detail
             else:
                 if activity.shape != best.shape:
                     raise ValueError('OpenFocus depth requires frames with matching shapes')
                 code = index * step
-                def select(start, stop):
-                    cancel()
-                    select_activity_rows(activity, best, depth, votes, code,
-                                         reciprocal, start, stop)
-                run_bands(activity.shape[0], 128, select)
+                if preserve_detail and detail.shape == activity.shape:
+                    def select_both(start, stop):
+                        cancel()
+                        select_detail_rows(detail, detail_best, detail_second,
+                                           detail_winner, code, start, stop)
+                        select_activity_rows(activity, best, depth, votes, code,
+                                             reciprocal, start, stop)
+                    run_bands(activity.shape[0], 128, select_both)
+                    del detail
+                else:
+                    if preserve_detail:
+                        def select_detail(start, stop):
+                            cancel()
+                            select_detail_rows(detail, detail_best, detail_second,
+                                               detail_winner, code, start, stop)
+                        run_bands(detail.shape[0], 128, select_detail)
+                        del detail
+                    def select(start, stop):
+                        cancel()
+                        select_activity_rows(activity, best, depth, votes, code,
+                                             reciprocal, start, stop)
+                    run_bands(activity.shape[0], 128, select)
             if _live_preview is not None:
                 _live_preview.show_positions(depth, index, len(frames), step * (len(frames) - 1))
             if progress_callback is not None:

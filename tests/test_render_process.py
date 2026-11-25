@@ -939,19 +939,52 @@ def test_changed_source_is_reported_without_publishing_stale_pixels(qapp, tmp_pa
     assert len(errors) == 1 and path in errors[0]
 
 
-def test_heap_input_snapshot_survives_parent_staging_release(qapp, scratch):
+@pytest.mark.parametrize('persistent', [False, True])
+def test_heap_input_snapshot_survives_parent_staging_release(qapp, scratch, monkeypatch, persistent):
+    from multiprocessing.shared_memory import SharedMemory
+    from core import frame_transport, resource_policy
     from core.render_process import RenderProcessWorker
-    image = (np.arange(32 * 40 * 3, dtype=np.uint16).reshape(32, 40, 3) * 7 + 1003)
+
+    if persistent:
+        monkeypatch.delenv('OPENFOCUS_DISABLE_PERSISTENT_RENDER_WORKER', raising=False)
+    else:
+        monkeypatch.setenv('OPENFOCUS_DISABLE_PERSISTENT_RENDER_WORKER', '1')
+    memory = resource_policy.ResourceSnapshot(available_ram=8 << 30, total_ram=16 << 30)
+    monkeypatch.setattr(resource_policy, 'probe_memory', lambda: memory)
+    codes = np.arange(256 * 384 * 3, dtype=np.uint32).reshape(256, 384, 3)
+    image = (codes * 7 + 1003).astype(np.uint16)
     source = image[::-1, ::2]
     expected = source.copy()
+    staged, published = [], []
+    encode = frame_transport.FrameEncoder.encode
+    decode_shared = frame_transport._shm_decode
+
+    def record_encode(encoder, value):
+        token = encode(encoder, value)
+        if value is source and token[0] == 'value':
+            assert token[2] == 'shm'
+            staged.append(token[3][0])
+        return token
+
+    def record_decode(token):
+        published.append(token[0])
+        return decode_shared(token)
+
+    monkeypatch.setattr(frame_transport.FrameEncoder, 'encode', record_encode)
+    monkeypatch.setattr(frame_transport, '_shm_decode', record_decode)
     worker = RenderProcessWorker([source, source], algorithm='openfocus_a',
         thread_count=1, use_gpu=False, tile_enabled=False, exposure_match=False)
     results, errors = _start(worker)
     _wait(worker, qapp)
     assert not errors
+    assert len(results) == 1 and len(staged) == 1 and published
+    for name in [*staged, *published]:
+        with pytest.raises(FileNotFoundError):
+            SharedMemory(name=name)
     image.fill(0)
     for frame in results[0][0]:
         np.testing.assert_array_equal(frame, expected)
+        assert not frame.flags.writeable
     np.testing.assert_array_equal(results[0][1], expected)
 
 

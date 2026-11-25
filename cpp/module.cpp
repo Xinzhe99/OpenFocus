@@ -921,6 +921,24 @@ void pack_png_scanlines_py(ConstAnyCpuArray src, AnyCpuArray dst, int num_thread
 
 }  // namespace
 
+void of_u16_to_display_u8_py(
+    ConstAnyCpuArray src, AnyCpuArray dst, bool bgr_rev, int num_threads
+) {
+    const auto sv = make_array_view(src);
+    const auto dv = make_array_view(dst);
+    nb::gil_scoped_release release;
+    openfocus::of_u16_to_display_u8_cpp(sv, dv, bgr_rev, num_threads);
+}
+
+void of_bgr_to_rgb_py(
+    ConstAnyCpuArray src, AnyCpuArray dst, int num_threads
+) {
+    const auto sv = make_array_view(src);
+    const auto dv = make_array_view(dst);
+    nb::gil_scoped_release release;
+    openfocus::of_bgr_to_rgb_cpp(sv, dv, num_threads);
+}
+
 NB_MODULE(_openfocus_native, m) {
     m.doc() = "OpenFocus C++17 native compute kernels";
     m.def("abi_version", []() { return kAbiVersion; });
@@ -1068,6 +1086,10 @@ NB_MODULE(_openfocus_native, m) {
           nb::arg("acc"), nb::arg("weight_acc"), nb::arg("tile"), nb::arg("weight2d"),
           nb::arg("x0"), nb::arg("y0"), nb::arg("num_threads") = 4);
     m.def("of_tile_finalize", &of_tile_finalize_py);
+    m.def("of_u16_to_display_u8", &of_u16_to_display_u8_py,
+          nb::arg("src"), nb::arg("dst"), nb::arg("bgr_rev") = false, nb::arg("num_threads") = 8);
+    m.def("of_bgr_to_rgb", &of_bgr_to_rgb_py,
+          nb::arg("src"), nb::arg("dst"), nb::arg("num_threads") = 8);
     m.def("of_align_swap_rgb_to_bgr_rows", &of_align_swap_rgb_to_bgr_rows_py);
     m.def("of_align_swap_bgr_inplace_rows", &of_align_swap_bgr_inplace_rows_py);
     m.def("of_align_gray16_rows", &of_align_gray16_rows_py);
@@ -1086,4 +1108,9 @@ NB_MODULE(_openfocus_native, m) {
     m.def("of_align_warp_translation_region_int_rows", &of_align_warp_translation_region_int_rows_py);
     m.def("pack_png_scanlines", &pack_png_scanlines_py,
           nb::arg("src"), nb::arg("dst"), nb::arg("num_threads") = 8);
+    m.def("_shutdown_thread_pool", &openfocus::shutdown_thread_pool);
+    try {
+        nb::module_::import_("atexit").attr("register")(m.attr("_shutdown_thread_pool"));
+    } catch (...) {
+    }
 }

@@ -213,7 +213,8 @@ def _release_dialog_buffers(dialog_ref):
     if dialog._source_worker is not None:
         dialog._source_worker.requestInterruption()
     for name in ("doc", "record", "_source_qimage", "_pure_source_qimage",
-                 "_source_display", "_source_clean_display", "_source_valid", "_source_published",
+                 "_source_display", "_source_clean_display", "_source_valid",
+                 "_source_geometry", "_source_display_index", "_source_published",
                  "_before_qimage", "_result_display", "_result_qimage", "_sharpness_maps"):
         setattr(dialog, name, None)
 
@@ -1131,6 +1132,8 @@ class RetouchDialog(QDialog):
         self._source_display = None
         self._source_clean_display = None
         self._source_valid = None
+        self._source_geometry = None
+        self._source_display_index = None
         self._before_qimage = None
         self._result_display = None
         self._result_qimage = None
@@ -1671,11 +1674,10 @@ class RetouchDialog(QDialog):
         self._source_ready = False
         self._source_published = None
         self._source_loading = True
-        self._source_qimage = None
-        self._pure_source_qimage = None
-        self._source_display = None
-        self._source_clean_display = None
-        self._source_valid = None
+        # Keep the previous frame's pixels (and their geometry) on screen until
+        # the new frame's preview or decode replaces them, so scrubbing does not
+        # blank the canvas. _source_published stays None, so nothing can be
+        # painted from the stale image.
         preview = self.doc.source_navigation_previews[index]
         if preview is not None:
             self._set_source_display(preview, None)
@@ -1756,11 +1758,11 @@ class RetouchDialog(QDialog):
                 self._finish_source_request()
             return
         self._source_loading = False
-        if worker.error is not None:
-            self._set_notice(trans.t('retouch_source_failed').format(error=str(worker.error)))
-            self._update_controls()
-            return
-        if worker.display is None:
+        if worker.error is not None or worker.display is None:
+            if self._source_display_index != worker.index:
+                self._clear_source_display()
+            if worker.error is not None:
+                self._set_notice(trans.t('retouch_source_failed').format(error=str(worker.error)))
             self._update_controls()
             return
         self.doc.retain_prepared_source(worker.index, worker.pixels, worker.valid)
@@ -1779,6 +1781,18 @@ class RetouchDialog(QDialog):
         self._update_controls()
         self._update_status()
 
+    def _clear_source_display(self) -> None:
+        self._source_qimage = None
+        self._pure_source_qimage = None
+        self._source_display = None
+        self._source_clean_display = None
+        self._source_valid = None
+        self._source_geometry = None
+        self._source_display_index = None
+        self.source_canvas.update()
+        if self.preview_mode == "source":
+            self.result_canvas.update()
+
     def _set_source_display(self, display, valid):
         if display.ndim == 2:
             display = cv2.cvtColor(display, cv2.COLOR_GRAY2BGR)
@@ -1786,6 +1800,9 @@ class RetouchDialog(QDialog):
             display = cv2.cvtColor(display, cv2.COLOR_BGRA2BGR)
         self._source_clean_display = np.ascontiguousarray(display)
         self._source_valid = valid
+        frame = self.doc.active_frame
+        self._source_geometry = (frame.width, frame.height, frame.offset_x, frame.offset_y)
+        self._source_display_index = self.doc.frame_index
         self._pure_source_qimage = _qimage_from_bgr(self._source_clean_display, copy=False)
         self._render_source_overlay()
 
@@ -1794,7 +1811,7 @@ class RetouchDialog(QDialog):
         if display is None:
             return
         if self.chk_sharp.isChecked() and self._sharpness_maps:
-            heat = self._sharpness_maps.get(self.doc.frame_index)
+            heat = self._sharpness_maps.get(self._source_display_index)
             if heat is not None:
                 heat = cv2.resize(heat, (display.shape[1], display.shape[0]),
                                   interpolation=cv2.INTER_LINEAR)
@@ -1830,10 +1847,11 @@ class RetouchDialog(QDialog):
         display = self._display_image(patch)
         if self._result_display.ndim == 3 and display.ndim == 2:
             display = cv2.cvtColor(display, cv2.COLOR_GRAY2BGR)
-        display = self._tint_missing(display, (y0, y1, x0, x1))
+        display = np.ascontiguousarray(self._tint_missing(display, (y0, y1, x0, x1)))
         self._result_display[y0:y1, x0:x1] = display
+        patch_image = _qimage_from_bgr(display, copy=False)
         painter = QPainter(self._result_qimage)
-        painter.drawImage(x0, y0, _qimage_from_bgr(display))
+        painter.drawImage(x0, y0, patch_image)
         painter.end()
         self.result_canvas.update(
             self.result_canvas.widget_rect_for_image_rect(rect))
@@ -1843,17 +1861,13 @@ class RetouchDialog(QDialog):
         if role == "source":
             if self._source_qimage is None:
                 return None, 0, 0, 0, 0
-            frame = self.doc.active_frame
-            return (self._source_qimage, frame.width, frame.height,
-                    frame.offset_x, frame.offset_y)
+            return (self._source_qimage, *self._source_geometry)
         if self.preview_mode == "before":
             return (self._before_qimage, self.doc.width, self.doc.height, 0, 0)
         if self.preview_mode == "source":
             if self._source_qimage is None:
                 return None, 0, 0, 0, 0
-            frame = self.doc.active_frame
-            return (self._pure_source_qimage, frame.width, frame.height,
-                    frame.offset_x, frame.offset_y)
+            return (self._pure_source_qimage, *self._source_geometry)
         return (self._result_qimage, self.doc.width, self.doc.height, 0, 0)
 
     # --------------------------------------------------------------- zoom
@@ -2241,26 +2255,34 @@ class RetouchDialog(QDialog):
             self._update_controls()
 
     # ------------------------------------------------------------- history
-    def _undo(self) -> None:
-        if (self.preview_mode is not None or self._edit_dialog is not None
-                or self._checkpoint_dialog is not None):
-            return
-        was_stroke = self.doc.stroke_active
-        if self.doc.undo():
+    def _patch_dirty(self, rect, *, force_full: bool = False) -> None:
+        """Refresh only the tiles a history step changed."""
+        if (not force_full and isinstance(rect, tuple)
+                and rect != (0, 0, self.doc.width, self.doc.height)):
+            self._patch_result(rect)
+            self._update_status()
+        else:
             self._refresh_result_display()
-        if was_stroke:
-            self._set_stroke_ui(False)
-        self._update_dirty_ui()
-        self._update_controls()
+
+    def _undo(self) -> None:
+        self._step_history(self.doc.undo)
 
     def _redo(self) -> None:
+        self._step_history(self.doc.redo)
+
+    def _step_history(self, step) -> None:
         if (self.preview_mode is not None or self._edit_dialog is not None
                 or self._checkpoint_dialog is not None):
             return
         was_stroke = self.doc.stroke_active
-        if self.doc.redo():
-            self._refresh_result_display()
+        before_fill = self.doc.background_fill
+        rect = step(return_rect=True)
+        if was_stroke or rect:
+            fill_changed = self.chk_missing.isChecked() and self.doc.background_fill is not before_fill
+            # Finalizing a stroke can also roll back pixels outside the history entry.
+            self._patch_dirty(rect, force_full=was_stroke or fill_changed)
         if was_stroke:
+            self.result_canvas._drawing = False
             self._set_stroke_ui(False)
         self._update_dirty_ui()
         self._update_controls()
@@ -2527,8 +2549,6 @@ class RetouchDialog(QDialog):
         self.btn_apply.setEnabled(self._can_apply())
         if self._confirm_apply_button is not None:
             self._confirm_apply_button.setEnabled(self._can_apply())
-            self._confirm_apply_button.setToolTip(
-                trans.t('msg_loading_stack') if self._source_loading else '')
         self.btn_before.setEnabled(not blocked and self.preview_mode != "source")
         self.chk_sharp.setEnabled(not sources_busy)
         self.rb_source.setEnabled(not blocked)
@@ -2730,7 +2750,7 @@ class RetouchDialog(QDialog):
         visible Apply button was disabled during preview.
         """
         return (not self._applied and not self._applying and not self._closing
-                and not self._source_loading and not self.doc.stroke_active and self.preview_mode is None
+                and not self.doc.stroke_active and self.preview_mode is None
                 and self._edit_dialog is None and self._checkpoint_dialog is None
                 and self.doc.is_dirty)
 
@@ -2781,8 +2801,6 @@ class RetouchDialog(QDialog):
         self._confirm_box = box
         self._confirm_apply_button = apply_btn
         apply_btn.setEnabled(self._can_apply())
-        if self._source_loading:
-            apply_btn.setToolTip(trans.t('msg_loading_stack'))
         box.setDefaultButton(continue_btn)
         def confirmed(_result):
             clicked = box.clickedButton()

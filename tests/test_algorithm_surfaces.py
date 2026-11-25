@@ -411,7 +411,7 @@ def test_method_dropdown_groups_families_in_a_stable_order(qapp, algorithm_host)
     ]
 
 
-@pytest.mark.parametrize('method', ['openfocus_a', 'openfocus_b', 'openfocus_c'])
+@pytest.mark.parametrize('method', ['openfocus_b', 'openfocus_c'])
 def test_openfocus_smoothing_edits_whole_levels(algorithm_host, method):
     host = algorithm_host
     host.set_fusion_method(method)
@@ -422,6 +422,15 @@ def test_openfocus_smoothing_edits_whole_levels(algorithm_host, method):
     assert editor.text() == '5' and host.fusion_parameters_for(method)['smoothing'] == 5
     editor.stepDown()
     assert editor.text() == '4' and host.fusion_parameters_for(method)['smoothing'] == 4
+
+
+def test_openfocus_a_omits_noop_smoothing_editor_and_preserves_saved_value(algorithm_host):
+    host = algorithm_host
+    host.set_fusion_parameters('openfocus_a', {'smoothing': 6.0})
+    host.set_fusion_method('openfocus_a')
+    panel = host.fusion_parameter_panel
+    assert 'smoothing' not in panel.editors
+    assert panel.values()['smoothing'] == 6.0
 
 
 def test_saved_fraction_survives_other_edits_and_method_switch(algorithm_host):

@@ -16,9 +16,11 @@ import numpy as np
 _device_lock = Lock()
 _context_lock = Lock()
 _cache_lock = Lock()
+_transfer_queue_lock = Lock()
 _SHARED_CONTEXT = None
 _PROGRAM_CACHE = None
 _DEPTH_PROGRAM_CACHE = None
+_TRANSFER_QUEUE_CACHE = None
 
 _nvml_lock = Lock()
 _nvml_state = None
@@ -30,12 +32,14 @@ _MERGE_KERNEL_NAMES = (
     'merge_out_u8',
 )
 _DEPTH_KERNEL_NAMES = (
-    'gray_u8', 'gray_u16', 'detail_pool', 'detail_smooth', 'detail_select',
-    'init_detail', 'detail_confidence', 'confidence', 'apply_detail',
+    'gray_u8', 'gray_u16', 'detail_pool', 'detail_smooth', 'detail_smooth_h',
+    'detail_smooth_v', 'detail_select',
+    'init_detail', 'detail_confidence', 'confidence', 'zero_u32', 'confidence_hist',
+    'apply_detail',
     'activity', 'init_activity', 'select_activity', 'guide', 'snap',
     'sample_focus_plane',
 )
-_FILTER_KERNEL_NAMES = ('filt4', 'filt_guided', 'transpose_u16')
+_FILTER_KERNEL_NAMES = ('filt', 'filt_guided', 'transpose_u16')
 _RESAMPLE_KERNEL_NAMES = ('vert', 'horiz')
 
 _PREVIEW_KERNEL = r'''
@@ -259,6 +263,101 @@ def _wait_event(event, cancel=None) -> None:
         cancel()
 
 
+def _event_wait_list(event):
+    if event is not None and hasattr(event, 'wait'):
+        return [event]
+    return None
+
+
+def _enqueue_kernel(kernel, queue, gsize, lsize, *args, wait_for=None):
+    if wait_for:
+        try:
+            return kernel(queue, gsize, lsize, *args, wait_for=wait_for)
+        except TypeError:
+            for ev in wait_for:
+                _wait_event(ev)
+    return kernel(queue, gsize, lsize, *args)
+
+
+def _get_transfer_queue(cl, device, context):
+    """Return a cached dedicated transfer queue on ``context`` for async H2D DMA."""
+    global _TRANSFER_QUEUE_CACHE
+    key = (_device_cache_key(device), id(context))
+    with _transfer_queue_lock:
+        if _TRANSFER_QUEUE_CACHE is not None and _TRANSFER_QUEUE_CACHE[0] == key:
+            return _TRANSFER_QUEUE_CACHE[1]
+        try:
+            tq = cl.CommandQueue(context, device=device)
+        except Exception:
+            return None
+        _TRANSFER_QUEUE_CACHE = (key, tq)
+        return tq
+
+
+def _drain_command_queue(queue, context=None):
+    if queue is not None:
+        try:
+            queue.finish()
+        except Exception:
+            _invalidate_program_cache(context)
+
+
+class _PinnedUploader:
+    """Overlapped async H2D uploader using a dedicated OpenCL transfer queue."""
+
+    def __init__(self, cl, ctx, compute_q, transfer_q, slots, max_bytes, *, use_pinned=False):
+        self._cl = cl
+        self._ctx = ctx
+        self._compute_q = compute_q
+        self._tq = transfer_q if transfer_q is not None else compute_q
+        self._slots = max(1, int(slots))
+        self._max_bytes = max(0, int(max_bytes))
+        self._dma_events = [None] * self._slots
+        self.pinned = False
+
+    @property
+    def separate_queue(self):
+        return self._tq is not self._compute_q
+
+    def upload(self, slot, dev_buf, host_array, *, wait_for=None, cancel=None):
+        """Enqueue async H2D copy on the transfer queue and return its event."""
+        prev_dma = self._dma_events[slot]
+        if prev_dma is not None:
+            _wait_event(prev_dma, cancel)
+            self._dma_events[slot] = None
+        wait_list = wait_for if (wait_for and self.separate_queue) else None
+        try:
+            ev = self._cl.enqueue_copy(
+                self._tq, dev_buf, host_array, is_blocking=False, wait_for=wait_list,
+            )
+        except TypeError:
+            if wait_list:
+                for item in wait_list:
+                    _wait_event(item, cancel)
+            ev = self._cl.enqueue_copy(self._tq, dev_buf, host_array, is_blocking=False)
+        self._dma_events[slot] = ev
+        if self.separate_queue and hasattr(self._tq, 'flush'):
+            self._tq.flush()
+        return ev
+
+    def finish(self, cancel=None):
+        for slot in range(len(self._dma_events)):
+            ev = self._dma_events[slot]
+            if ev is not None:
+                _wait_event(ev, cancel)
+                self._dma_events[slot] = None
+
+    def close(self):
+        for slot in range(len(self._dma_events)):
+            ev = self._dma_events[slot]
+            if ev is not None and hasattr(ev, 'wait'):
+                try:
+                    ev.wait()
+                except Exception:
+                    pass
+            self._dma_events[slot] = None
+
+
 def _iter_prefetched(items, prepare_fn, *, enabled: bool, should_cancel=None,
                      max_in_flight: int = 1):
     """Yield (index, prepare_fn(index, item, cancelled)) with bounded background prefetch."""
@@ -348,11 +447,14 @@ def _get_shared_context(cl, device):
 
 
 def _invalidate_shared_context(context):
-    global _SHARED_CONTEXT
+    global _SHARED_CONTEXT, _TRANSFER_QUEUE_CACHE
     if context is not None:
         with _context_lock:
             if _SHARED_CONTEXT is not None and _SHARED_CONTEXT[-1] is context:
                 _SHARED_CONTEXT = None
+        with _transfer_queue_lock:
+            if _TRANSFER_QUEUE_CACHE is not None and _TRANSFER_QUEUE_CACHE[0][1] == id(context):
+                _TRANSFER_QUEUE_CACHE = None
 
 
 def _get_or_build_merge_program(cl, device):
@@ -388,11 +490,13 @@ def _get_or_build_depth_program(cl, device, context):
 
 
 def _invalidate_program_cache(context=None):
-    global _PROGRAM_CACHE, _DEPTH_PROGRAM_CACHE
+    global _PROGRAM_CACHE, _DEPTH_PROGRAM_CACHE, _TRANSFER_QUEUE_CACHE
     with _cache_lock:
         _PROGRAM_CACHE = None
         _DEPTH_PROGRAM_CACHE = None
-        _invalidate_shared_context(context)
+    with _transfer_queue_lock:
+        _TRANSFER_QUEUE_CACHE = None
+    _invalidate_shared_context(context)
 
 _MERGE_KERNEL = r'''
 __kernel void activity(__global const ushort *gray, __global const ushort *fine,
@@ -952,6 +1056,7 @@ class Merge:
             self.context, self.queue, self.program, kernels = _get_or_build_merge_program(
                 cl, device,
             )
+            self.transfer_queue = _get_transfer_queue(cl, device, self.context)
             self.device_name = opencl_device_name(device)
             self.activity_kernel = kernels['activity']
             self.kernel = kernels['merge']
@@ -970,6 +1075,7 @@ class Merge:
             self._merge_src_bytes = 0
             self._merge_src_alt = None
             self._merge_src_alt_bytes = 0
+            self._merge_uploader = None
             self._merge_slot_events = [None, None]
             self._merge_slot_hosts = [None, None]
             self._merge_slot = 0
@@ -985,12 +1091,9 @@ class Merge:
             raise GpuError('OpenCL GPU initialization failed') from exc
 
     def _drain_queue(self):
-        queue = getattr(self, 'queue', None)
-        if queue is not None:
-            try:
-                queue.finish()
-            except Exception:
-                _invalidate_program_cache(getattr(self, 'context', None))
+        ctx = getattr(self, 'context', None)
+        _drain_command_queue(getattr(self, 'transfer_queue', None), ctx)
+        _drain_command_queue(getattr(self, 'queue', None), ctx)
 
     def acquire(self, should_cancel):
         from fusion_methods.openfocus_ab import _check_cancel
@@ -1112,12 +1215,13 @@ class Merge:
                     host_budget, host_staging, source_peak, len(frames),
                 )
                 extra_host = max(max_src_bytes, pixels * 2)
-                unified_extra_vram = max_src_bytes if self.device.host_unified_memory else 0
+                extra_vram = max_src_bytes + pixels * 2
+                unified_extra_vram = extra_vram if self.device.host_unified_memory else 0
                 ping_pong = (
                     len(frames) >= 2
                     and (host_staging + prefetch_slots * source_peak + 2 * extra_host
                          + unified_extra_vram) <= host_budget
-                    and (vram_need + max_src_bytes) <= vram_cap
+                    and (vram_need + extra_vram) <= vram_cap
                 )
                 engine = _GpuB(
                     self, img_resize, depth_kernels=depth_k, filter_kernels=filt_k,
@@ -1125,6 +1229,8 @@ class Merge:
                 )
                 engine._prefetch_slots = prefetch_slots
                 engine._ping_pong = ping_pong
+                engine._max_upload_bytes = extra_host
+                engine._unified_memory = bool(self.device.host_unified_memory)
                 depth_kwargs = {
                     'prefetch': prefetch_slots > 0,
                     'live_preview': live_preview,
@@ -1225,6 +1331,7 @@ class Merge:
             self._merge_src_bytes = 0
             self._merge_src_alt = None
             self._merge_src_alt_bytes = 0
+            self._merge_uploader = None
             self._merge_slot_events = [None, None]
             self._merge_slot_hosts = [None, None]
             self._merge_slot = 0
@@ -1241,6 +1348,10 @@ class Merge:
             if hasattr(self, 'cl') and isinstance(exc, (self.cl.Error, MemoryError)):
                 _invalidate_program_cache(getattr(self, 'context', None))
             self._drain_queue()
+            uploader = getattr(self, '_merge_uploader', None)
+            if uploader is not None:
+                uploader.close()
+                self._merge_uploader = None
             _release_buffers(self._merge_acc, self._merge_depth, self._merge_src,
                              getattr(self, '_merge_src_alt', None))
             self._merge_acc = self._merge_depth = self._merge_src = self._merge_src_alt = None
@@ -1257,6 +1368,9 @@ class Merge:
             raise GpuError('OpenCL GPU merge allocation failed') from exc
 
     def _flush_merge_slots(self):
+        uploader = getattr(self, '_merge_uploader', None)
+        if uploader is not None:
+            uploader.finish()
         events = getattr(self, '_merge_slot_events', None)
         hosts = getattr(self, '_merge_slot_hosts', None)
         if events is not None:
@@ -1282,17 +1396,27 @@ class Merge:
             kern = getattr(self, rev_attr if bgr_rev else norm_attr)
             ping_pong = bool(getattr(self, '_merge_ping_pong', False))
             slot = self._merge_slot if ping_pong else 0
+            prev_compute_ev = None
             if ping_pong:
                 self._merge_slot ^= 1
-                if self._merge_slot_events[slot] is not None:
-                    _wait_event(self._merge_slot_events[slot])
-                    self._merge_slot_events[slot] = None
-                    self._merge_slot_hosts[slot] = None
+                prev_compute_ev = self._merge_slot_events[slot]
+                if prev_compute_ev is not None:
+                    uploader_cur = getattr(self, '_merge_uploader', None)
+                    if uploader_cur is None or not uploader_cur.separate_queue:
+                        _wait_event(prev_compute_ev)
+                        self._merge_slot_events[slot] = None
+                        self._merge_slot_hosts[slot] = None
+                        prev_compute_ev = None
             src_attr = '_merge_src' if slot == 0 else '_merge_src_alt'
             bytes_attr = '_merge_src_bytes' if slot == 0 else '_merge_src_alt_bytes'
             src_buf = getattr(self, src_attr, None)
             src_bytes = getattr(self, bytes_attr, 0)
             if src_buf is None or src_bytes != image.nbytes:
+                if prev_compute_ev is not None:
+                    _wait_event(prev_compute_ev)
+                    self._merge_slot_events[slot] = None
+                    self._merge_slot_hosts[slot] = None
+                    prev_compute_ev = None
                 _release_buffers(src_buf)
                 setattr(self, src_attr, None)
                 setattr(self, bytes_attr, 0)
@@ -1301,17 +1425,38 @@ class Merge:
                 )
                 setattr(self, src_attr, src_buf)
                 setattr(self, bytes_attr, image.nbytes)
+            uploader = getattr(self, '_merge_uploader', None)
+            if ping_pong and uploader is None:
+                uploader = _PinnedUploader(
+                    cl, self.context, self.queue, getattr(self, 'transfer_queue', None),
+                    2, image.nbytes,
+                )
+                self._merge_uploader = uploader
             self._merge_needs_drain = True
-            upload = cl.enqueue_copy(self.queue, src_buf, image, is_blocking=False)
+            if uploader is not None:
+                upload = uploader.upload(
+                    slot, src_buf, image, wait_for=_event_wait_list(prev_compute_ev),
+                )
+                wait_upload = _event_wait_list(upload) if uploader.separate_queue else None
+            else:
+                upload = cl.enqueue_copy(self.queue, src_buf, image, is_blocking=False)
+                wait_upload = None
             height, width = self._merge_shape[:2]
             channels = 1 if image.ndim == 2 else image.shape[2]
-            event = kern(self.queue, (height * width,), None, self._merge_acc,
-                         src_buf, self._merge_depth, np.int32(width),
-                         np.int32(channels), np.int32(65535 // max(1, count - 1)),
-                         np.int32(index), np.int32(scale), np.int32(index == 0))
+            event = _enqueue_kernel(
+                kern, self.queue, (height * width,), None, self._merge_acc,
+                src_buf, self._merge_depth, np.int32(width),
+                np.int32(channels), np.int32(65535 // max(1, count - 1)),
+                np.int32(index), np.int32(scale), np.int32(index == 0),
+                wait_for=wait_upload,
+            )
             if ping_pong and event is not None and hasattr(event, 'wait'):
+                if hasattr(self.queue, 'flush'):
+                    self.queue.flush()
                 self._merge_slot_events[slot] = event
-                self._merge_slot_hosts[slot] = (image, upload)
+                self._merge_slot_hosts[slot] = (
+                    (upload,) if (uploader is not None and uploader.pinned) else (image, upload)
+                )
             else:
                 event.wait()
                 del upload
@@ -1387,6 +1532,10 @@ class Merge:
     def end_merge(self):
         if getattr(self, '_merge_needs_drain', False):
             self._drain_queue()
+        uploader = getattr(self, '_merge_uploader', None)
+        if uploader is not None:
+            uploader.close()
+            self._merge_uploader = None
         if getattr(self, '_merge_slot_events', None) is not None:
             self._merge_slot_events = [None, None]
         if getattr(self, '_merge_slot_hosts', None) is not None:
@@ -1496,42 +1645,6 @@ __kernel void filt_guided(__global const ushort* src, __global const ushort* gui
         acc=state;
         out[(size_t)y*W+x]=(ushort)(((((state+3u)>>4)+1u
             +first[(size_t)y*W+x])>>1)&0xffffu);
-    }
-}
-
-__kernel void filt4(__global const ushort* src, __global ushort* out,
-                    __global ushort* first, const int H, const int W,
-                    const int count, const uint q, const uint t, const int step4)
-{
-    int x0=get_global_id(0); if(x0>=step4) return;
-    uint mask=0xffffffffu;
-    uint acc[4]={0u,0u,0u,0u};
-    int xs[4]={x0,x0+step4,x0+2*step4,x0+3*step4};
-    for(int k=0;k<4;k++){int x=xs[k]; if(x>=W)continue;
-        for(int y=0;y<count;++y) acc[k]+=(uint)src[(size_t)y*W+x];
-        acc[k]=(acc[k]<<4)/(uint)count; acc[k]*=(t+q);
-    }
-    for(int y=0;y<H;++y){
-        for(int k=0;k<4;k++){int x=xs[k]; if(x>=W)continue;
-            uint value=(uint)src[(size_t)y*W+x];
-            uint innovation=(value*16u*t)&mask;
-            uint state=((acc[k]+2048u+innovation)&mask)>>12;
-            first[(size_t)y*W+x]=(ushort)(((state+4u)>>4)&0xffffu);
-            acc[k]=(state*q+innovation)&mask;
-        }
-    }
-    for(int k=0;k<4;k++){int x=xs[k]; if(x>=W)continue;
-        acc[k]=(uint)first[(size_t)(H-1)*W+x]<<4; acc[k]*=(t+q);
-    }
-    for(int y=H-1;y>=0;--y){
-        for(int k=0;k<4;k++){int x=xs[k]; if(x>=W)continue;
-            uint value=(uint)src[(size_t)y*W+x];
-            uint innovation=(value*16u*t)&mask;
-            uint state=((acc[k]+2048u+innovation)&mask)>>12;
-            out[(size_t)y*W+x]=(ushort)(((((state+3u)>>4)+1u
-                +(uint)first[(size_t)y*W+x])>>1)&0xffffu);
-            acc[k]=(state*q+innovation)&mask;
-        }
     }
 }
 '''
@@ -1645,6 +1758,37 @@ __kernel void detail_smooth(__global const ushort* src, __global ushort* out,
         total += (long)src[(size_t)refl(y+dy,H)*W+refl(x+dx,W)];
     out[(size_t)y*W+x]=(ushort)(total/25);
 }
+__kernel void detail_smooth_h(__global const ushort* src, __global uint* tmp,
+                              const int H, const int W)
+{
+    int x=get_global_id(0), y=get_global_id(1);
+    if(x>=W||y>=H)return;
+    size_t row=(size_t)y*W;
+    uint sum;
+    if(x>=2 && x+2<W){
+        sum=(uint)src[row+x-2]+(uint)src[row+x-1]+(uint)src[row+x]
+           +(uint)src[row+x+1]+(uint)src[row+x+2];
+    }else{
+        sum=(uint)src[row+refl(x-2,W)]+(uint)src[row+refl(x-1,W)]+(uint)src[row+x]
+           +(uint)src[row+refl(x+1,W)]+(uint)src[row+refl(x+2,W)];
+    }
+    tmp[row+x]=sum;
+}
+__kernel void detail_smooth_v(__global const uint* tmp, __global ushort* out,
+                              const int H, const int W)
+{
+    int x=get_global_id(0), y=get_global_id(1);
+    if(x>=W||y>=H)return;
+    uint total;
+    if(y>=2 && y+2<H){
+        total=tmp[(size_t)(y-2)*W+x]+tmp[(size_t)(y-1)*W+x]+tmp[(size_t)y*W+x]
+             +tmp[(size_t)(y+1)*W+x]+tmp[(size_t)(y+2)*W+x];
+    }else{
+        total=tmp[(size_t)refl(y-2,H)*W+x]+tmp[(size_t)refl(y-1,H)*W+x]+tmp[(size_t)y*W+x]
+             +tmp[(size_t)refl(y+1,H)*W+x]+tmp[(size_t)refl(y+2,H)*W+x];
+    }
+    out[(size_t)y*W+x]=(ushort)(total/25u);
+}
 #define DEFINE_GRAY(NAME, SRC_T) \
 __kernel void NAME(__global const SRC_T* src, __global ushort* out, \
                    const int H, const int W, const int C, const int scale) \
@@ -1694,6 +1838,20 @@ __kernel void confidence(__global ushort* best, __global const ushort* votes, co
     int i=get_global_id(0); if(i>=n)return;
     long diff=(long)best[i]-(long)votes[i];
     best[i]=(ushort)(diff<0L?-diff:diff);
+}
+__kernel void zero_u32(__global uint* buf, const int n)
+{
+    int i=get_global_id(0); if(i>=n)return;
+    buf[i]=0u;
+}
+__kernel void confidence_hist(__global ushort* best, __global const ushort* votes,
+                              __global uint* hist, const int n)
+{
+    int i=get_global_id(0); if(i>=n)return;
+    int diff=(int)best[i]-(int)votes[i];
+    uint c=(uint)(diff<0?-diff:diff);
+    best[i]=(ushort)c;
+    atomic_inc(&hist[c]);
 }
 __kernel void apply_detail(__global ushort* depth, __global const ushort* mask,
                            __global const ushort* winner, const int n)
@@ -1790,16 +1948,16 @@ class _Filter:
         count_h = max(1, min(int(radius), w))
         count_v = max(1, min(int(radius), h))
         ta, tb, first = self._bufs_for(h, w, False)
+        # One work-item per column keeps every compute unit busy; each column
+        # runs the same ordered recurrence, so results do not depend on width.
         self._transpose(src_buf, ta, w, h)
-        step_h = (h + 3) // 4
-        self.kernels['filt4'](self.q, (step_h,), None, ta, tb, first,
-                              np.int32(w), np.int32(h), np.int32(count_h),
-                              np.uint32(q), np.uint32(t), np.int32(step_h))
+        self.kernels['filt'](self.q, (h,), None, ta, tb, first,
+                             np.int32(w), np.int32(h), np.int32(count_h),
+                             np.uint32(q), np.uint32(t))
         self._transpose(tb, ta, h, w)
-        step_v = (w + 3) // 4
-        self.kernels['filt4'](self.q, (step_v,), None, ta, out_buf, first,
-                              np.int32(h), np.int32(w), np.int32(count_v),
-                              np.uint32(q), np.uint32(t), np.int32(step_v))
+        self.kernels['filt'](self.q, (w,), None, ta, out_buf, first,
+                             np.int32(h), np.int32(w), np.int32(count_v),
+                             np.uint32(q), np.uint32(t))
 
     def axis_guided_buf(self, src_buf, guide_buf, out_buf, h, w, main, low, axis=0):
         from fusion_methods.openfocus_depth import _weight
@@ -1871,12 +2029,12 @@ class _HalfResample:
             self._scratch[key] = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, OH * W * 4)
         return self._scratch[key]
 
-    def run_buf(self, gray_buf, out_buf, H, W):
+    def run_buf(self, gray_buf, out_buf, H, W, *, wait_for=None):
         v, h, vix, vw, vc, hix, hw, hc = self._axes((H, W))
         OH, OW = v.indices.shape[0], h.indices.shape[0]
         vb = self._vb(OH, W)
-        self.kernels['vert'](self.q, (W, OH), None, gray_buf, vb, vix, vw, vc,
-                             np.int32(OH), np.int32(W))
+        _enqueue_kernel(self.kernels['vert'], self.q, (W, OH), None, gray_buf, vb, vix, vw, vc,
+                        np.int32(OH), np.int32(W), wait_for=wait_for)
         self.kernels['horiz'](self.q, (OW, OH), None, vb, out_buf, hix, hw, hc,
                               np.int32(OH), np.int32(OW), np.int32(W))
         return OH, OW
@@ -1967,12 +2125,17 @@ class _GpuB:
         self.expand = _ExpandDepth(cl, ctx, q, mf, pk, kernels=resample_kernels)
         self._cbuf = {}
 
-    def _source_buffer(self, nbytes, slot=0):
+    def _source_buffer(self, nbytes, slot=0, *, wait_for=None, cancel=None):
         # Ping-pong frames alternate across slots so the next host upload
         # never collides with an in-flight kernel reading the prior slot.
         key = f'src_in_{slot}'
         capacity, buf = self._cbuf.get(key, (0, None))
         if buf is None or nbytes > capacity:
+            if buf is not None and wait_for:
+                # The old allocation still counts against VRAM while a queued
+                # kernel uses it. Admission budgets one source buffer per slot.
+                for event in wait_for:
+                    _wait_event(event, cancel)
             self._cbuf.pop(key, None)
             del buf
             capacity = max(1, nbytes)
@@ -2002,18 +2165,28 @@ class _GpuB:
         host_gray = np.ascontiguousarray(gray, dtype=np.uint16)
         return False, host_gray, 1, False
 
-    def _gray_into(self, prepared, gray_buf, height, width, slot=0):
+    def _gray_into(self, prepared, gray_buf, height, width, slot=0,
+                   *, uploader=None, wait_for=None, cancel=None):
         is_raw, host_buf, channels, is_u8 = prepared
         if is_raw:
-            ib = self._source_buffer(host_buf.nbytes, slot=slot)
-            upload = self.cl.enqueue_copy(self.q, ib, host_buf, is_blocking=False)
+            ib = self._source_buffer(host_buf.nbytes, slot=slot, wait_for=wait_for, cancel=cancel)
+            if uploader is not None:
+                upload = uploader.upload(slot, ib, host_buf, wait_for=wait_for, cancel=cancel)
+                wait_upload = _event_wait_list(upload) if uploader.separate_queue else None
+            else:
+                upload = self.cl.enqueue_copy(self.q, ib, host_buf, is_blocking=False)
+                wait_upload = None
             kern = self.kernels['gray_u8' if is_u8 else 'gray_u16']
-            kern(self.q, (width, height), None, ib, gray_buf,
-                 np.int32(height), np.int32(width), np.int32(channels),
-                 np.int32(256 if is_u8 else 1))
+            _enqueue_kernel(kern, self.q, (width, height), None, ib, gray_buf,
+                            np.int32(height), np.int32(width), np.int32(channels),
+                            np.int32(256 if is_u8 else 1), wait_for=wait_upload)
             self.gpu.used = True
-            return upload
-        return self.cl.enqueue_copy(self.q, gray_buf, host_buf, is_blocking=False)
+            return upload, None
+        if uploader is not None:
+            upload = uploader.upload(slot, gray_buf, host_buf, wait_for=wait_for, cancel=cancel)
+            wait_upload = _event_wait_list(upload) if uploader.separate_queue else None
+            return upload, wait_upload
+        return self.cl.enqueue_copy(self.q, gray_buf, host_buf, is_blocking=False), None
 
     # -- depth_map equivalent ---------------------------------------------
     def depth(self, frames, kernel_size, smoothing, feather, shape, count,
@@ -2047,6 +2220,7 @@ class _GpuB:
         completed = False
         prepared_iter = None
         reader = None
+        uploader = None
         allocated = []
         try:
             cancel()
@@ -2054,7 +2228,10 @@ class _GpuB:
                 allocated.append(buf)
                 return buf
 
-            gray_buf = _alloc(self.cl.Buffer(self.ctx, self.mf.READ_WRITE, height * width * 2))
+            gray_bufs = tuple(
+                _alloc(self.cl.Buffer(self.ctx, self.mf.READ_WRITE, height * width * 2))
+                for _ in range(2 if ping_pong else 1)
+            )
             pb = (_alloc(self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes))
                   if (preserve_detail or scale != 0.0) else None)
             sb = (_alloc(self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes))
@@ -2073,6 +2250,13 @@ class _GpuB:
             depth_buf = _alloc(self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes))
             votes_buf = _alloc(self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes))
 
+            max_upload = int(getattr(self, '_max_upload_bytes', height * width * 2))
+            if ping_pong:
+                uploader = _PinnedUploader(
+                    self.cl, self.ctx, self.q, getattr(self.gpu, 'transfer_queue', None),
+                    2, max_upload,
+                )
+
             if live_preview is not None:
                 reader = _PreviewPlaneReader(self.cl, self.ctx, self.q,
                                              self.kernels['sample_focus_plane'], (oh, ow), np.uint16)
@@ -2085,26 +2269,47 @@ class _GpuB:
                 frames, prepare, enabled=prefetch, should_cancel=should_cancel,
                 max_in_flight=max(1, effective_slots),
             )
+            detail_tmp_buf = self.half._vb(oh, width) if preserve_detail else None
+            use_sep_smooth = (
+                preserve_detail
+                and 'detail_smooth_h' in self.kernels
+                and 'detail_smooth_v' in self.kernels
+            )
             slot_events = [None, None]
             slot_hosts = [None, None]
             for idx, prepared in prepared_iter:
                 slot = idx & 1 if ping_pong else 0
-                if slot_events[slot] is not None:
-                    _wait_event(slot_events[slot], cancel)
+                prev_slot_ev = slot_events[slot]
+                if prev_slot_ev is not None and (uploader is None or not uploader.separate_queue):
+                    _wait_event(prev_slot_ev, cancel)
                     slot_events[slot] = None
                     slot_hosts[slot] = None
+                    prev_slot_ev = None
                 cancel()
-                upload = self._gray_into(prepared, gray_buf, height, width, slot=slot)
+                gray_buf = gray_bufs[slot]
+                upload, wait_upload = self._gray_into(
+                    prepared, gray_buf, height, width, slot=slot,
+                    uploader=uploader, wait_for=_event_wait_list(prev_slot_ev), cancel=cancel,
+                )
                 cancel()
                 if preserve_detail:
-                    self.kernels['detail_pool'](self.q, (ow, oh), None, gray_buf, pb,
-                                                np.int32(height), np.int32(width),
-                                                np.int32(oh), np.int32(ow))
-                    self.kernels['detail_smooth'](self.q, (ow, oh), None, pb, sb,
-                                                  np.int32(oh), np.int32(ow))
+                    _enqueue_kernel(
+                        self.kernels['detail_pool'], self.q, (ow, oh), None, gray_buf, pb,
+                        np.int32(height), np.int32(width), np.int32(oh), np.int32(ow),
+                        wait_for=wait_upload,
+                    )
+                    wait_upload = None
+                    if use_sep_smooth:
+                        self.kernels['detail_smooth_h'](self.q, (ow, oh), None, pb, detail_tmp_buf,
+                                                        np.int32(oh), np.int32(ow))
+                        self.kernels['detail_smooth_v'](self.q, (ow, oh), None, detail_tmp_buf, sb,
+                                                        np.int32(oh), np.int32(ow))
+                    else:
+                        self.kernels['detail_smooth'](self.q, (ow, oh), None, pb, sb,
+                                                      np.int32(oh), np.int32(ow))
                 self.gpu.used = True
                 cancel()
-                self.half.run_buf(gray_buf, half_buf, height, width)
+                self.half.run_buf(gray_buf, half_buf, height, width, wait_for=wait_upload)
                 cancel()
                 self.filt.run_buf(half_buf, fine_buf, oh, ow, fine_r)
                 cancel()
@@ -2131,8 +2336,12 @@ class _GpuB:
                             np.uint16(code), np.int32(m),
                         )
                 if ping_pong and last_event is not None and hasattr(last_event, 'wait'):
+                    if hasattr(self.q, 'flush'):
+                        self.q.flush()
                     slot_events[slot] = last_event
-                    slot_hosts[slot] = (prepared, upload)
+                    slot_hosts[slot] = (
+                        (upload,) if (uploader is not None and uploader.pinned) else (prepared, upload)
+                    )
                     if reader is not None and live_preview.ready():
                         _wait_event(last_event, cancel)
                         slot_events[slot] = None
@@ -2154,24 +2363,37 @@ class _GpuB:
                     progress_callback(idx, count)
 
             if ping_pong:
+                if uploader is not None:
+                    uploader.finish(cancel)
                 for slot in (0, 1):
                     if slot_events[slot] is not None:
                         _wait_event(slot_events[slot], cancel)
                         slot_events[slot] = None
                     slot_hosts[slot] = None
                 self.q.finish()
+            if uploader is not None:
+                uploader.close()
+                uploader = None
 
             cancel()
             if preserve_detail:
                 self.kernels['detail_confidence'](self.q, (m,), None, best_buf, d_best_buf,
                                                   d_second_buf, np.int32(m))
             if scale != 0.0:
-                self.kernels['confidence'](self.q, (m,), None, best_buf, votes_buf, np.int32(m))
-                best = np.empty((oh, ow), dtype=np.uint16)
-                self.cl.enqueue_copy(self.q, best, best_buf, is_blocking=True)
-
-                hist = np.bincount(best.ravel(), minlength=65536)
-                threshold = int(np.float32(np.float32(best.size)
+                if 'zero_u32' in self.kernels and 'confidence_hist' in self.kernels:
+                    hist_buf = _alloc(self.cl.Buffer(self.ctx, self.mf.READ_WRITE, 65536 * 4))
+                    self.kernels['zero_u32'](self.q, (65536,), None, hist_buf, np.int32(65536))
+                    self.kernels['confidence_hist'](self.q, (m,), None, best_buf, votes_buf,
+                                                    hist_buf, np.int32(m))
+                    hist_u32 = np.empty(65536, dtype=np.uint32)
+                    self.cl.enqueue_copy(self.q, hist_u32, hist_buf, is_blocking=True)
+                    hist = hist_u32.astype(np.int64, copy=False)
+                else:
+                    self.kernels['confidence'](self.q, (m,), None, best_buf, votes_buf, np.int32(m))
+                    best = np.empty((oh, ow), dtype=np.uint16)
+                    self.cl.enqueue_copy(self.q, best, best_buf, is_blocking=True)
+                    hist = np.bincount(best.ravel(), minlength=65536)
+                threshold = int(np.float32(np.float32(m)
                                            * np.float32(0.009999999776482582)))
                 lo = int(np.searchsorted(np.cumsum(hist), threshold)) if threshold else 0
                 hi = (65535 - int(np.searchsorted(np.cumsum(hist[::-1]), threshold))
@@ -2210,6 +2432,8 @@ class _GpuB:
         finally:
             if not completed:
                 self.gpu._drain_queue()
+            if uploader is not None:
+                uploader.close()
             if prepared_iter is not None:
                 prepared_iter.close()
             if reader is not None:
