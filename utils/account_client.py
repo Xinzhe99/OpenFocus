@@ -1102,8 +1102,8 @@ class AccountClient:
         with self._condition:
             return self._session is not None
 
-    def token(self, *, expected_owner=None):
-        """Return a bearer for the expected account, refreshing before expiry."""
+    def token(self, *, expected_owner=None, deadline=None):
+        """Return a bearer, bounded by an optional monotonic deadline for renewal."""
         with self._condition:
             session = None if self._logout_in_progress else self._session
             if not session or (expected_owner is not None and
@@ -1111,7 +1111,7 @@ class AccountClient:
                 return None
             needs_refresh = session['expires_at'] <= self._clock() + 86400
         if needs_refresh:
-            self.refresh(_expected_token=session['token'])
+            self.refresh(_expected_token=session['token'], _deadline=deadline)
         with self._condition:
             session = None if self._logout_in_progress else self._session
             if not session or (expected_owner is not None and
@@ -1119,14 +1119,17 @@ class AccountClient:
                 return None
             return session['token']
 
-    def refresh(self, *, _expected_token=None):
+    def refresh(self, *, _expected_token=None, _deadline=None):
         """Rotate once; concurrent callers share the same result or error."""
         with self._condition:
             if self._logout_in_progress:
                 return False
             if self._refreshing:
                 while self._refreshing:
-                    self._condition.wait()
+                    remaining = None if _deadline is None else _deadline - time.monotonic()
+                    if remaining is not None and remaining <= 0:
+                        raise AccountError("timeout")
+                    self._condition.wait(remaining)
                 if self._last_refresh_error:
                     raise self._last_refresh_error
                 return not self._logout_in_progress and bool(self._session)
@@ -1134,12 +1137,15 @@ class AccountClient:
                 return False
             if _expected_token is not None and self._session["token"] != _expected_token:
                 return True
+            timeout = 15 if _deadline is None else min(15, _deadline - time.monotonic())
+            if timeout <= 0:
+                raise AccountError("timeout")
             token = self._session["token"]
             generation = self._generation
             self._refreshing = True
             self._last_refresh_error = None
         try:
-            session = self._call("POST", "/v1/auth/refresh", token=token)
+            session = self._call("POST", "/v1/auth/refresh", token=token, timeout=timeout)
             with self._condition:
                 if generation != self._generation:
                     return False
