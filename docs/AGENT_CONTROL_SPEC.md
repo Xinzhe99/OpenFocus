@@ -70,7 +70,7 @@ the named-pipe client's computer with `GetComputerNameW` and rejects a remote
 or unidentifiable client; `ERROR_PIPE_LOCAL` is treated as local.
 On POSIX, a socket-name conflict does not remove the existing endpoint. Choose
 another name or manually clean it only after confirming it has no owner.
-Unix socket paths can use up to 107 encoded bytes on Linux and 103 on macOS.
+Unix control socket paths can use up to 106 encoded bytes on Linux and 103 on macOS.
 The server normally publishes the owner-only socket with an exclusive hard
 link, which requires a filesystem that supports hard links to Unix sockets.
 If the requested path fits but the staging path is too long, it binds

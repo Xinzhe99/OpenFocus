@@ -356,17 +356,19 @@ def test_batch_converter_idle_progress_hidden_and_primary_start(qapp):
 
 
 def test_environment_info_dialog_uses_monospace_and_fits_screen(qapp):
-    from PyQt6.QtGui import QFontDatabase
+    from PyQt6.QtGui import QFontInfo
     from dialogs.about import EnvironmentInfoDialog
+    from ui.styles import build_stylesheet
 
+    original_style = qapp.styleSheet()
     dlg = EnvironmentInfoDialog()
     dlg.show()
     qapp.processEvents()
     try:
-        expected = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
-        actual = dlg.text_edit.font()
-        assert actual.family() == expected.family()
-        assert "," not in actual.family()
+        qapp.setStyleSheet(build_stylesheet("dark", font_size=18))
+        qapp.processEvents()
+        report_font = QFontInfo(dlg.text_edit.document().defaultFont())
+        assert report_font.fixedPitch()
         screen = dlg.screen()
         if screen is not None:
             avail = screen.availableGeometry()
@@ -375,6 +377,7 @@ def test_environment_info_dialog_uses_monospace_and_fits_screen(qapp):
     finally:
         dlg.close()
         dlg.deleteLater()
+        qapp.setStyleSheet(original_style)
 
 
 def test_custom_scheme_dialog_sets_contrasting_stop_foreground(qapp):

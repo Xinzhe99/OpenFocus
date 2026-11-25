@@ -39,7 +39,8 @@ from utils.output_sharpen import DEFAULT_SHARPEN_STRENGTH
 
 _log = get_logger(__name__)
 MAX_MOUSE_STEPS = 1024
-_UNIX_SOCKET_PATH_MAX = 107 if sys.platform == 'linux' else 103
+# QLocalSocket reserves two bytes in sun_path on Linux and one on macOS.
+_UNIX_SOCKET_PATH_MAX = 106 if sys.platform == 'linux' else 103
 
 class _DeferredResponse:
     def __init__(self, start):

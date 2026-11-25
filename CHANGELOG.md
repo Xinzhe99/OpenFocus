@@ -242,6 +242,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   handle unsupported system proxy schemes, and recover stale macOS Keychain
   sessions after a confirmed write mismatch.
 - Restore embedded TIFF thumbnail previews in Batch Image Converter.
+- Reject Linux control socket paths that are too long for Qt clients and
+  preserve fixed-width text in the Environment Info dialog under application themes.
 - Keep desktop updates recoverable across channel changes, failed delta
   downloads and interrupted installation. Verify the Windows website
   installer against the release's published size and SHA-256 digest.
