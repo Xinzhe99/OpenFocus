@@ -265,7 +265,7 @@ def test_export_and_batch_callbacks_ignore_shutting_down_or_deleted_window(
     assert not alerts
 
 
-def test_apply_list_order_remaps_selected_rows_and_load_empty_folder(qapp, tmp_path, monkeypatch):
+def test_apply_list_order_preserves_selected_rows_and_load_empty_folder(qapp, tmp_path, monkeypatch):
     from controllers.source_manager import SourceManager
     from tests.test_gui_units import _source_window
 
@@ -280,6 +280,13 @@ def test_apply_list_order_remaps_selected_rows_and_load_empty_folder(qapp, tmp_p
     w.raw_images = [np.zeros((8, 8, 3), np.uint8) for _ in names]
     sm = SourceManager(w)
     sm.update_file_list(names, thumbs)
+
+    # Exercise the selection-restore loop inside apply_list_order when reload_image_stack rebuilds file_list.
+    def rebuild_list(initial_index=0):
+        sm.update_file_list(w.image_filenames, thumbs)
+        return True
+
+    monkeypatch.setattr(w.transform_manager, "reload_image_stack", rebuild_list)
 
     # Select row 0 (a.png) before reordering.
     w.file_list.item(0).setSelected(True)

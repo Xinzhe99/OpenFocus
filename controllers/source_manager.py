@@ -1691,7 +1691,7 @@ class SourceManager(QObject):
             clear_output_view=False, preserve_outputs=True)
         if window.transform_manager.reload_image_stack(initial_index=new_pos):
             for row in range(n):
-                window.file_list.item(row).setSelected(new_order[row] in selected_rows)
+                window.file_list.item(row).setSelected(row in selected_rows)
 
     # === Icon Drag-and-Drop Support Methods ===
     # These methods handle files dropped on app icon/taskbar/dock
