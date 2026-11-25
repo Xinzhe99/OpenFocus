@@ -1028,7 +1028,9 @@ _PROGRAM_CACHE = None
 
 def _get_or_build_program(cl, device):
     global _PROGRAM_CACHE
-    from fusion_methods._openfocus_gpu import _build_cached_program, _get_shared_context
+    from fusion_methods._openfocus_gpu import (
+        _build_cached_program, _fp32_build_options, _get_shared_context,
+    )
 
     key = getattr(device, 'int_ptr', None)
     with _cache_lock:
@@ -1036,9 +1038,7 @@ def _get_or_build_program(cl, device):
         if _PROGRAM_CACHE is not None and _PROGRAM_CACHE[0] == key and _PROGRAM_CACHE[1] is ctx:
             return _PROGRAM_CACHE[1:]
         queue = cl.CommandQueue(ctx, device=device)
-        # OpenCL 1.2 makes correctly rounded FP32 divide/sqrt optional.
-        rounded = cl.device_fp_config.CORRECTLY_ROUNDED_DIVIDE_SQRT
-        options = ['-cl-fp32-correctly-rounded-divide-sqrt'] if device.single_fp_config & rounded else []
+        options = _fp32_build_options(cl, device)
         program = _build_cached_program(cl, device, ctx, _DTCWT_K, options=options)
         kernels = {name: cl.Kernel(program, name) for name in _KERNEL_NAMES}
         _PROGRAM_CACHE = (key, ctx, queue, kernels)

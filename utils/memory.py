@@ -86,24 +86,59 @@ def _macos_memory():
     """Physical total and reclaimable pages from Darwin's native VM counters."""
     import ctypes
     libc = ctypes.CDLL(None)
+    libc.sysctlbyname.argtypes = (
+        ctypes.c_char_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t),
+        ctypes.c_void_p, ctypes.c_size_t,
+    )
+    libc.sysctlbyname.restype = ctypes.c_int
     total = ctypes.c_uint64()
     size = ctypes.c_size_t(ctypes.sizeof(total))
     if libc.sysctlbyname(b"hw.memsize", ctypes.byref(total),
                          ctypes.byref(size), None, 0) != 0:
         return 0, 0
+    libc.mach_host_self.argtypes = ()
     libc.mach_host_self.restype = ctypes.c_uint
+    libc.host_page_size.argtypes = (ctypes.c_uint, ctypes.POINTER(ctypes.c_size_t))
+    libc.host_page_size.restype = ctypes.c_int
+    libc.mach_port_deallocate.argtypes = (ctypes.c_uint, ctypes.c_uint)
+    libc.mach_port_deallocate.restype = ctypes.c_int
     host = libc.mach_host_self()
     try:
-        page_size = ctypes.c_uint()
+        # vm_size_t is 64-bit on 64-bit Darwin (x86_64 and Apple Silicon arm64).
+        page_size = ctypes.c_size_t()
         if libc.host_page_size(host, ctypes.byref(page_size)) != 0:
             return 0, int(total.value)
-        # HOST_VM_INFO uses integer_t fields: free, active, inactive, wired,
-        # then fault/pageout counters. Speculative pages are already free.
+        stat64 = getattr(libc, "host_statistics64", None)
+        if stat64 is not None:
+            stat64.argtypes = (
+                ctypes.c_uint, ctypes.c_int, ctypes.c_void_p,
+                ctypes.POINTER(ctypes.c_uint),
+            )
+            stat64.restype = ctypes.c_int
+            # HOST_VM_INFO64 (4): vm_statistics64 is 38 natural_t words;
+            # free_count is word 0 and inactive_count is word 2.
+            stats64 = (ctypes.c_uint32 * 38)()
+            count64 = ctypes.c_uint(38)
+            if stat64(host, 4, stats64, ctypes.byref(count64)) == 0:
+                available = min(
+                    int(total.value),
+                    (int(stats64[0]) + int(stats64[2])) * int(page_size.value),
+                )
+                return available, int(total.value)
+        # HOST_VM_INFO (2) fallback: free, active, inactive, wired, then counters.
+        libc.host_statistics.argtypes = (
+            ctypes.c_uint, ctypes.c_int, ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_uint),
+        )
+        libc.host_statistics.restype = ctypes.c_int
         stats = (ctypes.c_uint * 15)()
         count = ctypes.c_uint(15)
         if libc.host_statistics(host, 2, stats, ctypes.byref(count)) != 0:
             return 0, int(total.value)
-        available = (int(stats[0]) + int(stats[2])) * page_size.value
+        available = min(
+            int(total.value),
+            (int(stats[0]) + int(stats[2])) * int(page_size.value),
+        )
         return available, int(total.value)
     finally:
         # mach_init.h defines mach_task_self() as this cached exported port.

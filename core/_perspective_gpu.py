@@ -453,6 +453,16 @@ class ExactPerspectiveGpu:
     def _plan_bands(self, inverse, rect, src_size, channels, itemsize, fixed_bytes):
         from core import resource_policy as policy
 
+        if getattr(self._device, 'host_unified_memory', False):
+            dev_mem = int(getattr(self._device, 'global_mem_size', 0) or 0)
+            budget = min(_MAX_WORKSPACE_BYTES,
+                         policy.frame_ram_budget(policy.probe_memory()),
+                         dev_mem // 4 if dev_mem > 0 else _MAX_WORKSPACE_BYTES)
+            if budget <= 0:
+                return None
+            return _band_plan(inverse, rect, src_size, channels, itemsize, budget,
+                              int(self._device.max_mem_alloc_size), fixed_bytes)
+
         now = time.monotonic()
         cache = self._vram_cache
         cached = cache is not None and now - cache[0] < 2.0

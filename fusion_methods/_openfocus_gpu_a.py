@@ -32,7 +32,8 @@ _PROGRAM_CACHE = None
 def _get_or_build_program(cl, device):
     global _PROGRAM_CACHE
     from fusion_methods._openfocus_gpu import (
-        _PREVIEW_KERNEL, _build_cached_program, _device_cache_key, _get_shared_context,
+        _PREVIEW_KERNEL, _build_cached_program, _device_cache_key,
+        _fp32_build_options, _get_shared_context,
     )
 
     key = _device_cache_key(device)
@@ -43,7 +44,7 @@ def _get_or_build_program(cl, device):
         queue = cl.CommandQueue(ctx, device=device)
         program = _build_cached_program(
             cl, device, ctx, _A_K + _PREVIEW_KERNEL.format(type='int'),
-            options=['-cl-fp32-correctly-rounded-divide-sqrt'],
+            options=_fp32_build_options(cl, device),
         )
         kernels = {name: cl.Kernel(program, name) for name in _KERNEL_NAMES}
         _PROGRAM_CACHE = (key, ctx, queue, kernels)
