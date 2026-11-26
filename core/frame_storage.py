@@ -81,16 +81,42 @@ _volume_facts = {}
 
 
 def _mount_table_signature():
-    """A value that changes when macOS mounts or unmounts a volume."""
+    """Every mounted file system: where it is mounted, its device and its identity.
+
+    Mounting, unmounting or remounting any volume, at any path, changes it.
+    """
     import ctypes
-    count = ctypes.CDLL(None, use_errno=True).getfsstat(None, 0, 2)  # MNT_NOWAIT
-    if count < 0:
-        raise OSError(ctypes.get_errno(), 'getfsstat failed')
+
+    class StatFs(ctypes.Structure):  # struct statfs with 64-bit inodes
+        _fields_ = [('f_bsize', ctypes.c_uint32), ('f_iosize', ctypes.c_int32),
+                    ('f_blocks', ctypes.c_uint64), ('f_bfree', ctypes.c_uint64),
+                    ('f_bavail', ctypes.c_uint64), ('f_files', ctypes.c_uint64),
+                    ('f_ffree', ctypes.c_uint64), ('f_fsid', ctypes.c_int32 * 2),
+                    ('f_owner', ctypes.c_uint32), ('f_type', ctypes.c_uint32),
+                    ('f_flags', ctypes.c_uint32), ('f_fssubtype', ctypes.c_uint32),
+                    ('f_fstypename', ctypes.c_char * 16), ('f_mntonname', ctypes.c_char * 1024),
+                    ('f_mntfromname', ctypes.c_char * 1024), ('f_flags_ext', ctypes.c_uint32),
+                    ('f_reserved', ctypes.c_uint32 * 7)]
+
+    libc = ctypes.CDLL(None, use_errno=True)
     try:
-        names = tuple(sorted(os.listdir('/Volumes')))
-    except OSError:
-        names = ()
-    return count, names
+        getfsstat = libc['getfsstat$INODE64']  # Intel names the 64-bit-inode variant
+    except AttributeError:
+        getfsstat = libc.getfsstat
+    getfsstat.argtypes = (ctypes.c_void_p, ctypes.c_int, ctypes.c_int)
+    getfsstat.restype = ctypes.c_int
+    for _attempt in range(3):
+        count = getfsstat(None, 0, 2)  # MNT_NOWAIT
+        if count < 0:
+            raise OSError(ctypes.get_errno(), 'getfsstat failed')
+        entries = (StatFs * (count + 4))()
+        filled = getfsstat(entries, ctypes.sizeof(entries), 2)
+        if filled < 0:
+            raise OSError(ctypes.get_errno(), 'getfsstat failed')
+        if filled < len(entries):  # otherwise a volume was mounted meanwhile; read again
+            return tuple(sorted((entry.f_mntonname, entry.f_mntfromname, tuple(entry.f_fsid))
+                                for entry in entries[:filled]))
+    raise OSError(errno.EAGAIN, 'the mount table kept changing')
 
 
 def _forget_volume_facts():
@@ -106,7 +132,8 @@ def _mounted_volume_fact(key, query):
     """
     try:
         signature = _mount_table_signature()
-    except (OSError, AttributeError, ValueError):
+    except (OSError, AttributeError, TypeError, ValueError):
+        # No getfsstat in this C library: nothing tells when volumes change.
         return query()[0]
     with _volume_facts_lock:
         if _volume_facts.get('signature') != signature:
@@ -226,7 +253,14 @@ def _default_is_local(path):
             return info.get('Internal') is True and info.get('RemovableMedia') is False, True
 
         try:
-            return _mounted_volume_fact(('local', os.path.abspath(path)), query)
+            # A symbolic link can be pointed at another volume without any
+            # mount change, so the answer belongs to the folder it reaches.
+            try:
+                resolved = os.path.realpath(path)
+                key = ('local', resolved, os.stat(resolved).st_dev)
+            except OSError:
+                return query()[0]  # nothing to key an answer by: ask each time
+            return _mounted_volume_fact(key, query)
         except (OSError, subprocess.SubprocessError, ValueError, IndexError):
             return False
     return False
