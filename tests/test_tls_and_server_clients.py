@@ -28,6 +28,8 @@ def test_create_ssl_context_loads_certifi_when_default_store_empty(monkeypatch, 
 
     monkeypatch.delenv("SSL_CERT_FILE", raising=False)
     monkeypatch.delenv("SSL_CERT_DIR", raising=False)
+    monkeypatch.delenv("REQUESTS_CA_BUNDLE", raising=False)
+    monkeypatch.delenv("CURL_CA_BUNDLE", raising=False)
     monkeypatch.setattr(ssl, "create_default_context", lambda: FakeContext())
 
     ctx = tls.create_ssl_context()
@@ -440,3 +442,74 @@ def test_account_terms_retries_once_on_transient_error_and_not_on_404(monkeypatc
     assert exc_info.value.category == "terms_unavailable"
     assert exc_info.value.status == 404
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize("env_var", ["REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"])
+def test_create_ssl_context_honors_common_ca_bundle_env_vars(monkeypatch, tmp_path, env_var):
+    ca_file = tmp_path / "custom-bundle.pem"
+    ca_file.write_text("dummy", encoding="utf-8")
+    loaded = []
+
+    class FakeContext:
+        def cert_store_stats(self):
+            return {"x509_ca": 0}
+
+        def load_verify_locations(self, cafile=None, capath=None, cadata=None):
+            loaded.append(cafile)
+
+    for key in ("SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv(env_var, str(ca_file))
+    monkeypatch.setattr(ssl, "create_default_context", lambda: FakeContext())
+
+    tls.create_ssl_context()
+    assert loaded == [str(ca_file)]
+
+
+def test_gallery_media_fetch_uses_tls_open_url(monkeypatch):
+    from controllers.gallery_controller import GalleryController
+
+    class FakeReply:
+        def read(self, size=-1):
+            return b"media-bytes"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    contexts = []
+
+    def fake_stdlib_urlopen(request, timeout=None, context=None):
+        contexts.append(context)
+        return FakeReply()
+
+    monkeypatch.setattr(tls, "_STDLIB_URLOPEN", fake_stdlib_urlopen)
+    monkeypatch.setattr(urllib.request, "urlopen", fake_stdlib_urlopen)
+
+    data = GalleryController._default_fetch_media("https://account.openfocus.top/gallery/sample.webp")
+    assert data == b"media-bytes"
+    assert len(contexts) == 1 and isinstance(contexts[0], ssl.SSLContext)
+
+
+def test_account_tls_error_preserves_reason_and_maps_friendly_message(monkeypatch):
+    from dialogs.account import AccountDialog
+    from locales import trans
+
+    class Opener:
+        def open(self, request, timeout=None):
+            raise urllib.error.URLError(ssl.SSLCertVerificationError(1, "unable to get local issuer"))
+
+    monkeypatch.setattr(
+        account_client.urllib.request,
+        "build_opener",
+        lambda *_handlers: Opener(),
+    )
+    with pytest.raises(account_client.AccountError) as exc_info:
+        account_client._http("GET", "https://account.openfocus.top/v1/terms")
+
+    assert exc_info.value.category == "network"
+    assert exc_info.value.reason == "tls"
+    assert not account_client._retryable_login_request(exc_info.value)
+    assert AccountDialog._error_text(exc_info.value) == trans.t("account_tls_error")

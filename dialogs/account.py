@@ -516,6 +516,8 @@ class AccountDialog(QDialog):
             key = 'account_expired'
         elif error.category == 'terms_unavailable':
             key = 'account_terms_unavailable'
+        elif error.category == 'network' and getattr(error, 'reason', None) == 'tls':
+            key = 'account_tls_error'
         elif error.category in ('network', 'loopback'):
             key = 'account_network_error'
         elif error.category == 'rate_limited' or (error.category == 'http' and error.status == 429):

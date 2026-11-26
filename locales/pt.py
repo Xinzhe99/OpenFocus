@@ -80,6 +80,7 @@ PACK = {
     "account_email_required": "Informe seu endereço de e-mail.",
     "account_terms_unavailable": "O cadastro de contas não está disponível: o serviço não consegue fornecer os termos atuais. Tente novamente mais tarde.",
     "account_network_error": "Não foi possível conectar ao serviço de contas. Conecte-se à internet e tente novamente.",
+    "account_tls_error": "Não foi possível verificar o certificado do servidor. Verifique a hora do sistema ou as configurações de proxy e tente novamente.",
     "account_generic_error": "Não foi possível concluir o acesso. Tente novamente.",
     "account_rate_limited": "Muitas solicitações. Aguarde antes de tentar novamente.",
     "account_expired": "O link de acesso expirou ou já foi usado. Solicite um novo link.",

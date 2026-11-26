@@ -66,6 +66,7 @@ from utils.gallery_client import (
 )
 from utils.logging_setup import get_logger
 from utils.settings_store import get_settings
+from utils.tls import open_url
 from widgets.danmaku_overlay import DanmakuSettings
 from widgets.gallery_screensaver import GalleryScreensaverWindow
 from widgets.gallery_showcase import GalleryShowcaseWidget, GalleryShowcaseWindow, ShowcaseWork
@@ -1514,7 +1515,7 @@ class GalleryController(QObject):
         if parsed.scheme not in ("http", "https"):
             raise ValueError(f"Unsupported media URL scheme: {parsed.scheme!r}")
         req = urllib.request.Request(url, headers={"User-Agent": "OpenFocus-Gallery"})
-        with urllib.request.urlopen(req, timeout=DEFAULT_TIMEOUT_SEC) as resp:
+        with open_url(urllib.request.urlopen, req, timeout=DEFAULT_TIMEOUT_SEC) as resp:
             data = resp.read(MAX_DOWNLOAD_BYTES + 1)
             if len(data) > MAX_DOWNLOAD_BYTES:
                 raise ValueError("Media payload exceeds size limit")

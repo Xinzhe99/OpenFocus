@@ -118,17 +118,20 @@ def log_sign_in_failure(method, error, elapsed_ms=None):
 
 
 class AccountError(Exception):
-    def __init__(self, category, status=None, retry_after=None, *, edge_request_id=None):
+    def __init__(self, category, status=None, retry_after=None, *, edge_request_id=None, reason=None):
         self.category = category
         self.status = status
         self.retry_after = retry_after
         self.edge_request_id = (edge_request_id if type(edge_request_id) is str
                                 and _EDGE_REQUEST_ID_PATTERN.fullmatch(edge_request_id) else None)
+        self.reason = reason if type(reason) is str else None
         super().__init__(category)
 
 
 def _retryable_login_request(error):
-    return error.category == 'network' or (error.category == 'http' and error.status in (408, 502, 503, 504))
+    return (error.category == 'network' and getattr(error, 'reason', None) != 'tls') or (
+        error.category == 'http' and error.status in (408, 502, 503, 504)
+    )
 
 
 def pkce_pair():
@@ -474,8 +477,15 @@ def _http(method, url, body=None, token=None, timeout=15):
             exc.close()
         raise AccountError(category, exc.code, retry, edge_request_id=edge_request_id) from None
     except (urllib.error.URLError, TimeoutError, OSError, HTTPException) as exc:
-        log_action("account_network_error", reason=classify_network_error(exc))
-        raise AccountError("network") from None
+        reason = classify_network_error(exc)
+        _logger.debug(
+            "account_http_failed endpoint=%s category=network reason=%s exc=%s",
+            urllib.parse.urlsplit(url).path,
+            reason,
+            type(exc).__name__,
+        )
+        log_action("account_network_error", reason=reason)
+        raise AccountError("network", reason=reason) from None
     except (ValueError, UnicodeError):
         raise AccountError("invalid_response") from None
 
