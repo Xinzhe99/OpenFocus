@@ -545,3 +545,45 @@ def test_builtin_fallback_works_avoid_duplicate_openfocus_camera_metadata():
     for work in works:
         cam = str(work.exif.get("camera", "") or "")
         assert "openfocus" not in cam.lower()
+
+
+def test_state_store_syncs_unread_notifications_and_uses_bounded_executor(qapp):
+    from concurrent.futures import ThreadPoolExecutor
+
+    store = gs.GalleryStateStore(client=gc.GalleryClient(token="tok"))
+    try:
+        assert isinstance(store._executor, ThreadPoolExecutor)
+        assert store._executor._max_workers == 2
+
+        gs.apply_profile_snapshot(
+            store,
+            {"user_id": "u1", "nickname": "Macro", "unread_notifications_count": 5},
+        )
+        assert store.unread_notifications_count == 5
+
+        emitted = []
+        store.notifications_changed.connect(lambda items, count: emitted.append((len(items), count)))
+
+        notes = [
+            gs.GalleryNotification(notification_id="n1", type="work_liked", is_read=False),
+            gs.GalleryNotification(notification_id="n2", type="user_followed", is_read=False),
+            gs.GalleryNotification(notification_id="n3", type="points_recharged", is_read=True),
+        ]
+        store._apply_notifications(store._account_generation, notes)
+        assert store.unread_notifications_count == 2
+        assert store.profile.unread_notifications_count == 2
+        assert emitted[-1] == (3, 2)
+
+        assert store.mark_notifications_read_local(ids=["n1"]) == 1
+        assert store.unread_notifications_count == 1
+        assert store.profile.unread_notifications_count == 1
+        assert store.notifications[0].is_read is True
+        assert emitted[-1] == (3, 1)
+
+        assert store.mark_notifications_read_local(all=True) == 0
+        assert store.unread_notifications_count == 0
+        assert store.profile.unread_notifications_count == 0
+        assert all(item.is_read for item in store.notifications)
+        assert emitted[-1] == (3, 0)
+    finally:
+        store.shutdown()

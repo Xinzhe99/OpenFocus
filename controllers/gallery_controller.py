@@ -31,10 +31,10 @@ import threading
 from time import monotonic
 import urllib.parse
 import urllib.request
-from typing import Any, Callable, Mapping, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Mapping, Optional, Sequence
 
 from PyQt6.QtCore import QObject, QPoint, Qt, QUrl, pyqtSignal
-from PyQt6.QtGui import QAction, QDesktopServices, QPixmap
+from PyQt6.QtGui import QAction, QDesktopServices, QImage, QPixmap
 from PyQt6.QtWidgets import QMenu, QPushButton
 
 from core.gallery_cache import (
@@ -45,7 +45,6 @@ from core.gallery_cache import (
     set_gallery_cache_dir,
     set_gallery_download_dir,
 )
-from core.gallery_media import convert_webp_to_jpeg, extract_exif_summary, filter_public_exif
 from core.gallery_state import (
     DEFAULT_POLL_INTERVAL_SEC,
     GalleryComment,
@@ -54,22 +53,25 @@ from core.gallery_state import (
     GalleryWork,
 )
 from locales import trans
-from locales.gallery_i18n import current_ui_language
+from locales.gallery_i18n import current_ui_language, translate_error
 from utils.export_paths import publish_unique
 from utils.file_manager import select_in_file_manager
 from utils.frame_pixels import is_qobject_alive, safe_disconnect
 from utils.gallery_client import (
     DEFAULT_TIMEOUT_SEC,
     GalleryClient,
+    GalleryClientError,
     call_get_comments,
     call_post_comment,
 )
 from utils.logging_setup import get_logger
 from utils.settings_store import get_settings
 from utils.tls import open_url
-from widgets.danmaku_overlay import DanmakuSettings
-from widgets.gallery_screensaver import GalleryScreensaverWindow
-from widgets.gallery_showcase import GalleryShowcaseWidget, GalleryShowcaseWindow, ShowcaseWork
+
+if TYPE_CHECKING:
+    from widgets.danmaku_overlay import DanmakuSettings
+    from widgets.gallery_screensaver import GalleryScreensaverWindow
+    from widgets.gallery_showcase import GalleryShowcaseWidget, GalleryShowcaseWindow, ShowcaseWork
 
 _logger = get_logger(__name__)
 
@@ -142,6 +144,8 @@ def _read_str_setting(settings: Any, key: str, default: str) -> str:
 
 def load_danmaku_settings(settings: Any = None) -> DanmakuSettings:
     """Load persisted DanmakuSettings from QSettings with safe clamping."""
+    from widgets.danmaku_overlay import DanmakuSettings
+
     store = settings if settings is not None else get_settings()
     return DanmakuSettings(
         enabled=_read_bool_setting(store, DANMAKU_ENABLED_KEY, True),
@@ -252,6 +256,17 @@ class _DynamicAccountProxy:
         token = client.token(expected_owner=owner, deadline=deadline)
         return token if session == self._session() else None
 
+    def refresh(self, *, _expected_token: Optional[str] = None, _deadline: Optional[float] = None) -> bool:
+        session = self._session()
+        _, client, owner = session
+        scheduled = self._operation_session.get()
+        if owner is None or client is None or (scheduled is not None and scheduled != session):
+            return False
+        refresh_fn = getattr(client, "refresh", None)
+        if not callable(refresh_fn):
+            return False
+        return bool(refresh_fn(_expected_token=_expected_token, _deadline=_deadline))
+
     def current_user(self) -> Optional[dict[str, Any]]:
         client = self._current()
         if client is None or not hasattr(client, "current_user"):
@@ -291,11 +306,14 @@ class GalleryController(QObject):
     danmaku_translation_mode_changed = pyqtSignal(str)
 
     # Internal thread-to-UI signals
-    _slide_image_ready = pyqtSignal(str, bytes)
+    _slide_image_ready = pyqtSignal(str, object)  # work_id, QImage | QPixmap | bytes
     _download_done = pyqtSignal(str, str)  # (saved_path, error_message)
     _work_comments_ready = pyqtSignal(str, str, object, object)  # work, language, request, comments
-    _work_comment_posted = pyqtSignal(str, str, int, object)
+    _work_comment_posted = pyqtSignal(str, str, int, object, str)
     _comment_vote_saved = pyqtSignal(str, int, object)
+    _comment_deleted = pyqtSignal(str, int)
+    _like_toggle_failed = pyqtSignal(str, bool, int, str)
+    _session_invalidated = pyqtSignal()
 
     def __init__(
         self,
@@ -333,7 +351,10 @@ class GalleryController(QObject):
         self._file_revealer = file_revealer
 
         self._account_proxy = _DynamicAccountProxy(window)
-        self.client: GalleryClient = client or GalleryClient(account_client=self._account_proxy)
+        self.client: GalleryClient = client or GalleryClient(
+            account_client=self._account_proxy,
+            on_session_invalidated=lambda: self._emit_safe(self._session_invalidated),
+        )
         self.state_store: GalleryStateStore = state_store or GalleryStateStore(
             client=self.client,
             poll_interval_sec=poll_interval_sec,
@@ -356,6 +377,7 @@ class GalleryController(QObject):
         self._opened_for_fusion: bool = False
         self._fusion_progress: tuple[int, int, str] | None = None
         self._screensaver: Optional[GalleryScreensaverWindow] = None
+        self._screensaver_pausing_showcase: bool = False
         self._hub_dialog: Optional[Any] = None
         self._account_dialog: Optional[Any] = None
         self._honor_dialogs: list[Any] = []
@@ -369,6 +391,9 @@ class GalleryController(QObject):
         self._work_comments_ready.connect(self._on_work_comments_ready)
         self._work_comment_posted.connect(self._on_work_comment_posted)
         self._comment_vote_saved.connect(self._on_comment_vote_saved)
+        self._comment_deleted.connect(self._on_comment_deleted)
+        self._like_toggle_failed.connect(self._on_like_toggle_failed)
+        self._session_invalidated.connect(self._on_session_invalidated)
 
         # Wire state store signals
         self.state_store.config_changed.connect(self._on_config_changed)
@@ -468,12 +493,24 @@ class GalleryController(QObject):
         self.update_unread_indicators()
 
         if fetch_remote:
+            self._submit_bg(self.disk_cache.warm_index)
             self.state_store.start_polling(immediate=False)
             self.state_store.refresh_config(force_refresh=False)
             if self.state_store.gallery_enabled:
                 self.state_store.refresh_feed()
                 if self.client.has_session():
                     self.state_store.refresh_account_silently()
+
+    def _on_session_invalidated(self) -> None:
+        if self._closed:
+            return
+        self.sync_account_session()
+        refresh_action = getattr(self.window, "_refresh_account_action", None)
+        if callable(refresh_action):
+            try:
+                refresh_action()
+            except Exception:
+                pass
 
     # ----------------------------------------------------------- session fence
 
@@ -519,6 +556,8 @@ class GalleryController(QObject):
     def _ensure_showcase_window(self) -> GalleryShowcaseWindow:
         if is_qobject_alive(self._showcase_window):
             return self._showcase_window
+        from widgets.gallery_showcase import GalleryShowcaseWindow
+
         win = GalleryShowcaseWindow(
             parent=self.window,
             slide_interval_sec=self.state_store.config.slide_interval_sec,
@@ -540,10 +579,12 @@ class GalleryController(QObject):
         return win
 
     def _set_showcase_works(self, works: Sequence[Any]) -> None:
+        from widgets.gallery_showcase import ShowcaseWork
+
         slides = [ShowcaseWork.from_any(work) for work in works]
         for slide in slides:
             if slide.image_url and not slide.has_local_image():
-                path = self.disk_cache.get_path(slide.image_url)
+                path = self.disk_cache.peek_path(slide.image_url)
                 if path is not None:
                     slide.local_path = str(path)
         if self._fusion_busy and slides and not any(slide.has_local_image() for slide in slides):
@@ -752,11 +793,25 @@ class GalleryController(QObject):
             preview_source=fusion_result,
             theme=self._theme(),
         )
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self._upload_prompt_dialog = dialog
-        dialog.upload_requested.connect(
-            lambda img=fusion_result: self.open_publish_with_fused_image(img)
-        )
-        dialog.finished.connect(lambda _code: self._clear_dialog_ref("_upload_prompt_dialog", dialog))
+        pending_result = [fusion_result]
+
+        def _on_upload_requested() -> None:
+            img = pending_result[0]
+            pending_result[0] = None
+            if img is not None:
+                self.open_publish_with_fused_image(img)
+
+        def _on_prompt_finished(_code: int) -> None:
+            pending_result[0] = None
+            safe_disconnect(dialog.upload_requested, _on_upload_requested)
+            self._clear_dialog_ref("_upload_prompt_dialog", dialog)
+            if is_qobject_alive(dialog):
+                dialog.deleteLater()
+
+        dialog.upload_requested.connect(_on_upload_requested)
+        dialog.finished.connect(_on_prompt_finished)
         dialog.show()
         return dialog
 
@@ -804,13 +859,11 @@ class GalleryController(QObject):
             return None
         from dialogs.account_center import AccountCenterDialog
 
-        # Trigger silent account refresh whenever Account Center is opened.
-        if self.client.has_session() and not self._fusion_busy:
-            self.state_store.refresh_account_silently()
-            self.state_store.refresh_notifications()
-
         dlg = self._account_dialog
         if is_qobject_alive(dlg):
+            if self.client.has_session() and not self._fusion_busy:
+                self.state_store.refresh_account_silently()
+                self.state_store.refresh_notifications()
             dlg.tabs.setCurrentIndex(max(0, min(int(initial_tab), dlg.tabs.count() - 1)))
             dlg.set_payment_region(self.state_store.config.payment_region)
             dlg.show()
@@ -829,6 +882,7 @@ class GalleryController(QObject):
             on_open_work=self.open_work_in_hub,
             on_open_author=self.open_author_showcase,
         )
+        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         dlg.set_payment_region(self.state_store.config.payment_region)
         if self.state_store.profile is not None:
             dlg.apply_profile(self.state_store.profile)
@@ -838,7 +892,13 @@ class GalleryController(QObject):
                 dlg.apply_profile(fallback_profile)
         if self.state_store.notifications:
             dlg.set_notifications(self.state_store.notifications)
-        dlg.finished.connect(lambda _code: self._clear_dialog_ref("_account_dialog", dlg))
+
+        def _on_account_finished(_code: int) -> None:
+            self._clear_dialog_ref("_account_dialog", dlg)
+            if is_qobject_alive(dlg):
+                dlg.deleteLater()
+
+        dlg.finished.connect(_on_account_finished)
         self._account_dialog = dlg
         dlg.show()
         return dlg
@@ -871,15 +931,14 @@ class GalleryController(QObject):
             return None
         from dialogs.gallery_hub import GalleryHubDialog
 
-        if self.state_store.gallery_enabled and not self._fusion_busy:
-            self.state_store.refresh_config(force_refresh=False)
-            if self.client.has_session():
-                self.state_store.refresh_account_silently()
-
         dlg = self._hub_dialog
         if is_qobject_alive(dlg):
             if not dlg.isEnabled():
                 return None
+            if self.state_store.gallery_enabled and not self._fusion_busy:
+                self.state_store.refresh_config(force_refresh=False)
+                if self.client.has_session():
+                    self.state_store.refresh_account_silently()
             if prefill_images:
                 for img in prefill_images:
                     dlg.prefill_fused_image(
@@ -895,6 +954,9 @@ class GalleryController(QObject):
             dlg.activateWindow()
             return dlg
 
+        if self.state_store.gallery_enabled and not self._fusion_busy:
+            self.state_store.refresh_config(force_refresh=False)
+
         dlg = GalleryHubDialog(
             client=self.client,
             state_store=self.state_store,
@@ -906,11 +968,25 @@ class GalleryController(QObject):
             prefill_images=prefill_images,
             prefill_openfocus_badge=prefill_openfocus_badge,
         )
+        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         dlg.set_danmaku_translation_mode(self._danmaku_settings.translation_mode)
         self.danmaku_translation_mode_changed.connect(dlg.set_danmaku_translation_mode)
         dlg.download_work_requested.connect(self._download_selected_work)
         dlg.account_center_requested.connect(self.open_account_center)
-        dlg.finished.connect(lambda _code: self._clear_dialog_ref("_hub_dialog", dlg))
+
+        def _on_hub_finished(_code: int) -> None:
+            safe_disconnect(self.danmaku_translation_mode_changed, dlg.set_danmaku_translation_mode)
+            safe_disconnect(dlg.download_work_requested, self._download_selected_work)
+            safe_disconnect(dlg.account_center_requested, self.open_account_center)
+            self._clear_dialog_ref("_hub_dialog", dlg)
+            if not getattr(dlg, "is_publishing", False):
+                queue = getattr(dlg, "_publish_queue", None)
+                if isinstance(queue, list):
+                    queue.clear()
+            if is_qobject_alive(dlg):
+                dlg.deleteLater()
+
+        dlg.finished.connect(_on_hub_finished)
         self._hub_dialog = dlg
         dlg.show()
         return dlg
@@ -962,6 +1038,8 @@ class GalleryController(QObject):
         """Launch the Fullscreen Always-on-Top Gallery Screensaver."""
         if self._closed or not self.state_store.gallery_enabled:
             return None
+        from widgets.gallery_screensaver import GalleryScreensaverWindow
+
         if not is_qobject_alive(self._screensaver):
             blur_cache = self._showcase.blur_cache if is_qobject_alive(self._showcase) else None
             scr = GalleryScreensaverWindow(
@@ -971,17 +1049,29 @@ class GalleryController(QObject):
                 danmaku_settings=self._danmaku_settings,
             )
             self._connect_showcase_signals(scr.showcase, connect_fullscreen=False)
+            scr.closed.connect(self._on_screensaver_closed)
             self._screensaver = scr
         if is_qobject_alive(self._showcase):
             if not self._showcase.works:
                 self._showcase.set_works(self.state_store.effective_showcase_works())
             self._screensaver.sync_from_showcase(self._showcase)
+            if not self._screensaver_pausing_showcase:
+                self._screensaver_pausing_showcase = True
+                self._showcase.pause_slideshow("screensaver")
+                self._showcase.danmaku_overlay.set_paused(True)
         else:
             self._screensaver.set_works(self.state_store.effective_showcase_works())
         self._screensaver.set_fusion_busy(self._fusion_busy)
         self._screensaver.apply_theme(self._theme())
         self._screensaver.launch()
         return self._screensaver
+
+    def _on_screensaver_closed(self) -> None:
+        if self._screensaver_pausing_showcase:
+            self._screensaver_pausing_showcase = False
+            if is_qobject_alive(self._showcase):
+                self._showcase.resume_slideshow("screensaver")
+                self._showcase.danmaku_overlay.set_paused(False)
 
     # ----------------------------------------------------- downloads & reveals
 
@@ -1046,6 +1136,8 @@ class GalleryController(QObject):
                     raise ValueError("Image data unavailable")
 
                 download_dir.mkdir(parents=True, exist_ok=True)
+                from core.gallery_media import convert_webp_to_jpeg
+
                 stem = _safe_filename_stem(title, fallback=f"gallery_{_safe_filename_stem(work_id, 'work')}")
                 saved = publish_unique(download_dir / f"{stem}.jpg",
                                        lambda path: convert_webp_to_jpeg(source_data, path))
@@ -1156,6 +1248,7 @@ class GalleryController(QObject):
                 parent=self.window,
                 theme=self._theme(),
             )
+            dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
             self._honor_dialogs.append(dlg)
             dlg.finished.connect(lambda _code, d=dlg: self._discard_honor_dialog(d))
             dlg.show()
@@ -1177,15 +1270,68 @@ class GalleryController(QObject):
             self._honor_dialogs.remove(dlg)
         except ValueError:
             pass
+        if is_qobject_alive(dlg):
+            dlg.deleteLater()
 
     # ---------------------------------------------- showcase interactive hooks
 
+    def _show_showcase_toast(self, message: str, *, preferred_view: Any = None) -> None:
+        if not message:
+            return
+        targets = []
+        if is_qobject_alive(preferred_view) and hasattr(preferred_view, "danmaku_overlay"):
+            targets.append(preferred_view)
+        for view in self._showcase_views():
+            if view not in targets and view.isVisible():
+                targets.append(view)
+        for view in self._showcase_views():
+            if view not in targets:
+                targets.append(view)
+        if targets:
+            try:
+                targets[0].danmaku_overlay.show_toast(message)
+            except Exception:
+                pass
+
+    def _set_like_in_views(self, work_id: str, target_liked: bool, *, exclude: Any = None) -> None:
+        for view in self._showcase_views():
+            if view is exclude:
+                continue
+            works = getattr(view, "_works", None) or view.works
+            for work in works:
+                if getattr(work, "id", "") != work_id:
+                    continue
+                if bool(getattr(work, "viewer_liked", False)) != target_liked:
+                    work.viewer_liked = target_liked
+                    delta = 1 if target_liked else -1
+                    work.like_count = max(0, int(getattr(work, "like_count", 0)) + delta)
+                    if getattr(view, "current_work", None) is work:
+                        if hasattr(view, "_update_hud_for_current"):
+                            view._update_hud_for_current()
+                        if hasattr(view, "_layout_overlays"):
+                            view._layout_overlays()
+                break
+
+    def _reconcile_danmaku_in_views(
+        self, work_id: str, pending_id: str, confirmed: Optional[GalleryComment]
+    ) -> None:
+        for view in self._showcase_views():
+            view.reconcile_danmaku(work_id, pending_id, confirmed)
+
     def _on_showcase_like_toggled(self, work_id: str, liked: bool) -> None:
-        if self._closed or not work_id or not self.client.has_session():
+        if self._closed or not work_id:
+            return
+        sender = self.sender()
+        if not self.client.has_session():
+            self._set_like_in_views(work_id, not liked)
+            self._show_showcase_toast(translate_error("unauthorized"), preferred_view=sender)
             return
         work = self._find_work(work_id)
         if work is not None and getattr(work, "is_builtin_fallback", False):
             return
+
+        self._set_like_in_views(work_id, liked, exclude=sender)
+        epoch = self._comments_account_epoch
 
         def _task() -> None:
             try:
@@ -1193,32 +1339,49 @@ class GalleryController(QObject):
                     self.client.like_work(work_id)
                 else:
                     self.client.unlike_work(work_id)
+            except GalleryClientError as exc:
+                _logger.debug("Like toggle failed for %s: %s", work_id, exc.code)
+                self._emit_safe(self._like_toggle_failed, work_id, liked, epoch, exc.code)
             except Exception:
                 _logger.debug("Like toggle failed for %s", work_id, exc_info=True)
+                self._emit_safe(self._like_toggle_failed, work_id, liked, epoch, "internal_error")
 
         self._submit_bg(_task)
+
+    def _on_like_toggle_failed(self, work_id: str, attempted_liked: bool, epoch: int, error_code: str) -> None:
+        if self._closed or epoch != self._comments_account_epoch:
+            return
+        self._set_like_in_views(work_id, not attempted_liked)
+        self._show_showcase_toast(translate_error(error_code or "internal_error"))
 
     def _on_showcase_comment_submitted(self, work_id: str, content: str, parent_id: str) -> None:
         if self._closed or not work_id or not content.strip():
             return
+        sender = self.sender()
+        pending_id = sender.pending_danmaku_id(work_id) if hasattr(sender, "pending_danmaku_id") else ""
+        if not self.client.has_session():
+            self._reconcile_danmaku_in_views(work_id, pending_id, None)
+            self._show_showcase_toast(translate_error("unauthorized"), preferred_view=sender)
+            return
         validation = self.state_store.validate_danmaku(content, parent_id=parent_id or None)
         if not validation.ok:
-            return
-        self.state_store.record_danmaku_sent()
-        if not self.client.has_session():
+            self._reconcile_danmaku_in_views(work_id, pending_id, None)
+            self._show_showcase_toast(
+                translate_error(validation.error_code or "invalid_request"),
+                preferred_view=sender,
+            )
             return
         work = self._find_work(work_id)
         if work is not None and getattr(work, "is_builtin_fallback", False):
             return
+        self.state_store.record_danmaku_sent()
 
-        sender = self.sender()
-        pending_id = sender.pending_danmaku_id(work_id) if isinstance(sender, GalleryShowcaseWidget) else ""
         epoch = self._comments_account_epoch
-
         post_lang = current_ui_language()
 
         def _task() -> None:
             confirmed = None
+            error_code = ""
             try:
                 response = call_post_comment(
                     self.client,
@@ -1233,14 +1396,25 @@ class GalleryController(QObject):
                     parsed = GalleryComment.from_dict(payload)
                     if parsed.comment_id:
                         confirmed = parsed
+                if confirmed is None:
+                    error_code = "invalid_response"
+            except GalleryClientError as exc:
+                error_code = exc.code
+                _logger.debug("Post comment failed for %s: %s", work_id, exc.code)
             except Exception:
+                error_code = "internal_error"
                 _logger.debug("Post comment failed for %s", work_id, exc_info=True)
-            self._emit_safe(self._work_comment_posted, work_id, pending_id, epoch, confirmed)
+            self._emit_safe(self._work_comment_posted, work_id, pending_id, epoch, confirmed, error_code)
 
         self._submit_bg(_task)
 
     def _on_work_comment_posted(
-        self, work_id: str, pending_id: str, epoch: int, confirmed: GalleryComment | None
+        self,
+        work_id: str,
+        pending_id: str,
+        epoch: int,
+        confirmed: GalleryComment | None,
+        error_code: str = "",
     ) -> None:
         if self._closed or epoch != self._comments_account_epoch:
             return
@@ -1250,8 +1424,9 @@ class GalleryController(QObject):
             for (cached_id, _lang), (_fetched_at, items) in self._comments_cache.items():
                 if cached_id == work_id and all(item.id != confirmed.id for item in items):
                     items.insert(0, confirmed)
-        for view in self._showcase_views():
-            view.reconcile_danmaku(work_id, pending_id, confirmed)
+        self._reconcile_danmaku_in_views(work_id, pending_id, confirmed)
+        if confirmed is None and error_code:
+            self._show_showcase_toast(translate_error(error_code))
         if retired:
             self._refresh_current_work_comments()
 
@@ -1309,17 +1484,58 @@ class GalleryController(QObject):
 
         self._submit_bg(_task)
 
+    @staticmethod
+    def _purge_comment_from_sequence(items: Sequence[Any], comment_id: str) -> tuple[list[Any], int]:
+        kept: list[Any] = []
+        removed = 0
+        for item in items:
+            item_id = getattr(item, "id", None) if not isinstance(item, Mapping) else (item.get("comment_id") or item.get("id"))
+            if item_id == comment_id:
+                removed += 1
+                continue
+            replies = getattr(item, "replies", None) if not isinstance(item, Mapping) else item.get("replies")
+            if replies:
+                new_replies, child_removed = GalleryController._purge_comment_from_sequence(replies, comment_id)
+                if child_removed:
+                    removed += child_removed
+                    if isinstance(item, GalleryComment):
+                        item = replace(item, replies=tuple(new_replies))
+                    elif isinstance(item, Mapping):
+                        item = {**item, "replies": new_replies}
+            kept.append(item)
+        return kept, removed
+
     def _on_showcase_comment_deleted(self, comment_id: str) -> None:
         if self._closed or not comment_id or not self.client.has_session():
             return
+        epoch = self._comments_account_epoch
 
         def _task() -> None:
             try:
                 self.client.delete_comment(comment_id)
+                self._emit_safe(self._comment_deleted, comment_id, epoch)
             except Exception:
                 _logger.debug("Delete comment failed for %s", comment_id, exc_info=True)
 
         self._submit_bg(_task)
+
+    def _on_comment_deleted(self, comment_id: str, epoch: int) -> None:
+        if self._closed or epoch != self._comments_account_epoch or not comment_id:
+            return
+        affected_works: set[str] = set()
+        for key, (fetched_at, items) in list(self._comments_cache.items()):
+            kept, removed = self._purge_comment_from_sequence(items, comment_id)
+            if removed:
+                self._comments_cache[key] = (fetched_at, kept)
+                affected_works.add(key[0])
+        self._retire_comment_reads(affected_works)
+        for view in self._showcase_views():
+            works = getattr(view, "_works", None) or view.works
+            for work in works:
+                kept, removed = self._purge_comment_from_sequence(work.comments, comment_id)
+                if removed:
+                    work.comment_count = max(0, int(work.comment_count) - removed)
+                    view.set_work_comments(work.id, kept)
 
     def _on_showcase_report_work(self, work_id: str, reason: str) -> None:
         if self._closed or not work_id or not self.client.has_session():
@@ -1378,9 +1594,7 @@ class GalleryController(QObject):
 
     def _fetch_work_comments(self, work_id: str) -> bool:
         """Fetch comments for *work_id* (requesting localized translation in auto mode)."""
-        if self._closed or self._fusion_busy or not work_id or not self.state_store.gallery_enabled:
-            return False
-        if not self.state_store.can_prefetch_media():
+        if self._closed or self._fusion_busy or not work_id or not self.state_store.can_remote_fetch():
             return False
         work = self._find_work(work_id)
         if work is not None and getattr(work, "is_builtin_fallback", False):
@@ -1402,7 +1616,7 @@ class GalleryController(QObject):
         def _task() -> None:
             comments = None
             try:
-                if self._closed or self._fusion_busy:
+                if self._closed or self._fusion_busy or not self.state_store.can_prefetch_media():
                     return
                 resp = call_get_comments(self.client, work_id, lang=req_lang or None)
                 comments = self._parse_work_comments(resp, req_lang)
@@ -1440,7 +1654,7 @@ class GalleryController(QObject):
     # --------------------------------------------------------- media prefetch
 
     def _prefetch_work_image(self, work_id: str) -> bool:
-        if self._closed or self._fusion_busy or not self.state_store.can_prefetch_media():
+        if self._closed or self._fusion_busy or not self.state_store.can_remote_fetch():
             return False
         work = self._find_work(work_id)
         if work is None:
@@ -1448,14 +1662,11 @@ class GalleryController(QObject):
         url = getattr(work, "image_url", "") or getattr(work, "full_url", "")
         if not url:
             return False
+        if getattr(work, "pixmap", None) is not None:
+            return False
         local_path = getattr(work, "local_path", "")
         if local_path and os.path.isfile(local_path):
             return False
-
-        cached = self.disk_cache.get(url)
-        if cached is not None:
-            self._on_slide_image_ready(work_id, cached)
-            return True
 
         with self._prefetch_lock:
             if work_id in self._prefetch_inflight:
@@ -1466,9 +1677,17 @@ class GalleryController(QObject):
             try:
                 if self._closed or self._fusion_busy:
                     return
-                data = self._fetch_media_bytes(url)
+                data = self.disk_cache.get(url)
+                if data is None:
+                    if not self.state_store.can_prefetch_media():
+                        return
+                    data = self._media_fetcher(url)
+                    if data:
+                        self.disk_cache.put(url, data)
                 if data and not self._closed:
-                    self._emit_safe(self._slide_image_ready, work_id, data)
+                    img = QImage.fromData(data)
+                    if not img.isNull():
+                        self._emit_safe(self._slide_image_ready, work_id, img)
             except Exception:
                 _logger.debug("Prefetch failed for %s", work_id, exc_info=True)
             finally:
@@ -1478,11 +1697,22 @@ class GalleryController(QObject):
         self._submit_bg(_task)
         return True
 
-    def _on_slide_image_ready(self, work_id: str, data: bytes) -> None:
-        if self._closed or not data:
+    def _on_slide_image_ready(self, work_id: str, payload: object) -> None:
+        if self._closed or not payload:
             return
-        pm = QPixmap()
-        if not pm.loadFromData(data):
+        if isinstance(payload, QImage):
+            if payload.isNull():
+                return
+            pm = QPixmap.fromImage(payload)
+        elif isinstance(payload, QPixmap):
+            pm = payload
+        elif isinstance(payload, (bytes, bytearray, memoryview)):
+            pm = QPixmap()
+            if not pm.loadFromData(bytes(payload)):
+                return
+        else:
+            return
+        if pm.isNull():
             return
         if is_qobject_alive(self._showcase):
             self._showcase.set_work_pixmap(work_id, pm)
@@ -1589,6 +1819,12 @@ class GalleryController(QObject):
             self._showcase.apply_theme(theme)
         if is_qobject_alive(self._screensaver):
             self._screensaver.apply_theme(theme)
+        for dlg in (self._hub_dialog, self._account_dialog, self._upload_prompt_dialog, *self._honor_dialogs):
+            if is_qobject_alive(dlg) and hasattr(dlg, "apply_theme"):
+                try:
+                    dlg.apply_theme(theme)
+                except Exception:
+                    pass
 
     def retranslate(self) -> None:
         new_lang = current_ui_language()
@@ -1650,12 +1886,14 @@ class GalleryController(QObject):
 
         if is_qobject_alive(self._screensaver):
             try:
+                safe_disconnect(self._screensaver.closed, self._on_screensaver_closed)
                 self._disconnect_showcase_signals(self._screensaver.showcase)
                 self._screensaver.exit_screensaver()
                 self._screensaver.deleteLater()
             except Exception:
                 pass
             self._screensaver = None
+        self._screensaver_pausing_showcase = False
 
         for attr in ("_hub_dialog", "_account_dialog", "_upload_prompt_dialog"):
             dlg = getattr(self, attr, None)
@@ -1677,13 +1915,20 @@ class GalleryController(QObject):
         self._honor_dialogs.clear()
 
         if is_qobject_alive(self._showcase_window):
-            try:
-                safe_disconnect(self._showcase_window.return_to_workspace_requested, self._on_showcase_return_requested)
-                safe_disconnect(self._showcase_window.window_closed, self._on_showcase_window_closed)
-                self._showcase_window.close()
-                self._showcase_window.deleteLater()
-            except Exception:
-                pass
+            for sig, slot in (
+                (getattr(self._showcase_window, "return_to_workspace_requested", None), self._on_showcase_return_requested),
+                (getattr(self._showcase_window, "window_closed", None), self._on_showcase_window_closed),
+            ):
+                if sig is not None:
+                    try:
+                        safe_disconnect(sig, slot)
+                    except Exception:
+                        pass
+            for action in (self._showcase_window.close, self._showcase_window.deleteLater):
+                try:
+                    action()
+                except Exception:
+                    pass
             self._showcase_window = None
             self._showcase = None
         elif is_qobject_alive(self._showcase):
@@ -1741,6 +1986,8 @@ class GalleryController(QObject):
     def _current_result_exif(self) -> dict[str, str]:
         """Extract allowlisted public EXIF summary from the active fusion output."""
         try:
+            from core.gallery_media import extract_exif_summary, filter_public_exif
+
             ctx = getattr(self.window, "last_render_context", None)
             raw_exif = getattr(ctx, "source_exif", b"") if ctx is not None else b""
             if raw_exif:

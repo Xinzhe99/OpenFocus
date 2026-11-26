@@ -424,37 +424,75 @@ class ExponentialBackoff:
 # Unmetered network detection (cross-platform best-effort, safe fallback True)
 # ---------------------------------------------------------------------------
 
+UNMETERED_CACHE_TTL_SEC: float = 60.0
+
 _unmetered_network_override: Optional[Callable[[], bool]] = None
 _network_override_lock = threading.Lock()
+_network_cache_lock = threading.Lock()
+_network_cache_value: Optional[bool] = None
+_network_cache_expires_at: float = 0.0
+_win_connectivity_lock = threading.Lock()
+_win_connectivity_init = False
+_win_connectivity_fn: Any = None
+_win_connectivity_hint_cls: Any = None
 
 
 def set_unmetered_network_checker(checker: Optional[Callable[[], bool]]) -> None:
     """Inject or clear a custom unmetered-network checker (intended for tests)."""
-    global _unmetered_network_override
+    global _unmetered_network_override, _network_cache_value, _network_cache_expires_at
     with _network_override_lock:
         _unmetered_network_override = checker
+    with _network_cache_lock:
+        _network_cache_value = None
+        _network_cache_expires_at = 0.0
+
+
+def clear_unmetered_network_cache() -> None:
+    """Clear the cached unmetered-network verdict."""
+    global _network_cache_value, _network_cache_expires_at
+    with _network_cache_lock:
+        _network_cache_value = None
+        _network_cache_expires_at = 0.0
+
+
+def _get_windows_connectivity_hint():
+    global _win_connectivity_init, _win_connectivity_fn, _win_connectivity_hint_cls
+    if _win_connectivity_init:
+        return _win_connectivity_fn, _win_connectivity_hint_cls
+    with _win_connectivity_lock:
+        if _win_connectivity_init:
+            return _win_connectivity_fn, _win_connectivity_hint_cls
+        try:
+            iphlpapi = ctypes.WinDLL("iphlpapi")
+            func = getattr(iphlpapi, "GetNetworkConnectivityHint", None)
+            if func is not None:
+                class _ConnectivityHint(ctypes.Structure):
+                    _fields_ = [
+                        ("ConnectivityLevel", ctypes.c_int),
+                        ("ConnectivityCost", ctypes.c_int),
+                        ("ApproachingDataLimit", ctypes.c_ubyte),
+                        ("OverDataLimit", ctypes.c_ubyte),
+                        ("Roaming", ctypes.c_ubyte),
+                    ]
+
+                func.argtypes = [ctypes.POINTER(_ConnectivityHint)]
+                func.restype = ctypes.c_uint32
+                _win_connectivity_fn = func
+                _win_connectivity_hint_cls = _ConnectivityHint
+        except Exception:
+            _win_connectivity_fn = None
+            _win_connectivity_hint_cls = None
+        _win_connectivity_init = True
+        return _win_connectivity_fn, _win_connectivity_hint_cls
 
 
 def _is_unmetered_windows() -> Optional[bool]:
     """Query Windows GetNetworkConnectivityHint via iphlpapi.dll (no subprocess)."""
     try:
-        iphlpapi = ctypes.WinDLL("iphlpapi")
-        func = getattr(iphlpapi, "GetNetworkConnectivityHint", None)
-        if func is None:
+        func, hint_cls = _get_windows_connectivity_hint()
+        if func is None or hint_cls is None:
             return None
-
-        class _ConnectivityHint(ctypes.Structure):
-            _fields_ = [
-                ("ConnectivityLevel", ctypes.c_int),
-                ("ConnectivityCost", ctypes.c_int),
-                ("ApproachingDataLimit", ctypes.c_ubyte),
-                ("OverDataLimit", ctypes.c_ubyte),
-                ("Roaming", ctypes.c_ubyte),
-            ]
-
-        func.argtypes = [ctypes.POINTER(_ConnectivityHint)]
-        func.restype = ctypes.c_uint32
-        hint = _ConnectivityHint()
+        hint = hint_cls()
         if func(ctypes.byref(hint)) != 0:
             return None
         # NL_NETWORK_CONNECTIVITY_COST_HINT:
@@ -534,8 +572,10 @@ def _is_unmetered_linux() -> Optional[bool]:
 def is_unmetered_network() -> bool:
     """Return True if the active network appears unmetered (WiFi/Ethernet).
 
-    Safe fallback to True if the OS query is unavailable or fails.
+    Caches the OS check for ``UNMETERED_CACHE_TTL_SEC`` seconds and falls back
+    safely to True if the OS query is unavailable or fails.
     """
+    global _network_cache_value, _network_cache_expires_at
     with _network_override_lock:
         override = _unmetered_network_override
     if override is not None:
@@ -544,6 +584,11 @@ def is_unmetered_network() -> bool:
         except Exception:
             return True
 
+    now = time.monotonic()
+    with _network_cache_lock:
+        if _network_cache_value is not None and now < _network_cache_expires_at:
+            return _network_cache_value
+
     verdict: Optional[bool] = None
     if sys.platform == "win32":
         verdict = _is_unmetered_windows()
@@ -551,7 +596,11 @@ def is_unmetered_network() -> bool:
         verdict = _is_unmetered_macos()
     elif sys.platform.startswith("linux"):
         verdict = _is_unmetered_linux()
-    return True if verdict is None else bool(verdict)
+    result = True if verdict is None else bool(verdict)
+    with _network_cache_lock:
+        _network_cache_value = result
+        _network_cache_expires_at = time.monotonic() + UNMETERED_CACHE_TTL_SEC
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -799,6 +848,7 @@ class GalleryClient:
         clock: Callable[[], float] = time.monotonic,
         network_checker: Optional[Callable[[], bool]] = None,
         allow_loopback_http: bool = True,
+        on_session_invalidated: Optional[Callable[[], None]] = None,
     ) -> None:
         if timeout <= 0:
             raise ValueError("timeout must be positive")
@@ -817,6 +867,7 @@ class GalleryClient:
         self._clock = clock
         self.backoff = backoff or ExponentialBackoff(clock=clock)
         self._network_checker = network_checker or is_unmetered_network
+        self._on_session_invalidated = on_session_invalidated
 
         # Local TTL cache for GET /api/v1/config
         self._config_lock = threading.Lock()
@@ -871,6 +922,66 @@ class GalleryClient:
         bind = getattr(self._account_client, "bind_operation", None)
         return bind(operation) if bind is not None else operation
 
+    def set_session_invalidated_callback(self, callback: Optional[Callable[[], None]]) -> None:
+        self._on_session_invalidated = callback
+
+    def _notify_session_invalidated(self) -> None:
+        cb = self._on_session_invalidated
+        if cb is not None:
+            try:
+                cb()
+            except Exception:
+                _logger.debug("Session invalidation callback failed", exc_info=True)
+
+    @staticmethod
+    def _map_account_error(exc: _account_client.AccountError) -> GalleryClientError:
+        if exc.category == "network":
+            code = "network_error"
+        elif exc.category == "timeout":
+            code = "timeout"
+        elif exc.status in _TRANSIENT_HTTP_STATUSES:
+            code = "rate_limited" if exc.status == 429 else "http_error"
+        else:
+            code = "unauthorized"
+        return GalleryClientError(
+            code,
+            "Could not renew the account session",
+            status=exc.status,
+            retry_after=exc.retry_after,
+            edge_request_id=exc.edge_request_id,
+        )
+
+    def _refresh_account_session(
+        self, expected_token: Optional[str], deadline: Optional[float]
+    ) -> bool:
+        refresh_fn = getattr(self._account_client, "refresh", None)
+        if not callable(refresh_fn):
+            return False
+        try:
+            sig = inspect.signature(refresh_fn)
+            kwargs: dict[str, Any] = {}
+            if "_expected_token" in sig.parameters:
+                kwargs["_expected_token"] = expected_token
+            if "_deadline" in sig.parameters:
+                kwargs["_deadline"] = deadline
+            return bool(refresh_fn(**kwargs))
+        except _account_client.AccountError as exc:
+            if exc.status in (401, 403) or not self.has_session():
+                self._notify_session_invalidated()
+                raise GalleryClientError(
+                    "unauthorized",
+                    "Could not renew the account session",
+                    status=exc.status,
+                    retry_after=exc.retry_after,
+                    edge_request_id=exc.edge_request_id,
+                ) from None
+            mapped = self._map_account_error(exc)
+            if mapped.is_transient:
+                self.backoff.record_failure(mapped.code, retry_after=mapped.retry_after)
+            raise mapped from None
+        except Exception:
+            return False
+
     def _resolve_token(self, *, required: bool, deadline: Optional[float]) -> Optional[str]:
         token = self._static_token
         try:
@@ -879,20 +990,10 @@ class GalleryClient:
             elif not token and self._account_client is not None:
                 token = self._account_client.token(deadline=deadline)
         except _account_client.AccountError as exc:
-            if exc.category == "network":
-                code = "network_error"
-            elif exc.category == "timeout":
-                code = "timeout"
-            elif exc.status in _TRANSIENT_HTTP_STATUSES:
-                code = "rate_limited" if exc.status == 429 else "http_error"
-            elif required:
-                code = "unauthorized"
-            else:
+            mapped = self._map_account_error(exc)
+            if mapped.code == "unauthorized" and not required:
                 return None
-            raise GalleryClientError(
-                code, "Could not renew the account session", status=exc.status,
-                retry_after=exc.retry_after, edge_request_id=exc.edge_request_id,
-            ) from None
+            raise mapped from None
         except Exception:
             if required:
                 raise GalleryClientError("unauthorized", "Session token unavailable") from None
@@ -1009,16 +1110,36 @@ class GalleryClient:
         elif content_type:
             headers["Content-Type"] = content_type
 
+        sent_token: Optional[str] = None
         try:
             if authenticated:
                 token = self._resolve_token(required=auth_required, deadline=deadline)
                 if token:
+                    sent_token = token
                     headers["Authorization"] = f"Bearer {token}"
             if deadline is not None:
                 effective_timeout = deadline - time.monotonic()
                 if effective_timeout <= 0:
                     raise GalleryClientError("timeout", "Gallery request deadline expired")
             response = self._transport(method, url, headers, payload, effective_timeout)
+            if (
+                response.status == 401
+                and sent_token is not None
+                and resolves_session
+                and self._account_client is not None
+            ):
+                refreshed = self._refresh_account_session(sent_token, deadline)
+                if refreshed:
+                    new_token = self._resolve_token(required=auth_required, deadline=deadline)
+                    if new_token and new_token != sent_token:
+                        headers["Authorization"] = f"Bearer {new_token}"
+                        if deadline is not None:
+                            effective_timeout = deadline - time.monotonic()
+                            if effective_timeout <= 0:
+                                raise GalleryClientError("timeout", "Gallery request deadline expired")
+                        response = self._transport(method, url, headers, payload, effective_timeout)
+                if response.status == 401 and not self.has_session():
+                    self._notify_session_invalidated()
         except GalleryClientError as exc:
             if exc.is_transient:
                 self.backoff.record_failure(exc.code, retry_after=exc.retry_after)

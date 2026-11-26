@@ -15,8 +15,9 @@ All dataclasses are pure Python and cleanly importable by UI widgets/dialogs.
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import copy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import os
 from pathlib import Path
 import re
@@ -769,7 +770,12 @@ class GalleryStateStore(QObject):
             cooldown_sec=self._config.danmaku_cooldown_sec,
         )
         self._network_checker = network_checker or self._client.is_unmetered_network
-        self._background_runner = background_runner or self._spawn_daemon_thread
+        self._executor: Optional[ThreadPoolExecutor] = (
+            ThreadPoolExecutor(max_workers=2, thread_name_prefix="openfocus-gallery-sync")
+            if background_runner is None
+            else None
+        )
+        self._background_runner = background_runner or self._submit_pool_task
 
         self._fusion_busy: bool = False
         self._deferred_poll: bool = False
@@ -936,6 +942,11 @@ class GalleryStateStore(QObject):
     def shutdown(self) -> None:
         self._closed = True
         self.stop_polling()
+        if self._executor is not None:
+            try:
+                self._executor.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
 
     def _safe_emit(self, signal_name: str, *args: Any) -> None:
         if self._closed:
@@ -958,6 +969,14 @@ class GalleryStateStore(QObject):
             self.feed_changed.emit(self.effective_showcase_works())
 
     # ---- Background worker orchestration ----
+
+    def _submit_pool_task(self, task: Callable[[], None]) -> None:
+        if self._closed or self._executor is None:
+            return
+        try:
+            self._executor.submit(task)
+        except RuntimeError:
+            pass
 
     @staticmethod
     def _spawn_daemon_thread(task: Callable[[], None]) -> None:
@@ -1168,7 +1187,44 @@ class GalleryStateStore(QObject):
             return
         self._notifications = list(notifications)
         unread = sum(1 for item in self._notifications if not item.is_read)
+        if self._profile is not None:
+            self._profile = replace(self._profile, unread_notifications_count=unread)
         self.notifications_changed.emit(list(self._notifications), unread)
+
+    def mark_notifications_read_local(
+        self,
+        ids: Optional[Sequence[str]] = None,
+        all: bool = False,
+    ) -> int:
+        """Synchronize local notification read state and unread count without hitting the network."""
+        if self._closed:
+            return self.unread_notifications_count
+        mark_all = bool(all)
+        id_set = {str(nid) for nid in ids if nid} if ids is not None else set()
+        if not mark_all and not id_set:
+            return self.unread_notifications_count
+
+        updated: list[GalleryNotification] = []
+        for item in self._notifications:
+            if not item.is_read and (mark_all or item.notification_id in id_set):
+                updated.append(replace(item, is_read=True))
+            else:
+                updated.append(item)
+        self._notifications = updated
+
+        if mark_all:
+            unread = 0
+        elif self._notifications:
+            unread = sum(1 for item in self._notifications if not item.is_read)
+        elif self._profile is not None:
+            unread = max(0, self._profile.unread_notifications_count - len(id_set))
+        else:
+            unread = 0
+
+        if self._profile is not None:
+            self._profile = replace(self._profile, unread_notifications_count=unread)
+        self.notifications_changed.emit(list(self._notifications), unread)
+        return unread
 
     def _handle_operation_failed(self, generation: Optional[int], operation: str, error_code: str) -> None:
         if self._closed or generation is not None and generation != self._account_generation:

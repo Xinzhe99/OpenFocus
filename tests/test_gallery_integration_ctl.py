@@ -1347,3 +1347,181 @@ def test_shutdown_closes_visible_showcase_window(integrated_window, qapp):
     qapp.processEvents()
     assert not showcase.isVisible()
     assert gallery.showcase_window is None
+
+
+def test_controller_fluency_lifecycle_rollback_delete_screensaver_pause_and_theme(
+    integrated_window, qapp, monkeypatch
+):
+    from utils import gallery_client as gc_mod
+    from utils.gallery_client import GalleryClientError
+
+    window, _server, _settings, _root = integrated_window
+    gallery = window.gallery_controller
+
+    # 1. Open screensaver pauses showcase slideshow + danmaku overlay and resumes on close.
+    assert gallery.show_gallery_showcase(force=True)
+    showcase = gallery.showcase
+    showcase.set_works([
+        {"id": "w1", "title": "One", "pixmap": _make_pixmap(Qt.GlobalColor.red)},
+        {"id": "w2", "title": "Two", "pixmap": _make_pixmap(Qt.GlobalColor.blue)},
+    ])
+    qapp.processEvents()
+    scr = gallery.open_screensaver()
+    assert scr is not None
+    qapp.processEvents()
+    assert showcase.is_slideshow_paused()
+    assert "screensaver" in showcase.active_pause_reasons()
+    assert showcase.danmaku_overlay._paused is True
+    scr.exit_screensaver()
+    _wait_until(lambda: not scr.isVisible())
+    assert "screensaver" not in showcase.active_pause_reasons()
+    assert showcase.danmaku_overlay._paused is False
+
+    # 2. Signed-out / rejected danmaku & like revert optimistically without recording cooldown.
+    gallery.sync_account_session(_StubAccountClient(False))
+    showcase.show_slide(0)
+    showcase.open_danmaku_composer()
+    showcase.danmaku_overlay.comment_submitted.emit("Signed out comment")
+    qapp.processEvents()
+    assert gallery.state_store.danmaku_cooldown_remaining() == 0.0
+    assert not any(getattr(c, "content", None) == "Signed out comment" or (isinstance(c, dict) and c.get("content") == "Signed out comment")
+                   for c in showcase.current_work.comments)
+    assert showcase.danmaku_overlay._toast_text == t_gallery("gallery_err_unauthorized")
+
+    showcase._on_like_clicked()
+    qapp.processEvents()
+    assert showcase.current_work.viewer_liked is False
+    assert showcase.current_work.like_count == 0
+
+    # 3. Signed-in failed post_comment / like_work revert & show error toast; delete purges cache & view.
+    acct = _StubAccountClient(True, "usr_fluency", "f@example.com", "tok_f")
+    window._account_client = acct
+    gallery.sync_account_session(acct)
+    queued = []
+    orig_submit = gallery._executor.submit
+    monkeypatch.setattr(gallery._executor, "submit", queued.append)
+    monkeypatch.setattr(gallery.client, "post_comment", lambda *_a, **_k: (_ for _ in ()).throw(GalleryClientError("rate_limited")))
+    monkeypatch.setattr(gallery.client, "like_work", lambda *_a, **_k: (_ for _ in ()).throw(GalleryClientError("forbidden")))
+    deleted_ids = []
+    monkeypatch.setattr(gallery.client, "delete_comment", lambda cid: deleted_ids.append(cid) or {"deleted": True})
+
+    # Sensitive word rejected locally -> reverts and does not hit network.
+    showcase.open_danmaku_composer()
+    showcase.danmaku_overlay.comment_submitted.emit("Visit https://spam.example now")
+    assert queued == []
+    assert gallery.state_store.danmaku_cooldown_remaining() == 0.0
+    assert showcase.danmaku_overlay._toast_text == t_gallery("gallery_err_content_rejected")
+
+    # Server rejection reverts bullet and displays toast.
+    showcase.open_danmaku_composer()
+    showcase.danmaku_overlay.comment_submitted.emit("Valid focus stack")
+    assert len(queued) == 1
+    queued.pop(0)()
+    qapp.processEvents()
+    assert showcase.danmaku_overlay._toast_text == t_gallery("gallery_err_rate_limited")
+    assert showcase.current_work.comments == []
+
+    # Failed like reverts state.
+    showcase._on_like_clicked()
+    assert showcase.current_work.viewer_liked is True
+    assert len(queued) == 1
+    queued.pop(0)()
+    qapp.processEvents()
+    assert showcase.current_work.viewer_liked is False
+    assert showcase.current_work.like_count == 0
+    assert showcase.danmaku_overlay._toast_text == t_gallery("gallery_err_forbidden")
+
+    # Comment delete purges from _comments_cache and showcase view.
+    from core.gallery_state import GalleryComment
+    cmt = GalleryComment(comment_id="cmt_del_1", work_id="w1", content="Delete me", can_delete=True)
+    gallery._comments_cache[("w1", "en")] = (time.monotonic(), [cmt])
+    showcase.set_work_comments("w1", [cmt])
+    assert len(showcase.current_work.comments) == 1
+    showcase.comment_deleted.emit("cmt_del_1")
+    assert len(queued) == 1
+    queued.pop(0)()
+    qapp.processEvents()
+    assert deleted_ids == ["cmt_del_1"]
+    assert gallery._comments_cache[("w1", "en")][1] == []
+    assert showcase.current_work.comments == []
+
+    # 4. Prefetch decodes QImage off-thread and never calls is_unmetered_network on GUI thread.
+    monkeypatch.setattr(gallery._executor, "submit", orig_submit)
+    is_main_thread_calls = []
+    import threading
+    main_ident = threading.get_ident()
+    gc_mod.set_unmetered_network_checker(lambda: is_main_thread_calls.append(threading.get_ident()) or True)
+    try:
+        webp = _make_webp_bytes()
+        gallery._media_fetcher = lambda _url: webp
+        remote_work = GalleryWork(work_id="w_bg", full_url="https://cdn.example/w_bg.webp", title="BG")
+        remote_work2 = GalleryWork(work_id="w_bg2", full_url="https://cdn.example/w_bg2.webp", title="BG2")
+        remote_work3 = GalleryWork(work_id="w_bg3", full_url="https://cdn.example/w_bg3.webp", title="BG3")
+        gallery.state_store._apply_feed(gallery.state_store._account_generation, [remote_work, remote_work2, remote_work3])
+        _wait_until(lambda: gallery.showcase.works[0].pixmap is not None)
+        assert gallery._prefetch_work_image("w_bg3") is True
+        _wait_until(lambda: gallery.showcase.works[2].pixmap is not None)
+        assert all(tid != main_ident for tid in is_main_thread_calls)
+    finally:
+        gc_mod.set_unmetered_network_checker(None)
+
+    # 5. Open dialog dedupes initial refresh, forwards apply_theme, disconnects hub signals, and releases UploadPromptDialog ref.
+    refresh_calls = []
+    monkeypatch.setattr(gallery.state_store, "refresh_account_silently", lambda **k: refresh_calls.append("acct") or True)
+    monkeypatch.setattr(gallery.state_store, "refresh_notifications", lambda **k: refresh_calls.append("notif") or True)
+    hub = gallery.open_gallery_hub(initial_tab=0)
+    qapp.processEvents()
+    assert refresh_calls.count("acct") == 1
+    themed = []
+    hub.apply_theme = lambda t: themed.append(t)
+    gallery.apply_theme("light")
+    assert themed == ["light"]
+    mode_calls = []
+    hub.set_danmaku_translation_mode = lambda m: mode_calls.append(m)
+    hub.reject()
+    qapp.processEvents()
+    assert gallery.hub_dialog is None
+    gallery.danmaku_translation_mode_changed.emit("original")
+    assert mode_calls == []
+
+    refresh_calls.clear()
+    acct_dlg = gallery.open_account_center(0)
+    qapp.processEvents()
+    assert refresh_calls.count("acct") == 1
+    assert refresh_calls.count("notif") == 1
+    acct_dlg.reject()
+    qapp.processEvents()
+    assert gallery.account_dialog is None
+
+    import gc as py_gc
+    import weakref
+
+    class _ArrayHolder(np.ndarray):
+        pass
+
+    arr = np.zeros((16, 16, 3), dtype=np.uint8).view(_ArrayHolder)
+    arr_ref = weakref.ref(arr)
+    apply_config_snapshot(gallery.state_store, {
+        "gallery_enabled": True,
+        "upload_prompt_probability": 1.0,
+        "gallery_terms_version": "2026-11-26",
+    })
+    gallery.allow_headless_upload_prompt = True
+    prompt = gallery.on_fusion_completed(arr, interactive=True)
+    del arr
+    assert prompt is not None
+    prompt.reject()
+    qapp.processEvents()
+    from PyQt6.QtCore import QCoreApplication, QEvent
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    qapp.processEvents()
+    py_gc.collect()
+    assert arr_ref() is None
+
+    # shutdown() closes ShowcaseWindow cleanly even though auto_show_toggled was removed.
+    showcase_win = gallery.showcase_window
+    assert showcase_win is not None
+    assert not hasattr(showcase_win, "auto_show_toggled")
+    gallery.shutdown()
+    assert gallery.showcase_window is None
+    assert gallery._closed is True
