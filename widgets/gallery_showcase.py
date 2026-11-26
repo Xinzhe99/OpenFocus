@@ -27,9 +27,8 @@ from uuid import uuid4
 
 import numpy as np
 from PyQt6.QtCore import QPoint, QRect, QSize, Qt, QTimer, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QColor, QImage, QPainter, QPaintEvent, QPixmap, QResizeEvent
+from PyQt6.QtGui import QColor, QImage, QKeyEvent, QMouseEvent, QPainter, QPaintEvent, QPixmap, QResizeEvent
 from PyQt6.QtWidgets import (
-    QCheckBox,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -654,6 +653,7 @@ class GalleryShowcaseWidget(QWidget):
         self._prefetch_callback = prefetch_callback
         self._prefetched_ids: set[str] = set()
         self._allow_background_prefetch: bool = True
+        self._top_right_inset: int = 0
 
         # Floating danmaku layer sits over the painted canvas and below corner HUD
         # Interactive controls share the drawer's stacking context.
@@ -780,6 +780,23 @@ class GalleryShowcaseWidget(QWidget):
         for btn in self._action_buttons:
             action_layout.addWidget(btn)
         self.action_bar.hide()
+
+        # Left/right slide navigation buttons for manual browsing (shown when multiple works exist)
+        self.btn_prev_slide = QPushButton("\u2039", self)
+        self.btn_prev_slide.setObjectName("btn_gallery_prev_slide")
+        self.btn_prev_slide.setProperty("controlId", "btn_gallery_prev_slide")
+        self.btn_prev_slide.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_prev_slide.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_prev_slide.clicked.connect(self._on_prev_clicked)
+        self.btn_prev_slide.hide()
+
+        self.btn_next_slide = QPushButton("\u203a", self)
+        self.btn_next_slide.setObjectName("btn_gallery_next_slide")
+        self.btn_next_slide.setProperty("controlId", "btn_gallery_next_slide")
+        self.btn_next_slide.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_next_slide.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_next_slide.clicked.connect(self._on_next_clicked)
+        self.btn_next_slide.hide()
 
         # Slideshow timer (default 5 seconds)
         self._slide_timer = QTimer(self)
@@ -1114,8 +1131,37 @@ class GalleryShowcaseWidget(QWidget):
         self._cached_bg_pixmap = self._blur_cache.get_or_build(work.id, source, QSize(w, h))
         self._cached_bg_key = key
 
+    def set_top_right_inset(self, px: int) -> None:
+        """Reserve horizontal space at top-right (e.g., frameless window controls)."""
+        self._top_right_inset = max(0, int(px))
+        self._layout_overlays()
+
+    def _on_prev_clicked(self) -> None:
+        if self.previous_slide() and self._slide_timer.isActive():
+            self._slide_timer.start()
+
+    def _on_next_clicked(self) -> None:
+        if self.next_slide() and self._slide_timer.isActive():
+            self._slide_timer.start()
+
+    def keyPressEvent(self, event: QKeyEvent | None) -> None:
+        if event is not None and not self.danmaku_overlay.is_composing():
+            if event.key() == Qt.Key.Key_Left and self.previous_slide():
+                if self._slide_timer.isActive():
+                    self._slide_timer.start()
+                event.accept()
+                return
+            if event.key() == Qt.Key.Key_Right and self.next_slide():
+                if self._slide_timer.isActive():
+                    self._slide_timer.start()
+                event.accept()
+                return
+        super().keyPressEvent(event)
+
     def _raise_hud_layers(self) -> None:
         self.danmaku_overlay.raise_()
+        self.btn_prev_slide.raise_()
+        self.btn_next_slide.raise_()
         self.lbl_source_badge.raise_()
         self.meta_panel.raise_()
         self.action_bar.raise_()
@@ -1131,11 +1177,22 @@ class GalleryShowcaseWidget(QWidget):
 
         self.danmaku_overlay.setGeometry(0, 0, w, h)
 
+        # Edge previous/next slide controls
+        nav_w, nav_h = 36, 56
+        nav_y = max(margin, (h - nav_h) // 2)
+        self.btn_prev_slide.setGeometry(margin, nav_y, nav_w, nav_h)
+        self.btn_next_slide.setGeometry(max(margin, w - margin - nav_w), nav_y, nav_w, nav_h)
+
         # Top-right source badge
         self.lbl_source_badge.adjustSize()
         badge_w = max(self.lbl_source_badge.sizeHint().width() + SPACE["md"], 48)
         badge_h = max(self.lbl_source_badge.sizeHint().height() + 4, 24)
-        self.lbl_source_badge.setGeometry(w - badge_w - margin, margin, badge_w, badge_h)
+        self.lbl_source_badge.setGeometry(
+            max(margin, w - badge_w - margin - self._top_right_inset),
+            margin,
+            badge_w,
+            badge_h,
+        )
 
         # Bottom-right action bar
         self.action_bar.adjustSize()
@@ -1160,6 +1217,9 @@ class GalleryShowcaseWidget(QWidget):
 
     def _update_hud_for_current(self) -> None:
         work = self.current_work
+        has_multi = len(self._works) > 1
+        self.btn_prev_slide.setVisible(has_multi)
+        self.btn_next_slide.setVisible(has_multi)
         if work is None:
             self.lbl_source_badge.hide()
             self.meta_panel.hide()
@@ -1257,7 +1317,8 @@ class GalleryShowcaseWidget(QWidget):
         work.comments.append(local_item)
         work.comment_count += 1
         if work is self.current_work:
-            self.danmaku_overlay.add_comment(local_item, immediate=True)
+            self.danmaku_overlay.add_comment(local_item, immediate=True, is_own=True)
+            self.danmaku_overlay.show_toast(_tr("gallery_danmaku_sent_toast"))
             self.comment_drawer.set_comments(work.comments)
             self._update_hud_for_current()
             self._layout_overlays()
@@ -1327,6 +1388,12 @@ class GalleryShowcaseWidget(QWidget):
             f" padding: 4px 8px; font-size: {FONT['body']}pt; }}"
             f" QFrame#gallery_action_bar QPushButton:hover {{"
             f" background-color: {glass_hover}; }}"
+            f" QPushButton#btn_gallery_prev_slide, QPushButton#btn_gallery_next_slide {{"
+            f" background-color: {rgba(p['bg'], 0.48)}; color: {p['text']};"
+            f" border: 1px solid {rgba(p['borderStrong'], 0.42)};"
+            f" border-radius: 18px; font-size: 20pt; padding: 0 0 3px 0; }}"
+            f" QPushButton#btn_gallery_prev_slide:hover, QPushButton#btn_gallery_next_slide:hover {{"
+            f" background-color: {rgba(p['surfaceActive'], 0.85)}; border-color: {accent}; }}"
             f" QPushButton#btn_gallery_like:checked {{"
             f" color: {danger}; font-weight: {WEIGHT['semibold']}; }}"
         )
@@ -1404,7 +1471,6 @@ class GalleryShowcaseWindow(QWidget):
     """
 
     return_to_workspace_requested = pyqtSignal()
-    auto_show_toggled = pyqtSignal(bool)
     window_closed = pyqtSignal()
 
     def __init__(
@@ -1417,13 +1483,15 @@ class GalleryShowcaseWindow(QWidget):
         auto_show_during_fusion: bool = True,
         clock: Callable[[], float] | None = None,
     ) -> None:
-        super().__init__(parent, Qt.WindowType.Window)
+        del auto_show_during_fusion
+        super().__init__(parent, Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint)
         self.setObjectName("gallery_showcase_window")
         self.setProperty("controlId", "gallery_showcase_window")
         self.setMinimumSize(640, 420)
         self.resize(960, 620)
         self._theme = "dark"
         self._fusion_done = False
+        self._drag_offset: QPoint | None = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -1436,7 +1504,42 @@ class GalleryShowcaseWindow(QWidget):
             danmaku_settings=danmaku_settings,
             clock=clock,
         )
+        self.showcase.set_top_right_inset(108)
         root.addWidget(self.showcase, 1)
+
+        # Floating top-right frameless window controls (minimize, maximize, close)
+        self.window_controls = QFrame(self)
+        self.window_controls.setObjectName("gallery_window_controls")
+        self.window_controls.setProperty("controlId", "gallery_window_controls")
+        self.window_controls.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        wc_lay = QHBoxLayout(self.window_controls)
+        wc_lay.setContentsMargins(4, 3, 4, 3)
+        wc_lay.setSpacing(2)
+
+        self.btn_win_min = QPushButton("\u2212", self.window_controls)
+        self.btn_win_min.setObjectName("btn_gallery_win_min")
+        self.btn_win_min.setFixedSize(26, 24)
+        self.btn_win_min.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_win_min.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_win_min.clicked.connect(self.showMinimized)
+
+        self.btn_win_max = QPushButton("\u25a1", self.window_controls)
+        self.btn_win_max.setObjectName("btn_gallery_win_max")
+        self.btn_win_max.setFixedSize(26, 24)
+        self.btn_win_max.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_win_max.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_win_max.clicked.connect(self._toggle_maximized)
+
+        self.btn_win_close = QPushButton("\u2715", self.window_controls)
+        self.btn_win_close.setObjectName("btn_gallery_win_close")
+        self.btn_win_close.setFixedSize(26, 24)
+        self.btn_win_close.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_win_close.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_win_close.clicked.connect(self._on_return_clicked)
+
+        wc_lay.addWidget(self.btn_win_min)
+        wc_lay.addWidget(self.btn_win_max)
+        wc_lay.addWidget(self.btn_win_close)
 
         self.fusion_bar = QFrame(self)
         self.fusion_bar.setObjectName("galleryFusionStatusBar")
@@ -1461,13 +1564,6 @@ class GalleryShowcaseWindow(QWidget):
 
         bar_lay.addStretch(1)
 
-        self.chk_auto_show = QCheckBox("", self.fusion_bar)
-        self.chk_auto_show.setObjectName("chk_gallery_auto_show_fusion")
-        self.chk_auto_show.setProperty("controlId", "chk_gallery_auto_show_fusion")
-        self.chk_auto_show.setChecked(bool(auto_show_during_fusion))
-        self.chk_auto_show.toggled.connect(self.auto_show_toggled.emit)
-        bar_lay.addWidget(self.chk_auto_show)
-
         self.btn_return = QPushButton("", self.fusion_bar)
         self.btn_return.setObjectName("btn_gallery_return_workspace")
         self.btn_return.setProperty("controlId", "btn_gallery_return_workspace")
@@ -1478,12 +1574,64 @@ class GalleryShowcaseWindow(QWidget):
         self.fusion_bar.hide()
         root.addWidget(self.fusion_bar)
 
+        self._layout_window_controls()
         self.apply_theme(self._theme)
         self.retranslate()
 
-    def set_auto_show_checked(self, checked: bool) -> None:
-        with block_signals(self.chk_auto_show):
-            self.chk_auto_show.setChecked(bool(checked))
+    def _toggle_maximized(self) -> None:
+        if self.isMaximized():
+            self.showNormal()
+        else:
+            self.showMaximized()
+
+    def _layout_window_controls(self) -> None:
+        self.window_controls.adjustSize()
+        sz = self.window_controls.sizeHint()
+        x = max(SPACE["xs"], self.width() - sz.width() - SPACE["md"])
+        y = SPACE["sm"]
+        self.window_controls.setGeometry(x, y, sz.width(), sz.height())
+        self.window_controls.raise_()
+
+    def resizeEvent(self, event: QResizeEvent | None) -> None:
+        super().resizeEvent(event)
+        self._layout_window_controls()
+
+    def mousePressEvent(self, event: QMouseEvent | None) -> None:
+        if event is not None and event.button() == Qt.MouseButton.LeftButton:
+            pt = event.position().toPoint()
+            # Drag frameless window from fusion status bar or top margin band outside interactive children
+            child = self.childAt(pt)
+            if child in (None, self.fusion_bar, self.lbl_fusion_status, self.fusion_progress) or pt.y() <= 32:
+                self._drag_offset = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent | None) -> None:
+        if event is not None and self._drag_offset is not None and (event.buttons() & Qt.MouseButton.LeftButton):
+            if not self.isMaximized():
+                self.move(event.globalPosition().toPoint() - self._drag_offset)
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent | None) -> None:
+        if self._drag_offset is not None:
+            self._drag_offset = None
+            if event is not None:
+                event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent | None) -> None:
+        if event is not None and event.button() == Qt.MouseButton.LeftButton:
+            pt = event.position().toPoint()
+            child = self.childAt(pt)
+            if child in (None, self.fusion_bar, self.lbl_fusion_status) or pt.y() <= 32:
+                self._toggle_maximized()
+                event.accept()
+                return
+        super().mouseDoubleClickEvent(event)
 
     def set_fusion_in_progress(self, text: str = "", *, done: int = 0, total: int = 0) -> None:
         self._fusion_done = False
@@ -1529,16 +1677,26 @@ class GalleryShowcaseWindow(QWidget):
 
     def apply_theme(self, theme: str) -> None:
         self._theme = theme
-        p = palette(theme)
+        # Keep the showcase frame permanently dark for borderless photography immersion.
+        p = palette("dark")
+        glass = rgba(p["bg"], 0.72)
         self.setStyleSheet(
-            f"QWidget#gallery_showcase_window {{ background-color: {p['canvas']}; }}"
-            f" QFrame#galleryFusionStatusBar {{ background-color: {p['surface']};"
-            f" border-top: 1px solid {p['border']}; }}"
+            f"QWidget#gallery_showcase_window {{ background-color: {p['canvas']}; border: none; }}"
+            f" QFrame#gallery_window_controls {{ background-color: {glass};"
+            f" border: 1px solid {rgba(p['borderStrong'], 0.50)};"
+            f" border-radius: {RADIUS['md']}px; }}"
+            f" QFrame#gallery_window_controls QPushButton {{ background: transparent;"
+            f" color: {p['textMuted']}; border: none; border-radius: {RADIUS['sm']}px;"
+            f" font-size: {FONT['body']}pt; padding: 0; }}"
+            f" QFrame#gallery_window_controls QPushButton:hover {{ color: {p['text']};"
+            f" background-color: {rgba(p['surfaceActive'], 0.85)}; }}"
+            f" QPushButton#btn_gallery_win_close:hover {{ color: #ffffff;"
+            f" background-color: {p['danger']}; }}"
+            f" QFrame#galleryFusionStatusBar {{ background-color: {rgba(p['surface'], 0.96)};"
+            f" border-top: 1px solid {rgba(p['border'], 0.65)}; }}"
             f" QLabel#galleryFusionStatusLabel {{ color: {p['text']};"
             f" font-size: {FONT['caption']}pt; font-weight: {WEIGHT['medium']};"
             " background: transparent; }"
-            f" QCheckBox#chk_gallery_auto_show_fusion {{ color: {p['textMuted']};"
-            f" font-size: {FONT['caption']}pt; background: transparent; }}"
             f" QProgressBar#galleryFusionProgress {{ background: {p['bg']};"
             f" border: none; border-radius: 3px; }}"
             f" QProgressBar#galleryFusionProgress::chunk {{ background: {p['accent']};"
@@ -1562,7 +1720,7 @@ class GalleryShowcaseWindow(QWidget):
     @pyqtSlot()
     def retranslate(self) -> None:
         self.setWindowTitle(_tr("gallery_showcase_window_title"))
-        self.chk_auto_show.setText(_tr("gallery_auto_show_during_fusion"))
+        self.btn_win_close.setToolTip(_tr("gallery_close"))
         if self._fusion_done:
             self.lbl_fusion_status.setText(_tr("gallery_fusion_done_status"))
             self.btn_return.setText(_tr("gallery_fusion_view_result_btn"))

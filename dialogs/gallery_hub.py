@@ -1802,11 +1802,7 @@ class WorkDetailDialog(QDialog):
                     mode=translation_mode,
                     target_lang=target_lang,
                 )
-                rendered = (
-                    f"{display_content} \U0001f310"
-                    if is_translated
-                    else (display_content or content)
-                )
+                rendered = display_content or content
                 is_reply = bool(
                     force_reply
                     or _get(comment, "parent_id", None)

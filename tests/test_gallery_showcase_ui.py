@@ -837,16 +837,26 @@ def test_standalone_showcase_window_fusion_bar_and_return_flow(qapp):
     from widgets.gallery_showcase import GalleryShowcaseWindow
 
     win = GalleryShowcaseWindow()
-    win.set_works([ShowcaseWork(id="w1", title="Beetle", pixmap=_make_pixmap(100, 80, QColor(40, 80, 120)))])
+    assert bool(win.windowFlags() & Qt.WindowType.FramelessWindowHint)
+    w1 = ShowcaseWork(id="w1", title="Beetle", pixmap=_make_pixmap(100, 80, QColor(40, 80, 120)))
+    w2 = ShowcaseWork(id="w2", title="Spider", pixmap=_make_pixmap(100, 80, QColor(80, 120, 40)))
+    win.set_works([w1, w2])
     assert win.fusion_bar.isVisible() is False
+    assert not hasattr(win, "chk_auto_show")
 
-    toggled = []
     returned = []
-    win.auto_show_toggled.connect(toggled.append)
     win.return_to_workspace_requested.connect(lambda: returned.append(True))
 
     win.show()
     qapp.processEvents()
+    assert win.showcase.btn_prev_slide.isVisible() is True
+    assert win.showcase.btn_next_slide.isVisible() is True
+    assert win.showcase.current_work.id == "w1"
+    win.showcase.btn_next_slide.click()
+    assert win.showcase.current_work.id == "w2"
+    win.showcase.btn_prev_slide.click()
+    assert win.showcase.current_work.id == "w1"
+
     win.set_fusion_in_progress("Fusing 2/4", done=2, total=4)
     assert win.fusion_bar.isVisible() is True
     assert win.fusion_progress.maximum() == 4
@@ -855,9 +865,6 @@ def test_standalone_showcase_window_fusion_bar_and_return_flow(qapp):
 
     win.set_fusion_completed()
     assert win.fusion_progress.value() == 1
-
-    win.chk_auto_show.setChecked(False)
-    assert toggled == [False]
 
     win.btn_return.click()
     assert returned == [True]

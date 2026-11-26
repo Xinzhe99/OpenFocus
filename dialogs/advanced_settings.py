@@ -415,22 +415,6 @@ class AdvancedSettingsDialog(QDialog):
         self.combo_danmaku_translation.setCurrentIndex(max(0, trans_idx))
         danmaku.addRow(trans.t("gallery_danmaku_translation"), self.combo_danmaku_translation)
 
-        from controllers.gallery_controller import load_auto_show_during_fusion
-
-        auto_show_fusion = (
-            gallery.auto_show_during_fusion()
-            if gallery is not None and hasattr(gallery, "auto_show_during_fusion")
-            else load_auto_show_during_fusion(store)
-        )
-        self.chk_gallery_auto_show_fusion = QCheckBox(
-            trans.t("gallery_auto_show_during_fusion")
-        )
-        self.chk_gallery_auto_show_fusion.setProperty(
-            "controlId", "chk_gallery_auto_show_fusion"
-        )
-        self.chk_gallery_auto_show_fusion.setChecked(bool(auto_show_fusion))
-        danmaku.addRow(self.chk_gallery_auto_show_fusion)
-
         # --- Gallery Storage & Cache ---
         storage = _section(page_lay, trans.t("gallery_settings_storage_section"))
 
@@ -598,7 +582,6 @@ class AdvancedSettingsDialog(QDialog):
             'danmaku_opacity_pct': int(self.spin_danmaku_opacity.value()),
             'danmaku_density': self.combo_danmaku_density.currentData(),
             'danmaku_translation_mode': self.combo_danmaku_translation.currentData(),
-            'gallery_auto_show_fusion': self.chk_gallery_auto_show_fusion.isChecked(),
             'gallery_download_dir': self.gallery_download_dir.text().strip(),
             'gallery_cache_dir': self.gallery_cache_dir.text().strip(),
             'gallery_cache_max_mb': int(self.spin_gallery_cache_limit.value()),
@@ -659,8 +642,6 @@ class AdvancedSettingsDialog(QDialog):
         danmaku_changed = any(k in draft for k in danmaku_keys)
         for k in danmaku_keys:
             draft.pop(k, None)
-        gallery_auto_show_changed = 'gallery_auto_show_fusion' in draft
-        draft.pop('gallery_auto_show_fusion', None)
         gallery_download_dir = draft.pop('gallery_download_dir', None)
         gallery_cache_dir = draft.pop('gallery_cache_dir', None)
         gallery_cache_max_mb = draft.pop('gallery_cache_max_mb', None)
@@ -786,13 +767,6 @@ class AdvancedSettingsDialog(QDialog):
                 gallery.apply_danmaku_settings(new_danmaku, persist=True)
             else:
                 persist_danmaku_settings(new_danmaku)
-        if gallery_auto_show_changed:
-            auto_val = self.chk_gallery_auto_show_fusion.isChecked()
-            if gallery is not None and hasattr(gallery, "set_auto_show_during_fusion"):
-                gallery.set_auto_show_during_fusion(auto_val, persist=True)
-            else:
-                from controllers.gallery_controller import persist_auto_show_during_fusion
-                persist_auto_show_during_fusion(auto_val)
         if gallery_storage_changed:
             if gallery is not None:
                 gallery.apply_storage_settings(

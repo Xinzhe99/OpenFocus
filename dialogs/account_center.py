@@ -4,21 +4,25 @@ All network calls execute off the Qt GUI thread via ``_DialogTaskRunner`` and
 queued ``state_store`` completion signals (never issuing redundant synchronous
 ``get_me`` calls on the UI thread).
 
-Provides two primary sections:
+Provides five vertical sidebar sections (while preserving ``tabs`` index semantics
+where index 0 is Account and index 1 is Message Box):
   1. **My Account**: signed-in info, editable nickname with validation, points
-     balance + manual refresh (with explicit error feedback on failure), Lemon
-     Squeezy 3-tier recharge (500 / $9.99 highlighted Recommended,
-     1200 / $19.99, 5000 / $69.99) + Redeem Code box with ``payment_region``
-     emphasis, 12 canonical Interest chips, strictly 3 Privacy toggles
-     (``show_gallery``, ``show_following``, ``show_followers`` with rollback on
-     failed save — NEVER exposing ``can_hide_gallery``), and My Likes /
-     My Comments / Following / Followers sub-tabs.
+     balance + manual refresh (with explicit error feedback on failure), decoded
+     badges, and strictly 3 Privacy toggles (``show_gallery``,
+     ``show_following``, ``show_followers`` with rollback on failed save — NEVER
+     exposing ``can_hide_gallery``).
   2. **Message Box**: aggregated notifications rendered purely from structured
      English keys via 12-language i18n, showing work thumbnails via bounded
      async loading, unread dots, mark-all-read, and click-to-jump-to-work.
+  3. **Recharge Points**: Creem (Card & Alipay) 3-tier checkout + Redeem Code box
+     with ``payment_region`` emphasis.
+  4. **Interests**: server-driven interest chips (falling back to local
+     ``INTEREST_KEYS`` when offline).
+  5. **Activity**: My Likes / My Comments / Following / Followers sub-tabs.
 """
 from __future__ import annotations
 
+import re
 import webbrowser
 from typing import Any, Callable, Mapping, Sequence
 
@@ -29,12 +33,14 @@ from PyQt6.QtWidgets import (
     QDialog,
     QFrame,
     QGridLayout,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QPushButton,
     QScrollArea,
+    QStackedWidget,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -51,6 +57,7 @@ from dialogs.gallery_hub import (
 )
 from locales.gallery_i18n import (
     INTEREST_KEYS,
+    current_ui_language,
     format_notification,
     t_gallery,
     translate_badge,
@@ -87,25 +94,121 @@ RECHARGE_TIERS: tuple[dict[str, Any], ...] = (
 )
 
 
+def _extract_badge_key(entry: Any) -> str:
+    """Extract canonical badge key from either a string key or a server badge dict."""
+    if isinstance(entry, Mapping):
+        return str(entry.get("badge_key") or entry.get("key") or "").strip()
+    attr = getattr(entry, "badge_key", None)
+    if attr:
+        return str(attr).strip()
+    text = str(entry or "").strip()
+    if text.startswith("{") and "badge_key" in text:
+        match = re.search(r"""['"]badge_key['"]\s*:\s*['"]([^'"]+)['"]""", text)
+        if match:
+            return match.group(1).strip()
+    return text
+
+
+def _parse_interest_spec(raw: Any, lang: str) -> tuple[str, str] | None:
+    """Resolve ``(key, localized_label)`` from a server string key or descriptor mapping."""
+    if isinstance(raw, Mapping):
+        key = str(raw.get("key") or raw.get("id") or "").strip()
+        if not key:
+            return None
+        labels = raw.get("labels") if isinstance(raw.get("labels"), Mapping) else {}
+        label = str(labels.get(lang) or labels.get("en") or raw.get("label") or "").strip()
+        if not label:
+            translated = translate_tag(key)
+            label = key.replace("_", " ").title() if translated == f"gallery_tag_{key}" else translated
+        return key, label
+    key = str(raw or "").strip()
+    if not key:
+        return None
+    translated = translate_tag(key)
+    label = key.replace("_", " ").title() if translated == f"gallery_tag_{key}" else translated
+    return key, label
+
+
+class _VerticalTabsAdapter:
+    """QTabWidget-compatible facade over a QListWidget sidebar + QStackedWidget."""
+
+    def __init__(self, nav: QListWidget, stack: QStackedWidget) -> None:
+        self._nav = nav
+        self._stack = stack
+        self._nav.currentRowChanged.connect(self._stack.setCurrentIndex)
+
+    def addTab(self, widget: QWidget, label: str) -> int:
+        idx = self._stack.addWidget(widget)
+        item = QListWidgetItem(str(label))
+        item.setSizeHint(QSize(0, 38))
+        self._nav.addItem(item)
+        if self._nav.count() == 1:
+            self._nav.setCurrentRow(0)
+        return idx
+
+    def count(self) -> int:
+        return self._stack.count()
+
+    def currentIndex(self) -> int:
+        return self._stack.currentIndex()
+
+    def setCurrentIndex(self, index: int) -> None:
+        if 0 <= index < self._nav.count():
+            self._nav.setCurrentRow(index)
+            self._stack.setCurrentIndex(index)
+
+    def tabText(self, index: int) -> str:
+        item = self._nav.item(index)
+        return item.text() if item is not None else ""
+
+
 def _account_stylesheet(theme: str = "dark") -> str:
     c = palette(theme)
     r = RADIUS
     return f"""
         QDialog {{ background: {c['bg']}; color: {c['text']}; }}
+        QScrollArea, QWidget#accountScrollHost {{ background: transparent; border: none; }}
+        QLabel, QCheckBox {{ color: {c['text']}; background: transparent; }}
+        QListWidget#accountNavRail {{
+            background: {c['surface']};
+            border: 1px solid {c['border']};
+            border-radius: {r['md']}px;
+            padding: 6px 4px;
+            outline: none;
+        }}
+        QListWidget#accountNavRail::item {{
+            color: {c['textMuted']};
+            border-radius: {r['sm']}px;
+            padding: 8px 12px;
+            margin: 2px 4px;
+            border-left: 3px solid transparent;
+        }}
+        QListWidget#accountNavRail::item:hover {{
+            background: {c['surfaceHover']};
+            color: {c['text']};
+        }}
+        QListWidget#accountNavRail::item:selected {{
+            background: {c['accentSoft']};
+            color: {c['accentSoftText']};
+            border-left: 3px solid {c['accent']};
+            font-weight: 600;
+        }}
         QFrame#accountSectionCard, QFrame#tierCard, QFrame#notifRow {{
             background: {c['surface']};
             border: 1px solid {c['border']};
             border-radius: {r['md']}px;
         }}
+        QFrame#accountSectionCard[emphasized="true"] {{
+            border: 2px solid {c['accent']};
+        }}
         QFrame#tierCard[recommended="true"] {{
             border: 2px solid {c['accent']};
             background: {c['accentSoft']};
         }}
-        QGroupBox[emphasized="true"] {{
-            border: 2px solid {c['accent']};
-            border-radius: {r['md']}px;
-            margin-top: 8px;
-            padding-top: 8px;
+        QLabel#sectionTitle {{
+            font-size: 11pt;
+            font-weight: 700;
+            color: {c['text']};
         }}
         QLabel#mutedLabel {{ color: {c['textMuted']}; }}
         QLabel#recommendedPill {{
@@ -128,7 +231,10 @@ def _account_stylesheet(theme: str = "dark") -> str:
             color: {c['text']};
             border: 1px solid {c['border']};
             border-radius: 12px;
-            padding: 4px 10px;
+            padding: 5px 10px;
+        }}
+        QPushButton[chip="true"]:hover {{
+            background: {c['surfaceHover']};
         }}
         QPushButton[chip="true"]:checked {{
             background: {c['accent']};
@@ -186,6 +292,8 @@ class AccountCenterDialog(QDialog):
         self._profile: dict[str, Any] = {}
         self._payment_region: str = "global"
         self._nickname_max_chars: int = DEFAULT_NICKNAME_MAX_CHARS
+        self._selected_interest_keys: set[str] = set()
+        self._interest_specs: tuple[Any, ...] = tuple(INTEREST_KEYS)
         self._last_saved_privacy: dict[str, bool] = {
             "show_gallery": True,
             "show_following": True,
@@ -198,22 +306,43 @@ class AccountCenterDialog(QDialog):
         self._notifications: list[dict[str, Any]] = []
 
         self.setWindowTitle(t_gallery("account_center_title"))
-        self.resize(860, 680)
+        self.resize(900, 620)
         self.setStyleSheet(_account_stylesheet(theme))
 
         root = QVBoxLayout(self)
         root.setContentsMargins(SPACE["md"], SPACE["md"], SPACE["md"], SPACE["md"])
         root.setSpacing(SPACE["sm"])
 
-        self.tabs = QTabWidget()
-        _set_cid(self.tabs, "account_center_tabs", object_name="accountCenterTabs")
-        root.addWidget(self.tabs, 1)
+        body_row = QHBoxLayout()
+        body_row.setSpacing(SPACE["md"])
+
+        self.nav_list = QListWidget()
+        self.nav_list.setObjectName("accountNavRail")
+        _set_cid(self.nav_list, "account_center_tabs", object_name="accountNavRail")
+        self.nav_list.setFixedWidth(176)
+        self.nav_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        body_row.addWidget(self.nav_list)
+
+        self._pages_stack = QStackedWidget()
+        body_row.addWidget(self._pages_stack, 1)
+        root.addLayout(body_row, 1)
+
+        self.tabs = _VerticalTabsAdapter(self.nav_list, self._pages_stack)
 
         self._account_tab = self._build_account_tab()
         self._messages_tab = self._build_messages_tab()
+        self._recharge_tab = self._build_recharge_tab()
+        self._interests_tab = self._build_interests_tab()
+        self._activity_tab = self._build_activity_tab()
 
         self.tabs.addTab(self._account_tab, t_gallery("account_center_tab_account"))
         self.tabs.addTab(self._messages_tab, t_gallery("account_center_tab_messages"))
+        self.tabs.addTab(self._recharge_tab, t_gallery("account_center_recharge_title"))
+        self.tabs.addTab(self._interests_tab, t_gallery("account_center_interests_title"))
+        self.tabs.addTab(
+            self._activity_tab,
+            f"{t_gallery('account_center_subtab_likes')} / {t_gallery('account_center_subtab_following')}",
+        )
 
         close_row = QHBoxLayout()
         close_row.addStretch()
@@ -289,6 +418,9 @@ class AccountCenterDialog(QDialog):
         )
         self._nickname_max_chars = max_chars
         self.nickname_input.setMaxLength(max_chars)
+        interest_keys = _get(cfg, "interest_keys", None)
+        if isinstance(interest_keys, Sequence) and not isinstance(interest_keys, (str, bytes)) and len(interest_keys) > 0:
+            self._rebuild_interest_chips(interest_keys)
 
     def _on_store_notifications_changed(self, notifications: Sequence[Any], _unread: int = 0) -> None:
         self.set_notifications(notifications)
@@ -435,16 +567,22 @@ class AccountCenterDialog(QDialog):
 
                 self._runner.submit(_fetch, key=f"account_{method_name}", on_success=setter)
 
-    # ---------------------------------------------------- Tab 1: My Account
-    def _build_account_tab(self) -> QWidget:
+    @staticmethod
+    def _wrap_scroll(host: QWidget, cid: str, obj_name: str) -> QScrollArea:
+        if not host.objectName():
+            host.setObjectName("accountScrollHost")
         scroll = QScrollArea()
-        _set_cid(scroll, "account_tab_my_account", object_name="accountTabMyAccount")
+        _set_cid(scroll, cid, object_name=obj_name)
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setWidget(host)
+        return scroll
 
+    # ---------------------------------------------------- Page 1: My Account + Privacy
+    def _build_account_tab(self) -> QWidget:
         host = QWidget()
         layout = QVBoxLayout(host)
-        layout.setContentsMargins(SPACE["sm"], SPACE["sm"], SPACE["sm"], SPACE["sm"])
+        layout.setContentsMargins(0, 0, SPACE["xs"], 0)
         layout.setSpacing(SPACE["md"])
 
         profile_card = QFrame()
@@ -504,14 +642,71 @@ class AccountCenterDialog(QDialog):
         p_lay.addWidget(self.nickname_status)
         layout.addWidget(profile_card)
 
+        # Privacy Toggles: strictly show_gallery, show_following, show_followers
+        # (default all ON; NEVER expose can_hide_gallery!)
+        privacy_group = QFrame()
+        _set_cid(privacy_group, "account_privacy_group", object_name="accountSectionCard")
+        priv_lay = QVBoxLayout(privacy_group)
+        priv_lay.setContentsMargins(SPACE["md"], SPACE["md"], SPACE["md"], SPACE["md"])
+        priv_lay.setSpacing(SPACE["xs"])
+
+        priv_title = QLabel(t_gallery("account_center_privacy_title"))
+        priv_title.setObjectName("sectionTitle")
+        priv_lay.addWidget(priv_title)
+
+        self.show_gallery_check = QCheckBox(
+            t_gallery("account_center_privacy_show_gallery")
+        )
+        _set_cid(self.show_gallery_check, "account_privacy_show_gallery")
+        self.show_gallery_check.setChecked(True)
+        self.show_gallery_check.toggled.connect(self._on_privacy_toggled)
+        priv_lay.addWidget(self.show_gallery_check)
+
+        self.show_following_check = QCheckBox(
+            t_gallery("account_center_privacy_show_following")
+        )
+        _set_cid(self.show_following_check, "account_privacy_show_following")
+        self.show_following_check.setChecked(True)
+        self.show_following_check.toggled.connect(self._on_privacy_toggled)
+        priv_lay.addWidget(self.show_following_check)
+
+        self.show_followers_check = QCheckBox(
+            t_gallery("account_center_privacy_show_followers")
+        )
+        _set_cid(self.show_followers_check, "account_privacy_show_followers")
+        self.show_followers_check.setChecked(True)
+        self.show_followers_check.toggled.connect(self._on_privacy_toggled)
+        priv_lay.addWidget(self.show_followers_check)
+
+        self.privacy_status = QLabel("")
+        _set_cid(self.privacy_status, "account_privacy_status")
+        self.privacy_status.setObjectName("mutedLabel")
+        priv_lay.addWidget(self.privacy_status)
+        layout.addWidget(privacy_group)
+        layout.addStretch()
+
+        return self._wrap_scroll(host, "account_tab_my_account", "accountTabMyAccount")
+
+    # ---------------------------------------------------- Page 3: Recharge Points & Redeem Code
+    def _build_recharge_tab(self) -> QWidget:
+        host = QWidget()
+        layout = QVBoxLayout(host)
+        layout.setContentsMargins(0, 0, SPACE["xs"], 0)
+        layout.setSpacing(SPACE["md"])
+
         self._billing_layout = QVBoxLayout()
-        self._billing_layout.setSpacing(SPACE["sm"])
+        self._billing_layout.setSpacing(SPACE["md"])
         layout.addLayout(self._billing_layout)
 
-        self.recharge_group = QGroupBox(t_gallery("account_center_recharge_title"))
-        _set_cid(self.recharge_group, "account_recharge_group")
+        self.recharge_group = QFrame()
+        _set_cid(self.recharge_group, "account_recharge_group", object_name="accountSectionCard")
         rec_lay = QVBoxLayout(self.recharge_group)
+        rec_lay.setContentsMargins(SPACE["md"], SPACE["md"], SPACE["md"], SPACE["md"])
         rec_lay.setSpacing(SPACE["sm"])
+
+        rec_title = QLabel(t_gallery("account_center_recharge_title"))
+        rec_title.setObjectName("sectionTitle")
+        rec_lay.addWidget(rec_title)
 
         self.recharge_hint_label = QLabel(
             t_gallery("account_center_recharge_global_hint")
@@ -562,9 +757,16 @@ class AccountCenterDialog(QDialog):
         self.checkout_status.setObjectName("mutedLabel")
         rec_lay.addWidget(self.checkout_status)
 
-        self.redeem_group = QGroupBox(t_gallery("account_center_redeem_title"))
-        _set_cid(self.redeem_group, "account_redeem_group")
+        self.redeem_group = QFrame()
+        _set_cid(self.redeem_group, "account_redeem_group", object_name="accountSectionCard")
         red_lay = QVBoxLayout(self.redeem_group)
+        red_lay.setContentsMargins(SPACE["md"], SPACE["md"], SPACE["md"], SPACE["md"])
+        red_lay.setSpacing(SPACE["sm"])
+
+        red_title = QLabel(t_gallery("account_center_redeem_title"))
+        red_title.setObjectName("sectionTitle")
+        red_lay.addWidget(red_title)
+
         red_row = QHBoxLayout()
         self.redeem_input = QLineEdit()
         _set_cid(self.redeem_input, "account_redeem_input")
@@ -586,28 +788,39 @@ class AccountCenterDialog(QDialog):
         red_lay.addWidget(self.redeem_status)
 
         self._apply_payment_region_layout()
+        layout.addStretch()
+        return self._wrap_scroll(host, "account_tab_recharge", "accountTabRecharge")
 
-        interests_group = QGroupBox(t_gallery("account_center_interests_title"))
-        _set_cid(interests_group, "account_interests_group")
+    # ---------------------------------------------------- Page 4: Interests (server-driven)
+    def _build_interests_tab(self) -> QWidget:
+        host = QWidget()
+        layout = QVBoxLayout(host)
+        layout.setContentsMargins(0, 0, SPACE["xs"], 0)
+        layout.setSpacing(SPACE["md"])
+
+        interests_group = QFrame()
+        _set_cid(interests_group, "account_interests_group", object_name="accountSectionCard")
         int_lay = QVBoxLayout(interests_group)
+        int_lay.setContentsMargins(SPACE["md"], SPACE["md"], SPACE["md"], SPACE["md"])
+        int_lay.setSpacing(SPACE["sm"])
+
+        int_title = QLabel(t_gallery("account_center_interests_title"))
+        int_title.setObjectName("sectionTitle")
+        int_lay.addWidget(int_title)
+
         int_hint = QLabel(t_gallery("account_center_interests_hint"))
         int_hint.setObjectName("mutedLabel")
         int_lay.addWidget(int_hint)
 
-        chip_grid = QGridLayout()
-        chip_grid.setSpacing(SPACE["xs"])
+        self._interest_chip_grid = QGridLayout()
+        self._interest_chip_grid.setSpacing(SPACE["xs"])
         self.interest_chips: dict[str, QPushButton] = {}
-        for idx, key in enumerate(INTEREST_KEYS):
-            btn = QPushButton(translate_tag(key))
-            btn.setCheckable(True)
-            btn.setProperty("chip", True)
-            _set_cid(btn, f"account_interest_chip_{key}")
-            chip_grid.addWidget(btn, idx // 4, idx % 4)
-            self.interest_chips[key] = btn
-        int_lay.addLayout(chip_grid)
+        self._rebuild_interest_chips(self._interest_specs)
+        int_lay.addLayout(self._interest_chip_grid)
 
         int_action = QHBoxLayout()
         self.interests_save_btn = QPushButton(t_gallery("account_center_interests_save"))
+        self.interests_save_btn.setProperty("primary", True)
         _set_cid(self.interests_save_btn, "account_interests_save_btn")
         self.interests_save_btn.clicked.connect(self.save_interests)
         int_action.addWidget(self.interests_save_btn)
@@ -618,42 +831,51 @@ class AccountCenterDialog(QDialog):
         int_action.addWidget(self.interests_status, 1)
         int_lay.addLayout(int_action)
         layout.addWidget(interests_group)
+        layout.addStretch()
+        return self._wrap_scroll(host, "account_tab_interests", "accountTabInterests")
 
-        # Privacy Toggles: strictly show_gallery, show_following, show_followers
-        # (default all ON; NEVER expose can_hide_gallery!)
-        privacy_group = QGroupBox(t_gallery("account_center_privacy_title"))
-        _set_cid(privacy_group, "account_privacy_group")
-        priv_lay = QVBoxLayout(privacy_group)
+    def _rebuild_interest_chips(self, specs: Sequence[Any]) -> None:
+        """Rebuild interest chips from server ``interest_keys`` preserving current selections."""
+        if self.interest_chips:
+            visible_selected = set(self.selected_interests())
+            self._selected_interest_keys = (
+                self._selected_interest_keys - set(self.interest_chips)
+            ) | visible_selected
+        _clear_layout(self._interest_chip_grid)
+        self.interest_chips.clear()
+        self._interest_specs = tuple(specs)
+        lang = current_ui_language()
+        seen: set[str] = set()
+        col_count = 4
+        idx = 0
+        for raw in specs:
+            parsed = _parse_interest_spec(raw, lang)
+            if parsed is None or parsed[0] in seen:
+                continue
+            key, label = parsed
+            seen.add(key)
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.setProperty("chip", True)
+            btn.setChecked(key in self._selected_interest_keys)
+            btn.toggled.connect(
+                lambda checked, k=key: (
+                    self._selected_interest_keys.add(k)
+                    if checked
+                    else self._selected_interest_keys.discard(k)
+                )
+            )
+            _set_cid(btn, f"account_interest_chip_{key}")
+            self._interest_chip_grid.addWidget(btn, idx // col_count, idx % col_count)
+            self.interest_chips[key] = btn
+            idx += 1
 
-        self.show_gallery_check = QCheckBox(
-            t_gallery("account_center_privacy_show_gallery")
-        )
-        _set_cid(self.show_gallery_check, "account_privacy_show_gallery")
-        self.show_gallery_check.setChecked(True)
-        self.show_gallery_check.toggled.connect(self._on_privacy_toggled)
-        priv_lay.addWidget(self.show_gallery_check)
-
-        self.show_following_check = QCheckBox(
-            t_gallery("account_center_privacy_show_following")
-        )
-        _set_cid(self.show_following_check, "account_privacy_show_following")
-        self.show_following_check.setChecked(True)
-        self.show_following_check.toggled.connect(self._on_privacy_toggled)
-        priv_lay.addWidget(self.show_following_check)
-
-        self.show_followers_check = QCheckBox(
-            t_gallery("account_center_privacy_show_followers")
-        )
-        _set_cid(self.show_followers_check, "account_privacy_show_followers")
-        self.show_followers_check.setChecked(True)
-        self.show_followers_check.toggled.connect(self._on_privacy_toggled)
-        priv_lay.addWidget(self.show_followers_check)
-
-        self.privacy_status = QLabel("")
-        _set_cid(self.privacy_status, "account_privacy_status")
-        self.privacy_status.setObjectName("mutedLabel")
-        priv_lay.addWidget(self.privacy_status)
-        layout.addWidget(privacy_group)
+    # ---------------------------------------------------- Page 5: Likes / Comments / Follows
+    def _build_activity_tab(self) -> QWidget:
+        host = QWidget()
+        layout = QVBoxLayout(host)
+        layout.setContentsMargins(0, 0, SPACE["xs"], 0)
+        layout.setSpacing(SPACE["sm"])
 
         self.activity_tabs = QTabWidget()
         _set_cid(self.activity_tabs, "account_activity_tabs")
@@ -686,15 +908,13 @@ class AccountCenterDialog(QDialog):
             self._followers_host, t_gallery("account_center_subtab_followers")
         )
 
-        layout.addWidget(self.activity_tabs)
-        layout.addStretch()
+        layout.addWidget(self.activity_tabs, 1)
 
-        scroll.setWidget(host)
         self.set_my_likes([])
         self.set_my_comments([])
         self.set_following([])
         self.set_followers([])
-        return scroll
+        return self._wrap_scroll(host, "account_tab_activity", "accountTabActivity")
 
     def set_payment_region(self, region: str) -> None:
         normalized = "cn" if str(region or "").lower() == "cn" else "global"
@@ -772,17 +992,28 @@ class AccountCenterDialog(QDialog):
         self.nickname_input.setText(nickname)
 
         if badges:
-            badge_txt = " · ".join(translate_badge(str(b)) for b in badges)
-            self.badges_label.setText(
-                f"{t_gallery('account_center_badges_label')}: {badge_txt}"
-            )
-            self.badges_label.setVisible(True)
+            badge_keys: list[str] = []
+            for entry in badges:
+                key = _extract_badge_key(entry)
+                if key and key not in badge_keys:
+                    badge_keys.append(key)
+            if badge_keys:
+                badge_txt = " · ".join(translate_badge(k) for k in badge_keys)
+                self.badges_label.setText(
+                    f"{t_gallery('account_center_badges_label')}: {badge_txt}"
+                )
+                self.badges_label.setVisible(True)
+            else:
+                self.badges_label.setText("")
+                self.badges_label.setVisible(False)
         else:
             self.badges_label.setText("")
             self.badges_label.setVisible(False)
 
+        self._selected_interest_keys = set(interests)
         for key, btn in self.interest_chips.items():
-            btn.setChecked(key in interests)
+            with block_signals(btn):
+                btn.setChecked(key in interests)
 
         show_gallery = _get(privacy, "show_gallery", True)
         show_following = _get(privacy, "show_following", True)

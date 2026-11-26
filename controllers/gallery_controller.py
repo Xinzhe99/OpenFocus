@@ -174,18 +174,13 @@ def read_cache_max_mb(settings: Any = None) -> int:
 
 
 def load_auto_show_during_fusion(settings: Any = None) -> bool:
-    """Return whether Gallery Showcase opens automatically when starting fusion."""
-    store = settings if settings is not None else get_settings()
-    return _read_bool_setting(store, GALLERY_AUTO_SHOW_FUSION_KEY, True)
+    """Always open Gallery Showcase automatically when starting fusion."""
+    return True
 
 
 def persist_auto_show_during_fusion(enabled: bool, settings: Any = None) -> bool:
-    """Persist whether Gallery Showcase opens automatically when starting fusion."""
-    flag = bool(enabled)
-    store = settings if settings is not None else get_settings()
-    store.setValue(GALLERY_AUTO_SHOW_FUSION_KEY, flag)
-    store.sync()
-    return flag
+    """Keep fusion showcase auto-open enabled (single-session close only)."""
+    return True
 
 
 def persist_gallery_storage_settings(
@@ -528,7 +523,6 @@ class GalleryController(QObject):
             parent=self.window,
             slide_interval_sec=self.state_store.config.slide_interval_sec,
             danmaku_settings=self._danmaku_settings,
-            auto_show_during_fusion=self._auto_show_during_fusion,
         )
         win.showcase.set_danmaku_limits(
             max_chars=self.state_store.config.danmaku_max_chars,
@@ -539,7 +533,6 @@ class GalleryController(QObject):
         self._connect_showcase_signals(win.showcase, connect_fullscreen=True)
         win.showcase.slide_changed.connect(self._prefetch_current_slide)
         win.return_to_workspace_requested.connect(self._on_showcase_return_requested)
-        win.auto_show_toggled.connect(self._on_window_auto_show_toggled)
         win.window_closed.connect(self._on_showcase_window_closed)
         self._showcase_window = win
         self._showcase = win.showcase
@@ -562,9 +555,6 @@ class GalleryController(QObject):
     def _prefetch_current_slide(self, work_id: str) -> None:
         if self.is_showing_showcase():
             self._prefetch_work_image(work_id)
-
-    def _on_window_auto_show_toggled(self, checked: bool) -> None:
-        self.set_auto_show_during_fusion(checked, persist=True)
 
     def _on_showcase_return_requested(self) -> None:
         self.show_result_canvas()
@@ -591,7 +581,6 @@ class GalleryController(QObject):
         ):
             return False
         win = self._ensure_showcase_window()
-        win.set_auto_show_checked(self._auto_show_during_fusion)
         if not win.showcase.works:
             self._set_showcase_works(self.state_store.effective_showcase_works())
         if not win.isVisible():
@@ -689,7 +678,7 @@ class GalleryController(QObject):
         self._fusion_progress = (0, 0, "")
         if self.is_showing_showcase():
             self._showcase_window.set_fusion_in_progress()
-        elif self._auto_show_during_fusion:
+        else:
             self.show_gallery_showcase(for_fusion=True)
 
     def on_render_progress(self, done: int, total: int, text: str = "") -> None:
@@ -1531,16 +1520,12 @@ class GalleryController(QObject):
         return self._danmaku_settings.normalized()
 
     def auto_show_during_fusion(self) -> bool:
-        return bool(self._auto_show_during_fusion)
+        return True
 
     def set_auto_show_during_fusion(self, enabled: bool, *, persist: bool = True) -> bool:
-        flag = bool(enabled)
-        self._auto_show_during_fusion = flag
-        if is_qobject_alive(self._showcase_window):
-            self._showcase_window.set_auto_show_checked(flag)
-        if persist:
-            persist_auto_show_during_fusion(flag)
-        return flag
+        """Auto-show stays active for subsequent fusion runs; closing is per-session."""
+        self._auto_show_during_fusion = True
+        return True
 
     def apply_danmaku_settings(self, settings_obj: DanmakuSettings, *, persist: bool = True) -> None:
         """Apply Danmaku settings live to Showcase and Screensaver, and persist."""
@@ -1694,7 +1679,6 @@ class GalleryController(QObject):
         if is_qobject_alive(self._showcase_window):
             try:
                 safe_disconnect(self._showcase_window.return_to_workspace_requested, self._on_showcase_return_requested)
-                safe_disconnect(self._showcase_window.auto_show_toggled, self._on_window_auto_show_toggled)
                 safe_disconnect(self._showcase_window.window_closed, self._on_showcase_window_closed)
                 self._showcase_window.close()
                 self._showcase_window.deleteLater()
