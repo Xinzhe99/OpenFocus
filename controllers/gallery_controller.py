@@ -58,7 +58,7 @@ from utils.logging_setup import get_logger
 from utils.settings_store import get_settings
 from widgets.danmaku_overlay import DanmakuSettings
 from widgets.gallery_screensaver import GalleryScreensaverWindow
-from widgets.gallery_showcase import GalleryShowcaseWidget, GalleryShowcaseWindow
+from widgets.gallery_showcase import GalleryShowcaseWidget, GalleryShowcaseWindow, ShowcaseWork
 
 _logger = get_logger(__name__)
 
@@ -335,6 +335,7 @@ class GalleryController(QObject):
         self._showcase_window: Optional[GalleryShowcaseWindow] = None
         self._showcase: Optional[GalleryShowcaseWidget] = None
         self._opened_for_fusion: bool = False
+        self._fusion_progress: tuple[int, int, str] | None = None
         self._screensaver: Optional[GalleryScreensaverWindow] = None
         self._hub_dialog: Optional[Any] = None
         self._account_dialog: Optional[Any] = None
@@ -438,7 +439,7 @@ class GalleryController(QObject):
         self._active_account_key = _account_identity(getattr(self.window, "_account_client", None))
 
         if is_qobject_alive(self._showcase):
-            self._showcase.set_works(self.state_store.effective_showcase_works())
+            self._set_showcase_works(self.state_store.effective_showcase_works())
 
         self.update_unread_indicators()
 
@@ -504,20 +505,36 @@ class GalleryController(QObject):
         win.apply_theme(self._theme())
         win.set_fusion_busy(self._fusion_busy)
         self._connect_showcase_signals(win.showcase, connect_fullscreen=True)
+        win.showcase.slide_changed.connect(self._prefetch_current_slide)
         win.return_to_workspace_requested.connect(self._on_showcase_return_requested)
         win.auto_show_toggled.connect(self._on_window_auto_show_toggled)
         win.window_closed.connect(self._on_showcase_window_closed)
         self._showcase_window = win
         self._showcase = win.showcase
-        if not win.showcase.works:
-            win.showcase.set_works(self.state_store.effective_showcase_works())
+        self._set_showcase_works(self.state_store.effective_showcase_works())
         return win
+
+    def _set_showcase_works(self, works: Sequence[Any]) -> None:
+        slides = [ShowcaseWork.from_any(work) for work in works]
+        for slide in slides:
+            if slide.image_url and not slide.has_local_image():
+                path = self.disk_cache.get_path(slide.image_url)
+                if path is not None:
+                    slide.local_path = str(path)
+        if self._fusion_busy and slides and not any(slide.has_local_image() for slide in slides):
+            existing = {slide.id for slide in slides}
+            slides.extend(work for work in self.state_store.fallback_works
+                          if work.work_id not in existing)
+        self._showcase.set_works(slides)
+
+    def _prefetch_current_slide(self, work_id: str) -> None:
+        if self.is_showing_showcase():
+            self._prefetch_work_image(work_id)
 
     def _on_window_auto_show_toggled(self, checked: bool) -> None:
         self.set_auto_show_during_fusion(checked, persist=True)
 
     def _on_showcase_return_requested(self) -> None:
-        self._opened_for_fusion = False
         self.show_result_canvas()
         if is_qobject_alive(self.window) and hasattr(self.window, "raise_"):
             try:
@@ -544,26 +561,27 @@ class GalleryController(QObject):
         win = self._ensure_showcase_window()
         win.set_auto_show_checked(self._auto_show_during_fusion)
         if not win.showcase.works:
-            win.showcase.set_works(self.state_store.effective_showcase_works())
-        self._opened_for_fusion = bool(for_fusion)
-        if for_fusion:
-            win.set_fusion_in_progress()
-        else:
+            self._set_showcase_works(self.state_store.effective_showcase_works())
+        if not win.isVisible():
+            self._opened_for_fusion = for_fusion
+        if self._fusion_progress is None:
             win.hide_fusion_bar()
+        else:
+            done, total, text = self._fusion_progress
+            win.set_fusion_in_progress(text=text, done=done, total=total)
         win.show()
+        work = win.showcase.current_work
+        if work is not None:
+            self._prefetch_current_slide(work.id)
         win.raise_()
         win.activateWindow()
         return True
 
     def show_result_canvas(self) -> None:
-        """Close/hide the standalone Showcase window and keep the main result canvas active."""
+        """Hide the standalone Showcase and return to the current workspace view."""
         self._opened_for_fusion = False
         if is_qobject_alive(self._showcase_window) and self._showcase_window.isVisible():
             self._showcase_window.hide()
-        view_stack = getattr(self.window, "view_stack", None)
-        if view_stack is not None and not getattr(self.window, "wipe_active", False):
-            if view_stack.currentIndex() != 0:
-                view_stack.setCurrentIndex(0)
 
     # ------------------------------------------------------- context menu hook
 
@@ -611,6 +629,12 @@ class GalleryController(QObject):
         self.state_store.set_fusion_busy(flag)
         if is_qobject_alive(self._showcase):
             self._showcase.set_fusion_busy(flag)
+            work = self._showcase.current_work
+            if work is not None:
+                if flag and not work.has_local_image():
+                    self._set_showcase_works(self._showcase.works)
+                elif not flag:
+                    self._prefetch_current_slide(work.id)
         if is_qobject_alive(self._screensaver):
             self._screensaver.set_fusion_busy(flag)
 
@@ -623,38 +647,33 @@ class GalleryController(QObject):
             return False
         return True
 
-    def on_render_started(self, *, is_preview: bool = False) -> None:
-        """Called by RenderManager when a fusion/render job starts."""
+    def on_render_started(self, *, show_fusion: bool = True) -> None:
+        """Pause remote Gallery work and show status for desktop fusion."""
         self.set_fusion_busy(True)
-        if (
-            not is_preview
-            and self.state_store.gallery_enabled
-            and self._auto_show_during_fusion
-            and not getattr(self.window, "wipe_active", False)
-            and not getattr(self.window, "roi_mode_active", False)
-        ):
+        if not show_fusion:
+            return
+        self._fusion_progress = (0, 0, "")
+        if self.is_showing_showcase():
+            self._showcase_window.set_fusion_in_progress()
+        elif self._auto_show_during_fusion:
             self.show_gallery_showcase(for_fusion=True)
 
     def on_render_progress(self, done: int, total: int, text: str = "") -> None:
-        """Mirror active fusion progress on the standalone Showcase window bar."""
-        if (
-            not self._closed
-            and self._opened_for_fusion
-            and is_qobject_alive(self._showcase_window)
-            and self._showcase_window.isVisible()
-        ):
+        if self._closed or self._fusion_progress is None:
+            return
+        self._fusion_progress = (done, total, text)
+        if self.is_showing_showcase():
             self._showcase_window.set_fusion_in_progress(text=text, done=done, total=total)
 
     def on_render_ended(self) -> None:
         """Called by RenderManager on error, cancellation, or discard."""
         self.set_fusion_busy(False)
-        if (
-            self._opened_for_fusion
-            and is_qobject_alive(self._showcase_window)
-            and self._showcase_window.isVisible()
-            and self._can_close_fusion_showcase()
-        ):
-            self._showcase_window.hide()
+        win = self._showcase_window
+        if is_qobject_alive(win):
+            if self._opened_for_fusion and win.isVisible() and self._can_close_fusion_showcase():
+                win.hide()
+            win.hide_fusion_bar()
+        self._fusion_progress = None
         self._opened_for_fusion = False
 
     def on_fusion_completed(
@@ -684,7 +703,10 @@ class GalleryController(QObject):
                         pass
             else:
                 self._showcase_window.set_fusion_completed()
-                self._opened_for_fusion = False
+        elif self._fusion_progress is not None and is_qobject_alive(self._showcase_window):
+            self._showcase_window.hide_fusion_bar()
+        self._opened_for_fusion = False
+        self._fusion_progress = None
         if self._closed or not self.state_store.gallery_enabled:
             return None
         if fusion_result is None or is_preview or is_compare or is_batch or not interactive:
@@ -1087,11 +1109,7 @@ class GalleryController(QObject):
         if self._closed:
             return
         if is_qobject_alive(self._showcase):
-            self._showcase.set_works(works)
-            for work in works[:2]:
-                wid = getattr(work, "work_id", "") or getattr(work, "id", "")
-                if wid:
-                    self._prefetch_work_image(wid)
+            self._set_showcase_works(works)
         if is_qobject_alive(self._screensaver) and self._screensaver.isVisible():
             self._screensaver.set_works(works, start_index=max(0, self._screensaver.showcase.current_index))
 

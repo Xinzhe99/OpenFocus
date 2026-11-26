@@ -60,6 +60,7 @@ from core.gallery_media import (
     format_exif_summary,
     prepare_gallery_upload,
 )
+from locales import trans
 from locales.gallery_i18n import (
     AI_TAG_KEYS,
     LEADERBOARD_PERIOD_KEYS,
@@ -1553,8 +1554,9 @@ class WorkDetailDialog(QDialog):
         info_row.addWidget(self.author_btn)
 
         badge_text = t_gallery("gallery_badge_openfocus")
-        if bool(_get(work, "openfocus_badge", False)) and author_name.strip().lower() != badge_text.strip().lower():
-            badge = QLabel(badge_text)
+        if bool(_get(work, "openfocus_badge", False)):
+            badge = QLabel("◆" if author_name.strip().casefold() == badge_text.casefold() else badge_text)
+            badge.setAccessibleName(badge_text)
             badge.setObjectName("badgeOpenFocus")
             badge.setToolTip(t_gallery("gallery_publish_openfocus_badge"))
             badge.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
@@ -1895,9 +1897,10 @@ class GalleryHubDialog(QDialog):
         self.hub_points_badge = QLabel("")
         _set_cid(self.hub_points_badge, "gallery_hub_points_badge", object_name="badgeOpenFocus")
         self.hub_points_badge.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        self.hub_top_up_btn = QPushButton(t_gallery("gallery_hub_top_up_btn"))
+        self.hub_top_up_btn = QPushButton()
         _set_cid(self.hub_top_up_btn, "gallery_hub_top_up_btn")
         self.hub_top_up_btn.setFlat(True)
+        self.hub_top_up_btn.setAutoDefault(False)
         self.hub_top_up_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.hub_top_up_btn.clicked.connect(self.account_center_requested.emit)
         corner_lay.addWidget(self.hub_points_badge)
@@ -1917,7 +1920,8 @@ class GalleryHubDialog(QDialog):
         self.tabs.currentChanged.connect(self._on_tab_changed)
 
         self._connect_state_store()
-        self._refresh_points_summary()
+        trans.languageChanged.connect(self._retranslate_billing)
+        self._retranslate_billing()
 
         if prefill_images:
             self.add_publish_files(
@@ -1935,6 +1939,7 @@ class GalleryHubDialog(QDialog):
         return self._publishing
 
     def _shutdown_dialog(self) -> None:
+        safe_disconnect(trans.languageChanged, self._retranslate_billing)
         self._disconnect_state_store()
         self._runner.shutdown()
         self._media_loader.shutdown()
@@ -2601,7 +2606,7 @@ class GalleryHubDialog(QDialog):
         _set_cid(self.cost_hint_label, "gallery_publish_cost_hint", object_name="mutedLabel")
         self.cost_hint_label.setWordWrap(True)
         cost_lay.addWidget(self.cost_hint_label)
-        self.insufficient_points_label = QLabel(t_gallery("gallery_publish_insufficient_points"))
+        self.insufficient_points_label = QLabel()
         _set_cid(self.insufficient_points_label, "gallery_publish_insufficient_points", object_name="publishCostWarn")
         self.insufficient_points_label.setWordWrap(True)
         self.insufficient_points_label.hide()
@@ -2866,15 +2871,21 @@ class GalleryHubDialog(QDialog):
         except (TypeError, ValueError):
             return DEFAULT_UPLOAD_COST_POINTS
 
+    def _retranslate_billing(self) -> None:
+        self.hub_top_up_btn.setText(t_gallery("gallery_hub_top_up_btn"))
+        self.insufficient_points_label.setText(t_gallery("gallery_publish_insufficient_points"))
+        self._refresh_points_summary()
+
     def _refresh_points_summary(self) -> None:
         balance = self._current_points_balance()
         unit_cost = self._upload_cost_points()
         if hasattr(self, "hub_points_badge"):
-            self.hub_points_badge.setText(
-                t_gallery("gallery_hub_points_badge", points=balance)
-                if balance is not None
-                else t_gallery("gallery_hub_points_signed_out")
-            )
+            has_session = getattr(self._client, "has_session", None)
+            if balance is not None or (callable(has_session) and has_session()):
+                text = t_gallery("gallery_hub_points_badge", points=balance if balance is not None else "—")
+            else:
+                text = t_gallery("gallery_hub_points_signed_out")
+            self.hub_points_badge.setText(text)
         if hasattr(self, "publish_balance_label"):
             self.publish_balance_label.setText(
                 t_gallery(
@@ -2883,7 +2894,8 @@ class GalleryHubDialog(QDialog):
                     cost=unit_cost,
                 )
             )
-        pending_count = sum(1 for item in self._publish_queue if item.stage != "done")
+        pending_count = sum(item.stage in ("pending", "inspecting", "uploading", "confirming")
+                            for item in self._publish_queue)
         if hasattr(self, "cost_hint_label"):
             if pending_count > 0:
                 total = pending_count * unit_cost
@@ -2952,6 +2964,8 @@ class GalleryHubDialog(QDialog):
         for idx, item in enumerate(self._publish_queue):
             if item.stage == "done":
                 continue
+            if item.stage == "failed":
+                item.stage = "pending"
             item_title = default_title or item.title or os.path.splitext(item.label)[0]
             item_exif = self._merged_exif_for_item(item)
             item_badge = openfocus_badge or item.openfocus_badge
@@ -3012,10 +3026,15 @@ class GalleryHubDialog(QDialog):
                 if status_msg and stage in ("failed", "confirm_unknown"):
                     self.publish_feedback_label.setText(status_msg)
             self._refresh_publish_queue_ui()
+            self._refresh_points_summary()
 
         def _on_success(published_results: list[tuple[int, Any]]) -> None:
             for _idx, res in published_results:
                 self.work_published.emit(res)
+            if published_results or any(item.stage == "confirm_unknown" for item in self._publish_queue):
+                refresh = getattr(self._state_store, "refresh_account_after_points_change", None)
+                if callable(refresh):
+                    refresh()
             self._refresh_publish_queue_ui()
 
         def _on_finally() -> None:
@@ -3079,7 +3098,7 @@ class GalleryHubDialog(QDialog):
                     None,
                 )
                 return None
-            _emit("confirming", t_gallery("gallery_publish_status_confirming"), None)
+            _emit("confirm_unknown", t_gallery("gallery_publish_status_confirming"), None)
             return self._do_confirm_step(client, upload_id, idem_key, _emit, previous_outcome_unknown=True)
 
         # Stage 0: Per-row isolated media preparation (off GUI thread)

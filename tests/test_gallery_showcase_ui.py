@@ -732,7 +732,7 @@ def test_blur_cache_evicts_lru_and_previous_slide_single_cached_guard(qapp):
     showcase.deleteLater()
 
 
-def test_showcase_suppresses_duplicate_openfocus_badge_when_author_is_openfocus(qapp):
+def test_showcase_distinguishes_studio_badge_from_author_name(qapp):
     showcase = GalleryShowcaseWidget()
     showcase.resize(640, 360)
     showcase.show()
@@ -770,7 +770,13 @@ def test_showcase_suppresses_duplicate_openfocus_badge_when_author_is_openfocus(
     )
     qapp.processEvents()
     assert showcase.btn_author.text() == "OpenFocus Studio"
-    assert showcase.lbl_openfocus_badge.isVisible() is False
+    assert showcase.lbl_openfocus_badge.isVisible()
+    assert showcase.lbl_openfocus_badge.text() == '◆'
+    work = showcase.current_work
+    work.openfocus_badge = False
+    showcase.show_slide(0)
+    assert showcase.btn_author.text() == 'OpenFocus Studio'
+    assert not showcase.lbl_openfocus_badge.isVisible()
     showcase.deleteLater()
 
 

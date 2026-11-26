@@ -14,6 +14,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Open Gallery and Account Center from the main window. Browse bundled
   showcase images when the Gallery service is unavailable, and finish active
   Gallery publishing before the application closes.
+- Open the Gallery showcase in a standalone window during fusion, with
+  progress and a return button that preserves the workspace's live preview.
 - Download smaller desktop updates for matching installations on Windows,
   Apple Silicon macOS, and Linux x86-64. Publish a patch helper for the
   official 2.0.0 desktop builds when the patch is smaller than the full package.

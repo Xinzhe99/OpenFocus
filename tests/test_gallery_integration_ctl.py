@@ -4,10 +4,9 @@ Verifies:
 - Top-level Account & Gallery menus discoverable & invocable via ControlServer /
   control_surface, with red-dot unread badges ONLY on Account & Message Box
   (never on Gallery), across all 12 language packs.
-- Startup/idle shows Gallery Showcase; fusion result restores result canvas;
-  right-click "Hide Fusion Result" returns to Gallery Showcase; right-click
-  "Upload to Gallery" opens Publish tab prefilled with fused image +
-  openfocus_badge=True.
+- Keep the workspace visible at startup and open a standalone Showcase during
+  fusion. Right-click "Upload to Gallery" to open Publish with the fusion result
+  and openfocus_badge=True.
 - Opening Danmaku composer pauses the 5s slideshow timer; sending/cancelling
   resumes it.
 - Fullscreen Always-on-Top screensaver launches and exits cleanly on ESC.
@@ -53,6 +52,7 @@ from core.gallery_state import (
 )
 from dialogs.advanced_settings import AdvancedSettingsDialog
 from locales import trans
+from locales.gallery_i18n import t_gallery
 from ui.control_surface import action_catalog, widget_tree
 from utils.gallery_client import GalleryClient
 from utils.image_utils import imwrite_auto
@@ -295,16 +295,23 @@ def test_showcase_startup_hide_result_and_upload_to_gallery(integrated_window, q
     assert gc.showcase_window is None
 
     # Starting fusion opens the standalone Gallery Showcase window with progress bar.
-    gc.on_render_started(is_preview=False)
+    gc.on_render_started()
     qapp.processEvents()
     assert window.view_stack.currentIndex() == 0
     assert gc.is_showing_showcase() is True
     assert gc.showcase_window is not None and gc.showcase_window.fusion_bar.isVisible() is True
 
-    gc.on_render_progress(2, 5, "Stacking 40%")
+    window.render_manager.on_render_stage('fusion')
+    window.render_manager.on_render_progress(2, 5)
     assert gc.showcase_window.fusion_progress.maximum() == 5
     assert gc.showcase_window.fusion_progress.value() == 2
     assert "40%" in gc.showcase_window.lbl_fusion_status.text()
+    assert gc.show_gallery_showcase(force=True)
+    assert gc.showcase_window.fusion_progress.value() == 2
+    window.render_manager.on_render_stage('publish')
+    assert gc.showcase_window.fusion_progress.maximum() == 0
+    assert gc.showcase_window.lbl_fusion_status.text() == trans.t('render_stage_publish')
+    window.render_manager._hide_progress_bar()
 
     # Completing fusion auto-closes the standalone window when user is not composing.
     fused = np.full((64, 96, 3), 140, dtype=np.uint8)
@@ -316,7 +323,7 @@ def test_showcase_startup_hide_result_and_upload_to_gallery(integrated_window, q
     assert gc.is_showing_showcase() is False
 
     # While composing danmaku, completion keeps the window open with View Fusion Result action.
-    gc.on_render_started(is_preview=False)
+    gc.on_render_started()
     gc.showcase.open_danmaku_composer()
     qapp.processEvents()
     gc.on_fusion_completed(fused, interactive=True)
@@ -342,6 +349,85 @@ def test_showcase_startup_hide_result_and_upload_to_gallery(integrated_window, q
     assert hub._publish_queue[0].openfocus_badge is True
     hub.reject()
     qapp.processEvents()
+
+
+def test_showcase_reopens_and_preserves_workspace_during_fusion(integrated_window, qapp):
+    window, _server, _settings, _tmp_path = integrated_window
+    gallery = window.gallery_controller
+    gallery.show_gallery_showcase(force=True)
+    showcase = gallery.showcase_window
+    qapp.processEvents()
+    assert showcase.showcase.slide_timer.isActive()
+
+    showcase.close()
+    gallery.show_gallery_showcase(force=True)
+    qapp.processEvents()
+    assert showcase.showcase.slide_timer.isActive()
+
+    gallery.on_render_started()
+    window.view_stack.setCurrentWidget(window.live_preview_page)
+    showcase.btn_return.click()
+    assert not showcase.isVisible()
+    assert window.view_stack.currentWidget() is window.live_preview_page
+    gallery.on_render_ended()
+
+    gallery.on_render_started()
+    showcase.showcase.open_danmaku_composer()
+    assert showcase.showcase.danmaku_overlay.is_composing()
+    gallery.on_render_ended()
+    assert showcase.isVisible()
+    assert not showcase.fusion_bar.isVisible()
+
+
+def test_showcase_opens_manually_with_current_fusion_progress(integrated_window, qapp):
+    window, _server, _settings, _tmp_path = integrated_window
+    gallery = window.gallery_controller
+    gallery.set_auto_show_during_fusion(False)
+    gallery.on_render_started()
+    gallery.on_render_progress(2, 3, 'Working')
+    assert gallery.showcase_window is None
+
+    assert gallery.show_gallery_showcase(force=True)
+    qapp.processEvents()
+    showcase = gallery.showcase_window
+    assert showcase.fusion_progress.maximum() == 3
+    assert showcase.fusion_progress.value() == 2
+    gallery.on_fusion_completed(np.zeros((8, 8, 3), np.uint8), interactive=False)
+    assert showcase.isVisible() and not showcase.fusion_bar.isVisible()
+
+
+@pytest.mark.parametrize('first_open', ['cached-during-fusion', 'uncached-during-fusion', 'idle'])
+def test_showcase_first_open_loads_a_single_remote_work(integrated_window, first_open):
+    window, _server, _settings, _tmp_path = integrated_window
+    gallery = window.gallery_controller
+    url = 'https://media.example/remote.webp'
+    work = GalleryWork(work_id='remote', full_url=url, title='Remote image')
+    gallery.state_store._apply_feed(gallery.state_store._account_generation, [work])
+    fetched = []
+    data = _make_webp_bytes()
+
+    def fetch(media_url):
+        fetched.append(media_url)
+        return data
+
+    gallery._media_fetcher = fetch
+    if first_open == 'cached-during-fusion':
+        assert gallery.disk_cache.put(url, data) is not None
+    assert gallery.showcase_window is None
+    if first_open == 'idle':
+        assert gallery.show_gallery_showcase(force=True)
+        _wait_until(lambda: gallery.showcase.current_work.load_local_pixmap() is not None)
+        assert fetched == [url]
+    else:
+        gallery.on_render_started()
+        current = gallery.showcase.current_work
+        assert current.load_local_pixmap() is not None
+        if first_open == 'cached-during-fusion':
+            assert current.id == 'remote'
+        else:
+            assert current.id.startswith('builtin_')
+        assert not fetched
+        gallery.on_render_ended()
 
 
 # ---------------------------------------------------------------------------
@@ -754,6 +840,9 @@ def test_http_404_config_and_me_degrade_silently_and_preserve_local_account(
     assert acct_dlg is not None and acct_dlg.isVisible()
     assert "local@example.com" in acct_dlg.email_label.text()
     assert QApplication.activeModalWidget() is None
+    hub = gc.open_gallery_hub(initial_tab=2)
+    assert hub.hub_points_badge.text() == t_gallery('gallery_hub_points_badge', points='—')
+    hub.reject()
     acct_dlg.reject()
     qapp.processEvents()
 
@@ -798,6 +887,65 @@ def test_account_switch_drops_queued_gallery_write_and_retires_old_account_view(
     for operation in queued:
         operation()
     assert writes == [("new-selection", "Bearer new-bearer")]
+
+
+def test_hub_balance_follows_publish_and_voucher_redeem(integrated_window, monkeypatch):
+    window, _server, _settings, root = integrated_window
+    gallery = window.gallery_controller
+    window._account_client = _StubAccountClient()
+    window._refresh_account_action()
+    store = gallery.state_store
+    store.stop_polling()
+    terms = '2026-11-26'
+    apply_config_snapshot(store, {'gallery_terms_version': terms, 'upload_cost_points': 100})
+    balance = 250
+
+    def get_me(**kwargs):
+        return {'user_id': 'usr_alpha', 'points_balance': balance,
+                'gallery_terms_accepted_version': terms}
+
+    def confirm(*args, **kwargs):
+        nonlocal balance
+        balance -= 100
+        return {'work': {'id': 'published'}, 'points_balance': balance}
+
+    def redeem(code):
+        nonlocal balance
+        assert code == 'TEST-CODE'
+        balance += 100
+        return {'points_added': 100, 'points_balance': balance}
+
+    monkeypatch.setattr(GalleryStateStore, 'refresh_account_silently', _ORIG_REFRESH_ACCOUNT)
+    monkeypatch.setattr(gallery.client, 'get_me', get_me)
+    monkeypatch.setattr(gallery.client, 'inspect_upload', lambda *_args: {
+        'upload_id': 'upload-points',
+        'upload_urls': {'full': {'url': 'https://media.example/full'},
+                        'thumb': {'url': 'https://media.example/thumb'}},
+    })
+    monkeypatch.setattr(gallery.client, 'put_presigned_webp', lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(gallery.client, 'confirm_upload', confirm)
+    monkeypatch.setattr(gallery.client, 'redeem_code', redeem)
+    apply_profile_snapshot(store, get_me())
+    hub = gallery.open_gallery_hub(initial_tab=2)
+    paths = [root / f'points-{i}.png' for i in range(3)]
+    for path in paths:
+        assert imwrite_auto(str(path), np.full((48, 64, 3), 130, np.uint8))
+    hub.add_publish_files([str(paths[0])])
+    hub.publish_btn.click()
+    _wait_until(lambda: hub.hub_points_badge.text() == t_gallery('gallery_hub_points_badge', points=150))
+    hub.add_publish_files([str(path) for path in paths[1:]])
+    assert hub.insufficient_points_label.isVisible()
+
+    hub.hub_top_up_btn.click()
+    account = gallery.account_dialog
+    assert account is not None
+    account.redeem_input.setText('TEST-CODE')
+    account.redeem_btn.click()
+    _wait_until(lambda: hub.hub_points_badge.text() == t_gallery('gallery_hub_points_badge', points=250))
+    assert not hub.insufficient_points_label.isVisible()
+    assert account.points_label.text() == t_gallery('account_center_points_value', points=250)
+    account.reject()
+    hub.reject()
 
 
 def test_close_waits_for_gallery_publish_receipt(integrated_window, monkeypatch):

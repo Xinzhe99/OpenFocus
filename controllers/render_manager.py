@@ -1595,6 +1595,11 @@ class RenderManager:
         self.worker.progress_signal.connect(self.on_render_progress)
         self.worker.stage_signal.connect(self.on_render_stage)
         window.statusBar().clearMessage()
+        gallery = getattr(window, "gallery_controller", None)
+        if gallery is not None:
+            gallery.on_render_started(
+                show_fusion=interactive and need_fusion and not compare and not self._preview_mode,
+            )
         self.on_render_stage('waiting')
         if memory_estimate:
             summary = self._memory_summary(memory_estimate)
@@ -1603,9 +1608,6 @@ class RenderManager:
                 summary += ' · ' + trans.t('render_memory_fallback_plan').format(
                     device=display_name(memory_estimate.accelerator))
             window.statusBar().showMessage(summary, 8000)
-        gallery = getattr(window, "gallery_controller", None)
-        if gallery is not None:
-            gallery.on_render_started(is_preview=self._preview_mode)
         self.worker.start()
         if live_preview:
             self._start_live_preview()
@@ -2331,6 +2333,9 @@ class RenderManager:
         self._progress_first_t = monotonic()
         self._progress_last_t = None
         self._show_progress_bar(text)
+        gallery = getattr(self.window, "gallery_controller", None)
+        if gallery is not None:
+            gallery.on_render_progress(0, 0, text)
 
     def on_render_progress(self, done: int, total: int) -> None:
         """Surface completed preparation frames or fusion tiles with an ETA."""

@@ -1095,12 +1095,12 @@ class GalleryShowcaseWidget(QWidget):
         # Bottom-left author, OpenFocus badge, EXIF summary
         author_text = (work.author_nickname or work.author_id or "").strip()
         badge_text = _tr("gallery_badge_openfocus").strip()
-        show_badge = bool(work.openfocus_badge) and author_text.lower() != badge_text.lower()
         self.btn_author.setText(author_text)
         self.btn_author.setVisible(bool(author_text))
-        self.lbl_openfocus_badge.setText(badge_text)
+        self.lbl_openfocus_badge.setText("◆" if author_text.casefold() == badge_text.casefold() else badge_text)
+        self.lbl_openfocus_badge.setAccessibleName(badge_text)
         self.lbl_openfocus_badge.setToolTip(_tr("gallery_publish_openfocus_badge"))
-        self.lbl_openfocus_badge.setVisible(show_badge)
+        self.lbl_openfocus_badge.setVisible(work.openfocus_badge)
         exif_line = format_exif_summary(work.exif)
         self.lbl_exif.setText(exif_line)
         self.lbl_exif.setVisible(bool(exif_line))
@@ -1489,18 +1489,6 @@ class GalleryShowcaseWindow(QWidget):
         self.return_to_workspace_requested.emit()
         self.hide()
 
-    def showEvent(self, event: Any) -> None:
-        super().showEvent(event)
-        if is_qobject_alive(self.showcase):
-            self.showcase.resume_slideshow("window_hidden")
-
-    def hideEvent(self, event: Any) -> None:
-        if is_qobject_alive(self.showcase):
-            self.showcase.pause_slideshow("window_hidden")
-        super().hideEvent(event)
-
     def closeEvent(self, event: Any) -> None:
-        if is_qobject_alive(self.showcase):
-            self.showcase.pause_slideshow("window_hidden")
         self.window_closed.emit()
         super().closeEvent(event)
