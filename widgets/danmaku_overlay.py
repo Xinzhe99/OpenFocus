@@ -52,6 +52,7 @@ from locales.gallery_i18n import (
     translate_report_reason,
 )
 from utils.design_tokens import FONT, RADIUS, SPACE, WEIGHT, palette, rgba
+from utils.frame_pixels import is_qobject_alive
 
 
 DANMAKU_POSITIONS: tuple[str, ...] = ("top", "middle", "bottom", "full")
@@ -1205,26 +1206,32 @@ class DanmakuOverlay(QWidget):
         return bool(win.isMinimized() or (win.windowState() & Qt.WindowState.WindowMinimized))
 
     def _attach_window_filter(self) -> None:
+        if not is_qobject_alive(self):
+            return
         win = self.window()
         if win is self._watched_window:
             return
-        if self._watched_window is not None:
+        if self._watched_window is not None and is_qobject_alive(self._watched_window):
             try:
                 self._watched_window.removeEventFilter(self)
             except RuntimeError:
                 pass
         self._watched_window = win
-        if win is not None and win is not self:
+        if win is not None and win is not self and is_qobject_alive(win):
             win.installEventFilter(self)
 
     def eventFilter(self, obj: Any, event: Any) -> bool:
-        if (
-            obj is self._watched_window
-            and event is not None
-            and event.type() == QEvent.Type.WindowStateChange
-        ):
-            self._sync_timer()
-        return super().eventFilter(obj, event)
+        if event is None or not is_qobject_alive(self):
+            return False
+        try:
+            if (
+                obj is self._watched_window
+                and event.type() == QEvent.Type.WindowStateChange
+            ):
+                self._sync_timer()
+            return super().eventFilter(obj, event)
+        except RuntimeError:
+            return False
 
     def changeEvent(self, event: Any) -> None:
         super().changeEvent(event)

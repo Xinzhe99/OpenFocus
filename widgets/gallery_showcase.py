@@ -422,6 +422,8 @@ class CommentReplyDrawer(QFrame):
             item = self.list_layout.takeAt(0)
             w = item.widget()
             if w is not None:
+                w.hide()
+                w.setParent(None)
                 w.deleteLater()
 
     def _rebuild_rows(self) -> None:
@@ -1264,8 +1266,9 @@ class GalleryShowcaseWidget(QWidget):
 
         # Right-side comment/reply drawer
         drawer_w = max(240, min(340, int(w * 0.36)))
-        drawer_h = max(1, bar_y - margin * 2)
-        self.comment_drawer.setGeometry(w - drawer_w - margin, margin, drawer_w, drawer_h)
+        drawer_top = margin + 36 if self._top_right_inset > 0 else margin
+        drawer_h = max(1, bar_y - drawer_top - margin)
+        self.comment_drawer.setGeometry(w - drawer_w - margin, drawer_top, drawer_w, drawer_h)
 
     def _update_hud_for_current(self) -> None:
         work = self.current_work
@@ -1721,27 +1724,47 @@ class GalleryShowcaseWindow(QWidget):
         self.setGeometry(geom)
 
     def eventFilter(self, obj: Any, event: Any) -> bool:
-        if event is not None and obj in (self.showcase, self.showcase.danmaku_overlay, self.fusion_bar):
-            etype = event.type()
-            if etype == QEvent.Type.MouseMove:
-                win_pt = self.mapFromGlobal(event.globalPosition().toPoint())
-                if self._resize_edges and (event.buttons() & Qt.MouseButton.LeftButton):
-                    self._apply_fallback_resize(event.globalPosition().toPoint())
-                    return True
-                if not (event.buttons() & Qt.MouseButton.LeftButton):
-                    self._update_edge_cursor(win_pt)
-            elif etype == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
-                win_pt = self.mapFromGlobal(event.globalPosition().toPoint())
-                edges = self._resize_edges_at(win_pt)
-                if edges != Qt.Edge(0):
-                    self._begin_edge_resize(edges, event.globalPosition().toPoint())
-                    return True
-            elif etype == QEvent.Type.MouseButtonRelease and self._resize_edges:
-                self._resize_edges = Qt.Edge(0)
-                self._resize_start_global = None
-                self._resize_start_geom = None
-                return True
-        return super().eventFilter(obj, event)
+        if event is None or not is_qobject_alive(self):
+            return False
+        etype = event.type()
+        if etype in (
+            QEvent.Type.MouseMove,
+            QEvent.Type.MouseButtonPress,
+            QEvent.Type.MouseButtonRelease,
+        ):
+            try:
+                showcase = self.showcase if is_qobject_alive(self.showcase) else None
+                overlay = (
+                    showcase.danmaku_overlay
+                    if showcase is not None and is_qobject_alive(showcase.danmaku_overlay)
+                    else None
+                )
+                fusion_bar = self.fusion_bar if is_qobject_alive(self.fusion_bar) else None
+                if obj is showcase or obj is overlay or obj is fusion_bar:
+                    if etype == QEvent.Type.MouseMove:
+                        win_pt = self.mapFromGlobal(event.globalPosition().toPoint())
+                        if self._resize_edges and (event.buttons() & Qt.MouseButton.LeftButton):
+                            self._apply_fallback_resize(event.globalPosition().toPoint())
+                            return True
+                        if not (event.buttons() & Qt.MouseButton.LeftButton):
+                            self._update_edge_cursor(win_pt)
+                    elif etype == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+                        win_pt = self.mapFromGlobal(event.globalPosition().toPoint())
+                        edges = self._resize_edges_at(win_pt)
+                        if edges != Qt.Edge(0):
+                            self._begin_edge_resize(edges, event.globalPosition().toPoint())
+                            return True
+                    elif etype == QEvent.Type.MouseButtonRelease and self._resize_edges:
+                        self._resize_edges = Qt.Edge(0)
+                        self._resize_start_global = None
+                        self._resize_start_geom = None
+                        return True
+            except RuntimeError:
+                return False
+        try:
+            return super().eventFilter(obj, event)
+        except RuntimeError:
+            return False
 
     def _toggle_maximized(self) -> None:
         if self.isMaximized():

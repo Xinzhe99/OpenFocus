@@ -944,3 +944,26 @@ def test_foreground_scaled_cache_slide_lru_eviction_and_drawer_upvote_toggle(qap
     assert win._resize_edges_at(QPoint(698, 240)) == Qt.Edge.RightEdge
     assert win._resize_edges_at(QPoint(350, 240)) == Qt.Edge(0)
     win.deleteLater()
+
+
+def test_comment_drawer_clears_empty_label_and_avoids_window_controls_overlap(qapp):
+    from PyQt6.QtWidgets import QLabel
+    from widgets.gallery_showcase import GalleryShowcaseWindow
+
+    win = GalleryShowcaseWindow()
+    win.resize(800, 500)
+    win.show()
+    qapp.processEvents()
+
+    win.showcase.comment_drawer.set_comments(
+        [{"id": "c1", "author_nickname": "Alex", "content": "hi", "upvotes": 1, "viewer_vote": 0}]
+    )
+    assert win.showcase.comment_drawer.list_container.findChildren(QLabel, "commentEmpty") == []
+
+    win.showcase.open_comment_drawer()
+    win.showcase._layout_overlays()
+    qapp.processEvents()
+    assert win.showcase.comment_drawer.geometry().top() > win.window_controls.geometry().bottom()
+    win.close()
+    win.deleteLater()
+    qapp.processEvents()
