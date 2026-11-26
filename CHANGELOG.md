@@ -307,6 +307,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Process large Auto Background stacks at full resolution by moving focus
   tables to scratch storage when RAM is limited and reading aligned frames and
   validity masks one at a time.
+- Plan Auto Background memory for CPU focus analysis when GPU acceleration is
+  enabled but no compatible OpenCL GPU is available. Large stacks that fit in
+  RAM no longer move focus tables to scratch storage or fail when temporary
+  storage is short.
 - Show live focus layers on new full renders started from an earlier output,
   including when output history is browsed during alignment or preparation.
 - Keep the source loupe visible during a render, then replace its preview
