@@ -47,6 +47,7 @@ from PyQt6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QTabWidget,
     QToolButton,
     QVBoxLayout,
@@ -816,15 +817,30 @@ def _dialog_stylesheet(theme: str = "dark") -> str:
         QLabel#badgeOpenFocus {{
             background: {c['accentSoft']};
             color: {c['accentSoftText']};
+            border: 1px solid {c['accent']};
             border-radius: {r['xs']}px;
-            padding: 2px 6px;
-            font-weight: 600;
+            padding: 1px 5px;
+            font-size: 8pt;
+            font-weight: 500;
         }}
         QLabel#badgeSource {{
             background: {c['surfaceHover']};
             color: {c['textMuted']};
             border-radius: {r['xs']}px;
             padding: 2px 6px;
+        }}
+        QFrame#publishCostCard {{
+            background: {c['surfaceHover']};
+            border: 1px solid {c['border']};
+            border-radius: {r['sm']}px;
+        }}
+        QLabel#publishBalanceTitle {{
+            font-weight: 600;
+            color: {c['text']};
+        }}
+        QLabel#publishCostWarn {{
+            color: {c['warning']};
+            font-weight: 600;
         }}
         QPushButton[chip="true"] {{
             background: {c['surface']};
@@ -1536,9 +1552,12 @@ class WorkDetailDialog(QDialog):
         )
         info_row.addWidget(self.author_btn)
 
-        if bool(_get(work, "openfocus_badge", False)):
-            badge = QLabel(t_gallery("gallery_badge_openfocus"))
+        badge_text = t_gallery("gallery_badge_openfocus")
+        if bool(_get(work, "openfocus_badge", False)) and author_name.strip().lower() != badge_text.strip().lower():
+            badge = QLabel(badge_text)
             badge.setObjectName("badgeOpenFocus")
+            badge.setToolTip(t_gallery("gallery_publish_openfocus_badge"))
+            badge.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
             info_row.addWidget(badge)
         info_row.addStretch()
         root.addLayout(info_row)
@@ -1816,6 +1835,7 @@ class GalleryHubDialog(QDialog):
     download_work_requested = pyqtSignal(object)
     work_published = pyqtSignal(object)
     publication_finished = pyqtSignal()
+    account_center_requested = pyqtSignal()
 
     def __init__(
         self,
@@ -1868,6 +1888,21 @@ class GalleryHubDialog(QDialog):
 
         self.tabs = QTabWidget()
         _set_cid(self.tabs, "gallery_hub_tabs", object_name="galleryHubTabs")
+        corner = QWidget()
+        corner_lay = QHBoxLayout(corner)
+        corner_lay.setContentsMargins(0, 0, SPACE["xs"], 0)
+        corner_lay.setSpacing(SPACE["xs"])
+        self.hub_points_badge = QLabel("")
+        _set_cid(self.hub_points_badge, "gallery_hub_points_badge", object_name="badgeOpenFocus")
+        self.hub_points_badge.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self.hub_top_up_btn = QPushButton(t_gallery("gallery_hub_top_up_btn"))
+        _set_cid(self.hub_top_up_btn, "gallery_hub_top_up_btn")
+        self.hub_top_up_btn.setFlat(True)
+        self.hub_top_up_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.hub_top_up_btn.clicked.connect(self.account_center_requested.emit)
+        corner_lay.addWidget(self.hub_points_badge)
+        corner_lay.addWidget(self.hub_top_up_btn)
+        self.tabs.setCornerWidget(corner, Qt.Corner.TopRightCorner)
         root.addWidget(self.tabs, 1)
 
         self._square_tab = self._build_square_tab()
@@ -1882,6 +1917,7 @@ class GalleryHubDialog(QDialog):
         self.tabs.currentChanged.connect(self._on_tab_changed)
 
         self._connect_state_store()
+        self._refresh_points_summary()
 
         if prefill_images:
             self.add_publish_files(
@@ -1938,11 +1974,11 @@ class GalleryHubDialog(QDialog):
 
     def _on_store_profile_changed(self, profile: Any) -> None:
         self._cached_profile = profile or {}
+        self._refresh_points_summary()
 
     def _on_store_config_changed(self, cfg: Any) -> None:
         if cfg is not None:
-            cost = int(_get(cfg, "upload_cost_points", DEFAULT_UPLOAD_COST_POINTS) or DEFAULT_UPLOAD_COST_POINTS)
-            self.cost_hint_label.setText(t_gallery("gallery_publish_cost_hint", cost=cost))
+            self._refresh_points_summary()
             self.lb_reward_banner.setText(self._leaderboard_reward_text(self._active_period))
 
     def showEvent(self, event: QEvent) -> None:
@@ -2174,6 +2210,8 @@ class GalleryHubDialog(QDialog):
         if bool(_get(work, "openfocus_badge", False)):
             of_badge = QLabel(t_gallery("gallery_badge_openfocus"))
             of_badge.setObjectName("badgeOpenFocus")
+            of_badge.setToolTip(t_gallery("gallery_publish_openfocus_badge"))
+            of_badge.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
             badge_row.addWidget(of_badge)
         source_badge = _get(work, "source_badge", None)
         if source_badge in ("ad", "following"):
@@ -2550,14 +2588,25 @@ class GalleryHubDialog(QDialog):
         agree_row.addWidget(self.agreement_view_btn)
         right_col.addLayout(agree_row)
 
-        cost = int(
-            _get(self._get_config(), "upload_cost_points", DEFAULT_UPLOAD_COST_POINTS)
-            or DEFAULT_UPLOAD_COST_POINTS
-        )
-        self.cost_hint_label = QLabel(t_gallery("gallery_publish_cost_hint", cost=cost))
-        self.cost_hint_label.setObjectName("mutedLabel")
+        cost_card = QFrame()
+        cost_card.setObjectName("publishCostCard")
+        cost_lay = QVBoxLayout(cost_card)
+        cost_lay.setContentsMargins(SPACE["sm"], SPACE["xs"], SPACE["sm"], SPACE["xs"])
+        cost_lay.setSpacing(2)
+        self.publish_balance_label = QLabel("")
+        _set_cid(self.publish_balance_label, "gallery_publish_balance_label", object_name="publishBalanceTitle")
+        self.publish_balance_label.setWordWrap(True)
+        cost_lay.addWidget(self.publish_balance_label)
+        self.cost_hint_label = QLabel("")
+        _set_cid(self.cost_hint_label, "gallery_publish_cost_hint", object_name="mutedLabel")
         self.cost_hint_label.setWordWrap(True)
-        right_col.addWidget(self.cost_hint_label)
+        cost_lay.addWidget(self.cost_hint_label)
+        self.insufficient_points_label = QLabel(t_gallery("gallery_publish_insufficient_points"))
+        _set_cid(self.insufficient_points_label, "gallery_publish_insufficient_points", object_name="publishCostWarn")
+        self.insufficient_points_label.setWordWrap(True)
+        self.insufficient_points_label.hide()
+        cost_lay.addWidget(self.insufficient_points_label)
+        right_col.addWidget(cost_card)
 
         self.publish_feedback_label = QLabel("")
         _set_cid(self.publish_feedback_label, "gallery_publish_feedback")
@@ -2797,11 +2846,66 @@ class GalleryHubDialog(QDialog):
         )
         self.watermark_preview_label.setPixmap(rendered)
 
+    def _current_points_balance(self) -> int | None:
+        profile = self._get_profile()
+        if not profile:
+            return None
+        for key in ("points_balance", "points"):
+            raw = _get(profile, key, None)
+            if raw is not None and not isinstance(raw, bool):
+                try:
+                    return int(raw)
+                except (TypeError, ValueError):
+                    continue
+        return None
+
+    def _upload_cost_points(self) -> int:
+        raw = _get(self._get_config(), "upload_cost_points", DEFAULT_UPLOAD_COST_POINTS)
+        try:
+            return max(0, int(raw if raw is not None else DEFAULT_UPLOAD_COST_POINTS))
+        except (TypeError, ValueError):
+            return DEFAULT_UPLOAD_COST_POINTS
+
+    def _refresh_points_summary(self) -> None:
+        balance = self._current_points_balance()
+        unit_cost = self._upload_cost_points()
+        if hasattr(self, "hub_points_badge"):
+            self.hub_points_badge.setText(
+                t_gallery("gallery_hub_points_badge", points=balance)
+                if balance is not None
+                else t_gallery("gallery_hub_points_signed_out")
+            )
+        if hasattr(self, "publish_balance_label"):
+            self.publish_balance_label.setText(
+                t_gallery(
+                    "gallery_publish_cost_summary",
+                    balance=balance if balance is not None else "\u2014",
+                    cost=unit_cost,
+                )
+            )
+        pending_count = sum(1 for item in self._publish_queue if item.stage != "done")
+        if hasattr(self, "cost_hint_label"):
+            if pending_count > 0:
+                total = pending_count * unit_cost
+                self.cost_hint_label.setText(
+                    t_gallery("gallery_publish_batch_estimate", count=pending_count, total=total)
+                )
+            else:
+                self.cost_hint_label.setText(
+                    t_gallery("gallery_publish_cost_hint", cost=unit_cost)
+                )
+        if hasattr(self, "insufficient_points_label"):
+            total = pending_count * unit_cost
+            self.insufficient_points_label.setVisible(
+                pending_count > 0 and balance is not None and balance < total
+            )
+
     def _update_publish_button_state(self) -> None:
         has_pending = any(item.stage != "done" for item in self._publish_queue)
         self.publish_btn.setEnabled(not self._publishing and has_pending and self.agreement_check.isChecked())
         self.add_files_btn.setEnabled(not self._publishing)
         self.clear_files_btn.setEnabled(not self._publishing and bool(self._publish_queue))
+        self._refresh_points_summary()
 
     def open_agreement_dialog(self) -> GalleryAgreementDialog:
         dlg = GalleryAgreementDialog(self, theme=self._theme)

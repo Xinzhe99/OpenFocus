@@ -1531,20 +1531,16 @@ class RenderManager:
             self.clear_prepared_cache()
         prepared_cache = self._prepared_cache if retain_preparation else None
         self._render_context['preparation_key'] = preparation_key if retain_preparation else None
-        # Spec 3.1a: legacy OpenFocus A/B/C process live visualization is
-        # commented out (preserved verbatim) so the result display area stays
-        # free for the OpenFocus Gallery Showcase during fusion wait.
-        # live_preview = (
-        #     interactive and not compare and need_fusion
-        #     and method in ('openfocus_a', 'openfocus_b', 'openfocus_c')
-        #     and not self._preview_mode and roi_rect is None and not use_roi_aligned_images
-        #     and getattr(window, 'live_preview_page', None) is not None
-        #     and not window.wipe_active and not getattr(window, 'roi_mode_active', False))
-        # if live_preview:
-        #     self._render_context['live_source_rows'] = tuple(
-        #         reversed(included_idx) if getattr(window, 'stack_reverse_order', False)
-        #         else included_idx)
-        live_preview = False
+        live_preview = (
+            interactive and not compare and need_fusion
+            and method in ('openfocus_a', 'openfocus_b', 'openfocus_c')
+            and not self._preview_mode and roi_rect is None and not use_roi_aligned_images
+            and getattr(window, 'live_preview_page', None) is not None
+            and not window.wipe_active and not getattr(window, 'roi_mode_active', False))
+        if live_preview:
+            self._render_context['live_source_rows'] = tuple(
+                reversed(included_idx) if getattr(window, 'stack_reverse_order', False)
+                else included_idx)
         worker_cls = globals().get('RenderProcessWorker')
         if worker_cls is None:
             worker_cls = __getattr__('RenderProcessWorker')
@@ -1740,7 +1736,7 @@ class RenderManager:
             self._restore_ui_controls()
             gallery = getattr(window, "gallery_controller", None)
             if gallery is not None:
-                gallery.set_fusion_busy(False)
+                gallery.on_render_ended()
             return
         if getattr(self, '_render_progress_stage', None) != 'publish':
             self.on_render_stage('publish')
@@ -2139,7 +2135,7 @@ class RenderManager:
                         is_compare=bool(compare),
                     )
                 else:
-                    gallery.set_fusion_busy(False)
+                    gallery.on_render_ended()
             if compare:
                 if self._compare_queue:
                     # Keep controls locked and chain the next method. The
@@ -2370,6 +2366,9 @@ class RenderManager:
             label = getattr(self, '_status_bar_label', None)
             if label is not None:
                 label.setText(text)
+            gallery = getattr(self.window, "gallery_controller", None)
+            if gallery is not None and hasattr(gallery, "on_render_progress"):
+                gallery.on_render_progress(done, total, text)
 
     def _finish_compare_run(self) -> None:
         """End a comparison run: unlock the UI and report skipped methods."""
@@ -2400,7 +2399,7 @@ class RenderManager:
         window = self.window
         gallery = getattr(window, "gallery_controller", None)
         if gallery is not None:
-            gallery.set_fusion_busy(False)
+            gallery.on_render_ended()
         if (getattr(self, "_compare_cancelling", False)
                 or bool(getattr(self.worker, "is_cancelled", False))):
             error_message = "CANCELLED: render cancelled"

@@ -612,6 +612,15 @@ def setup_menus(window: QMainWindow) -> None:
     gallery_menu.addAction(open_gallery_action)
     window.ui_objs['action_open_gallery'] = open_gallery_action
 
+    showcase_action = QAction(trans.t('menu_gallery_showcase'), window)
+    showcase_action.setObjectName('action_gallery_showcase')
+    showcase_action.setProperty('trans_key', 'menu_gallery_showcase')
+    showcase_action.triggered.connect(
+        lambda: getattr(window, 'open_gallery_showcase', lambda *_a, **_k: None)()
+    )
+    gallery_menu.addAction(showcase_action)
+    window.ui_objs['action_gallery_showcase'] = showcase_action
+
     screensaver_action = QAction(trans.t('menu_gallery_screensaver'), window)
     screensaver_action.setObjectName('action_gallery_screensaver')
     screensaver_action.setProperty('trans_key', 'menu_gallery_screensaver')

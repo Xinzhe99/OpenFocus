@@ -28,10 +28,12 @@ import numpy as np
 from PyQt6.QtCore import QPoint, QRect, QSize, Qt, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QColor, QImage, QPainter, QPaintEvent, QPixmap, QResizeEvent
 from PyQt6.QtWidgets import (
+    QCheckBox,
     QFrame,
     QHBoxLayout,
     QLabel,
     QMenu,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -42,6 +44,7 @@ from PyQt6.QtWidgets import (
 from core.gallery_media import format_exif_summary
 from locales import trans
 from utils.design_tokens import FONT, RADIUS, SPACE, WEIGHT, palette, rgba
+from utils.frame_pixels import block_signals, is_qobject_alive
 from widgets.danmaku_overlay import (
     DANMAKU_COOLDOWN_SEC,
     DANMAKU_MAX_CHARS,
@@ -670,10 +673,13 @@ class GalleryShowcaseWidget(QWidget):
         self.lbl_openfocus_badge = QLabel("", self.meta_panel)
         self.lbl_openfocus_badge.setObjectName("gallery_openfocus_badge")
         self.lbl_openfocus_badge.setProperty("controlId", "gallery_openfocus_badge")
+        self.lbl_openfocus_badge.setSizePolicy(
+            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
+        )
         self.lbl_openfocus_badge.hide()
 
         author_row.addWidget(self.btn_author)
-        author_row.addWidget(self.lbl_openfocus_badge)
+        author_row.addWidget(self.lbl_openfocus_badge, 0, Qt.AlignmentFlag.AlignVCenter)
         author_row.addStretch(1)
         meta_layout.addLayout(author_row)
 
@@ -1087,10 +1093,14 @@ class GalleryShowcaseWidget(QWidget):
             self.lbl_source_badge.hide()
 
         # Bottom-left author, OpenFocus badge, EXIF summary
-        self.btn_author.setText(work.author_nickname or work.author_id)
-        self.btn_author.setVisible(bool(work.author_nickname or work.author_id))
-        self.lbl_openfocus_badge.setText(_tr("gallery_badge_openfocus"))
-        self.lbl_openfocus_badge.setVisible(bool(work.openfocus_badge))
+        author_text = (work.author_nickname or work.author_id or "").strip()
+        badge_text = _tr("gallery_badge_openfocus").strip()
+        show_badge = bool(work.openfocus_badge) and author_text.lower() != badge_text.lower()
+        self.btn_author.setText(author_text)
+        self.btn_author.setVisible(bool(author_text))
+        self.lbl_openfocus_badge.setText(badge_text)
+        self.lbl_openfocus_badge.setToolTip(_tr("gallery_publish_openfocus_badge"))
+        self.lbl_openfocus_badge.setVisible(show_badge)
         exif_line = format_exif_summary(work.exif)
         self.lbl_exif.setText(exif_line)
         self.lbl_exif.setVisible(bool(exif_line))
@@ -1217,9 +1227,10 @@ class GalleryShowcaseWidget(QWidget):
             f" font-size: {FONT['subtitle']}pt; font-weight: {WEIGHT['semibold']}; }}"
             f" QPushButton#btn_gallery_author:hover {{ color: {accent}; }}"
             f" QLabel#gallery_openfocus_badge {{"
-            f" background-color: {accent}; color: {p['textOnAccent']};"
-            f" border-radius: {RADIUS['xs']}px; padding: 1px 6px;"
-            f" font-size: {FONT['caption']}pt; font-weight: {WEIGHT['semibold']}; }}"
+            f" background-color: {rgba(accent, 0.16)}; color: {p['accentSoftText']};"
+            f" border: 1px solid {rgba(accent, 0.40)};"
+            f" border-radius: {RADIUS['xs']}px; padding: 1px 5px;"
+            f" font-size: 8pt; font-weight: {WEIGHT['medium']}; }}"
             f" QLabel#gallery_exif_summary {{ color: {p['textMuted']};"
             f" font-size: {FONT['caption']}pt; background: transparent; }}"
             f" QFrame#gallery_action_bar QPushButton {{"
@@ -1295,3 +1306,201 @@ class GalleryShowcaseWidget(QWidget):
         target = QRect(x, y, scaled_size.width(), scaled_size.height())
         painter.drawPixmap(target, fg)
         painter.end()
+
+
+class GalleryShowcaseWindow(QWidget):
+    """Standalone non-modal window hosting the OpenFocus Gallery Showcase.
+
+    Decoupled from the main window's source/result canvas so the workspace stays
+    clean at startup, while optionally opening during active fusion waits.
+    """
+
+    return_to_workspace_requested = pyqtSignal()
+    auto_show_toggled = pyqtSignal(bool)
+    window_closed = pyqtSignal()
+
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        *,
+        slide_interval_sec: float = 5.0,
+        blur_cache: StaticBlurBackgroundCache | None = None,
+        danmaku_settings: DanmakuSettings | None = None,
+        auto_show_during_fusion: bool = True,
+        clock: Callable[[], float] | None = None,
+    ) -> None:
+        super().__init__(parent, Qt.WindowType.Window)
+        self.setObjectName("gallery_showcase_window")
+        self.setProperty("controlId", "gallery_showcase_window")
+        self.setMinimumSize(640, 420)
+        self.resize(960, 620)
+        self._theme = "dark"
+        self._fusion_done = False
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        self.showcase = GalleryShowcaseWidget(
+            self,
+            slide_interval_sec=slide_interval_sec,
+            blur_cache=blur_cache,
+            danmaku_settings=danmaku_settings,
+            clock=clock,
+        )
+        root.addWidget(self.showcase, 1)
+
+        self.fusion_bar = QFrame(self)
+        self.fusion_bar.setObjectName("galleryFusionStatusBar")
+        self.fusion_bar.setProperty("controlId", "gallery_fusion_status_bar")
+        bar_lay = QHBoxLayout(self.fusion_bar)
+        bar_lay.setContentsMargins(SPACE["md"], SPACE["xs"], SPACE["md"], SPACE["xs"])
+        bar_lay.setSpacing(SPACE["sm"])
+
+        self.lbl_fusion_status = QLabel("", self.fusion_bar)
+        self.lbl_fusion_status.setObjectName("galleryFusionStatusLabel")
+        self.lbl_fusion_status.setProperty("controlId", "gallery_fusion_status_label")
+        bar_lay.addWidget(self.lbl_fusion_status)
+
+        self.fusion_progress = QProgressBar(self.fusion_bar)
+        self.fusion_progress.setObjectName("galleryFusionProgress")
+        self.fusion_progress.setTextVisible(False)
+        self.fusion_progress.setFixedHeight(6)
+        self.fusion_progress.setMinimumWidth(140)
+        self.fusion_progress.setMaximumWidth(260)
+        self.fusion_progress.setRange(0, 0)
+        bar_lay.addWidget(self.fusion_progress)
+
+        bar_lay.addStretch(1)
+
+        self.chk_auto_show = QCheckBox("", self.fusion_bar)
+        self.chk_auto_show.setObjectName("chk_gallery_auto_show_fusion")
+        self.chk_auto_show.setProperty("controlId", "chk_gallery_auto_show_fusion")
+        self.chk_auto_show.setChecked(bool(auto_show_during_fusion))
+        self.chk_auto_show.toggled.connect(self.auto_show_toggled.emit)
+        bar_lay.addWidget(self.chk_auto_show)
+
+        self.btn_return = QPushButton("", self.fusion_bar)
+        self.btn_return.setObjectName("btn_gallery_return_workspace")
+        self.btn_return.setProperty("controlId", "btn_gallery_return_workspace")
+        self.btn_return.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_return.clicked.connect(self._on_return_clicked)
+        bar_lay.addWidget(self.btn_return)
+
+        self.fusion_bar.hide()
+        root.addWidget(self.fusion_bar)
+
+        self.apply_theme(self._theme)
+        self.retranslate()
+
+    def set_auto_show_checked(self, checked: bool) -> None:
+        with block_signals(self.chk_auto_show):
+            self.chk_auto_show.setChecked(bool(checked))
+
+    def set_fusion_in_progress(self, text: str = "", *, done: int = 0, total: int = 0) -> None:
+        self._fusion_done = False
+        self.lbl_fusion_status.setText(text or _tr("gallery_fusion_waiting_status"))
+        if total > 0:
+            self.fusion_progress.setRange(0, int(total))
+            self.fusion_progress.setValue(min(max(0, int(done)), int(total)))
+        else:
+            self.fusion_progress.setRange(0, 0)
+        self.fusion_progress.show()
+        self.btn_return.setProperty("primary", False)
+        self.btn_return.style().unpolish(self.btn_return)
+        self.btn_return.style().polish(self.btn_return)
+        self.btn_return.setText(_tr("gallery_fusion_return_btn"))
+        self.fusion_bar.show()
+
+    def set_fusion_completed(self) -> None:
+        self._fusion_done = True
+        self.lbl_fusion_status.setText(_tr("gallery_fusion_done_status"))
+        self.fusion_progress.setRange(0, 1)
+        self.fusion_progress.setValue(1)
+        self.btn_return.setProperty("primary", True)
+        self.btn_return.style().unpolish(self.btn_return)
+        self.btn_return.style().polish(self.btn_return)
+        self.btn_return.setText(_tr("gallery_fusion_view_result_btn"))
+        self.fusion_bar.show()
+
+    def hide_fusion_bar(self) -> None:
+        self._fusion_done = False
+        self.fusion_bar.hide()
+
+    def set_works(self, works: Sequence[Any], *, start_index: int = 0) -> None:
+        if is_qobject_alive(self.showcase):
+            self.showcase.set_works(works, start_index=start_index)
+
+    def set_danmaku_settings(self, settings: DanmakuSettings) -> None:
+        if is_qobject_alive(self.showcase):
+            self.showcase.set_danmaku_settings(settings)
+
+    def set_fusion_busy(self, busy: bool) -> None:
+        if is_qobject_alive(self.showcase):
+            self.showcase.set_fusion_busy(busy)
+
+    def apply_theme(self, theme: str) -> None:
+        self._theme = theme
+        p = palette(theme)
+        self.setStyleSheet(
+            f"QWidget#gallery_showcase_window {{ background-color: {p['canvas']}; }}"
+            f" QFrame#galleryFusionStatusBar {{ background-color: {p['surface']};"
+            f" border-top: 1px solid {p['border']}; }}"
+            f" QLabel#galleryFusionStatusLabel {{ color: {p['text']};"
+            f" font-size: {FONT['caption']}pt; font-weight: {WEIGHT['medium']};"
+            " background: transparent; }"
+            f" QCheckBox#chk_gallery_auto_show_fusion {{ color: {p['textMuted']};"
+            f" font-size: {FONT['caption']}pt; background: transparent; }}"
+            f" QProgressBar#galleryFusionProgress {{ background: {p['bg']};"
+            f" border: none; border-radius: 3px; }}"
+            f" QProgressBar#galleryFusionProgress::chunk {{ background: {p['accent']};"
+            " border-radius: 3px; }"
+            f" QPushButton#btn_gallery_return_workspace {{ background: transparent;"
+            f" color: {p['textMuted']}; border: 1px solid {p['border']};"
+            f" border-radius: {RADIUS['sm']}px; padding: 3px 10px;"
+            f" font-size: {FONT['caption']}pt; font-weight: {WEIGHT['regular']}; }}"
+            f" QPushButton#btn_gallery_return_workspace:hover {{"
+            f" color: {p['text']}; background-color: {p['surfaceHover']};"
+            f" border-color: {p['borderStrong']}; }}"
+            f" QPushButton#btn_gallery_return_workspace[primary=\"true\"] {{"
+            f" background-color: {p['accent']}; color: {p['textOnAccent']}; border: none;"
+            f" padding: 4px 12px; font-weight: {WEIGHT['semibold']}; }}"
+            f" QPushButton#btn_gallery_return_workspace[primary=\"true\"]:hover {{"
+            f" background-color: {p['accentHover']}; }}"
+        )
+        if is_qobject_alive(self.showcase):
+            self.showcase.apply_theme(theme)
+
+    @pyqtSlot()
+    def retranslate(self) -> None:
+        self.setWindowTitle(_tr("gallery_showcase_window_title"))
+        self.chk_auto_show.setText(_tr("gallery_auto_show_during_fusion"))
+        if self._fusion_done:
+            self.lbl_fusion_status.setText(_tr("gallery_fusion_done_status"))
+            self.btn_return.setText(_tr("gallery_fusion_view_result_btn"))
+        else:
+            if not self.lbl_fusion_status.text():
+                self.lbl_fusion_status.setText(_tr("gallery_fusion_waiting_status"))
+            self.btn_return.setText(_tr("gallery_fusion_return_btn"))
+        if is_qobject_alive(self.showcase):
+            self.showcase.retranslate()
+
+    def _on_return_clicked(self) -> None:
+        self.return_to_workspace_requested.emit()
+        self.hide()
+
+    def showEvent(self, event: Any) -> None:
+        super().showEvent(event)
+        if is_qobject_alive(self.showcase):
+            self.showcase.resume_slideshow("window_hidden")
+
+    def hideEvent(self, event: Any) -> None:
+        if is_qobject_alive(self.showcase):
+            self.showcase.pause_slideshow("window_hidden")
+        super().hideEvent(event)
+
+    def closeEvent(self, event: Any) -> None:
+        if is_qobject_alive(self.showcase):
+            self.showcase.pause_slideshow("window_hidden")
+        self.window_closed.emit()
+        super().closeEvent(event)

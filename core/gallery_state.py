@@ -648,7 +648,7 @@ def build_builtin_fallback_works(assets_dir: Optional[Path] = None) -> list[Gall
             "author_nickname": "OpenFocus",
             "rel_path": os.path.join("Examples", "a00.jpg"),
             "ai_tags": ("botanical", "microscopy"),
-            "exif": {"camera": "OpenFocus Sample Stack", "lens": "Macro 90mm f/2.8"},
+            "exif": {"lens": "Macro 90mm f/2.8"},
         },
         {
             "work_id": "builtin_openfocus_demo_02",
@@ -657,7 +657,7 @@ def build_builtin_fallback_works(assets_dir: Optional[Path] = None) -> list[Gall
             "author_nickname": "OpenFocus",
             "rel_path": os.path.join("demo_stack", "demo_01.jpg"),
             "ai_tags": ("product_still_life", "abstract_texture"),
-            "exif": {"camera": "OpenFocus Demo", "lens": "Macro 60mm f/4"},
+            "exif": {"lens": "Macro 60mm f/4"},
         },
         {
             "work_id": "builtin_openfocus_brand_03",
@@ -666,7 +666,7 @@ def build_builtin_fallback_works(assets_dir: Optional[Path] = None) -> list[Gall
             "author_nickname": "OpenFocus",
             "rel_path": "comparison_ai_vs_gff.png",
             "ai_tags": ("microscopy",),
-            "exif": {"camera": "OpenFocus Studio"},
+            "exif": {"lens": "Macro Focus Stack"},
         },
     )
 
@@ -696,7 +696,7 @@ def build_builtin_fallback_works(assets_dir: Optional[Path] = None) -> list[Gall
                 author_id="openfocus_official",
                 author_nickname="OpenFocus",
                 title="OpenFocus Focus Stacking Showcase",
-                exif={"camera": "OpenFocus"},
+                exif={"lens": "Macro Focus Stack"},
                 ai_tags=("other",),
                 openfocus_badge=True,
                 allow_download=False,

@@ -844,3 +844,43 @@ def test_large_translated_layouts_render_cleanly_across_locales(qapp, lang):
         dlg.close()
     finally:
         trans.set_language(prev_lang)
+
+
+def test_gallery_hub_displays_points_balance_and_dynamic_publish_cost(qapp, tmp_path):
+    class _Store:
+        def __init__(self):
+            self.profile = {"user_id": "u1", "nickname": "Tester", "points_balance": 100}
+            self.config = {"upload_cost_points": 100}
+
+        def refresh_account_silently(self):
+            return True
+
+    img1 = tmp_path / "shot1.png"
+    img2 = tmp_path / "shot2.png"
+    QImage(24, 24, QImage.Format.Format_RGB32).save(str(img1))
+    QImage(24, 24, QImage.Format.Format_RGB32).save(str(img2))
+
+    store = _Store()
+    dlg = GalleryHubDialog(state_store=store, initial_tab=2)
+    dlg.show()
+    qapp.processEvents()
+
+    assert "100" in dlg.hub_points_badge.text()
+    assert "100" in dlg.publish_balance_label.text()
+    assert dlg.insufficient_points_label.isVisible() is False
+
+    account_requests = []
+    dlg.account_center_requested.connect(lambda: account_requests.append(True))
+    dlg.hub_top_up_btn.click()
+    assert account_requests == [True]
+
+    dlg.add_publish_files([str(img1)])
+    qapp.processEvents()
+    assert "100" in dlg.cost_hint_label.text()
+    assert dlg.insufficient_points_label.isVisible() is False
+
+    dlg.add_publish_files([str(img2)])
+    qapp.processEvents()
+    assert "200" in dlg.cost_hint_label.text()
+    assert dlg.insufficient_points_label.isVisible() is True
+    dlg.close()

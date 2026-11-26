@@ -685,7 +685,6 @@ class OpenFocus(QMainWindow):
         self.result_control_bar = result_panel.control_bar
         self.result_slider = result_panel.slider
         self.live_preview_page = result_panel.live_preview_page
-        self.gallery_showcase_page = result_panel.gallery_showcase_page
         self.result_slider.actionTriggered.connect(self.render_manager.inspect_previous_output)
         # 连接右侧面板的ROI模式退出请求信号
         self.lbl_result_img.roiModeExitRequested.connect(self._on_roi_mode_exit_requested)
@@ -772,7 +771,6 @@ class OpenFocus(QMainWindow):
         for _attribute, _control in ((
                 "lbl_source_img", "view_source"),
                 ("lbl_result_img", "view_result"),
-                ("gallery_showcase_page", "gallery_showcase"),
                 ("wipe_widget", "wipe_compare"),
                 ("wipe_bar", "wipe_bar"),
                 ("view_stack", "result_view_stack"),
@@ -3848,6 +3846,19 @@ class OpenFocus(QMainWindow):
         gallery = getattr(self, 'gallery_controller', None)
         if gallery is not None:
             return gallery.open_downloads_folder()
+        return None
+
+    @property
+    def gallery_showcase_page(self):
+        """Return the standalone Gallery Showcase widget when created."""
+        gallery = getattr(self, 'gallery_controller', None)
+        return gallery.showcase if gallery is not None else None
+
+    def open_gallery_showcase(self):
+        """Open the standalone OpenFocus Gallery Showcase window."""
+        gallery = getattr(self, 'gallery_controller', None)
+        if gallery is not None:
+            return gallery.show_gallery_showcase(force=True)
         return None
 
     def open_gallery_screensaver(self):

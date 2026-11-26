@@ -216,6 +216,7 @@ def test_top_level_account_and_gallery_menus_via_ctl_and_unread_dot(integrated_w
         "action_message_box",
         "action_my_downloads",
         "action_open_gallery",
+        "action_gallery_showcase",
         "action_gallery_screensaver",
     ):
         assert expected in keys, f"{expected} missing from ctl action catalog"
@@ -288,31 +289,48 @@ def test_showcase_startup_hide_result_and_upload_to_gallery(integrated_window, q
     window, _server, _settings, _tmp_path = integrated_window
     gc = window.gallery_controller
 
-    # Startup/idle displays Gallery Showcase automatically.
-    assert window.view_stack.currentWidget() is window.gallery_showcase_page
-    assert gc.is_showing_showcase() is True
+    # Startup stays cleanly on user result canvas; no embedded Gallery replaces canvas.
+    assert window.view_stack.currentIndex() == 0
+    assert gc.is_showing_showcase() is False
+    assert gc.showcase_window is None
 
-    # Displaying a fusion result restores the normal result canvas (index 0).
+    # Starting fusion opens the standalone Gallery Showcase window with progress bar.
+    gc.on_render_started(is_preview=False)
+    qapp.processEvents()
+    assert window.view_stack.currentIndex() == 0
+    assert gc.is_showing_showcase() is True
+    assert gc.showcase_window is not None and gc.showcase_window.fusion_bar.isVisible() is True
+
+    gc.on_render_progress(2, 5, "Stacking 40%")
+    assert gc.showcase_window.fusion_progress.maximum() == 5
+    assert gc.showcase_window.fusion_progress.value() == 2
+    assert "40%" in gc.showcase_window.lbl_fusion_status.text()
+
+    # Completing fusion auto-closes the standalone window when user is not composing.
     fused = np.full((64, 96, 3), 140, dtype=np.uint8)
     window.fusion_result = fused
     assert window.output_manager.display_specific_fusion_result(fused) is True
+    gc.on_fusion_completed(fused, interactive=True)
     qapp.processEvents()
     assert window.view_stack.currentIndex() == 0
     assert gc.is_showing_showcase() is False
 
-    # Right-click context menu on lbl_result_img exposes Hide Fusion Result & Upload to Gallery.
+    # While composing danmaku, completion keeps the window open with View Fusion Result action.
+    gc.on_render_started(is_preview=False)
+    gc.showcase.open_danmaku_composer()
+    qapp.processEvents()
+    gc.on_fusion_completed(fused, interactive=True)
+    qapp.processEvents()
+    assert gc.is_showing_showcase() is True
+    gc.showcase_window.btn_return.click()
+    qapp.processEvents()
+    assert gc.is_showing_showcase() is False
+
+    # Right-click context menu on lbl_result_img exposes Upload to Gallery.
     menu = gc.build_result_context_menu(window.lbl_result_img)
     actions_by_name = {act.objectName(): act for act in menu.actions()}
-    assert "action_hide_fusion_result" in actions_by_name
     assert "action_upload_to_gallery" in actions_by_name
-    assert actions_by_name["action_hide_fusion_result"].isEnabled()
     assert actions_by_name["action_upload_to_gallery"].isEnabled()
-
-    # Triggering "Hide Fusion Result" switches view_stack back to Gallery Showcase.
-    actions_by_name["action_hide_fusion_result"].trigger()
-    qapp.processEvents()
-    assert window.view_stack.currentWidget() is window.gallery_showcase_page
-    assert gc.is_showing_showcase() is True
 
     # Triggering "Upload to Gallery" opens Publish tab prefilled with fused image & openfocus_badge=True.
     actions_by_name["action_upload_to_gallery"].trigger()
@@ -332,6 +350,7 @@ def test_showcase_startup_hide_result_and_upload_to_gallery(integrated_window, q
 
 def test_danmaku_composer_pauses_and_resumes_slide_timer(integrated_window, qapp):
     window, _server, _settings, _tmp_path = integrated_window
+    assert window.gallery_controller.show_gallery_showcase(force=True) is True
     showcase = window.gallery_showcase_page
     showcase.set_works(
         [
@@ -573,6 +592,7 @@ def test_webp_to_jpg_download_honor_card_upload_prompt_and_advanced_settings(int
     adv.spin_danmaku_font_size.setValue(22)
     adv.spin_danmaku_opacity.setValue(60)
     adv.combo_danmaku_density.setCurrentIndex(adv.combo_danmaku_density.findData("low"))
+    adv.chk_gallery_auto_show_fusion.setChecked(False)
 
     custom_dl = tmp_path / "custom_dl"
     custom_cache = tmp_path / "custom_cache"
@@ -586,12 +606,14 @@ def test_webp_to_jpg_download_honor_card_upload_prompt_and_advanced_settings(int
 
     adv._apply()
     assert adv.result() == QDialog.DialogCode.Accepted
+    gc.show_gallery_showcase(force=True)
     live_dm = window.gallery_showcase_page.danmaku_overlay.settings
     assert live_dm.enabled is False
     assert live_dm.position == "bottom"
     assert live_dm.font_size == 22
     assert abs(live_dm.opacity - 0.60) < 0.01
     assert live_dm.density == "low"
+    assert gc.auto_show_during_fusion() is False
     assert gc.cache_max_mb() == 150
     assert resolve_gallery_download_dir(create=False) == custom_dl
     assert gc.disk_cache.cache_dir == custom_cache
@@ -713,10 +735,13 @@ def test_http_404_config_and_me_degrade_silently_and_preserve_local_account(
     assert ("account", "not_found") in sync_errors
     assert QApplication.activeModalWidget() is None
 
-    # 2. Idle Gallery showcase stays visible with offline built-in slides.
-    assert window.view_stack.currentWidget() is window.gallery_showcase_page
+    # 2. Main workspace stays clean at idle; standalone Showcase opens on demand with built-in slides.
+    assert window.view_stack.currentIndex() == 0
+    assert gc.show_gallery_showcase(force=True) is True
+    assert gc.is_showing_showcase() is True
     assert len(window.gallery_showcase_page.works) >= 1
     assert any(w.id.startswith("builtin_") for w in window.gallery_showcase_page.works)
+    gc.show_result_canvas()
     gc.allow_headless_upload_prompt = True
     assert gc.on_fusion_completed(np.zeros((8, 8, 3), np.uint8)) is None
 

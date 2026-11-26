@@ -486,3 +486,11 @@ def test_retired_gallery_responses_cannot_replace_new_session(qapp, retired_requ
     assert store.notifications == []
     assert store.feed_works == []
     store.shutdown()
+
+
+def test_builtin_fallback_works_avoid_duplicate_openfocus_camera_metadata():
+    works = gs.build_builtin_fallback_works()
+    assert works
+    for work in works:
+        cam = str(work.exif.get("camera", "") or "")
+        assert "openfocus" not in cam.lower()
