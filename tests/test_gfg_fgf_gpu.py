@@ -331,7 +331,8 @@ def test_gfg_unknown_gpu_memory_falls_back(monkeypatch):
 @pytest.mark.parametrize('maximum_mib,unified,reason', [
     (640, False, None),
     (500, False, 'host memory budget'),
-    (640, True, 'device budget'),
+    (640, True, None),
+    (600, True, 'device budget'),
 ])
 def test_gfg_gpu_admits_one_scaled_ecc_source_under_job_cap(
         tmp_path, monkeypatch, maximum_mib, unified, reason):
@@ -541,3 +542,48 @@ def test_gfg_drains_queue_on_error_and_cancel(monkeypatch):
     with pytest.raises(RegistrationCancelled):
         MultiFocusFusion(use_gpu=True, **options).fuse(frames, thread_count=1)
     assert drained == [True]
+
+
+@pytest.mark.parametrize('dtype,shape,kernel_size', [
+    (np.uint8, (544, 544), 7),
+    (np.uint16, (544, 544), 7),
+    (np.uint8, (517, 523), 21),
+])
+def test_gfg_row_parallel_cpu_and_large_kernel_gpu_parity(dtype, shape, kernel_size, monkeypatch):
+    """Exercise row-parallel CPU, fused div4/non-div4 paths, and large-kernel GPU scan."""
+    from fusion_methods import _openfocus_gpu
+    rng = np.random.default_rng(7201)
+    scale = 65535 if dtype == np.uint16 else 255
+    sharp = (rng.random(shape + (3,)) * scale).astype(dtype)
+    blurred = cv2.GaussianBlur(sharp, (0, 0), 5)
+    h = shape[0]
+    frames = []
+    for y0, y1 in ((0, h // 2), (h // 3, (2 * h) // 3), (h // 2, h)):
+        f = blurred.copy()
+        f[y0:y1] = sharp[y0:y1]
+        frames.append(f)
+
+    cpu_t1 = gfg_fgf.gfgfgf_impl(frames, None, kernel_size=kernel_size, thread_count=1)
+    cpu_par = gfg_fgf.gfgfgf_impl(frames, None, kernel_size=kernel_size, thread_count=4)
+    if dtype == np.uint8:
+        assert np.abs(cpu_par.astype(int) - cpu_t1.astype(int)).max() <= 1
+        assert np.mean(cpu_par == cpu_t1) >= 0.999
+    else:
+        np.testing.assert_array_equal(cpu_par, cpu_t1)
+
+    if not _openfocus_gpu.gpu_available():
+        return
+    monkeypatch.setattr(_openfocus_gpu, '_free_vram',
+                        lambda device: (int(device.global_mem_size),
+                                        int(device.global_mem_size)))
+    devs = []
+    gpu_out = gfg_fgf.gfgfgf_impl(frames, None, kernel_size=kernel_size,
+                                  use_gpu=True, device_callback=devs.append)
+    assert devs and devs[-1].startswith('OpenCL: ')
+    diff = np.abs(gpu_out.astype(np.float64) - cpu_t1.astype(np.float64))
+    if dtype == np.uint8:
+        assert diff.max() <= 1
+        assert np.mean(diff == 0) >= 0.95
+    else:
+        assert diff.max() <= 0.05
+
