@@ -61,9 +61,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Read TIFF calibration during the stack metadata scan.
 - Accelerate eligible mapped alignment warps, TIFF decoding, and 16-bit display
   conversion. Use shared memory for eligible render process transfers.
-- Speed up the OpenFocus alignment search, refinement, and RGB warps on AVX2
+- Speed up the OpenFocus alignment search, refinement, and warps on AVX2
   processors with identical output. On the laptop used for testing, aligning
-  four 5-megapixel frames ran about 1.5 times as fast.
+  four 5-megapixel frames ran about 1.5 times as fast, and warps that read
+  consecutive source columns, as most do, took about half the cycles.
 - Use OpenCL for eligible large integer ECC reductions, including 8×8 area
   downsizing. Apply exact Lanczos4 warps for large 8-bit and 16-bit frames
   during ECC and homography registration and whenever a GPU render resolves
