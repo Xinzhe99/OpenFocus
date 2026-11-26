@@ -1312,3 +1312,246 @@ def test_native_frame_switch_and_shutdown_wait_for_retirement(dialog, tmp_path, 
     current.finished.emit()
     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     assert sip.isdeleted(dialog)
+
+
+def _make_workspace_host(qapp, *, alignment='ecc', fusion_method='openfocus_a',
+                         stack_shape=(160, 560), experimental=False):
+    from PyQt6.QtWidgets import QListWidget
+    from controllers.output_manager import OutputManager
+
+    host = QWidget()
+    host.experimental_features = experimental
+    host.raw_images = make_two_focus_stack(stack_shape)
+    host.source_revision = 5
+    host.current_fusion_method = lambda: fusion_method
+    host.current_alignment_method = lambda: alignment
+    host.brightness_option_for = lambda option, _m: option == 'exposure_match'
+    host.registration_parameters_for = lambda m: ({'failure_policy': 'fail'} if m != 'none' else {})
+    host.reg_downscale_width = 1024
+    host.sharpen_output = False
+    host.stack_reverse_order = False
+    host.tile_enabled = False
+    host.thread_count = 1
+    host.output_list = QListWidget(host)
+    host.output_manager = OutputManager(host)
+    return host
+
+
+def _add_workspace_fusion(host, method, label, image, *, aligned_frames=None,
+                          alignment_options=('ecc',), extra_params=None,
+                          clear_frames=False):
+    from PyQt6.QtWidgets import QListWidgetItem
+    from controllers.output_manager import OutputRecord, OUTPUT_RECORD_ROLE
+    from core.algorithms import resolve_fusion_parameters
+    from core.render_context import build_render_context
+
+    params = resolve_fusion_parameters(method)
+    if extra_params:
+        params.update(extra_params)
+    frames_in = aligned_frames if aligned_frames is not None else host.raw_images
+    reg_params = ({'failure_policy': 'fail'} if alignment_options else {})
+    context_params = {
+        **params,
+        'registration_parameters': reg_params,
+        'reg_downscale_width': getattr(host, 'reg_downscale_width', 1024),
+        'exposure_match': True,
+        'base_correct': False,
+        'base_frame': 'none',
+        'sharpen_output': False,
+        'sharpen_strength': 100,
+        'sort_mode': 'asc',
+    }
+    context = build_render_context(
+        frames_in, image, algorithm=method,
+        alignment_options=alignment_options,
+        aligned=bool(alignment_options),
+        source_revision=host.source_revision,
+        parameters=context_params,
+    )
+    if clear_frames:
+        context.frames = ()
+    record = OutputRecord.create(image, label, context=context)
+    QListWidgetItem(label, host.output_list).setData(OUTPUT_RECORD_ROLE, record)
+    return record
+
+
+def test_openfocus_abc_workspace_outputs_reuse_immediately_without_workers(qapp, monkeypatch):
+    import numpy as np
+    from core.compare_worker import AlignmentWorker
+    from core.source_frames import process_frame
+    from dialogs import compare
+
+    host = _make_workspace_host(qapp, alignment='ecc', fusion_method='openfocus_a')
+    # Use ProcessedFrame descriptors like streaming OpenFocus A/B/C renders do so
+    # _show_frame(0) exercises the asynchronous BoundedPreviewWorker path.
+    processed = [process_frame(f, lambda img: img) for f in host.raw_images]
+    colors = {
+        'openfocus_a': (10, 120, 30),
+        'openfocus_b': (20, 180, 40),
+        'openfocus_c': (30, 220, 50),
+    }
+    records = {}
+    for method, bgr in colors.items():
+        img = np.full((160, 560, 3), bgr, dtype=np.uint8)
+        records[method] = _add_workspace_fusion(
+            host, method, f'Workspace {method}', img,
+            aligned_frames=processed, alignment_options=('ecc',),
+        )
+
+    worker_starts = []
+    orig_align = AlignmentWorker.start
+    orig_preview = PreviewWorker.start
+    monkeypatch.setattr(AlignmentWorker, 'start',
+                        lambda self, *a, **kw: (worker_starts.append('align'), orig_align(self, *a, **kw)))
+    monkeypatch.setattr(PreviewWorker, 'start',
+                        lambda self, *a, **kw: (worker_starts.append(('preview', self.methods)), orig_preview(self, *a, **kw)))
+
+    dialog = CompareDialog(host)
+    try:
+        dialog.show()
+        _until(qapp, lambda: _finished(dialog) and all(
+            dialog._canvases[m].can_show_full() for m in colors))
+        # Give any queued reference-preview completion callback time to fire.
+        QTest.qWait(250)
+        qapp.processEvents()
+        assert worker_starts == []
+        assert set(dialog._selected_methods()) == set(colors)
+        for method, bgr in colors.items():
+            assert dialog._results[method]['record'] is records[method]
+            canvas = dialog._canvases[method]
+            assert canvas.can_show_full()
+            assert canvas._pixmap.toImage().pixelColor(0, 0).green() == bgr[1]
+    finally:
+        if not sip.isdeleted(dialog):
+            dialog.reject()
+        _until(qapp, lambda: not dialog._has_workers())
+        host.deleteLater()
+
+
+def test_workspace_reuse_handles_empty_frames_dropdown_mismatch_and_mode_switching(qapp, monkeypatch):
+    import numpy as np
+    from core.compare_worker import AlignmentWorker
+    from dialogs import compare
+
+    # Main window dropdown is 'ecc', while workspace outputs were fused with 'none'
+    # and streaming retained no context.frames.
+    host = _make_workspace_host(qapp, alignment='ecc', fusion_method='openfocus_b')
+    colors = {
+        'openfocus_a': (5, 110, 15),
+        'openfocus_b': (5, 165, 25),
+        'openfocus_c': (5, 215, 35),
+    }
+    for method, bgr in colors.items():
+        img = np.full((160, 560, 3), bgr, dtype=np.uint8)
+        _add_workspace_fusion(
+            host, method, f'Stream {method}', img,
+            alignment_options=(), clear_frames=True,
+        )
+
+    worker_starts = []
+    monkeypatch.setattr(AlignmentWorker, 'start',
+                        lambda self, *a, **kw: worker_starts.append('align'))
+    monkeypatch.setattr(PreviewWorker, 'start',
+                        lambda self, *a, **kw: worker_starts.append(('preview', self.methods)))
+
+    dialog = CompareDialog(host)
+    try:
+        dialog.show()
+        _until(qapp, lambda: _finished(dialog) and all(
+            dialog._canvases[m].can_show_full() for m in colors))
+        assert worker_starts == []
+        assert set(dialog._selected_methods()) == set(colors)
+        assert dialog.align_combo.currentData() == 'none'
+
+        # Switch to ROI detail mode: crops the existing full-frame results with ZERO workers.
+        dialog.ref_canvas.set_magnification(4)
+        dialog.mode_combo.setCurrentIndex(dialog.mode_combo.findData(True))
+        _until(qapp, lambda: _finished(dialog) and all(
+            dialog._canvases[m].has_region() for m in colors))
+        QTest.qWait(250)
+        assert worker_starts == []
+        for method, bgr in colors.items():
+            canvas = dialog._canvases[method]
+            assert canvas._bounds == dialog.ref_canvas.region()
+            assert canvas._pixmap.toImage().pixelColor(0, 0).green() == bgr[1]
+
+        # Move ROI inside full-frame bounds: still ZERO workers.
+        dialog.ref_canvas.set_region_centre(QPointF(90, 80))
+        _until(qapp, lambda: _finished(dialog) and all(
+            dialog._canvases[m]._bounds == dialog.ref_canvas.region()
+            and not dialog._canvases[m]._pending for m in colors))
+        QTest.qWait(250)
+        assert worker_starts == []
+
+        # Switch back to full-frame mode: still ZERO workers (shows full result
+        # in both detail and full overview).
+        dialog.mode_combo.setCurrentIndex(dialog.mode_combo.findData(False))
+        _until(qapp, lambda: _finished(dialog) and all(
+            dialog._canvases[m].has_region() for m in colors))
+        dialog.view_combo.setCurrentIndex(dialog.view_combo.findData('full'))
+        _until(qapp, lambda: _finished(dialog) and all(
+            dialog._canvases[m].can_show_full() for m in colors))
+        QTest.qWait(250)
+        assert worker_starts == []
+    finally:
+        if not sip.isdeleted(dialog):
+            dialog.reject()
+        _until(qapp, lambda: not dialog._has_workers())
+        host.deleteLater()
+
+
+def test_workspace_reuse_computes_only_edited_or_added_method_and_aligns_lazily(qapp, monkeypatch):
+    import numpy as np
+    from core.compare_worker import AlignmentWorker
+
+    host = _make_workspace_host(qapp, alignment='ecc', fusion_method='openfocus_a', experimental=True)
+    saved_images = {}
+    for method, green in (('openfocus_a', 101), ('openfocus_b', 151), ('openfocus_c', 201)):
+        img = np.full((160, 560, 3), (0, green, 0), dtype=np.uint8)
+        saved_images[method] = img
+        _add_workspace_fusion(
+            host, method, f'Saved {method}', img,
+            alignment_options=('ecc',), clear_frames=True,
+        )
+
+    align_calls = []
+    fuse_calls = []
+    monkeypatch.setattr('core.compare_worker.align_frames',
+                        lambda imgs, align, shared, cancel, reverse_registration=False: (
+                            align_calls.append(align) or list(imgs)))
+    monkeypatch.setattr(PreviewWorker, '_fuse',
+                        lambda worker, method: (
+                            fuse_calls.append(method)
+                            or (np.full((160, 560, 3), (0, 250, 0), dtype=np.uint8), (0, 0, 560, 160))))
+
+    dialog = CompareDialog(host)
+    try:
+        dialog.show()
+        _until(qapp, lambda: _finished(dialog) and all(
+            dialog._canvases[m].can_show_full() for m in saved_images))
+        assert align_calls == []
+        assert fuse_calls == []
+
+        # Edit openfocus_a radius: aligns lazily once and fuses ONLY openfocus_a.
+        dialog.param_widgets['openfocus_a']['radius'].setValue(12)
+        _until(qapp, lambda: _finished(dialog) and dialog._result_is_current('openfocus_a'))
+        assert align_calls == ['ecc']
+        assert fuse_calls == ['openfocus_a']
+        assert dialog._results['openfocus_b']['image'] is saved_images['openfocus_b']
+        assert dialog._results['openfocus_c']['image'] is saved_images['openfocus_c']
+
+        # Check a 4th uncomputed method ('dct'): reuses the already-aligned frames
+        # and fuses ONLY 'dct', preserving A, B, C.
+        edited_a = dialog._results['openfocus_a']['image']
+        dialog._checks['dct'].setChecked(True)
+        _until(qapp, lambda: _finished(dialog) and dialog._result_is_current('dct'))
+        assert align_calls == ['ecc']
+        assert fuse_calls == ['openfocus_a', 'dct']
+        assert dialog._results['openfocus_a']['image'] is edited_a
+        assert dialog._results['openfocus_b']['image'] is saved_images['openfocus_b']
+        assert dialog._results['openfocus_c']['image'] is saved_images['openfocus_c']
+    finally:
+        if not sip.isdeleted(dialog):
+            dialog.reject()
+        _until(qapp, lambda: not dialog._has_workers())
+        host.deleteLater()
