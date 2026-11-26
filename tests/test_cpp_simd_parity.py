@@ -818,6 +818,145 @@ def test_rgb_tile_accumulation_preserves_shifted_input_view() -> None:
     np.testing.assert_array_equal(acc, np.ones_like(acc))
 
 
+def test_overlapping_kernel_buffers_match_scalar() -> None:
+    mod = _require_avx2()
+    rng = np.random.default_rng(1)
+    h, w = 12, 40
+    ch, cw = 6, 20
+    plane = rng.integers(0, 65536, (17, 34), dtype=np.uint16)
+    rgb = rng.integers(0, 65536, (5, 28), dtype=np.uint16)
+    raw = rng.integers(0, 65536, (h, w, 3), dtype=np.uint16)
+    fine = rng.uniform(0.0, 65535.0, (h, w, 3)).astype(np.float32)
+    coarse = rng.uniform(0.0, 65535.0, (ch, cw, 3)).astype(np.float32)
+    levels = rng.uniform(0.0, 65535.0, (ch, w + 1, 3)).astype(np.float32)
+    target = rng.random((h, w, 3), dtype=np.float32)
+    codes = rng.integers(0, 65535, (h, w + 1), dtype=np.uint16)
+
+    def iir_separate():
+        out = np.empty_like(plane)
+        mod.of_depth_axis_iir(plane, None, out, 3072, 512, 0, 0, 3, 1, 1)
+        return [out]
+
+    def iir_in_place():
+        b = plane.copy()
+        mod.of_depth_axis_iir(b, None, b, 3072, 512, 0, 0, 3, 0, 1)
+        return [b]
+
+    def iir_vertical():
+        b = plane.copy()
+        mod.of_depth_axis_iir(b[:16, :33], None, b[:16, 1:], 3072, 512, 0, 0, 3, 0, 1)
+        return [b]
+
+    def iir_horizontal():
+        b = plane.copy()
+        mod.of_depth_axis_iir(b[:16, :33], None, b[1:, :33], 3072, 512, 0, 0, 3, 1, 1)
+        return [b]
+
+    def iir_guided_shifted():
+        b = plane.copy()
+        src = np.ascontiguousarray(plane[:16, :33][::-1])
+        mod.of_depth_axis_iir(src, b[:16, :33], b[:16, 1:], 0, 0, 1024, 256, 3, 0, 1)
+        return [b]
+
+    def iir_guided_inplace():
+        b = plane.copy()
+        guide = np.ascontiguousarray(plane[::-1])
+        mod.of_depth_axis_iir(b, guide, b, 0, 0, 1024, 256, 3, 1, 1)
+        return [b]
+
+    def gray():
+        b = rgb.copy()
+        image = np.lib.stride_tricks.as_strided(b, shape=(5, 8, 3), strides=(b.strides[0], 6, 2))
+        mod.of_gray_rows(image, b[:, 8:16], 0, 5, 1, False)
+        return [b]
+
+    def down():
+        sb = np.zeros((h, cw + 1, 3), np.float32)
+        mod.of_pyr_down_f32(fine, sb[:ch, 1:], sb[:, :cw], 0, ch)
+        return [sb]
+
+    def down_from_raw():
+        buffer = bytearray(raw.tobytes())
+        src = np.frombuffer(buffer, np.uint16).reshape(h, w, 3)
+        scratch = np.frombuffer(buffer, np.float32).reshape(h, cw, 3)
+        out = np.zeros((ch, cw, 3), np.float32)
+        mod.of_pyr_down_from_raw(src, out, scratch, 1.0 / 65535.0, 0, ch)
+        return [np.frombuffer(bytes(buffer), np.uint8), out]
+
+    def reconstruct():
+        b = levels.copy()
+        rec = target.copy()
+        mod.of_pyr_reconstruct_f32(b[:, 1:1 + cw], rec, b[:, :w], 0, h)
+        return [b, rec]
+
+    def detail_weight():
+        b = levels.copy()
+        det = target.copy()
+        weights = np.zeros((h, w), np.uint16)
+        mod.of_pyr_detail_weight_f32(b[:, 1:1 + cw], det, weights, b[:, :w], 0, h)
+        return [b, det, weights]
+
+    def level0_weights():
+        b = levels.copy()
+        weights = np.zeros((h, w), np.uint16)
+        mod.of_pyr_level0_weights_from_raw(b[:, 1:1 + cw], raw, weights, b[:, :w], 1.0 / 65535.0, 0, h)
+        return [b, weights]
+
+    def level0_merge_first():
+        c = codes.copy()
+        acc = np.zeros((h, w, 3), np.float32)
+        winner = np.full((h, w), 7, np.uint16)
+        scratch = np.zeros((ch, w, 3), np.float32)
+        mod.of_pyr_level0_merge_from_raw(coarse, raw, c[:, :w], acc, c[:, 1:], winner, scratch, 1.0, True, 3, 0, h)
+        return [c, acc, winner]
+
+    def level0_merge_next():
+        c = codes.copy()
+        acc = np.zeros((h, w, 3), np.float32)
+        winner = np.full((h, w), 7, np.uint16)
+        scratch = np.zeros((ch, w, 3), np.float32)
+        mod.of_pyr_level0_merge_from_raw(coarse, raw, c[:, :w], acc, c[:, 1:], winner, scratch, 1.0, False, 3, 0, h)
+        return [c, acc, winner]
+
+    def level0_merge_winner_overlap():
+        c = codes.copy()
+        acc = np.zeros((h, w, 3), np.float32)
+        best = np.zeros((h, w), np.uint16)
+        scratch = np.zeros((ch, w, 3), np.float32)
+        mod.of_pyr_level0_merge_from_raw(coarse, raw, c[:, :w], acc, best, c[:, 1:], scratch, 1.0, False, 3, 0, h)
+        return [c, acc, best]
+
+    def pyr_merge_overlap():
+        c = codes.copy()
+        det = target.copy()
+        acc = np.zeros((h, w, 3), np.float32)
+        winner = np.full((h, w), 5, np.uint16)
+        mod.of_pyr_merge_f32(det, c[:, :w], acc, c[:, 1:], winner, False, 4, 0, h)
+        return [c, acc, winner]
+
+    for name, run in (
+        ("of_depth_axis_iir separate", iir_separate),
+        ("of_depth_axis_iir in_place", iir_in_place),
+        ("of_depth_axis_iir vertical shifted", iir_vertical),
+        ("of_depth_axis_iir horizontal shifted", iir_horizontal),
+        ("of_depth_axis_iir guided shifted", iir_guided_shifted),
+        ("of_depth_axis_iir guided in_place", iir_guided_inplace),
+        ("of_gray_rows inside rgb", gray),
+        ("of_pyr_down_f32 inside scratch", down),
+        ("of_pyr_down_from_raw scratch over src", down_from_raw),
+        ("of_pyr_reconstruct_f32 coarse shifted", reconstruct),
+        ("of_pyr_detail_weight_f32 coarse shifted", detail_weight),
+        ("of_pyr_level0_weights_from_raw coarse shifted", level0_weights),
+        ("of_pyr_level0_merge_from_raw first", level0_merge_first),
+        ("of_pyr_level0_merge_from_raw next", level0_merge_next),
+        ("of_pyr_level0_merge_from_raw winner overlap", level0_merge_winner_overlap),
+        ("of_pyr_merge_f32 overlap", pyr_merge_overlap),
+    ):
+        simd, scalar = _scalar_and_simd(mod, run)
+        for idx, (arr_a, arr_s) in enumerate(zip(simd, scalar)):
+            assert np.array_equal(arr_a.view(np.uint8), arr_s.view(np.uint8)), f"{name} mismatch at {idx}"
+
+
 def test_ecc_solver_avx2_parity() -> None:
     import cv2
     from core._ecc_native import find_transform_ecc_homography

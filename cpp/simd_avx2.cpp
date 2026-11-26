@@ -1381,7 +1381,7 @@ void pyr_level0_merge_3c_row_avx2(
     const uint8_t* s8 = static_cast<const uint8_t*>(raw_row);
     const uint16_t* s16 = static_cast<const uint16_t*>(raw_row);
     if (first) {
-        std::memcpy(br, wr, static_cast<size_t>(width) * sizeof(uint16_t));
+        std::memmove(br, wr, static_cast<size_t>(width) * sizeof(uint16_t));
         if (win_row != nullptr) {
             std::fill_n(win_row, width, index);
         }

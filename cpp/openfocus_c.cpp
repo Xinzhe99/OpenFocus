@@ -72,6 +72,8 @@ void down_horizontal_impl(
     const bool fast_src_3c = (channels == 3 && ix_stop > 1 && source.ndim == 3
                               && source.stride[2] == 1 && source.stride[1] == 3
                               && scratch.stride[2] == 1 && scratch.stride[1] == 3);
+    const uint64_t src_row_bytes = static_cast<uint64_t>(width) * 3u * static_cast<uint64_t>(source.itemsize);
+    const uint64_t dst_row_bytes = static_cast<uint64_t>(out_w) * 3u * sizeof(float);
 
     for (int64_t row = 0; row < rows; ++row) {
         const int64_t y = row + origin;
@@ -90,7 +92,7 @@ void down_horizontal_impl(
             }
             if constexpr (!ScaledRaw) {
                 const float* sr = static_cast<const float*>(source.data) + y * source.stride[0];
-                if (simd::use_avx2() && ix_stop >= 4) {
+                if (simd::use_avx2() && ix_stop >= 4 && !byte_ranges_overlap(h_row, dst_row_bytes, sr, src_row_bytes)) {
                     simd::pyr_down_horiz_f32_3c_row_avx2(sr, h_row, ix_stop, kD0, kD1);
                 } else {
                     for (int64_t x = 1; x < ix_stop; ++x) {
@@ -106,7 +108,7 @@ void down_horizontal_impl(
                 }
             } else if (source.itemsize == 1) {
                 const uint8_t* sr = static_cast<const uint8_t*>(source.data) + y * source.stride[0];
-                if (simd::use_avx2() && ix_stop >= 4) {
+                if (simd::use_avx2() && ix_stop >= 4 && !byte_ranges_overlap(h_row, dst_row_bytes, sr, src_row_bytes)) {
                     simd::pyr_down_horiz_raw_3c_row_avx2(sr, true, h_row, ix_stop, factor, kD0, kD1);
                 } else {
                     for (int64_t x = 1; x < ix_stop; ++x) {
@@ -122,7 +124,7 @@ void down_horizontal_impl(
                 }
             } else {
                 const uint16_t* sr = static_cast<const uint16_t*>(source.data) + y * source.stride[0];
-                if (simd::use_avx2() && ix_stop >= 4) {
+                if (simd::use_avx2() && ix_stop >= 4 && !byte_ranges_overlap(h_row, dst_row_bytes, sr, src_row_bytes)) {
                     simd::pyr_down_horiz_raw_3c_row_avx2(sr, false, h_row, ix_stop, factor, kD0, kD1);
                 } else {
                     for (int64_t x = 1; x < ix_stop; ++x) {
@@ -193,7 +195,12 @@ void down_vertical_impl(
             const float* p2 = static_cast<const float*>(scratch.data) + r2 * scratch.stride[0];
             const float* p3 = static_cast<const float*>(scratch.data) + r3 * scratch.stride[0];
             float* dst = static_cast<float*>(output.data) + y * output.stride[0];
-            if (simd::use_avx2() && elems >= 8) {
+            const uint64_t row_bytes = static_cast<uint64_t>(elems) * sizeof(float);
+            if (simd::use_avx2() && elems >= 8
+                    && !byte_ranges_overlap(dst, row_bytes, p0, row_bytes)
+                    && !byte_ranges_overlap(dst, row_bytes, p1, row_bytes)
+                    && !byte_ranges_overlap(dst, row_bytes, p2, row_bytes)
+                    && !byte_ranges_overlap(dst, row_bytes, p3, row_bytes)) {
                 simd::pyr_down_vertical_row_f32_avx2(p0, p1, p2, p3, dst, elems, kD0, kD1);
             } else {
                 for (int64_t i = 0; i < elems; ++i) {
@@ -234,6 +241,8 @@ void up_horizontal_impl(
                           && scratch.stride[2] == 1 && scratch.stride[1] == 3);
     const bool fast_1c = (channels == 1 && pair_stop > ix_start
                           && coarse.stride[1] == 1 && scratch.stride[1] == 1);
+    const uint64_t src_row_bytes = static_cast<uint64_t>(width) * static_cast<uint64_t>(channels) * sizeof(float);
+    const uint64_t dst_row_bytes = static_cast<uint64_t>(out_w) * static_cast<uint64_t>(channels) * sizeof(float);
 
     for (int64_t row = 0; row < rows; ++row) {
         const int64_t y = row + origin;
@@ -257,7 +266,8 @@ void up_horizontal_impl(
         if (fast_3c) {
             const float* sr = static_cast<const float*>(coarse.data) + y * coarse.stride[0];
             float* dr = static_cast<float*>(scratch.data) + row * scratch.stride[0];
-            if (simd::use_avx2() && (pair_stop - ix_start) >= 4) {
+            if (simd::use_avx2() && (pair_stop - ix_start) >= 4
+                    && !byte_ranges_overlap(dr, dst_row_bytes, sr, src_row_bytes)) {
                 simd::pyr_up_horiz_3c_row_avx2(sr, dr, ix_start, pair_stop, kE0, kE1, kE2, kE3);
             } else {
                 for (int64_t x = ix_start; x < pair_stop; x += 2) {
@@ -283,7 +293,8 @@ void up_horizontal_impl(
         } else if (fast_1c) {
             const float* sr = static_cast<const float*>(coarse.data) + y * coarse.stride[0];
             float* dr = static_cast<float*>(scratch.data) + row * scratch.stride[0];
-            if (simd::use_avx2() && (pair_stop - ix_start) >= 16) {
+            if (simd::use_avx2() && (pair_stop - ix_start) >= 16
+                    && !byte_ranges_overlap(dr, dst_row_bytes, sr, src_row_bytes)) {
                 simd::pyr_up_horiz_1c_row_avx2(sr, dr, ix_start, pair_stop, kE0, kE1, kE2, kE3);
             } else {
                 for (int64_t x = ix_start; x < pair_stop; x += 2) {
@@ -389,20 +400,35 @@ void synth_detail_band_impl(
             const float w2 = kE2;
             const float w3 = odd ? kE1 : kE3;
             const float w4 = odd ? kE0 : 0.0f;
+            const uint64_t f3_bytes = static_cast<uint64_t>(width) * 3u * sizeof(float);
+            const uint64_t w_bytes = static_cast<uint64_t>(width) * sizeof(uint16_t);
+            const auto overlaps_any_hr = [hr0, hr1, hr2, hr3, hr4, f3_bytes](const void* ptr, uint64_t bytes) {
+                return byte_ranges_overlap(ptr, bytes, hr0, f3_bytes)
+                    || byte_ranges_overlap(ptr, bytes, hr1, f3_bytes)
+                    || byte_ranges_overlap(ptr, bytes, hr2, f3_bytes)
+                    || byte_ranges_overlap(ptr, bytes, hr3, f3_bytes)
+                    || byte_ranges_overlap(ptr, bytes, hr4, f3_bytes);
+            };
 
             if constexpr (!ScaledRaw && WriteDetailInPlace && UpdateWeight) {
-                if (simd::use_avx2() && width >= 8) {
-                    float* dst = static_cast<float*>(target_or_raw.data) + y * target_or_raw.stride[0];
+                float* dst = static_cast<float*>(target_or_raw.data) + y * target_or_raw.stride[0];
+                if (simd::use_avx2() && width >= 8
+                        && !overlaps_any_hr(dst, f3_bytes)
+                        && !overlaps_any_hr(w_row, w_bytes)
+                        && !byte_ranges_overlap(dst, f3_bytes, w_row, w_bytes)) {
                     simd::pyr_detail_weight_3c_f32_avx2(
                         hr0, hr1, hr2, hr3, hr4, dst, w_row, width,
                         w0, w1, w2, w3, w4, kPointOne, kWScale, y_border);
                     continue;
                 }
             } else if constexpr (ScaledRaw && !WriteDetailInPlace && UpdateWeight) {
-                if (simd::use_avx2() && width >= 8) {
-                    const void* raw_ptr = (target_or_raw.itemsize == 1)
-                        ? static_cast<const void*>(static_cast<const uint8_t*>(target_or_raw.data) + y * target_or_raw.stride[0])
-                        : static_cast<const void*>(static_cast<const uint16_t*>(target_or_raw.data) + y * target_or_raw.stride[0]);
+                const void* raw_ptr = (target_or_raw.itemsize == 1)
+                    ? static_cast<const void*>(static_cast<const uint8_t*>(target_or_raw.data) + y * target_or_raw.stride[0])
+                    : static_cast<const void*>(static_cast<const uint16_t*>(target_or_raw.data) + y * target_or_raw.stride[0]);
+                const uint64_t raw_bytes = static_cast<uint64_t>(width) * 3u * static_cast<uint64_t>(target_or_raw.itemsize);
+                if (simd::use_avx2() && width >= 8
+                        && !overlaps_any_hr(w_row, w_bytes)
+                        && !byte_ranges_overlap(w_row, w_bytes, raw_ptr, raw_bytes)) {
                     simd::pyr_level0_weights_3c_f32_from_raw_avx2(
                         hr0, hr1, hr2, hr3, hr4, raw_ptr, target_or_raw.itemsize == 1, w_row, width,
                         factor, w0, w1, w2, w3, w4, kPointOne, kWScale, y_border);
@@ -653,10 +679,36 @@ void of_pyr_level0_merge_from_raw_cpp(
                 const void* raw_row = (source.itemsize == 1)
                     ? static_cast<const void*>(static_cast<const uint8_t*>(source.data) + y * source.stride[0])
                     : static_cast<const void*>(static_cast<const uint16_t*>(source.data) + y * source.stride[0]);
-                simd::pyr_level0_merge_3c_row_avx2(
-                    wr, br, win_row, hr0, hr1, hr2, hr3, hr4, raw_row, source.itemsize == 1,
-                    acc_row, width, factor, index, first, w0, w1, w2, w3, w4, kPointOne);
-                continue;
+                const uint64_t w_bytes = static_cast<uint64_t>(width) * sizeof(uint16_t);
+                const uint64_t f3_bytes = static_cast<uint64_t>(width) * 3u * sizeof(float);
+                const uint64_t raw_bytes = static_cast<uint64_t>(width) * 3u * static_cast<uint64_t>(source.itemsize);
+                const auto overlaps_any_hr = [hr0, hr1, hr2, hr3, hr4, f3_bytes](const void* ptr, uint64_t bytes) {
+                    return byte_ranges_overlap(ptr, bytes, hr0, f3_bytes)
+                        || byte_ranges_overlap(ptr, bytes, hr1, f3_bytes)
+                        || byte_ranges_overlap(ptr, bytes, hr2, f3_bytes)
+                        || byte_ranges_overlap(ptr, bytes, hr3, f3_bytes)
+                        || byte_ranges_overlap(ptr, bytes, hr4, f3_bytes);
+                };
+                const bool row_disjoint =
+                    !byte_ranges_overlap(br, w_bytes, wr, w_bytes)
+                    && (win_row == nullptr || !byte_ranges_overlap(br, w_bytes, win_row, w_bytes))
+                    && !byte_ranges_overlap(br, w_bytes, acc_row, f3_bytes)
+                    && !byte_ranges_overlap(br, w_bytes, raw_row, raw_bytes)
+                    && !overlaps_any_hr(br, w_bytes)
+                    && (win_row == nullptr || (
+                        !byte_ranges_overlap(win_row, w_bytes, wr, w_bytes)
+                        && !byte_ranges_overlap(win_row, w_bytes, acc_row, f3_bytes)
+                        && !byte_ranges_overlap(win_row, w_bytes, raw_row, raw_bytes)
+                        && !overlaps_any_hr(win_row, w_bytes)))
+                    && !byte_ranges_overlap(acc_row, f3_bytes, wr, w_bytes)
+                    && !byte_ranges_overlap(acc_row, f3_bytes, raw_row, raw_bytes)
+                    && !overlaps_any_hr(acc_row, f3_bytes);
+                if (row_disjoint) {
+                    simd::pyr_level0_merge_3c_row_avx2(
+                        wr, br, win_row, hr0, hr1, hr2, hr3, hr4, raw_row, source.itemsize == 1,
+                        acc_row, width, factor, index, first, w0, w1, w2, w3, w4, kPointOne);
+                    continue;
+                }
             }
 
             for (int64_t x = 0; x < width; ++x) {
@@ -770,14 +822,14 @@ void of_pyr_merge_f32_cpp(
         uint16_t* br = b_base + y * b_sy;
         uint16_t* win_row = (winner != nullptr) ? (winner + y * winner_sy) : nullptr;
         if (first) {
-            std::memcpy(br, wr, static_cast<size_t>(width) * sizeof(uint16_t));
+            std::memmove(br, wr, static_cast<size_t>(width) * sizeof(uint16_t));
             if (win_row != nullptr) {
                 std::fill_n(win_row, width, index);
             }
             if (packed3) {
                 const float* dr = static_cast<const float*>(detail.data) + y * detail.stride[0];
                 float* ar = static_cast<float*>(accumulator.data) + y * accumulator.stride[0];
-                std::memcpy(ar, dr, static_cast<size_t>(width * 3) * sizeof(float));
+                std::memmove(ar, dr, static_cast<size_t>(width * 3) * sizeof(float));
             } else {
                 for (int64_t x = 0; x < width; ++x) {
                     for (int64_t c = 0; c < channels; ++c) {
@@ -788,7 +840,20 @@ void of_pyr_merge_f32_cpp(
         } else if (packed3) {
             const float* dr = static_cast<const float*>(detail.data) + y * detail.stride[0];
             float* ar = static_cast<float*>(accumulator.data) + y * accumulator.stride[0];
-            if (simd::use_avx2() && width >= 16) {
+            const uint64_t w_bytes = static_cast<uint64_t>(width) * sizeof(uint16_t);
+            const uint64_t f3_bytes = static_cast<uint64_t>(width) * 3u * sizeof(float);
+            const bool row_disjoint =
+                !byte_ranges_overlap(br, w_bytes, wr, w_bytes)
+                && (win_row == nullptr || !byte_ranges_overlap(br, w_bytes, win_row, w_bytes))
+                && !byte_ranges_overlap(br, w_bytes, dr, f3_bytes)
+                && !byte_ranges_overlap(br, w_bytes, ar, f3_bytes)
+                && (win_row == nullptr || (
+                    !byte_ranges_overlap(win_row, w_bytes, wr, w_bytes)
+                    && !byte_ranges_overlap(win_row, w_bytes, dr, f3_bytes)
+                    && !byte_ranges_overlap(win_row, w_bytes, ar, f3_bytes)))
+                && !byte_ranges_overlap(ar, f3_bytes, wr, w_bytes)
+                && !byte_ranges_overlap(ar, f3_bytes, dr, f3_bytes);
+            if (simd::use_avx2() && width >= 16 && row_disjoint) {
                 simd::pyr_merge_f32_3c_row_avx2(wr, br, win_row, dr, ar, width, index);
                 continue;
             }
@@ -862,7 +927,13 @@ void of_pyr_reconstruct_f32_cpp(
             const float w2 = kE2;
             const float w3 = odd ? kE1 : kE3;
             const float w4 = odd ? kE0 : 0.0f;
-            if (simd::use_avx2() && elems >= 8) {
+            const uint64_t row_bytes = static_cast<uint64_t>(elems) * sizeof(float);
+            if (simd::use_avx2() && elems >= 8
+                    && !byte_ranges_overlap(tr, row_bytes, hr0, row_bytes)
+                    && !byte_ranges_overlap(tr, row_bytes, hr1, row_bytes)
+                    && !byte_ranges_overlap(tr, row_bytes, hr2, row_bytes)
+                    && !byte_ranges_overlap(tr, row_bytes, hr3, row_bytes)
+                    && !byte_ranges_overlap(tr, row_bytes, hr4, row_bytes)) {
                 simd::pyr_reconstruct_row_f32_avx2(
                     hr0, hr1, hr2, hr3, hr4, tr, elems,
                     w0, w1, w2, w3, w4, kPointOne);
@@ -914,9 +985,10 @@ void of_pyr_output_f32_cpp(
     for (int64_t y = start; y < stop; ++y) {
         if (packed) {
             const float* sr = static_cast<const float*>(source.data) + y * source.stride[0];
+            const uint64_t src_row_bytes = static_cast<uint64_t>(elems) * sizeof(float);
             if (is_u8) {
                 uint8_t* dr = static_cast<uint8_t*>(output.data) + y * output.stride[0];
-                if (use_avx2_out) {
+                if (use_avx2_out && !byte_ranges_overlap(dr, static_cast<uint64_t>(elems), sr, src_row_bytes)) {
                     simd::pyr_output_f32_to_u8_row_avx2(sr, dr, elems);
                 } else {
                     for (int64_t i = 0; i < elems; ++i) {
@@ -926,7 +998,7 @@ void of_pyr_output_f32_cpp(
                 }
             } else {
                 float* dr = static_cast<float*>(output.data) + y * output.stride[0];
-                if (use_avx2_out) {
+                if (use_avx2_out && (dr == sr || !byte_ranges_overlap(dr, src_row_bytes, sr, src_row_bytes))) {
                     simd::pyr_output_f32_to_f32_row_avx2(sr, dr, elems);
                 } else {
                     for (int64_t i = 0; i < elems; ++i) {

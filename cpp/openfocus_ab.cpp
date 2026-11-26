@@ -95,9 +95,15 @@ void burt_laplacian_row_impl(const ArrayView& gray, const ArrayView& reduced,
         const int32_t* r0 = static_cast<const int32_t*>(reduced.data) + y0 * reduced.stride[0];
         const int32_t* r1 = static_cast<const int32_t*>(reduced.data) + y1 * reduced.stride[0];
         int32_t* o_row = static_cast<int32_t*>(output.data) + y * output.stride[0];
-        simd::burt_laplacian_row_i32_avx2(g_row, r0, r1, o_row, width, fine_width,
-                                          static_cast<int32_t>(wy0), static_cast<int32_t>(wy1));
-        return;
+        const uint64_t fine_bytes = static_cast<uint64_t>(fine_width) * sizeof(int32_t);
+        const uint64_t red_bytes = static_cast<uint64_t>(width) * sizeof(int32_t);
+        if ((o_row == g_row || !byte_ranges_overlap(o_row, fine_bytes, g_row, fine_bytes))
+                && !byte_ranges_overlap(o_row, fine_bytes, r0, red_bytes)
+                && !byte_ranges_overlap(o_row, fine_bytes, r1, red_bytes)) {
+            simd::burt_laplacian_row_i32_avx2(g_row, r0, r1, o_row, width, fine_width,
+                                              static_cast<int32_t>(wy0), static_cast<int32_t>(wy1));
+            return;
+        }
     }
 
     int64_t left = read_2d(reduced, y0, 0) * wy0 + read_2d(reduced, y1, 0) * wy1;
@@ -199,7 +205,7 @@ inline void burt_accumulate_row_i64(
     const int64_t den = int64_t{1} << shift;
     const int64_t py = 2 * y + 1 - factor;
     const int64_t y0 = py >> shift;
-    const int64_t fy = py - (y0 << shift);
+    const int64_t fy = py - y0 * den;
     const int64_t row_a = offset + std::clamp<int64_t>(y0, 0, height - 1) * width;
     const int64_t row_b = offset + std::clamp<int64_t>(y0 + 1, 0, height - 1) * width;
     int64_t left = static_cast<int64_t>(laps[row_a]) * (den - fy)
@@ -402,6 +408,26 @@ inline bool rows_are_packed(const ArrayView& v) {
     return v.stride[2] == 1 && v.stride[1] == v.shape[2];
 }
 
+inline bool u16_plane_overlaps(
+    const uint16_t* a, int64_t a_sy,
+    const uint16_t* b, int64_t b_sy,
+    int64_t rows, int64_t cols
+) {
+    if (rows <= 0 || cols <= 0 || a == nullptr || b == nullptr) {
+        return false;
+    }
+    const auto low_ptr = [rows](const uint16_t* p, int64_t sy) -> const uint8_t* {
+        const int64_t first_row = sy < 0 ? (rows - 1) : 0;
+        return reinterpret_cast<const uint8_t*>(p + first_row * sy);
+    };
+    const auto span_bytes = [rows, cols](int64_t sy) -> uint64_t {
+        const int64_t abs_sy = sy < 0 ? -sy : sy;
+        return static_cast<uint64_t>((rows - 1) * abs_sy + cols) * sizeof(uint16_t);
+    };
+    return byte_ranges_overlap(low_ptr(a, a_sy), span_bytes(a_sy),
+                               low_ptr(b, b_sy), span_bytes(b_sy));
+}
+
 template <typename SrcT, typename DstT>
 void copy_scaled_rows_typed(const ArrayView& dst, const ArrayView& src,
                             int64_t start, int64_t stop, int64_t elems, uint32_t scale) {
@@ -493,19 +519,21 @@ void of_gray_rows_cpp(const ArrayView& image, const ArrayView& output,
             const bool contiguous_rgb = (image.stride[2] == 1);
             const bool avx2_ok = contiguous_rgb && simd::use_avx2() && width >= 8;
             const bool out_u16 = (output.itemsize == 2);
+            const uint64_t src_row_bytes = static_cast<uint64_t>(width) * 3u * static_cast<uint64_t>(image.itemsize);
+            const uint64_t out_row_bytes = static_cast<uint64_t>(width) * static_cast<uint64_t>(output.itemsize);
             for (int64_t y = start; y < stop; ++y) {
                 if (image.itemsize == 1) {
                     const uint8_t* sr = static_cast<const uint8_t*>(image.data) + y * image.stride[0];
                     if (out_u16) {
                         uint16_t* dr = static_cast<uint16_t*>(output.data) + y * output.stride[0];
-                        if (avx2_ok) {
+                        if (avx2_ok && !byte_ranges_overlap(dr, out_row_bytes, sr, src_row_bytes)) {
                             simd::gray_rgb_u8_row_avx2(sr, dr, nullptr, width, static_cast<int32_t>(scale), depth_color, true);
                         } else {
                             gray_rgb3_packed_row(sr, dr, width, image.stride[1], image.stride[2], scale, depth_color);
                         }
                     } else {
                         int32_t* dr = static_cast<int32_t*>(output.data) + y * output.stride[0];
-                        if (avx2_ok) {
+                        if (avx2_ok && !byte_ranges_overlap(dr, out_row_bytes, sr, src_row_bytes)) {
                             simd::gray_rgb_u8_row_avx2(sr, nullptr, dr, width, static_cast<int32_t>(scale), depth_color, false);
                         } else {
                             gray_rgb3_packed_row(sr, dr, width, image.stride[1], image.stride[2], scale, depth_color);
@@ -515,14 +543,14 @@ void of_gray_rows_cpp(const ArrayView& image, const ArrayView& output,
                     const uint16_t* sr = static_cast<const uint16_t*>(image.data) + y * image.stride[0];
                     if (out_u16) {
                         uint16_t* dr = static_cast<uint16_t*>(output.data) + y * output.stride[0];
-                        if (avx2_ok) {
+                        if (avx2_ok && !byte_ranges_overlap(dr, out_row_bytes, sr, src_row_bytes)) {
                             simd::gray_rgb_u16_row_avx2(sr, dr, nullptr, width, static_cast<int32_t>(scale), depth_color, true);
                         } else {
                             gray_rgb3_packed_row(sr, dr, width, image.stride[1], image.stride[2], scale, depth_color);
                         }
                     } else {
                         int32_t* dr = static_cast<int32_t*>(output.data) + y * output.stride[0];
-                        if (avx2_ok) {
+                        if (avx2_ok && !byte_ranges_overlap(dr, out_row_bytes, sr, src_row_bytes)) {
                             simd::gray_rgb_u16_row_avx2(sr, nullptr, dr, width, static_cast<int32_t>(scale), depth_color, false);
                         } else {
                             gray_rgb3_packed_row(sr, dr, width, image.stride[1], image.stride[2], scale, depth_color);
@@ -596,7 +624,10 @@ void of_down2_rows_cpp(const ArrayView& image, const ArrayView& output,
                     const uint16_t* ib = static_cast<const uint16_t*>(image.data);
                     const uint16_t* r0 = ib + top * image.stride[0];
                     const uint16_t* r1 = ib + bottom * image.stride[0];
-                    if (avx2_ok) {
+                    const uint64_t row_bytes = static_cast<uint64_t>(full_w) * sizeof(int32_t);
+                    if (avx2_ok
+                            && !byte_ranges_overlap(dst, row_bytes, r0, row_bytes)
+                            && !byte_ranges_overlap(dst, row_bytes, r1, row_bytes)) {
                         simd::down2_row_u16_to_i32_avx2(r0, r1, dst, full_w, static_cast<int32_t>(scale));
                     } else {
                         for (int64_t x = 0; x < full_w; ++x) {
@@ -816,7 +847,7 @@ int of_select_rows_a_cpp(
             {
                 const int64_t py = 2 * y - 1;
                 const int64_t cy0 = py >> 2;
-                const uint32_t fy1 = static_cast<uint32_t>(py - (cy0 << 2));
+                const uint32_t fy1 = static_cast<uint32_t>(py - cy0 * 4);
                 const uint32_t wy_1 = 4u - fy1;
                 const int64_t ya = std::clamp<int64_t>(cy0, 0, h0 - 1);
                 const int64_t yb = std::clamp<int64_t>(cy0 + 1, 0, h0 - 1);
@@ -837,7 +868,7 @@ int of_select_rows_a_cpp(
             {
                 const int64_t py = 2 * y - 3;
                 const int64_t cy0 = py >> 3;
-                fy2 = static_cast<uint32_t>(py - (cy0 << 3));
+                fy2 = static_cast<uint32_t>(py - cy0 * 8);
                 wy2 = 8u - fy2;
                 update_level_pair_u32(laps, off2, w2, 2,
                                       std::clamp<int64_t>(cy0, 0, h2 - 1),
@@ -847,7 +878,7 @@ int of_select_rows_a_cpp(
             {
                 const int64_t py = 2 * y - 7;
                 const int64_t cy0 = py >> 4;
-                fy3 = static_cast<uint32_t>(py - (cy0 << 4));
+                fy3 = static_cast<uint32_t>(py - cy0 * 16);
                 wy3 = 16u - fy3;
                 update_level_pair_u32(laps, off3, w3, 3,
                                       std::clamp<int64_t>(cy0, 0, h3 - 1),
@@ -857,7 +888,7 @@ int of_select_rows_a_cpp(
             {
                 const int64_t py = 2 * y - 15;
                 const int64_t cy0 = py >> 5;
-                fy4 = static_cast<uint32_t>(py - (cy0 << 5));
+                fy4 = static_cast<uint32_t>(py - cy0 * 32);
                 wy4 = 32u - fy4;
                 update_level_pair_u32(laps, off4, w4, 4,
                                       std::clamp<int64_t>(cy0, 0, h4 - 1),
@@ -867,7 +898,7 @@ int of_select_rows_a_cpp(
             {
                 const int64_t py = 2 * y - 31;
                 const int64_t cy0 = py >> 6;
-                fy5 = static_cast<uint32_t>(py - (cy0 << 6));
+                fy5 = static_cast<uint32_t>(py - cy0 * 64);
                 wy5 = 64u - fy5;
                 update_level_pair_u32(laps, off5, w5, 5,
                                       std::clamp<int64_t>(cy0, 0, h5 - 1),
@@ -1226,14 +1257,23 @@ void of_depth_axis_iir_cpp(
         return;
     }
     const int64_t cnt = std::max<int64_t>(1, std::min<int64_t>(count, axis == 0 ? h : w));
+    const bool out_self_overlap = (h > 1) && (std::abs(out_sy) < w);
+    const bool src_exact_inplace = (out == src && out_sy == src_sy && !out_self_overlap);
+    const bool src_overlap = u16_plane_overlaps(out, out_sy, src, src_sy, h, w);
+    const bool guide_overlap = (guide != nullptr)
+                               && u16_plane_overlaps(out, out_sy, guide, guide_sy, h, w);
+    const bool overlap_blocks_avx2 = out_self_overlap
+                                     || (guide == nullptr ? (src_overlap && !src_exact_inplace)
+                                                          : (src_overlap || guide_overlap));
+    const bool allow_avx2 = simd::use_avx2() && !overlap_blocks_avx2;
 
     if (axis == 0) {
         const int64_t band = 64;
-        const int threads = (h * w >= 131072) ? num_threads : 1;
+        const int threads = (!overlap_blocks_avx2 && h * w >= 131072) ? num_threads : 1;
         openfocus::parallel_bands(w, band, threads, [&](int64_t left, int64_t right) {
             const int64_t cols = right - left;
             if (guide == nullptr) {
-                if (simd::use_avx2() && cols >= 8) {
+                if (allow_avx2 && cols >= 8) {
                     simd::depth_axis_iir_y_unguided_avx2(src, src_sy, out, out_sy, h, left, cols, cnt, q, t);
                     return;
                 }
@@ -1282,7 +1322,7 @@ void of_depth_axis_iir_cpp(
                     }
                 }
             } else {
-                if (simd::use_avx2() && cols >= 8) {
+                if (allow_avx2 && cols >= 8) {
                     simd::depth_axis_iir_y_guided_avx2(src, src_sy, guide, guide_sy, out, out_sy, h, left, cols, cnt, tm, tl);
                     return;
                 }
@@ -1370,10 +1410,10 @@ void of_depth_axis_iir_cpp(
 
     // Horizontal (axis == 1): each row is independent -> keep row history in L1/L2 per-thread buffer, zero full-plane transpose.
     const int64_t row_band = 16;
-    const int threads = (h * w >= 131072) ? num_threads : 1;
+    const int threads = (!overlap_blocks_avx2 && h * w >= 131072) ? num_threads : 1;
     openfocus::parallel_bands(h, row_band, threads, [&](int64_t start, int64_t stop) {
         if (guide == nullptr) {
-            if (simd::use_avx2() && w >= 8 && (stop - start) >= 8) {
+            if (allow_avx2 && w >= 8 && (stop - start) >= 8) {
                 simd::depth_axis_iir_x_unguided_avx2(src, src_sy, out, out_sy, start, stop, w, cnt, q, t);
                 return;
             }
@@ -1406,7 +1446,7 @@ void of_depth_axis_iir_cpp(
                 }
             }
         } else {
-            if (simd::use_avx2() && w >= 8 && (stop - start) >= 8) {
+            if (allow_avx2 && w >= 8 && (stop - start) >= 8) {
                 simd::depth_axis_iir_x_guided_avx2(src, src_sy, guide, guide_sy, out, out_sy, start, stop, w, cnt, tm, tl);
                 return;
             }
