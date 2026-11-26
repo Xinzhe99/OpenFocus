@@ -108,7 +108,7 @@ Arrastra el divisor para comparar un fotograma de origen con el resultado fusion
 
 Compara los métodos lado a lado y reutiliza el resultado o los ajustes que prefieras.
 
-OpenFocus A, OpenFocus B y OpenFocus C son los únicos métodos de fusión estables. Los demás métodos son experimentales. Para usarlos en la aplicación de escritorio, selecciona **Ajustes → Ajustes avanzados… → Activar funciones experimentales**. En la CLI sin interfaz, usa `--experimental`.
+OpenFocus A, OpenFocus B, OpenFocus C, filtro guiado, GFG-FGF, DCT y DTCWT son métodos de fusión estables. Los métodos experimentales (StackMFF V1/V2/V3) se activan en la aplicación de escritorio en **Ajustes → Ajustes avanzados… → Activar funciones experimentales**, o en la CLI sin interfaz con `--experimental`.
 
 </td>
 <td width="54%">

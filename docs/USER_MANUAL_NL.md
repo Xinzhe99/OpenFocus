@@ -28,7 +28,7 @@ OpenFocus is een professionele desktoptoepassing voor multifocus-beeldfusie, bed
 ### Belangrijkste functies
 
 - **Multifocus-beeldfusie**: meerdere afbeeldingen met verschillende scherpstelpunten combineren tot één volledig scherp beeld
-- **Beeldfusie** met de stabiele methoden OpenFocus A, B en C, de experimentele methoden Guided Filter, DCT, DTCWT, GFG-FGF en StackMFF V1/V2/V3, en een modus met alleen uitlijning
+- **Beeldfusie** met de stabiele methoden OpenFocus A, B en C, Guided Filter, DCT, DTCWT en GFG-FGF, de experimentele methoden StackMFF V1/V2/V3, en een modus met alleen uitlijning
 - **Beeldregistratie**: verschoven beeldreeksen uitlijnen met ECC, homografie, homografie met daaropvolgende ECC-verfijning of de snelle OpenFocus-uitlijning
 - **Automatische achtergrond**: een onrustige gestapelde achtergrond vervangen door één echt frame, en zien waar geen frame de scène scherp zag
 - **Bronvaste retouche**: pixels schilderen vanuit de frames die het resultaat echt hebben gemaakt, met bron- en herstelpenseel, belichtingspenseel en ongedaan maken per streek
@@ -57,7 +57,7 @@ Transparante PNG-stapels kunnen in de desktopapp, in batchverwerking en op de op
 
 Laad op volledige grootte, kies geen uitlijning, schakel Snel voorbeeld en ROI uit, render en sla op als PNG. Batchverwerking vereist een fusiemethode en PNG-uitvoer zonder een uitgelijnde stapel op te slaan. Uitlijning, formaatwijziging of verkleining, flat-fieldcorrectie, dieptekaarten, methodenvergelijking, retoucheren en schaalbalken zijn niet beschikbaar voor transparante gegevens; labels kunnen niet in een export worden ingebrand. Een fusiemethode die de afmetingen van de rechthoek wijzigt, wordt geweigerd. Afwijkende of zachte maskers, verschillende maskers per frame, transparante TIFF-invoer en niet-PNG-uitvoer, inclusief GIF en meerbladige TIFF, zijn niet mogelijk. De CLI weigert bovendien sensorreiniging en dieptekaarten voor transparante invoer.
 
-Het CLI-equivalent is bijvoorbeeld `python main.py --input ./png-stack --output ./result.png --method guided_filter --align none --experimental`.
+Het CLI-equivalent is bijvoorbeeld `python main.py --input ./png-stack --output ./result.png --method guided_filter --align none`.
 
 ### Ondersteunde uitvoerformaten
 
@@ -424,7 +424,7 @@ Meer instellingen via **Instellingen → Geavanceerde instellingen… → Regist
 
 ## 8. Fusiemethoden
 
-**OpenFocus A, B en C** zijn de stabiele fusiemethoden. Een nieuw desktopprofiel start met **OpenFocus B** en **ECC**. Voor de andere fusiemethoden en experimentele registratiemethoden kies je **Instellingen → Geavanceerde instellingen → Algemeen** en vink je **Experimentele functies inschakelen** aan. Voeg op de CLI bij elke uitvoering met een experimentele fusiemethode `--experimental` toe.
+**OpenFocus A, B en C, Guided Filter, GFG-FGF, DCT en DTCWT** zijn de stabiele fusiemethoden. Een nieuw desktopprofiel start met **OpenFocus B** en **ECC**. Voor de experimentele fusiemethoden (StackMFF V1/V2/V3) en experimentele registratiemethoden kies je **Instellingen → Geavanceerde instellingen → Algemeen** en vink je **Experimentele functies inschakelen** aan. Voeg op de CLI bij elke uitvoering met een experimentele fusiemethode `--experimental` toe.
 
 ### Guided Filter
 
@@ -907,16 +907,16 @@ Vanuit een Python-omgeving (of naast het gepakte uitvoerbare bestand):
 python main.py --input ./stack_folder --output ./result/fused.png
 
 # DTCWT met ECC-registratie, 8 threads
-python main.py -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8 --experimental
+python main.py -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8
 
 # StackMFF V3 geforceerd op CPU, met aangepaste tegelgrootte
 python main.py -i ./stack_folder -o ./result/fused.png -m stackmffv3 --cpu --tile-size 512 --experimental
 
 # Expliciete bestandslijst; videobestanden worden ook als invoer geaccepteerd
-python main.py -i img1.jpg img2.jpg img3.jpg -o fused.png -m gfgfgf --experimental
+python main.py -i img1.jpg img2.jpg img3.jpg -o fused.png -m gfgfgf
 
 # Eén meerbladige TIFF-Z-stapel met een uit metadata gekalibreerde schaalbalk
-python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar --experimental
+python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar
 
 # Aangrenzende vergelijkbare frames bekijken zonder te fuseren of de invoer te wijzigen
 python main.py -i ./stack_folder --suggest-duplicates
@@ -931,7 +931,7 @@ Voeg voor één rendering bijvoorbeeld `--align openfocus --alignment-report ali
 | `--input, -i` | Beeldmap of -mappen, videobestand, een of meer beeldbestanden of een meerbladige TIFF |
 | `--output, -o` | Pad van het uitvoerbeeld (de extensie bepaalt het formaat) |
 | `--output-dir, -d` | Batchmodus: elke invoermap fuseren en per stapel `<map>.png` schrijven |
-| `--method, -m` | Stabiele methoden zijn `openfocus_a`, `openfocus_b` (standaard) en `openfocus_c`. Experimentele methoden zijn `guided_filter`, `dct`, `dtcwt`, `gfgfgf`, `stackmff`, `stackmffv2` en `stackmffv3` |
+| `--method, -m` | Stabiele methoden zijn `openfocus_a`, `openfocus_b` (standaard), `openfocus_c`, `guided_filter`, `dct`, `dtcwt` en `gfgfgf`. Experimentele methoden zijn `stackmff`, `stackmffv2` en `stackmffv3` |
 | `--experimental` | Experimentele fusiemethoden toestaan voor deze CLI-uitvoering |
 | `--align, -a` | `none` (standaard), `homography`, `ecc`, `both`, `openfocus` |
 | `--param KEY=JSON_VALUE` | Fusieparameter; herhaal voor meerdere sleutels; overschrijft oudere flags |
@@ -971,7 +971,7 @@ Voeg voor één rendering bijvoorbeeld `--align openfocus --alignment-report ali
 | `--resume` | Sla een map alleen over als alle nu gevraagde resultaten niet-lege gewone bestanden zijn; inhoud en parameters worden niet gecontroleerd |
 | `--json FILE` | Een machineleesbare resultaatsamenvatting naar FILE schrijven |
 | `--json-progress` | Eén JSON-voortgangsobject per stap naar stdout schrijven (NDJSON); proza gaat naar stderr |
-| `--config FILE` | Batchmodus: JSON-bestand met overschrijvingen per map, bijvoorbeeld `{"stackA": {"method": "dct", "kernel": 9}}`. Voeg voor dit voorbeeld bij de uitvoering `--experimental` toe. |
+| `--config FILE` | Batchmodus: JSON-bestand met overschrijvingen per map, bijvoorbeeld `{"stackA": {"method": "dct", "kernel": 9}}`. Voeg voor een experimentele methode bij de uitvoering `--experimental` toe. |
 | `--suggest-duplicates` | Bijna identieke aangrenzende frames voor handmatige controle melden; fuseert of sluit ze niet uit |
 
 Er is geen `--method none`-waarde: de CLI fuseert altijd. Gebruik de desktopapp voor uitvoer met alleen uitlijning.

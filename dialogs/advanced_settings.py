@@ -288,7 +288,7 @@ class AdvancedSettingsDialog(QDialog):
             self.spin_overlap.setEnabled(enabled)
             if spec is None:
                 key = 'advanced_tile_alignment_only'
-            elif spatial and method == 'dtcwt':
+            elif enabled and supported and method == 'dtcwt':
                 key = 'advanced_tile_memory_status'
             elif spatial and spec.neural:
                 key = 'advanced_tile_neural_status'

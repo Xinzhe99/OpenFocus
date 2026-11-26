@@ -108,7 +108,7 @@ Vergleichen Sie Quellbild und Fusionsergebnis mit einem verschiebbaren Trenner.
 
 Vergleichen Sie Verfahren nebeneinander und übernehmen Sie das Ergebnis oder seine Einstellungen.
 
-OpenFocus A, OpenFocus B und OpenFocus C sind die einzigen stabilen Fusionsverfahren. Weitere Verfahren sind experimentell. Um sie in der Desktop-App zu verwenden, wählen Sie **Einstellungen → Erweiterte Einstellungen… → Experimentelle Funktionen aktivieren**. Für die Headless-CLI verwenden Sie `--experimental`.
+OpenFocus A, OpenFocus B und OpenFocus C sowie Guided Filter, GFG-FGF, DCT und DTCWT sind stabile Fusionsverfahren. Experimentelle Verfahren (StackMFF V1/V2/V3) lassen sich in der Desktop-App unter **Einstellungen → Erweiterte Einstellungen… → Experimentelle Funktionen aktivieren** freischalten. Für die Headless-CLI verwenden Sie `--experimental`.
 
 </td>
 <td width="54%">

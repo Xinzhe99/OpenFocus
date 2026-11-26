@@ -85,7 +85,7 @@ input and non-PNG output, including GIF and multi-page TIFF, are unsupported.
 The CLI rejects sensor cleanup and depth maps for transparent input as well.
 
 For example, the CLI equivalent is `python main.py --input ./png-stack
---output ./result.png --method guided_filter --align none --experimental`.
+--output ./result.png --method guided_filter --align none`.
 
 ### Supported Output Formats
 
@@ -880,10 +880,11 @@ Access additional settings via **Settings → Advanced Settings → Registration
 
 ## 8. Image Fusion Methods
 
-OpenFocus A, B and C are the stable fusion methods. To use the other fusion
-methods, enable **Experimental features** in Advanced Settings or pass
-`--experimental` in the CLI. A fresh desktop profile uses **OpenFocus B** with
-**ECC** registration. Existing method selections are preserved.
+OpenFocus A, B and C, Guided Filter, GFG-FGF, DCT and DTCWT are the stable
+fusion methods. To use the experimental fusion methods (StackMFF V1/V2/V3),
+enable **Experimental features** in Advanced Settings or pass `--experimental`
+in the CLI. A fresh desktop profile uses **OpenFocus B** with **ECC**
+registration. Existing method selections are preserved.
 
 ### Guided Filter
 
@@ -1960,16 +1961,16 @@ From a Python environment (or next to the packaged executable):
 python main.py --input ./stack_folder --output ./result/fused.png
 
 # DTCWT with ECC registration, 8 threads
-python main.py -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8 --experimental
+python main.py -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8
 
 # StackMFF V3 forced to CPU with a custom tile size
 python main.py -i ./stack_folder -o ./result/fused.png -m stackmffv3 --cpu --tile-size 512 --experimental
 
 # Explicit file list; video files are also accepted as input
-python main.py -i img1.jpg img2.jpg img3.jpg -o fused.png -m gfgfgf --experimental
+python main.py -i img1.jpg img2.jpg img3.jpg -o fused.png -m gfgfgf
 
 # Single multi-page TIFF Z-stack with a metadata-calibrated scale bar
-python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar --experimental
+python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar
 
 # Unattended: align, stack, replace the background, and keep the stacked
 # result and the missing-data map for review
@@ -2006,7 +2007,7 @@ an input or another output. Batch, grouped and dry-run modes reject this option.
 | `--output-dir, -d` | Batch mode: fuse every input folder, writing `<folder>.png` per stack |
 | `--resume` | Batch mode: skip a folder only when every currently requested output is a nonempty regular file |
 | `--config FILE` | Batch mode: JSON per-folder overrides, e.g. `{"stackA": {"method": "dct"}}` |
-| `--method, -m` | Stable: `openfocus_a`, `openfocus_b` (default), `openfocus_c`. Experimental: `guided_filter`, `dct`, `dtcwt`, `gfgfgf`, `stackmff`, `stackmffv2`, `stackmffv3` |
+| `--method, -m` | Stable: `openfocus_a`, `openfocus_b` (default), `openfocus_c`, `guided_filter`, `dct`, `dtcwt`, `gfgfgf`. Experimental: `stackmff`, `stackmffv2`, `stackmffv3` |
 | `--experimental` | Enable experimental fusion methods for this CLI invocation |
 | `--param KEY=JSON_VALUE` | Set any fusion parameter; repeatable and overrides legacy flags |
 | `--align, -a` | `none` (default), `homography`, `ecc`, `both`, `openfocus` |

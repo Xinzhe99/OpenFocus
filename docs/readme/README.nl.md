@@ -108,7 +108,7 @@ Vergelijk een bronframe en het fusieresultaat met een versleepbare scheiding.
 
 Vergelijk methoden naast elkaar en neem het resultaat of de instellingen over.
 
-OpenFocus A, OpenFocus B en OpenFocus C zijn de enige stabiele fusiemethoden. De overige methoden zijn experimenteel. Kies in de desktopapp **Instellingen → Geavanceerde instellingen… → Experimentele functies inschakelen** om ze te gebruiken. Gebruik voor de headless CLI `--experimental`.
+OpenFocus A, OpenFocus B, OpenFocus C, Guided Filter, GFG-FGF, DCT en DTCWT zijn de stabiele fusiemethoden. Experimentele methoden (StackMFF V1/V2/V3) activeer je in de desktopapp via **Instellingen → Geavanceerde instellingen… → Experimentele functies inschakelen**, of in de headless CLI met `--experimental`.
 
 </td>
 <td width="54%">

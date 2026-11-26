@@ -108,7 +108,7 @@ StackMFF V3는 AI로 각 프레임의 선명한 부분을 합쳐 초점이 맞�
 
 합성 방식을 나란히 비교하고 선택한 결과를 출력으로 채택하거나 설정을 메인 창에 적용합니다.
 
-안정 합성 방식은 OpenFocus A, OpenFocus B, OpenFocus C뿐입니다. 다른 방식은 실험적입니다. 데스크톱 앱에서 실험적 방식을 사용하려면 **설정 → 고급 설정… → 실험적 기능 활성화**를 선택하세요. 헤드리스 CLI에서는 `--experimental`을 지정하세요.
+안정 합성 방식은 OpenFocus A, OpenFocus B, OpenFocus C, 가이드 필터, GFG-FGF, DCT, DTCWT입니다. 실험적 합성 방식(StackMFF V1/V2/V3)을 데스크톱 앱에서 사용하려면 **설정 → 고급 설정… → 실험적 기능 활성화**를 선택하고, 헤드리스 CLI에서는 `--experimental`을 지정하세요.
 
 </td>
 <td width="54%">

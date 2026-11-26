@@ -28,7 +28,7 @@ OpenFocus는 연구자, 엔지니어, 이미지 처리 전문가를 위해 만�
 ### 주요 기능
 
 - **다초점 이미지 합성**: 초점이 각기 다른 여러 이미지를 하나의 완전히 초점이 맞은 이미지로 결합합니다
-- **합성 알고리즘**은 안정 버전인 OpenFocus A/B/C, 실험적 방식인 StackMFF V1/V2/V3(딥러닝), 가이드 필터, DCT, DTCWT, GFG-FGF를 포함합니다. 정합 전용 모드도 있습니다.
+- **합성 알고리즘**은 안정 버전인 OpenFocus A/B/C, 가이드 필터, DCT, DTCWT, GFG-FGF와 실험적 방식인 StackMFF V1/V2/V3(딥러닝)를 포함합니다. 정합 전용 모드도 있습니다.
 - **이미지 정합**: OpenFocus(고속), ECC, 호모그래피 중 하나를 선택해 이동·회전·크기·원근 변화를 보정합니다
 - **자동 배경**: 지저분한 스택 배경을 실제 프레임 하나로 바꾸고, 어떤 프레임도 선명하게 보지 못한 곳을 표시
 - **와이프 비교 보기**: A/B 구분선 보기로 정합 상태를 확인하고 결과를 비교합니다
@@ -70,7 +70,7 @@ OpenFocus는 연구자, 엔지니어, 이미지 처리 전문가를 위해 만�
 바를 쓸 수 없습니다. 사각형 크기를 바꾸는 합성 방식은 거부됩니다. 그라디언트나 페더
 마스크, 프레임마다 다른 마스크, 투명 TIFF 입력, GIF와 다중 페이지 TIFF를 포함한 PNG 이외
 출력은 지원하지 않습니다. CLI도 투명 입력의 센서 보정과 깊이 맵을 거부합니다. CLI 예:
-`python main.py --input ./png-stack --output ./result.png --method guided_filter --align none --experimental`.
+`python main.py --input ./png-stack --output ./result.png --method guided_filter --align none`.
 
 ### 지원하는 출력 형식
 
@@ -560,8 +560,8 @@ EXIF Orientation 태그가 있는 카메라 JPEG/TIFF 파일은 가져오기 과
 
 ## 8. 이미지 합성 방식
 
-안정 합성 방식은 **OpenFocus A, B, C**입니다. 새 데스크톱 프로필의 기본값은 **OpenFocus B**와
-**ECC** 정합입니다. 데스크톱에서 다른 합성 방식이나 실험적 정합 방식을 사용하려면
+안정 합성 방식은 **OpenFocus A, B, C, 가이드 필터, GFG-FGF, DCT, DTCWT**입니다. 새 데스크톱 프로필의 기본값은 **OpenFocus B**와
+**ECC** 정합입니다. 데스크톱에서 실험적 합성 방식(StackMFF V1/V2/V3)이나 실험적 정합 방식을 사용하려면
 **설정 → 고급 설정 → 일반**에서 **실험적 기능 활성화**를 선택하세요. CLI에서 실험적 합성 방식을
 쓰려면 실행할 때마다 `--experimental`을 지정하세요.
 
@@ -1307,16 +1307,16 @@ openfocus -i ./stack_folder -o ./result/fused.png
 python main.py --input ./stack_folder --output ./result/fused.png
 
 # DTCWT + ECC 정합, 8스레드
-python main.py -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8 --experimental
+python main.py -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8
 
 # StackMFF V3를 CPU로 강제하고 사용자 지정 타일 크기 사용
 python main.py -i ./stack_folder -o ./result/fused.png -m stackmffv3 --cpu --tile-size 512 --experimental
 
 # 파일을 명시적으로 나열. 동영상 파일도 입력으로 받습니다
-python main.py -i img1.jpg img2.jpg img3.jpg -o fused.png -m gfgfgf --experimental
+python main.py -i img1.jpg img2.jpg img3.jpg -o fused.png -m gfgfgf
 
 # 메타데이터에서 보정한 스케일 바가 있는 단일 다중 페이지 TIFF Z-스택
-python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar --experimental
+python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar
 
 # 합성하거나 입력을 바꾸지 않고 인접한 유사 프레임만 확인
 python main.py -i ./stack_folder --suggest-duplicates
@@ -1405,7 +1405,7 @@ openfocus retouch replay edits.ofretouch --base fused.png --sources frame1.png f
 | `--input, -i` | 이미지 폴더, 동영상 파일, 하나 이상의 이미지 파일, 또는 다중 페이지 TIFF |
 | `--output, -o` | 단일 스택 출력 경로(확장자가 형식 결정). `--output-dir`이 없으면 필수 |
 | `--output-dir, -d` | 배치 모드: 각 입력 폴더를 처리하고 스택마다 `<folder>.png` 기록 |
-| `--method, -m` | 안정 버전은 `openfocus_a`, `openfocus_b`(기본값), `openfocus_c`. 실험적 방식은 `guided_filter`, `dct`, `dtcwt`, `gfgfgf`, `stackmff`, `stackmffv2`, `stackmffv3` |
+| `--method, -m` | 안정 버전은 `openfocus_a`, `openfocus_b`(기본값), `openfocus_c`, `guided_filter`, `dct`, `dtcwt`, `gfgfgf`. 실험적 방식은 `stackmff`, `stackmffv2`, `stackmffv3` |
 | `--experimental` | 이 CLI 실행에서 실험적 합성 방식 사용 허용 |
 | `--param KEY=JSON_VALUE` | 합성 매개변수. 여러 번 지정할 수 있고 기존 전용 플래그보다 우선 |
 | `--align, -a` | `none`(기본값), `homography`, `ecc`, `openfocus`, `both` |

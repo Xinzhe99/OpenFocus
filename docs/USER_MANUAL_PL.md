@@ -28,7 +28,7 @@ OpenFocus to profesjonalna aplikacja desktopowa do wieloogniskowej fuzji obrazó
 ### Najważniejsze funkcje
 
 - **Wieloogniskowa fuzja obrazów**: wiele zdjęć o różnych punktach ostrości łączy się w jeden w pełni ostry obraz
-- **Fuzja obrazów** obejmuje stabilne metody OpenFocus A/B/C, eksperymentalne metody StackMFF V1/V2/V3, Guided Filter, DCT, DTCWT i GFG-FGF oraz tryb tylko wyrównania
+- **Fuzja obrazów** obejmuje stabilne metody OpenFocus A/B/C, Guided Filter, DCT, DTCWT i GFG-FGF, eksperymentalne metody StackMFF V1/V2/V3 oraz tryb tylko wyrównania
 - **Rejestracja obrazów**: ECC, homografia, homografia → ECC i szybkie wyrównanie OpenFocus
 - **Automatyczne tło**: zastąpienie niespokojnego tła ze stacku jedną prawdziwą klatką oraz pokazanie, gdzie żadna klatka nie uchwyciła sceny wyraźnie
 - **Porównanie suwakiem**: kontrola wyrównania i wyniku za pomocą przeciąganego dzielnika A/B
@@ -59,7 +59,7 @@ Stosy przezroczystych PNG można łączyć w aplikacji desktopowej, przetwarzani
 
 Wczytaj w pełnym rozmiarze, wybierz brak wyrównania, wyłącz szybki podgląd i ROI, a następnie wyrenderuj i zapisz jako PNG. Przetwarzanie wsadowe wymaga metody fuzji i wyjścia PNG bez zapisywania wyrównanego stosu. Wyrównanie, zmiana rozmiaru i skalowanie w dół, korekcja pyłu, mapy głębi, porównanie, retusz, etykiety i paski skali nie są obsługiwane dla danych przezroczystych. Metoda, która zmienia wymiary prostokąta, jest odrzucana. Zmienne lub rozmyte maski, różne maski klatek, przezroczysty TIFF na wejściu i wyjście inne niż PNG, w tym GIF i wielostronicowy TIFF, nie są obsługiwane. CLI odrzuca również czyszczenie matrycy i mapy głębi dla przezroczystego wejścia.
 
-Odpowiednik w CLI to `python main.py --input ./png-stack --output ./result.png --method guided_filter --align none --experimental`.
+Odpowiednik w CLI to `python main.py --input ./png-stack --output ./result.png --method guided_filter --align none`.
 
 ### Obsługiwane formaty wyjściowe
 
@@ -407,7 +407,7 @@ Dodatkowe parametry otwiera **Ustawienia → Ustawienia zaawansowane → Rejestr
 
 ## 8. Metody fuzji obrazów
 
-**OpenFocus A, B i C** to stabilne metody fuzji. Nowy profil aplikacji desktopowej domyślnie używa **OpenFocus B** z rejestracją **ECC**. Aby użyć pozostałych metod fuzji lub eksperymentalnych metod rejestracji, przejdź do **Ustawienia → Ustawienia zaawansowane → Ogólne** i zaznacz **Włącz funkcje eksperymentalne**. W CLI dodaj `--experimental` przy każdym uruchomieniu z eksperymentalną metodą fuzji.
+**OpenFocus A, B i C, Guided Filter, GFG-FGF, DCT i DTCWT** to stabilne metody fuzji. Nowy profil aplikacji desktopowej domyślnie używa **OpenFocus B** z rejestracją **ECC**. Aby użyć eksperymentalnych metod fuzji (StackMFF V1/V2/V3) lub eksperymentalnych metod rejestracji, przejdź do **Ustawienia → Ustawienia zaawansowane → Ogólne** i zaznacz **Włącz funkcje eksperymentalne**. W CLI dodaj `--experimental` przy każdym uruchomieniu z eksperymentalną metodą fuzji.
 
 ### StackMFF V3 (uczenie głębokie)
 
@@ -884,16 +884,16 @@ Ze środowiska Pythona (lub obok gotowego pliku wykonywalnego):
 python main.py --input ./stack_folder --output ./result/fused.png
 
 # DTCWT z rejestracją ECC, 8 wątków
-python main.py -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8 --experimental
+python main.py -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8
 
 # StackMFF V3 wymuszony na CPU z niestandardowym rozmiarem kafelka
 python main.py -i ./stack_folder -o ./result/fused.png -m stackmffv3 --cpu --tile-size 512 --experimental
 
 # Jawna lista plików; pliki wideo są również akceptowane jako wejście
-python main.py -i img1.jpg img2.jpg img3.jpg -o fused.png -m gfgfgf --experimental
+python main.py -i img1.jpg img2.jpg img3.jpg -o fused.png -m gfgfgf
 
 # Jeden wielostronicowy stos Z TIFF z paskiem skali kalibrowanym z metadanych
-python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar --experimental
+python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar
 
 # Sprawdź sąsiednie podobne klatki bez fuzji i zmiany wejścia
 python main.py -i ./stack_folder --suggest-duplicates
@@ -911,7 +911,7 @@ Na przykład dodaj `--align openfocus --alignment-report alignment.json` do poje
 | `--output-dir, -d` | Tryb wsadowy: łączy każdy folder wejściowy, zapisując `<folder>.png` dla każdego stosu |
 | `--resume` | Pomija folder tylko wtedy, gdy wszystkie żądane wyniki są niepustymi zwykłymi plikami; nie sprawdza treści ani parametrów |
 | `--config FILE` | Tryb wsadowy: JSON z nadpisaniami dla każdego folderu, np. `{"stackA": {"method": "openfocus_a"}}` |
-| `--method, -m` | Stabilne metody to `openfocus_a`, `openfocus_b` (domyślna) i `openfocus_c`. Eksperymentalne metody to `guided_filter`, `dct`, `dtcwt`, `gfgfgf`, `stackmff`, `stackmffv2` i `stackmffv3` |
+| `--method, -m` | Stabilne metody to `openfocus_a`, `openfocus_b` (domyślna), `openfocus_c`, `guided_filter`, `dct`, `dtcwt` i `gfgfgf`. Eksperymentalne metody to `stackmff`, `stackmffv2` i `stackmffv3` |
 | `--experimental` | Zezwala na użycie eksperymentalnych metod fuzji w tym uruchomieniu CLI |
 | `--param KEY=JSON_VALUE` | Ustawia dowolny parametr fuzji; można powtarzać, nadpisuje starsze flagi |
 | `--align, -a` | `none` (domyślnie), `homography`, `ecc`, `both`, `openfocus` |

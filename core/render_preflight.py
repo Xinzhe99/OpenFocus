@@ -153,7 +153,8 @@ def estimate_render_memory(frames, algorithm, parameters, *, preview=False, roi=
     supported = spec.external_tiling_supported and algorithm not in (
         'openfocus_a', 'openfocus_b', 'openfocus_c')
     from core.multi_focus_fusion import _DEFAULT_TILE_THRESHOLD
-    allowed = supported and (spec.external_tiling_default or threshold != _DEFAULT_TILE_THRESHOLD)
+    allowed = supported and (spec.external_tiling_default or algorithm == 'dtcwt'
+                             or threshold != _DEFAULT_TILE_THRESHOLD)
     tiled = tile_enabled is not False and allowed
     estimate = replace(estimate, tiling_supported=supported)
     if spec.neural:

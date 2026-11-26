@@ -1,8 +1,9 @@
 # OpenFocus fusion methods
 
-OpenFocus A, B and C are the stable focus-stacking methods. Other methods
-require **Enable experimental features** in Advanced Settings or
-`--experimental` in the command-line interface. A, B and C use these approaches:
+OpenFocus A, B and C, Guided Filter, GFG-FGF, DCT and DTCWT are the stable
+focus-stacking methods. Experimental methods (StackMFF V1/V2/V3) require
+**Enable experimental features** in Advanced Settings or `--experimental` in
+the command-line interface. A, B and C use these approaches:
 
 | Method | Approach | Main controls |
 |---|---|---|

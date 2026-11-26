@@ -108,7 +108,7 @@ Arraste o divisor para comparar um quadro de origem com o resultado fundido.
 
 Compare os métodos lado a lado e reutilize o resultado ou as configurações escolhidas.
 
-OpenFocus A, OpenFocus B e OpenFocus C são os únicos métodos de fusão estáveis. Os demais métodos são experimentais. Para usá-los no aplicativo de desktop, selecione **Configurações → Configurações avançadas… → Ativar recursos experimentais**. Na CLI sem interface gráfica, use `--experimental`.
+OpenFocus A, OpenFocus B, OpenFocus C, filtro guiado, GFG-FGF, DCT e DTCWT são métodos de fusão estáveis. Os métodos experimentais (StackMFF V1/V2/V3) podem ser ativados no aplicativo de desktop em **Configurações → Configurações avançadas… → Ativar recursos experimentais**, ou na CLI sem interface gráfica com `--experimental`.
 
 </td>
 <td width="54%">

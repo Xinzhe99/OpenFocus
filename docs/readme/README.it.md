@@ -108,7 +108,7 @@ Trascina il divisore per confrontare un fotogramma sorgente con il risultato fus
 
 Confronta i metodi affiancati e riutilizza il risultato o le impostazioni che preferisci.
 
-OpenFocus A, OpenFocus B e OpenFocus C sono gli unici metodi di fusione stabili. Gli altri metodi sono sperimentali. Per usarli nell’app desktop, seleziona **Impostazioni → Impostazioni avanzate… → Attiva funzioni sperimentali**. Nella CLI senza interfaccia grafica, usa `--experimental`.
+OpenFocus A, OpenFocus B, OpenFocus C, filtro guidato, GFG-FGF, DCT e DTCWT sono i metodi di fusione stabili. I metodi sperimentali (StackMFF V1/V2/V3) si attivano nell’app desktop in **Impostazioni → Impostazioni avanzate… → Attiva funzioni sperimentali**, oppure nella CLI senza interfaccia grafica con `--experimental`.
 
 </td>
 <td width="54%">

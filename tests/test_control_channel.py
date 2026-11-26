@@ -2549,13 +2549,13 @@ def test_control_channel_guards_experimental_fusion_and_alignment(server, contro
     from core.algorithms import fusion_algorithms
     from locales import trans
 
-    assert call(server, 'method.set', id='guided_filter')['result']['id'] == 'guided_filter'
+    assert call(server, 'method.set', id='stackmffv3')['result']['id'] == 'stackmffv3'
     control_window.experimental_features = False
     control_window.apply_experimental_features()
     locked_render = call(server, 'render.start')
     assert locked_render['error']['code'] == 'invalid_argument'
     assert trans.t('experimental_locked_hint') in locked_render['error']['message']
-    assert control_window.current_fusion_method() == 'guided_filter'
+    assert control_window.current_fusion_method() == 'stackmffv3'
     for spec in fusion_algorithms():
         before = control_window.current_fusion_method()
         reply = call(server, 'method.set', id=spec.id)

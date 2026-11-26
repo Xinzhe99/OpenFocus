@@ -108,7 +108,7 @@ Porównuj klatkę źródłową z wynikiem fuzji za pomocą przesuwanego podział
 
 Porównuj metody obok siebie i wykorzystaj wybrany wynik lub jego ustawienia.
 
-OpenFocus A, OpenFocus B i OpenFocus C to jedyne stabilne metody fuzji. Pozostałe metody są eksperymentalne. Aby ich użyć w aplikacji desktopowej, wybierz **Ustawienia → Ustawienia zaawansowane… → Włącz funkcje eksperymentalne**. W CLI bez interfejsu graficznego użyj opcji `--experimental`.
+OpenFocus A, OpenFocus B, OpenFocus C, Guided Filter, GFG-FGF, DCT i DTCWT to stabilne metody fuzji. Metody eksperymentalne (StackMFF V1/V2/V3) można włączyć w aplikacji desktopowej w **Ustawienia → Ustawienia zaawansowane… → Włącz funkcje eksperymentalne**, a w CLI bez interfejsu graficznego opcją `--experimental`.
 
 </td>
 <td width="54%">
