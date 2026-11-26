@@ -16,7 +16,9 @@ import pytest
 from tests.test_depth_map import _synthetic_thirds
 
 
-def _wait(qapp, predicate, timeout=10000):
+def _wait(qapp, predicate, timeout=60000):
+    # The first measurement in a process compiles its kernel, which can take
+    # tens of seconds while other test processes share the cores.
     from PyQt6.QtTest import QTest
     deadline = time.monotonic() + timeout / 1000
     while not predicate():
