@@ -844,3 +844,64 @@ def test_large_translated_layouts_render_cleanly_across_locales(qapp, lang):
         dlg.close()
     finally:
         trans.set_language(prev_lang)
+
+
+def test_work_detail_dialog_passes_lang_and_renders_translated_comment_with_tooltip(qapp):
+    from dialogs.gallery_hub import WorkDetailDialog
+    from PyQt6.QtWidgets import QListWidget
+
+    requested = []
+    posted = []
+
+    class _Client:
+        def get_comments(self, work_id, *, cursor=None, limit=None, lang=None, danmaku=None):
+            requested.append((work_id, lang))
+            return {
+                "items": [
+                    {
+                        "id": "c1",
+                        "author_nickname": "Kenji",
+                        "content": "素晴らしいピント合成！",
+                        "src_lang": "ja",
+                        "translated_content": "Awesome focus stack!",
+                        "translated_lang": "en",
+                    }
+                ]
+            }
+
+        def post_comment(self, work_id, content, parent_id=None, *, is_danmaku=None, client_lang=None):
+            posted.append((work_id, content, parent_id, is_danmaku, client_lang))
+            return {"comment": {"id": "c2", "author_nickname": "Me", "content": content}}
+
+    prev_lang = trans.current_lang
+    try:
+        trans.set_language("en")
+        dlg = WorkDetailDialog(
+            work={"id": "w_tl", "title": "Beetle", "author_nickname": "Kenji", "likes_count": 3},
+            client=_Client(),
+        )
+        dlg.show()
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            qapp.processEvents()
+            if dlg.findChild(QListWidget).count() > 0:
+                break
+            time.sleep(0.01)
+
+        lw = dlg.findChild(QListWidget)
+        assert requested and requested[0] == ("w_tl", "en")
+        assert lw.count() == 1
+        item = lw.item(0)
+        assert "Awesome focus stack! \U0001f310" in item.text()
+        assert "素晴らしいピント合成！" in item.toolTip()
+
+        dlg.comment_input.setText("Great work!")
+        dlg._submit_comment()
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and not posted:
+            qapp.processEvents()
+            time.sleep(0.01)
+        assert posted and posted[0] == ("w_tl", "Great work!", None, False, "en")
+        dlg.close()
+    finally:
+        trans.set_language(prev_lang)

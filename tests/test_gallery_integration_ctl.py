@@ -958,3 +958,91 @@ def test_magnifier_label_context_menu_single_emit_and_pan_roi_suppression(qapp):
         label.close()
         label.deleteLater()
         qapp.processEvents()
+
+
+def test_danmaku_translation_settings_and_controller_comment_language_sync(integrated_window, qapp):
+    from dialogs.advanced_settings import AdvancedSettingsDialog
+
+    window, _server, _settings, _tmp_path = integrated_window
+    gc = window.gallery_controller
+    requested_langs = []
+
+    def _mock_get_comments(work_id, *, cursor=None, limit=None, lang=None, danmaku=None):
+        requested_langs.append((work_id, lang))
+        if lang == "ja":
+            return {
+                "items": [
+                    {
+                        "id": "c_remote",
+                        "work_id": work_id,
+                        "content": "Clean focus stack",
+                        "src_lang": "en",
+                        "translated_content": "きれいな深度合成",
+                        "translated_lang": "ja",
+                    }
+                ]
+            }
+        return {
+            "items": [
+                {
+                    "id": "c_remote",
+                    "work_id": work_id,
+                    "content": "Clean focus stack",
+                    "src_lang": "en",
+                    "translated_content": "干净的景深合成",
+                    "translated_lang": "zh",
+                }
+            ]
+        }
+
+    gc.client.get_comments = _mock_get_comments
+
+    # Persist translation_mode via AdvancedSettingsDialog.
+    adv = AdvancedSettingsDialog(window)
+    assert adv.combo_danmaku_translation.findData("auto") >= 0
+    adv.combo_danmaku_translation.setCurrentIndex(
+        adv.combo_danmaku_translation.findData("same_language")
+    )
+    adv._apply()
+    assert window.gallery_showcase_page.danmaku_overlay.settings.translation_mode == "same_language"
+
+    # Switch back to auto and test feed + language switch re-fetch.
+    adv2 = AdvancedSettingsDialog(window)
+    adv2.combo_danmaku_translation.setCurrentIndex(adv2.combo_danmaku_translation.findData("auto"))
+    adv2._apply()
+    assert window.gallery_showcase_page.danmaku_overlay.settings.translation_mode == "auto"
+
+    # Compute avoidance: paused during active fusion.
+    gc.set_fusion_busy(True)
+    assert gc._fetch_work_comments("w_trans") is False
+    gc.set_fusion_busy(False)
+
+    trans.set_language("zh")
+    qapp.processEvents()
+    gc.state_store._feed_works = [
+        GalleryWork.from_dict(
+            {
+                "work_id": "w_trans",
+                "title": "Trans Test",
+                "full_url": "https://cdn.openfocus.top/w_trans.webp",
+            }
+        )
+    ]
+    gc._on_feed_changed(list(gc.state_store._feed_works))
+    _wait_until(lambda: ("w_trans", "zh") in requested_langs)
+    _wait_until(
+        lambda: any(
+            b.translated_content == "干净的景深合成"
+            for b in window.gallery_showcase_page.danmaku_overlay.active_bullets
+        )
+    )
+
+    trans.set_language("ja")
+    gc.retranslate()
+    _wait_until(lambda: ("w_trans", "ja") in requested_langs)
+    _wait_until(
+        lambda: any(
+            b.translated_content == "きれいな深度合成"
+            for b in window.gallery_showcase_page.danmaku_overlay.active_bullets
+        )
+    )

@@ -887,3 +887,29 @@ def test_confirmation_requires_a_published_work_receipt():
     with pytest.raises(gc.GalleryClientError, match="invalid_response") as error:
         client.confirm_upload("waiting", idempotency_key="same-receipt")
     assert error.value.stage == "confirm"
+
+
+def test_comments_endpoints_forward_normalized_lang_when_provided():
+    import urllib.parse
+
+    calls = []
+
+    def transport(method, url, headers, body, timeout):
+        calls.append((method, url, body))
+        if method == "GET":
+            return _json_response({"items": [{"id": "c1", "content": "Hello", "translated_content": "你好", "translated_lang": "zh"}]})
+        return _json_response({"comment": {"id": "c2"}}, status=201)
+
+    client = gc.GalleryClient(token="tok", transport=transport)
+    client.get_comments("w1")
+    client.get_comments("w1", lang="zh-CN", danmaku=True)
+    client.post_comment("w1", "Nice focus stack!", is_danmaku=True, client_lang="en_US")
+
+    q1 = urllib.parse.urlparse(calls[0][1]).query
+    assert "lang=" not in q1
+    q2 = urllib.parse.parse_qs(urllib.parse.urlparse(calls[1][1]).query)
+    assert q2["lang"] == ["zh"]
+    assert q2["danmaku"] == ["1"]
+    posted_body = json.loads(calls[2][2].decode("utf-8"))
+    assert posted_body["client_lang"] == "en"
+    assert posted_body["is_danmaku"] is True

@@ -20,6 +20,7 @@ import copy
 import ctypes
 from dataclasses import dataclass
 from http.client import HTTPException
+import inspect
 import json
 import math
 import os
@@ -37,6 +38,7 @@ import urllib.request
 import uuid
 
 from constants import app_display_version
+from locales.gallery_i18n import normalize_lang_code
 from utils import account_client as _account_client
 from utils.logging_setup import get_logger, log_action
 from utils.tls import classify_network_error, https_handlers
@@ -1702,13 +1704,21 @@ class GalleryClient:
         *,
         cursor: Optional[str] = None,
         limit: Optional[int] = None,
+        lang: Optional[str] = None,
+        danmaku: Optional[bool] = None,
     ) -> dict[str, Any]:
         """GET /api/v1/gallery/works/:work_id/comments"""
         path = ROUTES["work_comments"].format(work_id=_quote_path_segment(work_id, "work_id"))
+        query: dict[str, Any] = {"cursor": cursor, "limit": limit}
+        norm_lang = normalize_lang_code(lang)
+        if norm_lang:
+            query["lang"] = norm_lang
+        if danmaku is not None:
+            query["danmaku"] = "1" if danmaku else "0"
         data, _ = self._request_json(
             "GET",
             path,
-            query={"cursor": cursor, "limit": limit},
+            query=query,
             auth_optional=True,
         )
         return data
@@ -1720,6 +1730,7 @@ class GalleryClient:
         parent_id: Optional[str] = None,
         *,
         is_danmaku: Optional[bool] = None,
+        client_lang: Optional[str] = None,
     ) -> dict[str, Any]:
         """POST /api/v1/gallery/works/:work_id/comments
 
@@ -1745,6 +1756,9 @@ class GalleryClient:
                 "content": content.strip(),
                 "is_danmaku": True if is_danmaku is None else bool(is_danmaku),
             }
+        norm_lang = normalize_lang_code(client_lang)
+        if norm_lang:
+            body["client_lang"] = norm_lang
         path = ROUTES["work_comments"].format(work_id=_quote_path_segment(work_id, "work_id"))
         data, _ = self._request_json("POST", path, json_body=body, auth_required=True)
         return data
@@ -1803,3 +1817,54 @@ class GalleryClient:
         path = ROUTES["user_follow"].format(user_id=_quote_path_segment(user_id, "user_id"))
         data, _ = self._request_json("DELETE", path, auth_required=True)
         return data
+
+
+def _accepted_kwargs(fn: Any, candidates: Mapping[str, Any]) -> dict[str, Any]:
+    """Filter *candidates* to keyword parameters accepted by *fn*."""
+    non_empty = {k: v for k, v in candidates.items() if v is not None}
+    if not non_empty:
+        return {}
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return {}
+    if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
+        return non_empty
+    return {
+        k: v
+        for k, v in non_empty.items()
+        if k in sig.parameters
+        and sig.parameters[k].kind
+        in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+    }
+
+
+def call_get_comments(client: Any, work_id: str, *, lang: Optional[str] = None) -> Any:
+    """Invoke ``client.get_comments`` passing ``lang`` only if supported."""
+    norm_lang = normalize_lang_code(lang)
+    fn = client.get_comments
+    kwargs = _accepted_kwargs(fn, {"lang": norm_lang or None})
+    return fn(work_id, **kwargs)
+
+
+def call_post_comment(
+    client: Any,
+    work_id: str,
+    content: str,
+    *,
+    parent_id: Optional[str] = None,
+    is_danmaku: Optional[bool] = None,
+    client_lang: Optional[str] = None,
+) -> Any:
+    """Invoke ``client.post_comment`` passing optional kwargs only if supported."""
+    norm_lang = normalize_lang_code(client_lang)
+    fn = client.post_comment
+    kwargs = _accepted_kwargs(
+        fn,
+        {
+            "parent_id": parent_id,
+            "is_danmaku": is_danmaku,
+            "client_lang": norm_lang or None,
+        },
+    )
+    return fn(work_id, content, **kwargs)

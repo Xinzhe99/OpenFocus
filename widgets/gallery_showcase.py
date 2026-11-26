@@ -41,6 +41,7 @@ from PyQt6.QtWidgets import (
 
 from core.gallery_media import format_exif_summary
 from locales import trans
+from locales.gallery_i18n import current_ui_language, resolve_comment_translation
 from utils.design_tokens import FONT, RADIUS, SPACE, WEIGHT, palette, rgba
 from widgets.danmaku_overlay import (
     DANMAKU_COOLDOWN_SEC,
@@ -305,6 +306,7 @@ class CommentReplyDrawer(QFrame):
         super().__init__(parent)
         self._theme = "dark"
         self._comments: list[Any] = []
+        self._translation_mode: str = "auto"
         self._is_open = False
         self.setObjectName("gallery_comment_drawer")
         self.setProperty("controlId", "gallery_comment_drawer")
@@ -343,6 +345,10 @@ class CommentReplyDrawer(QFrame):
         self.apply_theme(self._theme)
         self.retranslate()
         self.hide()
+
+    def set_translation_mode(self, mode: str) -> None:
+        self._translation_mode = mode if mode in ("auto", "original", "same_language") else "auto"
+        self._rebuild_rows()
 
     def is_open(self) -> bool:
         return self._is_open
@@ -515,7 +521,12 @@ class CommentReplyDrawer(QFrame):
         meta.addStretch(1)
         layout.addLayout(meta)
 
-        lbl_body = QLabel(content, card)
+        display_text, is_translated = resolve_comment_translation(
+            comment,
+            mode=self._translation_mode,
+            target_lang=current_ui_language(),
+        )
+        lbl_body = QLabel(display_text, card)
         lbl_body.setObjectName("commentBody")
         lbl_body.setWordWrap(True)
         layout.addWidget(lbl_body)
@@ -536,6 +547,24 @@ class CommentReplyDrawer(QFrame):
         if actionable:
             btn_rep.clicked.connect(lambda _c=False, i=cid, b=btn_rep: self._open_report_menu(i, b))
         actions.addWidget(btn_rep)
+
+        if is_translated:
+            btn_toggle = QPushButton(_tr("gallery_danmaku_toggle_original"), card)
+            btn_toggle.setObjectName("btn_toggle_comment_translation")
+            btn_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+            showing_translated = [True]
+
+            def _toggle_translation(_checked: bool = False) -> None:
+                showing_translated[0] = not showing_translated[0]
+                lbl_body.setText(display_text if showing_translated[0] else content)
+                btn_toggle.setText(
+                    _tr("gallery_danmaku_toggle_original")
+                    if showing_translated[0]
+                    else _tr("gallery_danmaku_toggle_translated")
+                )
+
+            btn_toggle.clicked.connect(_toggle_translation)
+            actions.addWidget(btn_toggle)
 
         if actionable and can_delete:
             btn_del = QPushButton(_tr("gallery_comments_delete"), card)
@@ -925,6 +954,7 @@ class GalleryShowcaseWidget(QWidget):
     def set_danmaku_settings(self, settings: DanmakuSettings) -> None:
         norm = settings.normalized()
         self.danmaku_overlay.set_settings(norm)
+        self.comment_drawer.set_translation_mode(norm.translation_mode)
         self.danmaku_settings_changed.emit(norm)
 
     def set_danmaku_limits(

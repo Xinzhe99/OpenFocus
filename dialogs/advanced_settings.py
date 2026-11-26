@@ -401,6 +401,20 @@ class AdvancedSettingsDialog(QDialog):
         self.combo_danmaku_density.setCurrentIndex(max(0, dens_idx))
         danmaku.addRow(trans.t("gallery_danmaku_density"), self.combo_danmaku_density)
 
+        self.combo_danmaku_translation = QComboBox()
+        self.combo_danmaku_translation.setProperty("controlId", "combo_danmaku_translation")
+        for mode_key, i18n_key in (
+            ("auto", "gallery_danmaku_translate_auto"),
+            ("original", "gallery_danmaku_translate_original"),
+            ("same_language", "gallery_danmaku_translate_same_lang"),
+        ):
+            self.combo_danmaku_translation.addItem(trans.t(i18n_key), mode_key)
+        trans_idx = self.combo_danmaku_translation.findData(
+            getattr(danmaku_cfg, "translation_mode", "auto")
+        )
+        self.combo_danmaku_translation.setCurrentIndex(max(0, trans_idx))
+        danmaku.addRow(trans.t("gallery_danmaku_translation"), self.combo_danmaku_translation)
+
         # --- Gallery Storage & Cache ---
         storage = _section(page_lay, trans.t("gallery_settings_storage_section"))
 
@@ -567,6 +581,7 @@ class AdvancedSettingsDialog(QDialog):
             'danmaku_font_size': int(self.spin_danmaku_font_size.value()),
             'danmaku_opacity_pct': int(self.spin_danmaku_opacity.value()),
             'danmaku_density': self.combo_danmaku_density.currentData(),
+            'danmaku_translation_mode': self.combo_danmaku_translation.currentData(),
             'gallery_download_dir': self.gallery_download_dir.text().strip(),
             'gallery_cache_dir': self.gallery_cache_dir.text().strip(),
             'gallery_cache_max_mb': int(self.spin_gallery_cache_limit.value()),
@@ -622,7 +637,7 @@ class AdvancedSettingsDialog(QDialog):
         share_usage = draft.pop('share_usage', None)
         danmaku_keys = (
             'danmaku_enabled', 'danmaku_position', 'danmaku_font_size',
-            'danmaku_opacity_pct', 'danmaku_density',
+            'danmaku_opacity_pct', 'danmaku_density', 'danmaku_translation_mode',
         )
         danmaku_changed = any(k in draft for k in danmaku_keys)
         for k in danmaku_keys:
@@ -746,6 +761,7 @@ class AdvancedSettingsDialog(QDialog):
                 font_size=int(self.spin_danmaku_font_size.value()),
                 opacity=int(self.spin_danmaku_opacity.value()) / 100.0,
                 density=str(self.combo_danmaku_density.currentData() or "medium"),
+                translation_mode=str(self.combo_danmaku_translation.currentData() or "auto"),
             ).normalized()
             if gallery is not None:
                 gallery.apply_danmaku_settings(new_danmaku, persist=True)

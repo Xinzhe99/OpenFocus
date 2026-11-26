@@ -729,3 +729,49 @@ def test_blur_cache_evicts_lru_and_previous_slide_single_cached_guard(qapp):
     showcase.set_work_pixmap("w3", _make_pixmap(100, 100, QColor(40, 110, 230)))
     assert len(cache) == 2
     showcase.deleteLater()
+
+
+def test_comment_drawer_renders_translation_with_original_toggle(qapp):
+    from PyQt6.QtWidgets import QLabel
+    from locales import trans
+
+    prev_lang = trans.current_lang
+    try:
+        trans.set_language("zh")
+        showcase = GalleryShowcaseWidget()
+        showcase.resize(640, 360)
+        showcase.set_danmaku_settings(DanmakuSettings(translation_mode="auto"))
+        showcase.set_works(
+            [
+                ShowcaseWork(
+                    id="w1",
+                    pixmap=_make_pixmap(120, 80, QColor(30, 80, 140)),
+                    comments=[
+                        {
+                            "id": "c1",
+                            "author_nickname": "Hiro",
+                            "content": "Sharp compound eyes!",
+                            "src_lang": "en",
+                            "translated_content": "锐利的复眼！",
+                            "translated_lang": "zh",
+                        }
+                    ],
+                )
+            ]
+        )
+        showcase.open_comment_drawer()
+        qapp.processEvents()
+
+        card = showcase.comment_drawer.findChild(QFrame, "commentCard")
+        assert card is not None
+        body = card.findChild(QLabel, "commentBody")
+        toggle = card.findChild(QPushButton, "btn_toggle_comment_translation")
+        assert body is not None and toggle is not None
+        assert body.text() == "锐利的复眼！"
+        toggle.click()
+        assert body.text() == "Sharp compound eyes!"
+        toggle.click()
+        assert body.text() == "锐利的复眼！"
+        showcase.deleteLater()
+    finally:
+        trans.set_language(prev_lang)

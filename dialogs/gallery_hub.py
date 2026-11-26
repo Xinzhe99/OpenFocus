@@ -63,6 +63,8 @@ from locales.gallery_i18n import (
     AI_TAG_KEYS,
     LEADERBOARD_PERIOD_KEYS,
     REPORT_REASON_KEYS,
+    current_ui_language,
+    resolve_comment_translation,
     t_gallery,
     translate_badge,
     translate_error,
@@ -74,7 +76,7 @@ from locales.gallery_i18n import (
 from utils.design_tokens import RADIUS, SPACE, palette
 from utils.file_dialogs import FileDialog
 from utils.frame_pixels import block_signals, is_qobject_alive, safe_disconnect
-from utils.gallery_client import _extract_upload_target
+from utils.gallery_client import _extract_upload_target, call_get_comments, call_post_comment
 
 MAX_BATCH_UPLOAD = 10
 DEFAULT_UPLOAD_COST_POINTS = 100
@@ -1693,6 +1695,14 @@ class WorkDetailDialog(QDialog):
             ),
         )
 
+    def _translation_mode(self) -> str:
+        try:
+            from controllers.gallery_controller import load_danmaku_settings
+
+            return load_danmaku_settings().translation_mode
+        except Exception:
+            return "auto"
+
     def load_comments(self) -> None:
         initial = _get(self.work, "comments", None)
         if initial:
@@ -1701,8 +1711,10 @@ class WorkDetailDialog(QDialog):
         if self._client is None or not hasattr(self._client, "get_comments"):
             return
 
+        req_lang = current_ui_language() if self._translation_mode() == "auto" else None
+
         def _fetch() -> list[Any]:
-            resp = self._client.get_comments(self.work_id)
+            resp = call_get_comments(self._client, self.work_id, lang=req_lang)
             items = _get(resp, "items", resp) if isinstance(resp, Mapping) else resp
             return list(items or ())
 
@@ -1715,6 +1727,8 @@ class WorkDetailDialog(QDialog):
     def _render_comments(self) -> None:
         self.comments_list.clear()
         seen_ids: set[str] = set()
+        mode = self._translation_mode()
+        target_lang = current_ui_language()
 
         def _append_comment(comment: Any, *, force_reply: bool = False) -> None:
             cid = str(_get(comment, "comment_id", "") or _get(comment, "id", ""))
@@ -1724,6 +1738,12 @@ class WorkDetailDialog(QDialog):
                 seen_ids.add(cid)
             author = _comment_author(comment)
             content = str(_get(comment, "content", ""))
+            display_content, is_translated = resolve_comment_translation(
+                comment,
+                mode=mode,
+                target_lang=target_lang,
+            )
+            rendered = f"{display_content} \U0001f310" if is_translated else (display_content or content)
             is_reply = bool(
                 force_reply
                 or _get(comment, "parent_id", None)
@@ -1736,7 +1756,9 @@ class WorkDetailDialog(QDialog):
                 if bool(_get(comment, "is_author_reply", False))
                 else ""
             )
-            item = QListWidgetItem(f"{prefix}{author_tag}{author}: {content}")
+            item = QListWidgetItem(f"{prefix}{author_tag}{author}: {rendered}")
+            if is_translated:
+                item.setToolTip(t_gallery("gallery_danmaku_original_tooltip", original=content))
             item.setData(Qt.ItemDataRole.UserRole, (cid, author))
             self.comments_list.addItem(item)
 
@@ -1783,13 +1805,14 @@ class WorkDetailDialog(QDialog):
             return
 
         def _post() -> Any:
-            kwargs: dict[str, Any] = {"is_danmaku": False}
-            if parent_id:
-                kwargs["parent_id"] = parent_id
-            try:
-                return self._client.post_comment(self.work_id, text, **kwargs)
-            except TypeError:
-                return self._client.post_comment(self.work_id, text, parent_id=parent_id)
+            return call_post_comment(
+                self._client,
+                self.work_id,
+                text,
+                parent_id=parent_id,
+                is_danmaku=False,
+                client_lang=current_ui_language(),
+            )
 
         self._runner.submit(
             _post,
