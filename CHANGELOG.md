@@ -296,6 +296,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   6 TB and took 100 minutes in power-saver mode.
 - Bound OpenFocus alignment memory for deep stacks by reusing cached source
   pixels during estimation and staging the resolved frames during fusion.
+- Stop retrying resized OpenFocus A, B and C renders requested through the
+  Python API with the low-memory plan. That plan did not count the RAM that
+  resizing needs, so a render rejected for memory could still start.
 - Release the isolated render worker after a memory error so the next render
   starts with fresh native memory and device contexts.
 - Free cached source frames and retry at reduced memory before refusing

@@ -1219,7 +1219,9 @@ class MultiFocusFusion:
                         min_worker = max(1, decode_peak or min(per_worker, min(height, 128) * width * 64))
                     else:
                         min_worker = max(1, min(per_worker, min(height, 128) * width * 64))
-                    if min_fixed + min_worker > budget_now:
+                    # Resizing keeps full-source and resized planes in RAM, so
+                    # only an unresized render can fall back to this floor.
+                    if img_resize is not None or min_fixed + min_worker > budget_now:
                         raise
                     plan = policy.plan_execution(
                         policy.Workload(

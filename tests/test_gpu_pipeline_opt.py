@@ -311,6 +311,46 @@ def test_preflight_uses_imported_jpeg_metadata(monkeypatch, tmp_path, alignment)
     assert 0 < estimate.registration_ram < 1024 ** 3
 
 
+def test_openfocus_low_ram_retry_keeps_rejection_for_resized_render(monkeypatch):
+    from core import multi_focus_fusion as mff
+    from core.algorithm_adapters import openfocus_b_resources
+
+    frames = [np.full((64, 64, 3), 20 + i * 30, np.uint8) for i in range(4)]
+    # In-memory frames retry with the fixed buffers and one 128-row band. The
+    # budget holds that floor but not the RAM a 64 -> 128 resize needs.
+    fixed, per_worker = openfocus_b_resources(128, 128, {}, len(frames))
+    floor = fixed + min(per_worker, 128 * 128 * 64)
+    resize_bytes = (64 * 64 + 128 * 128) * 3 * 8
+    monkeypatch.setattr(mff, 'memory_budget_bytes', lambda: floor + resize_bytes // 2)
+    events = []
+    monkeypatch.setattr(mff, 'log_action', lambda event, **kw: events.append(event))
+    original_plan = resource_policy.plan_execution
+    rejection = resource_policy.ResourceLimitError('first plan rejected')
+    calls = []
+
+    def first_plan_rejects(workload, **kwargs):
+        if workload.algorithm == 'openfocus_b':
+            calls.append(kwargs.get('user_threads'))
+            if len(calls) == 1:
+                raise rejection
+        return original_plan(workload, **kwargs)
+
+    monkeypatch.setattr(resource_policy, 'plan_execution', first_plan_rejects)
+    fusion = MultiFocusFusion('openfocus_b', use_gpu=False, tile_enabled=False, exposure_match=False)
+    with pytest.raises(resource_policy.ResourceLimitError) as rejected:
+        fusion.fuse(frames, img_resize=(128, 128))
+    assert rejected.value is rejection
+    assert len(calls) == 1
+    assert 'openfocus_low_ram_degrade' not in events
+
+    # The same budget still lets an unresized render fall back to one worker.
+    calls.clear()
+    result = fusion.fuse(frames)
+    assert result.shape == (64, 64, 3)
+    assert calls[1] == 1
+    assert 'openfocus_low_ram_degrade' in events
+
+
 def test_openfocus_b_low_ram_auto_degrades_to_serial(monkeypatch):
     from core import multi_focus_fusion as mff
 
