@@ -246,6 +246,7 @@ def openfocus_b_impl(input_source, img_resize=None, kernel_size: int = 17,
         if resident_flag:
             # Charge the current decode and any other upload still holding its host buffer.
             fixed_host = per_slot * (2 if getattr(gpu, '_merge_ping_pong', False) else 1)
+            fixed_host += getattr(gpu, '_merge_unified_bytes', 0)
             if result is not None:
                 fixed_host += result.nbytes
             slots = _prefetch_window(

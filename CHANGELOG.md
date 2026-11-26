@@ -287,6 +287,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Use scratch-backed decode, perspective warps, and exposure matching for
   eligible full-size JPEGs that exceed the staging RAM budget. Map compressed
   input read-only and release temporary views after each source pass.
+- Keep OpenFocus B from reading ahead more frames than memory allows when it
+  blends on an integrated GPU with little free RAM.
 - Plan OpenFocus B's mapped integer-frame fusion using its bounded RAM
   working set and release source mappings after their depth and merge passes.
 - Upload frames held in temporary files to the GPU from a read-only view of
