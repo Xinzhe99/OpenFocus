@@ -118,7 +118,10 @@ jobs:
             export QT_QPA_FONTDIR="${SYSTEMROOT:-C:/Windows}/Fonts"
           fi
           set +e
-          pytest -v --timeout=90 --timeout-method=thread
+          # Consecutive slices of the suite, one pytest process per runner
+          # core. The processes compete for the cores, so a test gets twice
+          # the time limit that the single-process checks above use.
+          python tools/parallel_tests.py --capture=fd --durations=10 --timeout=180 --timeout-method=thread
           pytest_exit=$?
           echo "exit_code=$pytest_exit" >> "$GITHUB_OUTPUT"
           exit "$pytest_exit"
