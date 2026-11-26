@@ -903,12 +903,15 @@ def store_frame(image, *, prefer_ram=True):
 
 
 @contextlib.contextmanager
-def frame_region(image, key=Ellipsis, *, write=False):
+def frame_region(image, key=Ellipsis, *, write=False, writeback=False):
     """Borrow one region without retaining its mapped pages after the context.
 
     The original array and its file owner remain valid. Consumers must copy
     arrays retained after this context; disk views close with the lease.
     ``None`` represents an absent optional source mask.
+
+    On Windows, ``writeback`` also flushes a writable view before it closes
+    so the system can reclaim its modified pages.
     """
     if image is None:
         yield None
@@ -929,7 +932,27 @@ def frame_region(image, key=Ellipsis, *, write=False):
         yield borrowed
     finally:
         _owned_mappings.pop(id(mapping), None)
+        if write and writeback and os.name == 'nt':
+            try:
+                mapping._mmap.flush()
+            except (AttributeError, OSError, ValueError):
+                pass
         mapping._mmap.close()
+
+
+def flush_mapped_frame(image) -> bool:
+    """Request writeback of a writable mapped frame's dirty pages."""
+    root = _mapped_base(image)
+    if root is None or getattr(root, 'mode', None) in ('r', 'c'):
+        return False
+    mmap_obj = getattr(root, '_mmap', None)
+    if mmap_obj is None:
+        return False
+    try:
+        mmap_obj.flush()
+    except (AttributeError, OSError, ValueError):
+        return False
+    return True
 
 
 def _reopen_mapped(region, root, *, write):

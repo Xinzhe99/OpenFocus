@@ -1,10 +1,12 @@
 """OpenFocus A: Burt response with low-detail background blending."""
 
+import os
+
 import cv2
 import numpy as np
 from core.frame_storage import (
     create_transient_frame as create_frame, create_frame as create_disk_frame,
-    frame_region,
+    flush_mapped_frame, frame_region, is_mapped_frame,
 )
 from fusion_methods._openfocus_pixels import frame_codes, frame_gray_codes, gray_codes, output_codes
 from fusion_methods._openfocus_execution import execution_job, configure_rows, run_bands
@@ -134,7 +136,7 @@ def _soft_log_cache(response, frames, img_resize, workers):
     """Reserve a RAM-only cache after allowing for the remaining soft passes."""
     from core import resource_policy as policy
     from core.multi_focus_fusion import memory_budget_bytes
-    from core.source_frames import frame_resolution_bytes, source_cache_growth_bytes
+    from core.source_frames import frame_resolution_bytes
 
     cache_bytes = len(frames) * response.nbytes
     budget = min(policy.ram_budget(policy.probe_memory()), memory_budget_bytes())
@@ -162,7 +164,7 @@ def _soft_log_cache(response, frames, img_resize, workers):
         workers * (decode_bytes + response_bytes),
         workers * (decode_bytes + prepare_bytes) + response.nbytes + frame_bytes
         + band_pixels * max(64, 24 + channels * 8),
-    ) + source_cache_growth_bytes(frames)
+    )
     if cache_bytes + remaining_bytes > budget:
         return None
 
@@ -205,6 +207,18 @@ def _background_plane(shape, nbytes, frames, workers):
         except MemoryError:
             pass
     return create_disk_frame(shape, np.float32)
+
+
+def _writeback_selection(*planes):
+    if os.name != 'nt' or not any(is_mapped_frame(plane) for plane in planes):
+        return
+    from core import resource_policy as policy
+
+    # A child allocation cap cannot tell us whether Windows is short on
+    # reclaimable pages. Use the machine's reserve-protected headroom.
+    if policy._detected_ram_ceiling(policy.probe_memory()) < 256 * 1024 * 1024:
+        for plane in planes:
+            flush_mapped_frame(plane)
 
 
 @execution_job
@@ -264,32 +278,37 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
         progress_callback(0, len(frames))
     _check_cancel(should_cancel)
 
+    from core.source_frames import resolve_frame, without_source_cache_growth
+
     def produce_response(index, cancelled):
         source = frames[index]
-        code = frame_codes(source, img_resize, cancelled)
+        with without_source_cache_growth():
+            code = frame_codes(source, img_resize, cancelled)
         return _response(code, radius, cancelled, _check_cancel,
                          u8=source.dtype == np.uint8)
 
     def produce(index, cancelled):
         source = frames[index]
         if native_hard and source.dtype in (np.uint8, np.uint16):
-            from core.source_frames import resolve_frame
-
             _check_cancel(cancelled)
-            frame = resolve_frame(source, should_cancel=cancelled)
+            with without_source_cache_growth():
+                frame = resolve_frame(source, should_cancel=cancelled)
             _check_cancel(cancelled)
             gray = frame_gray_codes(frame, None, cancelled)
             return frame, (gray, *_hard_pyramid(gray, radius, cancelled, _check_cancel))
-        code = frame_codes(source, img_resize, cancelled)
+        with without_source_cache_growth():
+            code = frame_codes(source, img_resize, cancelled)
         if hard:
             gray = gray_codes(code, cancelled, u8=source.dtype == np.uint8)
             return code, (gray, *_hard_pyramid(gray, radius, cancelled, _check_cancel))
         response = _response(code, radius, cancelled, _check_cancel,
                              u8=source.dtype == np.uint8)
-        return _prepare_frame(source, img_resize, cancelled), response
+        with without_source_cache_growth():
+            return _prepare_frame(source, img_resize, cancelled), response
 
     def prepare(index, cancelled):
-        return _prepare_frame(frames[index], img_resize, cancelled)
+        with without_source_cache_growth():
+            return _prepare_frame(frames[index], img_resize, cancelled)
 
     soft = blend_mode == 'soft'
     feather = blend_mode == 'feather'
@@ -497,7 +516,8 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
                         return
                     args = (frame, *pyramid, response, best, output, start, stop, scale, first)
                     if state == A_BACKGROUND:
-                        with frame_region(background, slice(start, stop), write=True) as region:
+                        with frame_region(background, slice(start, stop), write=True,
+                                          writeback=True) as region:
                             band_state[slot] = select_rows(*args, region)
                     else:
                         band_state[slot] = select_rows(*args, no_background)
@@ -507,6 +527,7 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
                     _check_cancel(should_cancel)
                     live_preview.update_best(best, index, len(frames))
                 del frame, pyramid
+                _writeback_selection(best, output)
                 if progress_callback is not None:
                     progress_callback(index + 1, len(frames))
                 _check_cancel(should_cancel)
@@ -522,7 +543,9 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
             if band_state[start // band] == A_BACKGROUND:
                 with frame_region(background, slice(start, stop)) as region:
                     blend_low_response_rows(output, best, region, start, stop)
-        run_bands(height, band, blend_background, scratch_bytes=mapped_band_bytes)
+        if A_BACKGROUND in band_state:
+            run_bands(height, band, blend_background, scratch_bytes=mapped_band_bytes)
+            _writeback_selection(output)
         del best, background, no_background
         SOURCE_CACHE.clear()
         result = output_codes(output, frames, should_cancel, e37=True)
