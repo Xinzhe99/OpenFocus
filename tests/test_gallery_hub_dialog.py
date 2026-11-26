@@ -912,7 +912,8 @@ def test_work_detail_dialog_passes_lang_and_renders_translated_comment_with_tool
         assert requested and requested[0] == ("w_tl", "en")
         assert lw.count() == 1
         item = lw.item(0)
-        assert "Awesome focus stack! \U0001f310" in item.text()
+        assert "Awesome focus stack!" in item.text()
+        assert "\U0001f310" not in item.text()
         assert item.toolTip().startswith("<qt>")
         assert "素晴らしいピント合成！ &lt;b&gt;&amp;&lt;/b&gt;" in item.toolTip()
 
@@ -956,7 +957,7 @@ def test_work_detail_discards_pending_comments_in_previous_locale(qapp):
     )
     try:
         assert english_request_started.wait(5)
-        assert detail.comments_list.item(0).text() == "Kenji: Great! 🌐"
+        assert detail.comments_list.item(0).text() == "Kenji: Great!"
         trans.set_language("fr")
         assert detail.comments_list.item(0).text() == "Kenji: 素晴らしい！"
         assert not detail.comments_list.item(0).toolTip()
@@ -964,15 +965,15 @@ def test_work_detail_discards_pending_comments_in_previous_locale(qapp):
         deadline = time.monotonic() + 2.0
         while time.monotonic() < deadline:
             qapp.processEvents()
-            if detail.comments_list.item(0).text() == "Kenji: Superbe ! 🌐":
+            if detail.comments_list.item(0).text() == "Kenji: Superbe !":
                 break
             time.sleep(0.01)
-        assert detail.comments_list.item(0).text() == "Kenji: Superbe ! 🌐"
+        assert detail.comments_list.item(0).text() == "Kenji: Superbe !"
 
         release_english_request.set()
         assert detail.wait_for_idle()
         assert detail.comments_list.count() == 1
-        assert detail.comments_list.item(0).text() == "Kenji: Superbe ! 🌐"
+        assert detail.comments_list.item(0).text() == "Kenji: Superbe !"
     finally:
         release_english_request.set()
         detail.close()

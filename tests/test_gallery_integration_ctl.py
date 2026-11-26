@@ -379,21 +379,33 @@ def test_showcase_reopens_and_preserves_workspace_during_fusion(integrated_windo
     assert not showcase.fusion_bar.isVisible()
 
 
-def test_showcase_opens_manually_with_current_fusion_progress(integrated_window, qapp):
+def test_showcase_opens_automatically_with_current_fusion_progress(integrated_window, qapp):
     window, _server, _settings, _tmp_path = integrated_window
     gallery = window.gallery_controller
-    gallery.set_auto_show_during_fusion(False)
+    # Permanent opt-out is disabled: even calling legacy setter keeps fusion auto-show active.
+    assert gallery.set_auto_show_during_fusion(False) is True
+    assert gallery.auto_show_during_fusion() is True
+
     gallery.on_render_started()
     gallery.on_render_progress(2, 3, 'Working')
-    assert gallery.showcase_window is None
-
-    assert gallery.show_gallery_showcase(force=True)
     qapp.processEvents()
     showcase = gallery.showcase_window
+    assert showcase is not None and showcase.isVisible()
     assert showcase.fusion_progress.maximum() == 3
     assert showcase.fusion_progress.value() == 2
+
+    # Closing the current showcase dismisses this session only.
+    showcase.btn_return.click()
+    assert not showcase.isVisible()
+
     gallery.on_fusion_completed(np.zeros((8, 8, 3), np.uint8), interactive=False)
-    assert showcase.isVisible() and not showcase.fusion_bar.isVisible()
+    assert not showcase.isVisible() and not showcase.fusion_bar.isVisible()
+
+    # Next fusion opens it again automatically.
+    gallery.on_render_started()
+    qapp.processEvents()
+    assert showcase.isVisible()
+    gallery.on_render_ended()
 
 
 @pytest.mark.parametrize('first_open', ['cached-during-fusion', 'uncached-during-fusion', 'idle'])
@@ -678,7 +690,7 @@ def test_webp_to_jpg_download_honor_card_upload_prompt_and_advanced_settings(int
     adv.spin_danmaku_font_size.setValue(22)
     adv.spin_danmaku_opacity.setValue(60)
     adv.combo_danmaku_density.setCurrentIndex(adv.combo_danmaku_density.findData("low"))
-    adv.chk_gallery_auto_show_fusion.setChecked(False)
+    assert not hasattr(adv, "chk_gallery_auto_show_fusion")
 
     custom_dl = tmp_path / "custom_dl"
     custom_cache = tmp_path / "custom_cache"
@@ -699,7 +711,7 @@ def test_webp_to_jpg_download_honor_card_upload_prompt_and_advanced_settings(int
     assert live_dm.font_size == 22
     assert abs(live_dm.opacity - 0.60) < 0.01
     assert live_dm.density == "low"
-    assert gc.auto_show_during_fusion() is False
+    assert gc.auto_show_during_fusion() is True
     assert gc.cache_max_mb() == 150
     assert resolve_gallery_download_dir(create=False) == custom_dl
     assert gc.disk_cache.cache_dir == custom_cache

@@ -189,10 +189,17 @@ def test_algorithm_parameter_spinboxes_bounded_width(qapp):
     qapp.processEvents()
     try:
         for editor in panel.editors.values():
-            assert editor.minimumWidth() >= 110
-            assert editor.maximumWidth() <= 180
-            assert editor.width() <= 180
+            assert editor.minimumWidth() >= 76
+            assert editor.maximumWidth() <= 128
+            assert editor.width() <= 128
             assert editor.width() >= editor.minimumSizeHint().width()
+        # Multiple numeric parameters should be packed into a 2-column grid to avoid wasted height.
+        r_geo = panel.editors["radius"].geometry()
+        s_geo = panel.editors["smoothing"].geometry()
+        f_geo = panel.editors["feather"].geometry()
+        assert abs(r_geo.y() - s_geo.y()) <= 4
+        assert s_geo.x() > r_geo.x()
+        assert f_geo.y() > r_geo.y()
     finally:
         panel.close()
         panel.deleteLater()

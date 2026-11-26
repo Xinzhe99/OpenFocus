@@ -519,8 +519,59 @@ def test_account_center_translated_layouts_render_cleanly(qapp, lang):
         dlg.show()
         qapp.processEvents()
         assert dlg.width() > 0 and dlg.height() > 0
+        assert dlg.tabs.count() == 5
         for idx in range(dlg.tabs.count()):
             assert dlg.tabs.tabText(idx).strip()
+        assert "lemon squeezy" not in dlg.recharge_hint_label.text().lower()
+        assert "creem" in dlg.recharge_hint_label.text().lower()
         dlg.close()
     finally:
         trans.set_language(prev_lang)
+
+
+def test_dict_badges_after_nickname_save_and_server_dynamic_interests(qapp):
+    client = FakeAccountClient()
+    store = FakeStateStore()
+    dlg = AccountCenterDialog(client=client, state_store=store, initial_tab=1)
+    assert dlg.tabs.currentIndex() == 1
+
+    # Simulate PATCH /api/v1/gallery/profile returning raw server badge dicts
+    dlg.apply_profile(
+        {
+            "user_id": "u_admin",
+            "nickname": "AdminUser",
+            "points_balance": 600,
+            "badges": [
+                {"badge_key": "pioneer_creator", "period_key": "", "work_id": "w1", "awarded_at": 1795693860},
+                {"badge_key": "pro_supporter", "period_key": ""},
+            ],
+            "interests": ["fungi", "amber_fossil"],
+        }
+    )
+    badge_text = dlg.badges_label.text()
+    assert not dlg.badges_label.isHidden()
+    assert "{" not in badge_text and "badge_key" not in badge_text
+    assert "Pioneer Creator" in badge_text
+    assert "Pro Supporter" in badge_text
+
+    # Simulate server /api/v1/config updating interest_keys dynamically without a client upgrade
+    dlg._on_store_config_changed(
+        {
+            "payment_region": "cn",
+            "interest_keys": [
+                "insect",
+                "fungi",
+                {"key": "amber_fossil", "labels": {"zh": "琥珀化石", "en": "Amber Fossil"}},
+            ],
+        }
+    )
+    assert set(dlg.interest_chips.keys()) == {"insect", "fungi", "amber_fossil"}
+    assert dlg.interest_chips["amber_fossil"].text() == "Amber Fossil"
+    assert dlg.interest_chips["fungi"].isChecked() is True
+    assert dlg.interest_chips["amber_fossil"].isChecked() is True
+    assert dlg.interest_chips["insect"].isChecked() is False
+    dlg.tabs.setCurrentIndex(0)
+    dlg.show()
+    qapp.processEvents()
+    assert dlg.badges_label.isVisible() is True
+    dlg.close()
