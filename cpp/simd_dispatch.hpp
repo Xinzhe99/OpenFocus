@@ -97,6 +97,15 @@ void quantize_f32_to_u16_row_avx2(
 void quantize_f32_to_u8_row_avx2(
     const float* sr, uint8_t* dr, int64_t elems);
 
+// Exact integer sums of a packed row.
+uint64_t sum_u8_row_avx2(const uint8_t* p, int64_t n);
+uint64_t sum_u16_row_avx2(const uint16_t* p, int64_t n);
+
+// Sum of double(float(v) * (255 / 65535)) over a row. Returns true and writes
+// the sum when it is provably identical to adding the terms one by one;
+// returns false when the row must be summed in scalar order instead.
+bool sum_u16_normalized_row_avx2(const uint16_t* p, int64_t n, double* out);
+
 void exposure_gain_u16_row_avx2(
     const uint16_t* sr, uint16_t* dr, int64_t elems, float gain, float limit);
 

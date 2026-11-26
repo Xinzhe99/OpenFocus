@@ -175,6 +175,45 @@ def test_exposure_gain_avx2_vs_scalar_bit_exact(w, dtype, channels):
     assert np.array_equal(out_avx.view(np.uint8), out_sca.view(np.uint8))
 
 
+@pytest.mark.parametrize("kind", ["random", "bright", "maximum"])
+@pytest.mark.parametrize("dtype", [np.uint8, np.uint16])
+def test_exposure_mean_avx2_vs_scalar_bit_exact(kind, dtype):
+    """Bright wide rows exceed the exactly summable range and fall back per row."""
+    mod = _require_avx2()
+    rng = np.random.default_rng(930)
+    top = 255 if dtype == np.uint8 else 65535
+    means_simd, means_scalar = [], []
+    for shape in ((17, 33, 3), (6, 5184, 3), (5, 2049, 3)):
+        if kind == "random":
+            image = rng.integers(0, top + 1, shape, dtype=dtype)
+        elif kind == "bright":
+            image = rng.integers(top - top // 8, top + 1, shape, dtype=dtype)
+        else:
+            image = np.full(shape, top, dtype=dtype)
+
+        def run():
+            values = []
+            for normalize in (False, True):
+                for threads in (1, 3):
+                    values.append(mod.of_exposure_mean(image, normalize, threads))
+                    values.append(mod.of_exposure_mean(image[:, :, ::-1], normalize, threads))
+                    values.append(mod.of_exposure_mean(np.ascontiguousarray(image[:, :, 0]), normalize, threads))
+                    values.append(mod.of_exposure_mean(image[:, ::2], normalize, threads))
+            return values
+
+        try:
+            mod.set_force_scalar(False)
+            means_simd += run()
+            mod.set_force_scalar(True)
+            means_scalar += run()
+        finally:
+            mod.set_force_scalar(False)
+    assert means_simd == means_scalar
+    if dtype == np.uint8:
+        expected = float(image.astype(np.float64).mean())
+        assert abs(means_simd[-4] - expected) <= 1e-9 * max(1.0, expected)
+
+
 @pytest.mark.parametrize("w", [7, 8, 17, 33, 129])
 def test_ab_packed_gray_down2_merge_select_avx2_vs_scalar(w):
     mod = _require_avx2()

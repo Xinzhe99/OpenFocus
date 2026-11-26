@@ -752,6 +752,75 @@ void select_a_response_pairs_avx2(
     }
 }
 
+uint64_t sum_u8_row_avx2(const uint8_t* p, int64_t n) {
+    const __m256i zero = _mm256_setzero_si256();
+    __m256i acc = zero;
+    int64_t i = 0;
+    for (; i + 32 <= n; i += 32) {
+        const __m256i v = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(p + i));
+        acc = _mm256_add_epi64(acc, _mm256_sad_epu8(v, zero));
+    }
+    alignas(32) uint64_t parts[4];
+    _mm256_store_si256(reinterpret_cast<__m256i*>(parts), acc);
+    uint64_t total = parts[0] + parts[1] + parts[2] + parts[3];
+    for (; i < n; ++i) {
+        total += p[i];
+    }
+    return total;
+}
+
+uint64_t sum_u16_row_avx2(const uint16_t* p, int64_t n) {
+    const __m256i zero = _mm256_setzero_si256();
+    const __m256i low_mask = _mm256_set1_epi16(0x00FF);
+    __m256i acc_lo = zero;
+    __m256i acc_hi = zero;
+    int64_t i = 0;
+    for (; i + 16 <= n; i += 16) {
+        const __m256i v = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(p + i));
+        acc_lo = _mm256_add_epi64(acc_lo, _mm256_sad_epu8(_mm256_and_si256(v, low_mask), zero));
+        acc_hi = _mm256_add_epi64(acc_hi, _mm256_sad_epu8(_mm256_srli_epi16(v, 8), zero));
+    }
+    alignas(32) uint64_t lo[4], hi[4];
+    _mm256_store_si256(reinterpret_cast<__m256i*>(lo), acc_lo);
+    _mm256_store_si256(reinterpret_cast<__m256i*>(hi), acc_hi);
+    uint64_t total = (lo[0] + lo[1] + lo[2] + lo[3]) + ((hi[0] + hi[1] + hi[2] + hi[3]) << 8u);
+    for (; i < n; ++i) {
+        total += p[i];
+    }
+    return total;
+}
+
+bool sum_u16_normalized_row_avx2(const uint16_t* p, int64_t n, double* out) {
+    // Each term float(v) * (255 / 65535) is a float32 that is zero or at least
+    // 2^-9, hence a multiple of 2^-32. A sum below 2^21 therefore has fewer
+    // than 2^53 such units: every partial sum is exact in double, in any
+    // order, and equals the element-by-element sum. A larger result may have
+    // rounded, so the caller repeats that row in scalar order.
+    constexpr float scale = 255.0f / 65535.0f;
+    constexpr double exact_limit = 2097152.0;
+    const __m256 v_scale = _mm256_set1_ps(scale);
+    __m256d acc0 = _mm256_setzero_pd();
+    __m256d acc1 = _mm256_setzero_pd();
+    int64_t i = 0;
+    for (; i + 8 <= n; i += 8) {
+        const __m256i vi = _mm256_cvtepu16_epi32(_mm_loadu_si128(reinterpret_cast<const __m128i*>(p + i)));
+        const __m256 vf = _mm256_mul_ps(_mm256_cvtepi32_ps(vi), v_scale);
+        acc0 = _mm256_add_pd(acc0, _mm256_cvtps_pd(_mm256_castps256_ps128(vf)));
+        acc1 = _mm256_add_pd(acc1, _mm256_cvtps_pd(_mm256_extractf128_ps(vf, 1)));
+    }
+    alignas(32) double parts[4];
+    _mm256_store_pd(parts, _mm256_add_pd(acc0, acc1));
+    double total = (parts[0] + parts[1]) + (parts[2] + parts[3]);
+    for (; i < n; ++i) {
+        total += static_cast<double>(static_cast<float>(p[i]) * scale);
+    }
+    if (!(total < exact_limit)) {
+        return false;
+    }
+    *out = total;
+    return true;
+}
+
 void quantize_f32_to_u16_row_avx2(
     const float* sr, uint16_t* dr, int64_t elems, float scale_f32
 ) {
@@ -3928,6 +3997,9 @@ void select_a_combine_m2_to_m5_avx2(const uint32_t*, const uint32_t*, uint32_t*,
 void select_a_response_pairs_avx2(const void*, bool, const uint32_t*, const uint32_t*, const uint32_t*, const uint32_t*, const uint32_t*, const uint32_t*, int32_t*, int64_t) {}
 void quantize_f32_to_u16_row_avx2(const float*, uint16_t*, int64_t, float) {}
 void quantize_f32_to_u8_row_avx2(const float*, uint8_t*, int64_t) {}
+uint64_t sum_u8_row_avx2(const uint8_t*, int64_t) { return 0; }
+uint64_t sum_u16_row_avx2(const uint16_t*, int64_t) { return 0; }
+bool sum_u16_normalized_row_avx2(const uint16_t*, int64_t, double*) { return false; }
 void exposure_gain_u16_row_avx2(const uint16_t*, uint16_t*, int64_t, float, float) {}
 void exposure_gain_u8_row_avx2(const uint8_t*, uint8_t*, int64_t, float, float) {}
 void exposure_gain_f32_row_avx2(const float*, float*, int64_t, float, float) {}
