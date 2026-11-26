@@ -41,6 +41,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   your phone or computer to sign in automatically on the desktop.
 
 ### Changed
+- Match exposure on the threads lent to each full-frame warp when OpenFocus B
+  prepares a large stack one frame at a time. Prepared frames are unchanged.
 - Run the full CI suite in parallel slices. Preserve pytest selection and
   collection errors, isolate temporary directories, and replay a crashing
   slice for native diagnostics.
