@@ -72,6 +72,56 @@ def create_transient_frame(shape, dtype):
     return create_frame(shape, dtype) if image is None else image
 
 
+# macOS answers questions about a volume through diskutil, which takes from
+# 50 ms to over a second per call. Scratch selection asks the same questions
+# for every render and tile, so answers are kept while the set of mounted
+# volumes stays the same.
+_volume_facts_lock = threading.Lock()
+_volume_facts = {}
+
+
+def _mount_table_signature():
+    """A value that changes when macOS mounts or unmounts a volume."""
+    import ctypes
+    count = ctypes.CDLL(None, use_errno=True).getfsstat(None, 0, 2)  # MNT_NOWAIT
+    if count < 0:
+        raise OSError(ctypes.get_errno(), 'getfsstat failed')
+    try:
+        names = tuple(sorted(os.listdir('/Volumes')))
+    except OSError:
+        names = ()
+    return count, names
+
+
+def _forget_volume_facts():
+    with _volume_facts_lock:
+        _volume_facts.clear()
+
+
+def _mounted_volume_fact(key, query):
+    """Answer from the last complete query made with these volumes mounted.
+
+    ``query`` returns ``(value, complete)`` or raises. Only a complete answer
+    is kept, so a failed or timed-out diskutil call is asked again next time.
+    """
+    try:
+        signature = _mount_table_signature()
+    except (OSError, AttributeError, ValueError):
+        return query()[0]
+    with _volume_facts_lock:
+        if _volume_facts.get('signature') != signature:
+            _volume_facts.clear()
+            _volume_facts['signature'] = signature
+        if key in _volume_facts:
+            return _volume_facts[key]
+    value, complete = query()  # outside the lock: diskutil can take seconds
+    if complete:
+        with _volume_facts_lock:
+            if _volume_facts.get('signature') == signature:
+                _volume_facts[key] = value
+    return value
+
+
 def _local_mounts():
     """Discover fixed local volumes conservatively; never infer network media."""
     if sys.platform == 'win32':
@@ -114,20 +164,25 @@ def _local_mounts():
         return mounts
     if sys.platform == 'darwin':
         import plistlib
-        mounts = []
-        try:
+
+        def query():
+            mounts, complete = [], True
             listing = plistlib.loads(subprocess.check_output(['/usr/sbin/diskutil', 'list', '-plist'], timeout=10))
             for disk in listing.get('AllDisks', []):
                 try:
                     info = plistlib.loads(subprocess.check_output(
                         ['/usr/sbin/diskutil', 'info', '-plist', disk], timeout=3))
                 except (OSError, subprocess.SubprocessError, ValueError):
+                    complete = False
                     continue
                 if info.get('Internal') is True and not info.get('RemovableMedia', True) and info.get('MountPoint'):
                     mounts.append(info['MountPoint'])
+            return mounts, complete
+
+        try:
+            return list(_mounted_volume_fact('local mounts', query))
         except (OSError, subprocess.SubprocessError, ValueError):
-            pass
-        return mounts
+            return []
     return []
 
 
@@ -160,14 +215,18 @@ def _default_is_local(path):
             return False
     if sys.platform == 'darwin':
         import plistlib
-        try:
+
+        def query():
             # diskutil accepts a device or mount point, not an arbitrary
             # temporary subdirectory (including APFS Data firmlink paths).
             usage = subprocess.check_output(['/bin/df', '-P', path], timeout=3, text=True)
             device = usage.splitlines()[-1].split()[0]
             info = plistlib.loads(subprocess.check_output(
                 ['/usr/sbin/diskutil', 'info', '-plist', device], timeout=10))
-            return info.get('Internal') is True and info.get('RemovableMedia') is False
+            return info.get('Internal') is True and info.get('RemovableMedia') is False, True
+
+        try:
+            return _mounted_volume_fact(('local', os.path.abspath(path)), query)
         except (OSError, subprocess.SubprocessError, ValueError, IndexError):
             return False
     return False

@@ -37,6 +37,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   your phone or computer to sign in automatically on the desktop.
 
 ### Changed
+- Start renders and tiles sooner on macOS: OpenFocus remembers which volumes
+  are internal until a volume is mounted or unmounted, and no longer asks
+  the system before every scratch choice.
 - Distribute OpenFocus source under Apache 2.0 and retain prior attribution
   and model terms. View bundled licenses and any release EULA in Help.
 - Build desktop packages and platform wheels with C++17 CPU kernels for

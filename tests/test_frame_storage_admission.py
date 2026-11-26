@@ -741,7 +741,15 @@ def test_linux_recognizes_fixed_mounts_and_rejects_network_or_removable(monkeypa
     assert not frame_storage._default_is_local('/mnt/network/tmp')
 
 
-def test_macos_recognizes_internal_fixed_volumes_only(monkeypatch):
+@pytest.fixture
+def stand_in_volume_answers():
+    """Answers a stand-in gives must not be remembered for other tests."""
+    frame_storage._forget_volume_facts()
+    yield
+    frame_storage._forget_volume_facts()
+
+
+def test_macos_recognizes_internal_fixed_volumes_only(monkeypatch, stand_in_volume_answers):
     import plistlib
     import subprocess
 
@@ -773,6 +781,90 @@ def test_macos_recognizes_internal_fixed_volumes_only(monkeypatch):
     assert frame_storage._default_is_local('/private/var/folders/app/tmp')
     assert not frame_storage._default_is_local('/Volumes/USB/tmp')
     assert not frame_storage._default_is_local('/Volumes/Network/tmp')
+
+
+def _macos_volume_queries(monkeypatch, *, fail_info=(), mounts=1):
+    """Stand in for macOS: count diskutil and df calls against a mount table."""
+    import plistlib
+    import subprocess
+
+    calls = []
+    table = {'signature': (mounts, ('Macintosh HD',))}
+    disks = {'disk0s1': {'Internal': True, 'RemovableMedia': False, 'MountPoint': '/System/Volumes/Data'},
+             'disk2s1': {'Internal': True, 'RemovableMedia': False, 'MountPoint': '/Volumes/Work'}}
+
+    def run(command, timeout, text=False):
+        calls.append(command[:3])
+        if command[0] == '/bin/df':
+            return 'Filesystem 512-blocks Used Available Capacity Mounted on\n/dev/disk0s1 100 1 99 1% /\n'
+        if command[1] == 'list':
+            return plistlib.dumps({'AllDisks': list(disks)})
+        name = command[-1].removeprefix('/dev/')
+        if name in fail_info:
+            raise subprocess.TimeoutExpired(command, timeout)
+        return plistlib.dumps(disks[name])
+
+    monkeypatch.setattr(frame_storage, 'sys', SimpleNamespace(platform='darwin'))
+    monkeypatch.setattr(frame_storage, 'subprocess', SimpleNamespace(
+        check_output=run, SubprocessError=subprocess.SubprocessError))
+    monkeypatch.setattr(frame_storage, '_mount_table_signature', lambda: table['signature'])
+    return calls, table, fail_info
+
+
+def test_macos_volume_answers_are_reused_until_the_mounted_volumes_change(monkeypatch, stand_in_volume_answers):
+    calls, table, _ = _macos_volume_queries(monkeypatch)
+
+    assert [frame_storage._default_is_local('/private/tmp') for _ in range(5)] == [True] * 5
+    assert len(calls) == 2  # one df and one diskutil info
+    first = frame_storage._local_mounts()
+    assert first == ['/System/Volumes/Data', '/Volumes/Work']
+    first.append('caller edit')
+    assert frame_storage._local_mounts() == ['/System/Volumes/Data', '/Volumes/Work']
+    assert len(calls) == 5  # one list and two info calls more
+    assert frame_storage._default_is_local('/private/var/tmp')
+    assert len(calls) == 7  # another path is another question
+
+    table['signature'] = (2, ('Macintosh HD', 'Camera'))
+    assert frame_storage._default_is_local('/private/tmp')
+    assert frame_storage._local_mounts() == ['/System/Volumes/Data', '/Volumes/Work']
+    assert len(calls) == 12
+
+
+def test_macos_volume_failures_are_asked_again(monkeypatch, stand_in_volume_answers):
+    failing = {'disk0s1'}
+    calls, _, _ = _macos_volume_queries(monkeypatch, fail_info=failing)
+
+    assert not frame_storage._default_is_local('/private/tmp')
+    assert frame_storage._local_mounts() == ['/Volumes/Work']  # one disk did not answer
+    asked = len(calls)
+    failing.clear()
+    assert frame_storage._default_is_local('/private/tmp')
+    assert frame_storage._local_mounts() == ['/System/Volumes/Data', '/Volumes/Work']
+    assert len(calls) == asked + 5
+    assert frame_storage._default_is_local('/private/tmp')
+    assert len(calls) == asked + 5
+
+
+def test_macos_volume_answers_are_not_kept_without_a_mount_signature(monkeypatch, stand_in_volume_answers):
+    calls, _, _ = _macos_volume_queries(monkeypatch)
+
+    def unavailable():
+        raise OSError('getfsstat failed')
+
+    monkeypatch.setattr(frame_storage, '_mount_table_signature', unavailable)
+    assert frame_storage._default_is_local('/private/tmp')
+    assert frame_storage._default_is_local('/private/tmp')
+    assert len(calls) == 4
+
+
+def test_macos_volume_answers_survive_concurrent_tile_threads(monkeypatch, stand_in_volume_answers):
+    from concurrent.futures import ThreadPoolExecutor
+
+    calls, _, _ = _macos_volume_queries(monkeypatch)
+    with ThreadPoolExecutor(8) as pool:
+        answers = list(pool.map(lambda _: frame_storage._default_is_local('/private/tmp'), range(64)))
+    assert answers == [True] * 64
+    assert 2 <= len(calls) <= 16  # threads that start together may each ask once
 
 
 def test_collecting_snapshot_during_admission_reclaims_budget_without_deadlock(tmp_path):
