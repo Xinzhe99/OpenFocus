@@ -80,6 +80,7 @@ PACK = {
     "account_email_required": "이메일 주소를 입력하세요.",
     "account_terms_unavailable": "계정 등록을 사용할 수 없습니다. 서비스에서 현재 약관을 제공할 수 없습니다. 나중에 다시 시도하세요.",
     "account_network_error": "계정 서비스에 연결할 수 없습니다. 인터넷에 연결한 후 다시 시도하세요.",
+    "account_tls_error": "서버 인증서를 확인할 수 없습니다. 시스템 시간이나 프록시 설정을 확인한 후 다시 시도하세요.",
     "account_generic_error": "로그인을 완료하지 못했습니다. 다시 시도해 주세요.",
     "account_rate_limited": "요청이 너무 많습니다. 잠시 기다린 후 다시 시도해 주세요.",
     "account_expired": "로그인 링크가 만료되었거나 이미 사용되었습니다. 새 링크를 요청하세요.",

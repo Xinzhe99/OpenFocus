@@ -21,3 +21,21 @@ def test_bundle_can_receive_projects_and_media_drops(tmp_path):
     assert by_type[project_type]["CFBundleTypeRole"] == "Editor"
     for media in ("public.image", "public.movie", "public.folder"):
         assert by_type[media]["LSHandlerRank"] == "None"
+
+
+def test_configure_macos_bundle_populates_app_version_when_zero_or_missing(tmp_path):
+    from constants import APP_VERSION
+
+    bundle = tmp_path / "OpenFocus.app"
+    info = bundle / "Contents" / "Info.plist"
+    info.parent.mkdir(parents=True)
+    info.write_bytes(plistlib.dumps({
+        "CFBundleExecutable": "OpenFocus",
+        "CFBundleShortVersionString": "0.0.0",
+        "CFBundleVersion": "0.0.0",
+    }))
+    script = Path(__file__).resolve().parents[1] / "packaging" / "configure_macos_bundle.py"
+    subprocess.run([sys.executable, str(script), str(bundle)], check=True, timeout=10)
+    data = plistlib.loads(info.read_bytes())
+    assert data["CFBundleShortVersionString"] == APP_VERSION
+    assert data["CFBundleVersion"] == APP_VERSION

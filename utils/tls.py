@@ -17,7 +17,11 @@ _SYSTEM_CA_FILES = (
 
 
 def ca_bundle_path() -> Optional[str]:
-    """Return an explicit CA PEM bundle path (certifi first, then OS fallbacks)."""
+    """Return an explicit CA PEM bundle path (env override, certifi, then OS fallbacks)."""
+    for env_var in ("REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"):
+        env_path = os.environ.get(env_var)
+        if env_path and os.path.isfile(env_path):
+            return env_path
     try:
         import certifi
         path = certifi.where()

@@ -80,6 +80,7 @@ PACK = {
     "account_email_required": "Geben Sie Ihre E-Mail-Adresse ein.",
     "account_terms_unavailable": "Die Kontoregistrierung ist noch nicht verfügbar: Der Dienst kann die aktuellen Bedingungen nicht bereitstellen. Versuchen Sie es später erneut.",
     "account_network_error": "Der Kontodienst konnte nicht erreicht werden. Stellen Sie eine Internetverbindung her und versuchen Sie es erneut.",
+    "account_tls_error": "Das Serverzertifikat konnte nicht überprüft werden. Prüfen Sie Systemzeit oder Proxy-Einstellungen und versuchen Sie es erneut.",
     "account_generic_error": "Die Anmeldung konnte nicht abgeschlossen werden. Bitte versuchen Sie es erneut.",
     "account_rate_limited": "Zu viele Anfragen. Bitte warten Sie, bevor Sie es erneut versuchen.",
     "account_expired": "Der Anmeldelink ist abgelaufen oder wurde bereits verwendet. Fordern Sie einen neuen Link an.",

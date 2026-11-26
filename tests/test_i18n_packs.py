@@ -228,3 +228,16 @@ def test_failed_pack_does_not_hide_other_packs(monkeypatch, capsys):
     manager.translations["fr"].pop("menu_file", None)
     assert manager.get("menu_file") == manager.translations["en"]["menu_file"]
     assert "simulated broken pack" in capsys.readouterr().out
+
+
+def test_frozen_missing_locales_dir_scan_is_silent(monkeypatch, capsys):
+    import locales
+
+    def missing_dir(_path):
+        raise FileNotFoundError("no frozen locales dir")
+
+    monkeypatch.setattr(locales.os, "listdir", missing_dir)
+    manager = TranslationManager()
+    assert manager._scan_extra_pack_codes(warn_on_error=True) == set()
+    captured = capsys.readouterr()
+    assert "cannot scan for language packs" not in captured.out

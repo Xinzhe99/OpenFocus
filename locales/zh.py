@@ -83,6 +83,7 @@ ZH = {
     "account_email_required": "请输入邮箱地址。",
     "account_terms_unavailable": "账号注册服务尚未准备好：无法获取当前协议。请稍后重试。",
     "account_network_error": "无法连接账号服务。请连接网络后重试。",
+    "account_tls_error": "无法验证服务器证书，请检查系统时间或代理设置后重试。",
     "account_generic_error": "登录未完成，请重试。",
     "account_rate_limited": "请求过于频繁，请稍后重试。",
     "account_expired": "登录链接已过期或已使用，请重新获取。",
