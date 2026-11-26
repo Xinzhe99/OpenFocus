@@ -111,7 +111,8 @@ def _frame_pass_workers(frames, img_resize, algorithm, thread_count, *, activity
     from core.source_frames import frame_resolution_bytes, source_cache_growth_bytes
     decode_bytes = max((frame_resolution_bytes(frame) for frame in frames), default=0)
     per_worker += decode_bytes
-    fixed += source_cache_growth_bytes(frames)
+    if algorithm != 'openfocus_a':
+        fixed += source_cache_growth_bytes(frames)
     budget = min(memory_budget_bytes(), policy.frame_ram_budget(policy.probe_memory()))
     # Serial mapping/strip execution remains the low-RAM path. Parallel
     # producers are admitted only when their full resident envelopes fit.
