@@ -698,8 +698,9 @@ def test_webp_to_jpg_download_honor_card_upload_prompt_and_advanced_settings(int
     adv.gallery_cache_dir.setText(str(custom_cache))
     adv.spin_gallery_cache_limit.setValue(150)
 
-    # One-click Clear Cache clears current cache immediately.
+    # One-click Clear Cache clears current cache immediately (asynchronously in #299).
     adv.btn_clear_gallery_cache.click()
+    _wait_until(lambda: adv.btn_clear_gallery_cache.isEnabled(), timeout=5.0)
     assert gc.cache_usage_bytes() == 0
 
     adv._apply()

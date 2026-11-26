@@ -402,3 +402,72 @@ def test_custom_scheme_dialog_sets_contrasting_stop_foreground(qapp):
     finally:
         dlg.close()
         dlg.deleteLater()
+
+
+def test_advanced_settings_gallery_cache_scan_is_lazy_and_cached(qapp):
+    import time
+    from PyQt6.QtWidgets import QWidget
+    from dialogs.advanced_settings import AdvancedSettingsDialog
+    from widgets.danmaku_overlay import DanmakuSettings
+
+    class FakeGalleryController:
+        def __init__(self):
+            self.usage_calls = 0
+            self.clear_calls = 0
+
+        def danmaku_settings(self):
+            return DanmakuSettings()
+
+        def cache_max_mb(self):
+            return 256
+
+        def cache_usage_bytes(self):
+            self.usage_calls += 1
+            return 12 * 1024 * 1024
+
+        def clear_disk_cache(self):
+            self.clear_calls += 1
+            return 3, 12 * 1024 * 1024
+
+    class FakeWindow(QWidget):
+        def __init__(self):
+            super().__init__()
+            self.gallery_controller = FakeGalleryController()
+
+    win = FakeWindow()
+    dlg = AdvancedSettingsDialog(win)
+    try:
+        # __init__ must NOT scan disk synchronously
+        assert win.gallery_controller.usage_calls == 0
+        # Changing cache limit spinbox must NOT rescan disk
+        dlg.spin_gallery_cache_limit.setValue(512)
+        assert win.gallery_controller.usage_calls == 0
+
+        # Switching to Gallery tab triggers async scan once
+        dlg.show()
+        dlg.tabs.setCurrentIndex(dlg._gallery_tab_index)
+        deadline = time.monotonic() + 2.0
+        while not dlg._gallery_cache_scanned and time.monotonic() < deadline:
+            qapp.processEvents()
+            time.sleep(0.01)
+        assert dlg._gallery_cache_scanned is True
+        assert win.gallery_controller.usage_calls == 1
+        assert "12.0" in dlg.lbl_gallery_cache_usage.text()
+
+        # Spinbox step reuses cached usage bytes without rescanning
+        dlg.spin_gallery_cache_limit.setValue(1024)
+        assert win.gallery_controller.usage_calls == 1
+        assert "1024" in dlg.lbl_gallery_cache_usage.text()
+
+        # Clear cache runs asynchronously and resets cached usage to 0.0 MB
+        dlg.btn_clear_gallery_cache.click()
+        deadline = time.monotonic() + 2.0
+        while not dlg.btn_clear_gallery_cache.isEnabled() and time.monotonic() < deadline:
+            qapp.processEvents()
+            time.sleep(0.01)
+        assert win.gallery_controller.clear_calls == 1
+        assert "0.0" in dlg.lbl_gallery_cache_usage.text()
+    finally:
+        dlg.close()
+        dlg.deleteLater()
+        win.deleteLater()

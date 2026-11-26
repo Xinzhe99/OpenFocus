@@ -18,7 +18,7 @@ import urllib.request
 import uuid
 from typing import Any, Callable, Mapping, Sequence
 
-from PyQt6.QtCore import QEvent, QObject, QRectF, QSize, Qt, pyqtSignal
+from PyQt6.QtCore import QEvent, QObject, QRectF, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import (
     QColor,
     QFont,
@@ -346,6 +346,9 @@ class _DialogTaskRunner(QObject):
         self._seq = 0
         self._inflight = 0
         self._shutdown = False
+        self._executor: ThreadPoolExecutor | None = ThreadPoolExecutor(
+            max_workers=4, thread_name_prefix="gallery-dlg"
+        )
         self._latest_by_key: dict[str, int] = {}
         self._callbacks: dict[int, tuple[str | None, Any, Any, Any, Any]] = {}
         self._task_done.connect(self._handle_done, Qt.ConnectionType.QueuedConnection)
@@ -359,6 +362,10 @@ class _DialogTaskRunner(QObject):
             self._shutdown = True
             self._callbacks.clear()
             self._latest_by_key.clear()
+            executor = self._executor
+            self._executor = None
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)
 
     @property
     def is_busy(self) -> bool:
@@ -392,7 +399,7 @@ class _DialogTaskRunner(QObject):
         on_progress: Callable[[Any], None] | None = None,
     ) -> int:
         with self._lock:
-            if self._shutdown:
+            if self._shutdown or self._executor is None:
                 return -1
             self._seq += 1
             req_id = self._seq
@@ -400,6 +407,7 @@ class _DialogTaskRunner(QObject):
             if key is not None:
                 self._latest_by_key[key] = req_id
             self._callbacks[req_id] = (key, on_success, on_error, on_finally, on_progress)
+            executor = self._executor
         if self._bind_operation is not None:
             fn = self._bind_operation(fn)
 
@@ -429,8 +437,13 @@ class _DialogTaskRunner(QObject):
                     self._inflight = max(0, self._inflight - 1)
                     self._callbacks.pop(req_id, None)
 
-        thread = threading.Thread(target=_worker, daemon=True)
-        thread.start()
+        try:
+            executor.submit(_worker)
+        except RuntimeError:
+            with self._lock:
+                self._inflight = max(0, self._inflight - 1)
+                self._callbacks.pop(req_id, None)
+            return -1
         return req_id
 
     def _handle_progress(self, req_id: int, payload: Any) -> None:
@@ -892,6 +905,7 @@ class PublishQueueItem:
     work_id: str = ""
     upload_id: str = ""
     idempotency_key: str = ""
+    preview_base_qimage: QImage | None = field(default=None, repr=False, compare=False)
 
 
 class GalleryAgreementDialog(QDialog):
@@ -989,11 +1003,14 @@ class UploadPromptDialog(QDialog):
         theme: str = "dark",
     ):
         super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         _set_cid(self, "upload_prompt_dialog", object_name="uploadPromptDialog")
         self.setWindowTitle(t_gallery("gallery_upload_prompt_title"))
         self.setMinimumWidth(400)
         self.setStyleSheet(_dialog_stylesheet(theme))
         self.wants_upload = False
+        self._runner = _DialogTaskRunner(self, None)
+        self._preview_source: Any = preview_source
 
         root = QVBoxLayout(self)
         root.setContentsMargins(SPACE["lg"], SPACE["md"], SPACE["lg"], SPACE["md"])
@@ -1004,14 +1021,40 @@ class UploadPromptDialog(QDialog):
         heading.setWordWrap(True)
         root.addWidget(heading)
 
+        self.preview_label: QLabel | None = None
         if preview_source is not None:
-            pix = _pixmap_from_any(preview_source, size=QSize(340, 200))
-            if not pix.isNull():
-                preview = QLabel()
-                _set_cid(preview, "upload_prompt_preview")
-                preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                preview.setPixmap(pix)
+            preview = QLabel()
+            _set_cid(preview, "upload_prompt_preview")
+            preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.preview_label = preview
+            if isinstance(preview_source, QPixmap):
+                pix = _pixmap_from_any(preview_source, size=QSize(340, 200))
+                if not pix.isNull():
+                    preview.setPixmap(pix)
+                    root.addWidget(preview)
+                else:
+                    preview.hide()
+                self._preview_source = None
+            else:
+                preview.hide()
                 root.addWidget(preview)
+                src_ref = preview_source
+
+                def _decode_preview() -> QImage:
+                    return _image_from_any(src_ref, size=QSize(340, 200))
+
+                def _apply_preview(img: Any) -> None:
+                    self._preview_source = None
+                    if isinstance(img, QImage) and not img.isNull() and is_qobject_alive(preview):
+                        preview.setPixmap(QPixmap.fromImage(img))
+                        preview.show()
+
+                self._runner.submit(
+                    _decode_preview,
+                    key="upload_prompt_preview",
+                    on_success=_apply_preview,
+                    on_error=lambda _exc: setattr(self, "_preview_source", None),
+                )
 
         body = QLabel(t_gallery("gallery_upload_prompt_body"))
         body.setWordWrap(True)
@@ -1032,6 +1075,21 @@ class UploadPromptDialog(QDialog):
         buttons.addWidget(self.dismiss_btn)
         buttons.addWidget(self.upload_btn)
         root.addLayout(buttons)
+
+    def wait_for_idle(self, timeout: float = 5.0) -> bool:
+        return self._runner.wait_for_idle(timeout)
+
+    def _shutdown_dialog(self) -> None:
+        self._preview_source = None
+        self._runner.shutdown()
+
+    def done(self, result: int) -> None:
+        self._shutdown_dialog()
+        super().done(result)
+
+    def closeEvent(self, event: QEvent) -> None:
+        self._shutdown_dialog()
+        super().closeEvent(event)
 
     def _on_upload_clicked(self) -> None:
         self.wants_upload = True
@@ -1210,6 +1268,7 @@ class AuthorShowcaseDialog(QDialog):
         theme: str = "dark",
     ):
         super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         _set_cid(self, "author_showcase_dialog", object_name="authorShowcaseDialog")
         self.author_id = str(author_id)
         self.author_name = author_name or t_gallery("gallery_author_label")
@@ -1303,6 +1362,10 @@ class AuthorShowcaseDialog(QDialog):
     def _shutdown_dialog(self) -> None:
         self._runner.shutdown()
         self._media_loader.shutdown()
+
+    def apply_theme(self, theme: str) -> None:
+        self._theme = theme
+        self.setStyleSheet(_dialog_stylesheet(theme))
 
     def done(self, result: int) -> None:
         self._shutdown_dialog()
@@ -1512,6 +1575,7 @@ class WorkDetailDialog(QDialog):
         translation_mode: str | None = None,
     ):
         super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         _set_cid(self, "gallery_work_detail_dialog", object_name="galleryWorkDetailDialog")
         self.work = work
         self.work_id = _work_id(work)
@@ -1629,6 +1693,7 @@ class WorkDetailDialog(QDialog):
         _set_cid(self.comment_input, "work_detail_comment_input")
         self.comment_input.setMaxLength(DEFAULT_COMMENT_MAX_CHARS)
         self.comment_input.setPlaceholderText(t_gallery("gallery_comment_placeholder"))
+        self.comment_input.returnPressed.connect(self._submit_comment)
         composer.addWidget(self.comment_input, 1)
 
         self.send_comment_btn = QPushButton(t_gallery("gallery_send_comment"))
@@ -1654,6 +1719,10 @@ class WorkDetailDialog(QDialog):
         safe_disconnect(trans.languageChanged, self._on_language_changed)
         self._runner.shutdown()
         self._media_loader.shutdown()
+
+    def apply_theme(self, theme: str) -> None:
+        self._theme = theme
+        self.setStyleSheet(_dialog_stylesheet(theme))
 
     def done(self, result: int) -> None:
         self._shutdown_dialog()
@@ -1840,6 +1909,8 @@ class WorkDetailDialog(QDialog):
         self.comment_input.setFocus()
 
     def _submit_comment(self) -> None:
+        if not self.send_comment_btn.isEnabled():
+            return
         text = self.comment_input.text().strip()
         if not text:
             return
@@ -1853,7 +1924,17 @@ class WorkDetailDialog(QDialog):
         }
 
         def _finish(created: Any) -> None:
-            self._comments.append(created if created is not None else fallback_comment)
+            comment_obj = (
+                _get(created, "comment", created)
+                if isinstance(created, Mapping)
+                else created
+            )
+            if comment_obj is None or (
+                isinstance(comment_obj, Mapping)
+                and not str(_get(comment_obj, "content", "") or "").strip()
+            ):
+                comment_obj = fallback_comment
+            self._comments.append(comment_obj)
             self._reply_parent_id = None
             self.comment_input.clear()
             self.comment_input.setPlaceholderText(t_gallery("gallery_comment_placeholder"))
@@ -1873,12 +1954,18 @@ class WorkDetailDialog(QDialog):
                 client_lang=current_ui_language(),
             )
 
+        self.send_comment_btn.setEnabled(False)
         self._runner.submit(
             _post,
             key="work_post_comment",
             on_success=_finish,
             on_error=lambda exc: self.status_label.setText(
                 translate_error(_error_code_from_exc(exc))
+            ),
+            on_finally=lambda: (
+                self.send_comment_btn.setEnabled(True)
+                if is_qobject_alive(self.send_comment_btn)
+                else None
             ),
         )
 
@@ -1941,6 +2028,10 @@ class GalleryHubDialog(QDialog):
         self._cached_profile: Any = {}
         self._watermark_preview_has_overlay = False
         self._watermark_preview_rendered_text = ""
+        self._watermark_debounce_timer = QTimer(self)
+        self._watermark_debounce_timer.setSingleShot(True)
+        self._watermark_debounce_timer.setInterval(100)
+        self._watermark_debounce_timer.timeout.connect(self._update_watermark_preview)
 
         self.setWindowTitle(t_gallery("gallery_hub_title"))
         self.resize(980, 680)
@@ -2001,10 +2092,20 @@ class GalleryHubDialog(QDialog):
         return self._publishing
 
     def _shutdown_dialog(self) -> None:
+        self._watermark_debounce_timer.stop()
         safe_disconnect(trans.languageChanged, self._retranslate_billing)
         self._disconnect_state_store()
         self._runner.shutdown()
         self._media_loader.shutdown()
+
+    def apply_theme(self, theme: str) -> None:
+        self._theme = theme
+        self.setStyleSheet(_dialog_stylesheet(theme))
+        for child in self.findChildren((WorkDetailDialog, AuthorShowcaseDialog)):
+            if is_qobject_alive(child):
+                child.apply_theme(theme)
+        if not self._publish_queue:
+            self._update_watermark_preview()
 
     def closeEvent(self, event: QEvent) -> None:
         if self._publishing:
@@ -2232,13 +2333,26 @@ class GalleryHubDialog(QDialog):
             items = _get(resp, "items", resp) if isinstance(resp, Mapping) else resp
             next_cur = _get(resp, "next_cursor", None) if isinstance(resp, Mapping) else None
             self._square_next_cursor = str(next_cur) if next_cur else None
+            incoming = list(items or ())
+            if not self._square_works:
+                self.set_square_works(incoming)
+                return
             existing_ids = {_work_id(w) for w in self._square_works if _work_id(w)}
-            merged = list(self._square_works)
-            for work in (items or ()):
+            to_append: list[Any] = []
+            for work in incoming:
                 wid = _work_id(work)
                 if not wid or wid not in existing_ids:
-                    merged.append(work)
-            self.set_square_works(merged)
+                    if wid:
+                        existing_ids.add(wid)
+                    to_append.append(work)
+            start_idx = len(self._square_works)
+            self._square_works.extend(to_append)
+            columns = 3
+            for offset, work in enumerate(to_append):
+                idx = start_idx + offset
+                card = self._build_work_card(work)
+                self._square_grid.addWidget(card, idx // columns, idx % columns)
+            self.load_more_btn.setVisible(bool(self._square_next_cursor))
 
         self._runner.submit(
             _fetch,
@@ -2361,10 +2475,17 @@ class GalleryHubDialog(QDialog):
                 if _work_id(work) == work_id:
                     return self.open_work_detail(work)
         if self._client is not None and hasattr(self._client, "get_work"):
+            def _open_loaded(resp: Any) -> None:
+                if resp is None:
+                    return
+                work = _get(resp, "work", resp) if isinstance(resp, Mapping) else resp
+                if work is not None:
+                    self.open_work_detail(work)
+
             self._runner.submit(
                 lambda: self._client.get_work(work_id),
                 key="open_work_by_id",
-                on_success=lambda work: self.open_work_detail(work) if work is not None else None,
+                on_success=_open_loaded,
             )
         return None
 
@@ -2585,7 +2706,7 @@ class GalleryHubDialog(QDialog):
         )
         if self._current_nickname():
             self.watermark_text_edit.setText(self._current_nickname())
-        self.watermark_text_edit.textChanged.connect(self._update_watermark_preview)
+        self.watermark_text_edit.textChanged.connect(self._schedule_watermark_preview)
         wm_row.addWidget(self.watermark_text_edit, 1)
 
         self.use_nickname_btn = QPushButton(t_gallery("gallery_publish_use_nickname"))
@@ -2778,21 +2899,26 @@ class GalleryHubDialog(QDialog):
         capped = len(source_list) > remaining
         accepted = source_list[:remaining]
 
+        has_explicit_exif = bool(exif)
+        new_items: list[PublishQueueItem] = []
         for idx, src in enumerate(accepted):
             if isinstance(src, (str, os.PathLike)):
                 label = os.path.basename(os.fspath(src)) or f"image_{len(self._publish_queue) + 1}"
             else:
                 label = title or f"OpenFocus_fused_{len(self._publish_queue) + idx + 1}.webp"
-            extracted = dict(exif) if exif else _extract_exif_dict(src, self._media_helper)
-            self._publish_queue.append(
-                PublishQueueItem(
-                    source=src,
-                    label=label,
-                    title=title,
-                    exif=extracted,
-                    openfocus_badge=openfocus_badge,
-                )
+            base_qimg: QImage | None = None
+            if isinstance(src, QPixmap):
+                base_qimg = _image_from_any(src, size=QSize(360, 240))
+            item = PublishQueueItem(
+                source=src,
+                label=label,
+                title=title,
+                exif=dict(exif) if has_explicit_exif else {},
+                openfocus_badge=openfocus_badge,
+                preview_base_qimage=base_qimg,
             )
+            self._publish_queue.append(item)
+            new_items.append(item)
 
         if capped:
             self.batch_warning_label.setText(
@@ -2806,8 +2932,49 @@ class GalleryHubDialog(QDialog):
         if self._publish_queue and self.publish_queue_list.currentRow() < 0:
             self.publish_queue_list.setCurrentRow(0)
             self._on_publish_selection_changed(0)
-        self._update_watermark_preview()
+        else:
+            self._update_watermark_preview()
         self._update_publish_button_state()
+
+        for item in new_items:
+            if item.preview_base_qimage is not None and (has_explicit_exif or isinstance(item.source, QPixmap)):
+                if not has_explicit_exif:
+                    item.exif = _extract_exif_dict(item.source, self._media_helper)
+                continue
+            src_ref = item.source
+            need_preview = item.preview_base_qimage is None
+            need_exif = not has_explicit_exif
+
+            def _prep_item(
+                s: Any = src_ref,
+                want_img: bool = need_preview,
+                want_exif: bool = need_exif,
+            ) -> tuple[QImage | None, dict[str, str]]:
+                img = _image_from_any(s, size=QSize(360, 240)) if want_img else None
+                ex = _extract_exif_dict(s, self._media_helper) if want_exif else {}
+                return img, ex
+
+            def _on_prepped(
+                res: tuple[QImage | None, dict[str, str]],
+                q_item: PublishQueueItem = item,
+            ) -> None:
+                img, ex = res
+                if img is not None:
+                    q_item.preview_base_qimage = img
+                if ex and not q_item.exif:
+                    q_item.exif = ex
+                try:
+                    row_idx = self._publish_queue.index(q_item)
+                except ValueError:
+                    return
+                cur_row = self.publish_queue_list.currentRow()
+                if cur_row < 0 and self._publish_queue:
+                    cur_row = 0
+                if cur_row == row_idx:
+                    self._on_publish_selection_changed(row_idx)
+
+            self._runner.submit(_prep_item, on_success=_on_prepped)
+
         return len(accepted)
 
     def clear_publish_queue(self) -> None:
@@ -2884,9 +3051,15 @@ class GalleryHubDialog(QDialog):
     def _fill_watermark_with_nickname(self) -> None:
         nickname = self._current_nickname()
         if nickname:
-            self.watermark_text_edit.setText(nickname)
+            with block_signals(self.watermark_text_edit):
+                self.watermark_text_edit.setText(nickname)
+            self._update_watermark_preview()
+
+    def _schedule_watermark_preview(self) -> None:
+        self._watermark_debounce_timer.start()
 
     def _update_watermark_preview(self) -> None:
+        self._watermark_debounce_timer.stop()
         enabled = self.watermark_enabled_check.isChecked()
         self.watermark_text_edit.setEnabled(enabled)
         self.use_nickname_btn.setEnabled(enabled)
@@ -2895,23 +3068,28 @@ class GalleryHubDialog(QDialog):
         if row < 0 and self._publish_queue:
             row = 0
 
+        base_img: QImage | None = None
         if 0 <= row < len(self._publish_queue):
-            pix = _pixmap_from_any(
-                self._publish_queue[row].source,
-                size=QSize(360, 240),
-            )
+            item = self._publish_queue[row]
+            base_img = item.preview_base_qimage
+            if base_img is None and isinstance(item.source, QPixmap):
+                base_img = _image_from_any(item.source, size=QSize(360, 240))
+                item.preview_base_qimage = base_img
         else:
-            pix = QPixmap(320, 200)
-            pix.fill(QColor(palette(self._theme)["canvas"]))
+            canvas_img = QImage(320, 200, QImage.Format.Format_ARGB32_Premultiplied)
+            canvas_img.fill(QColor(palette(self._theme)["canvas"]))
+            base_img = canvas_img
 
         attribution = self.watermark_text_edit.text().strip()
-        if pix.isNull():
+        if base_img is None or base_img.isNull():
             self._watermark_preview_has_overlay = False
             self._watermark_preview_rendered_text = ""
             self.watermark_preview_label.setText(t_gallery("gallery_publish_preview_empty"))
             return
 
-        rendered = render_watermark_preview(pix, attribution, enabled=enabled)
+        rendered = QPixmap.fromImage(
+            _draw_watermark_on_qimage(base_img, attribution, enabled=enabled)
+        )
         self._watermark_preview_has_overlay = bool(enabled and attribution)
         self._watermark_preview_rendered_text = (
             (attribution if attribution.startswith("©") else f"© {attribution}")
