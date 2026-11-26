@@ -68,7 +68,7 @@ from utils.logging_setup import get_logger
 from utils.settings_store import get_settings
 from widgets.danmaku_overlay import DanmakuSettings
 from widgets.gallery_screensaver import GalleryScreensaverWindow
-from widgets.gallery_showcase import GalleryShowcaseWidget
+from widgets.gallery_showcase import GalleryShowcaseWidget, GalleryShowcaseWindow, ShowcaseWork
 
 _logger = get_logger(__name__)
 
@@ -78,6 +78,7 @@ DANMAKU_FONT_SIZE_KEY = "gallery/danmaku_font_size"
 DANMAKU_OPACITY_KEY = "gallery/danmaku_opacity"
 DANMAKU_DENSITY_KEY = "gallery/danmaku_density"
 DANMAKU_TRANSLATION_MODE_KEY = "gallery/danmaku_translation_mode"
+GALLERY_AUTO_SHOW_FUSION_KEY = "gallery/auto_show_during_fusion"
 GALLERY_CACHE_MAX_MB_KEY = "gallery/cache_max_mb"
 DEFAULT_CACHE_MAX_MB = DEFAULT_CACHE_MAX_BYTES // (1024 * 1024)
 MAX_DOWNLOAD_BYTES = 16 * 1024 * 1024
@@ -169,6 +170,21 @@ def read_cache_max_mb(settings: Any = None) -> int:
     """Read the persisted Gallery disk cache limit (MB) clamped to [10, 2048]."""
     store = settings if settings is not None else get_settings()
     return _read_int_setting(store, GALLERY_CACHE_MAX_MB_KEY, DEFAULT_CACHE_MAX_MB, minimum=10, maximum=2048)
+
+
+def load_auto_show_during_fusion(settings: Any = None) -> bool:
+    """Return whether Gallery Showcase opens automatically when starting fusion."""
+    store = settings if settings is not None else get_settings()
+    return _read_bool_setting(store, GALLERY_AUTO_SHOW_FUSION_KEY, True)
+
+
+def persist_auto_show_during_fusion(enabled: bool, settings: Any = None) -> bool:
+    """Persist whether Gallery Showcase opens automatically when starting fusion."""
+    flag = bool(enabled)
+    store = settings if settings is not None else get_settings()
+    store.setValue(GALLERY_AUTO_SHOW_FUSION_KEY, flag)
+    store.sync()
+    return flag
 
 
 def persist_gallery_storage_settings(
@@ -335,10 +351,14 @@ class GalleryController(QObject):
             settings=settings,
         )
         self._danmaku_settings: DanmakuSettings = load_danmaku_settings(settings)
+        self._auto_show_during_fusion: bool = load_auto_show_during_fusion(settings)
 
         self._executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="openfocus-gallery")
 
+        self._showcase_window: Optional[GalleryShowcaseWindow] = None
         self._showcase: Optional[GalleryShowcaseWidget] = None
+        self._opened_for_fusion: bool = False
+        self._fusion_progress: tuple[int, int, str] | None = None
         self._screensaver: Optional[GalleryScreensaverWindow] = None
         self._hub_dialog: Optional[Any] = None
         self._account_dialog: Optional[Any] = None
@@ -366,7 +386,13 @@ class GalleryController(QObject):
 
     @property
     def showcase(self) -> Optional[GalleryShowcaseWidget]:
-        return self._showcase
+        if self._showcase is None and not self._closed:
+            self._ensure_showcase_window()
+        return self._showcase if is_qobject_alive(self._showcase) else None
+
+    @property
+    def showcase_window(self) -> Optional[GalleryShowcaseWindow]:
+        return self._showcase_window
 
     @property
     def screensaver(self) -> Optional[GalleryScreensaverWindow]:
@@ -389,43 +415,13 @@ class GalleryController(QObject):
         return self._last_downloaded_path
 
     def attach_ui(self) -> None:
-        """Bind to result panel showcase, result canvas context menu, and account hooks."""
-        showcase = getattr(self.window, "gallery_showcase_page", None)
-        if is_qobject_alive(showcase) and showcase is not self._showcase:
-            self._showcase = showcase
-            showcase.set_danmaku_settings(self._danmaku_settings)
-            showcase.set_slide_interval(self.state_store.config.slide_interval_sec)
-            showcase.set_danmaku_limits(
-                max_chars=self.state_store.config.danmaku_max_chars,
-                cooldown_sec=self.state_store.config.danmaku_cooldown_sec,
-            )
-            showcase.apply_theme(self._theme())
-            self._connect_showcase_signals(showcase, connect_fullscreen=True)
-
+        """Bind result canvas context menu and unread indicators without altering workspace canvas."""
         if not self._ui_attached:
             self._ui_attached = True
             lbl_result = getattr(self.window, "lbl_result_img", None)
             if is_qobject_alive(lbl_result):
                 lbl_result.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
                 lbl_result.customContextMenuRequested.connect(self.show_result_context_menu)
-                if hasattr(lbl_result, "displayPixmapChanged"):
-                    lbl_result.displayPixmapChanged.connect(self._on_result_pixmap_changed)
-
-            output_list = getattr(self.window, "output_list", None)
-            if is_qobject_alive(output_list):
-                output_list.itemClicked.connect(self._on_output_selected)
-                output_list.currentRowChanged.connect(self._on_output_row_changed)
-
-            result_slider = getattr(self.window, "result_slider", None)
-            if is_qobject_alive(result_slider):
-                result_slider.valueChanged.connect(self._on_result_slider_changed)
-
-        # Populate offline fallback works synchronously so startup/idle shows the
-        # Gallery Showcase immediately without waiting for network I/O.
-        if is_qobject_alive(self._showcase) and not self._showcase.works:
-            self._showcase.set_works(self.state_store.effective_showcase_works())
-        if self._should_show_showcase_when_idle():
-            self.show_gallery_showcase()
 
         self.update_unread_indicators()
 
@@ -464,17 +460,14 @@ class GalleryController(QObject):
             safe_disconnect(sig, slot)
 
     def start(self, *, fetch_remote: bool = True) -> None:
-        """Populate offline fallback showcase immediately and begin low-frequency sync."""
+        """Initialize account state and begin low-frequency sync without opening Showcase."""
         if self._closed or self._started:
             return
         self._started = True
         self._active_account_key = _account_identity(getattr(self.window, "_account_client", None))
 
-        # Populate offline fallback works right away so startup never waits on network.
-        if self._showcase is not None:
-            self._showcase.set_works(self.state_store.effective_showcase_works())
-        if self._should_show_showcase_when_idle():
-            self.show_gallery_showcase()
+        if is_qobject_alive(self._showcase):
+            self._set_showcase_works(self.state_store.effective_showcase_works())
 
         self.update_unread_indicators()
 
@@ -525,93 +518,101 @@ class GalleryController(QObject):
                 dialog.reject()
                 dialog.deleteLater()
 
-    # ---------------------------------------------------- showcase & view stack
+    # ---------------------------------------- standalone Gallery showcase
 
-    def _has_active_result_image(self) -> bool:
-        if getattr(self.window, "fusion_result", None) is not None:
-            return True
-        if getattr(self.window, "registration_results", None):
-            return True
-        if getattr(self.window, "preview_result", None) is not None:
-            return True
-        return False
+    def _ensure_showcase_window(self) -> GalleryShowcaseWindow:
+        if is_qobject_alive(self._showcase_window):
+            return self._showcase_window
+        win = GalleryShowcaseWindow(
+            parent=self.window,
+            slide_interval_sec=self.state_store.config.slide_interval_sec,
+            danmaku_settings=self._danmaku_settings,
+            auto_show_during_fusion=self._auto_show_during_fusion,
+        )
+        win.showcase.set_danmaku_limits(
+            max_chars=self.state_store.config.danmaku_max_chars,
+            cooldown_sec=self.state_store.config.danmaku_cooldown_sec,
+        )
+        win.apply_theme(self._theme())
+        win.set_fusion_busy(self._fusion_busy)
+        self._connect_showcase_signals(win.showcase, connect_fullscreen=True)
+        win.showcase.slide_changed.connect(self._prefetch_current_slide)
+        win.return_to_workspace_requested.connect(self._on_showcase_return_requested)
+        win.auto_show_toggled.connect(self._on_window_auto_show_toggled)
+        win.window_closed.connect(self._on_showcase_window_closed)
+        self._showcase_window = win
+        self._showcase = win.showcase
+        self._set_showcase_works(self.state_store.effective_showcase_works())
+        return win
 
-    def _should_show_showcase_when_idle(self) -> bool:
-        if not self.state_store.gallery_enabled:
-            return False
-        if getattr(self.window, "wipe_active", False):
-            return False
-        if getattr(self.window, "roi_mode_active", False):
-            return False
-        return not self._has_active_result_image()
+    def _set_showcase_works(self, works: Sequence[Any]) -> None:
+        slides = [ShowcaseWork.from_any(work) for work in works]
+        for slide in slides:
+            if slide.image_url and not slide.has_local_image():
+                path = self.disk_cache.get_path(slide.image_url)
+                if path is not None:
+                    slide.local_path = str(path)
+        if self._fusion_busy and slides and not any(slide.has_local_image() for slide in slides):
+            existing = {slide.id for slide in slides}
+            slides.extend(work for work in self.state_store.fallback_works
+                          if work.work_id not in existing)
+        self._showcase.set_works(slides)
+
+    def _prefetch_current_slide(self, work_id: str) -> None:
+        if self.is_showing_showcase():
+            self._prefetch_work_image(work_id)
+
+    def _on_window_auto_show_toggled(self, checked: bool) -> None:
+        self.set_auto_show_during_fusion(checked, persist=True)
+
+    def _on_showcase_return_requested(self) -> None:
+        self.show_result_canvas()
+        if is_qobject_alive(self.window) and hasattr(self.window, "raise_"):
+            try:
+                self.window.raise_()
+                self.window.activateWindow()
+            except Exception:
+                pass
+
+    def _on_showcase_window_closed(self) -> None:
+        self._opened_for_fusion = False
 
     def is_showing_showcase(self) -> bool:
-        view_stack = getattr(self.window, "view_stack", None)
-        if view_stack is None or self._showcase is None:
-            return False
-        return view_stack.currentWidget() is self._showcase
+        return bool(is_qobject_alive(self._showcase_window) and self._showcase_window.isVisible())
 
-    def show_gallery_showcase(self, *, force: bool = False) -> bool:
-        """Switch the right-hand result view stack to the Gallery Showcase page."""
-        if self._closed or self._showcase is None:
-            return False
-        if not self.state_store.gallery_enabled:
+    def show_gallery_showcase(self, *, force: bool = False, for_fusion: bool = False) -> bool:
+        """Open the standalone OpenFocus Gallery Showcase window."""
+        if self._closed or not self.state_store.gallery_enabled:
             return False
         if not force and (
             getattr(self.window, "wipe_active", False)
             or getattr(self.window, "roi_mode_active", False)
         ):
             return False
-        view_stack = getattr(self.window, "view_stack", None)
-        if view_stack is None:
-            return False
-        if view_stack.indexOf(self._showcase) < 0:
-            return False
-        if not self._showcase.works:
-            self._showcase.set_works(self.state_store.effective_showcase_works())
-        view_stack.setCurrentWidget(self._showcase)
+        win = self._ensure_showcase_window()
+        win.set_auto_show_checked(self._auto_show_during_fusion)
+        if not win.showcase.works:
+            self._set_showcase_works(self.state_store.effective_showcase_works())
+        if not win.isVisible():
+            self._opened_for_fusion = for_fusion
+        if self._fusion_progress is None:
+            win.hide_fusion_bar()
+        else:
+            done, total, text = self._fusion_progress
+            win.set_fusion_in_progress(text=text, done=done, total=total)
+        win.show()
+        work = win.showcase.current_work
+        if work is not None:
+            self._prefetch_current_slide(work.id)
+        win.raise_()
+        win.activateWindow()
         return True
 
     def show_result_canvas(self) -> None:
-        """Restore the normal fusion/result canvas (index 0) when leaving showcase."""
-        view_stack = getattr(self.window, "view_stack", None)
-        if view_stack is None:
-            return
-        if self._showcase is not None and view_stack.currentWidget() is self._showcase:
-            view_stack.setCurrentIndex(0)
-
-    def hide_fusion_result(self) -> bool:
-        """Context-menu action: hide the current fusion result to show Gallery Showcase."""
-        if getattr(self.window, "wipe_active", False):
-            return False
-        return self.show_gallery_showcase(force=True)
-
-    def _on_result_pixmap_changed(self, has_pixmap: bool) -> None:
-        if self._closed:
-            return
-        if has_pixmap:
-            if not getattr(self.window, "wipe_active", False):
-                self.show_result_canvas()
-        elif self._should_show_showcase_when_idle():
-            self.show_gallery_showcase()
-
-    def _on_output_selected(self, _item: Any = None) -> None:
-        if self._closed:
-            return
-        if not getattr(self.window, "wipe_active", False):
-            self.show_result_canvas()
-
-    def _on_output_row_changed(self, row: int) -> None:
-        if self._closed:
-            return
-        if row >= 0 and not getattr(self.window, "wipe_active", False):
-            self.show_result_canvas()
-
-    def _on_result_slider_changed(self, _index: int) -> None:
-        if self._closed:
-            return
-        if not getattr(self.window, "wipe_active", False):
-            self.show_result_canvas()
+        """Hide the standalone Showcase and return to the current workspace view."""
+        self._opened_for_fusion = False
+        if is_qobject_alive(self._showcase_window) and self._showcase_window.isVisible():
+            self._showcase_window.hide()
 
     # ------------------------------------------------------- context menu hook
 
@@ -622,13 +623,6 @@ class GalleryController(QObject):
         menu.setProperty("controlId", "result_canvas_context_menu")
 
         enabled = self.state_store.gallery_enabled
-
-        hide_action = QAction(trans.t("gallery_hide_fusion_result"), menu)
-        hide_action.setObjectName("action_hide_fusion_result")
-        hide_action.setProperty("controlId", "action_hide_fusion_result")
-        hide_action.setEnabled(enabled)
-        hide_action.triggered.connect(self.hide_fusion_result)
-        menu.addAction(hide_action)
 
         upload_action = QAction(trans.t("menu_upload_to_gallery"), menu)
         upload_action.setObjectName("action_upload_to_gallery")
@@ -666,27 +660,54 @@ class GalleryController(QObject):
         self.state_store.set_fusion_busy(flag)
         if is_qobject_alive(self._showcase):
             self._showcase.set_fusion_busy(flag)
+            work = self._showcase.current_work
+            if work is not None:
+                if flag and not work.has_local_image():
+                    self._set_showcase_works(self._showcase.works)
+                elif not flag:
+                    self._prefetch_current_slide(work.id)
         if is_qobject_alive(self._screensaver):
             self._screensaver.set_fusion_busy(flag)
         if not flag:
             self._refresh_current_work_comments()
 
-    def on_render_started(self, *, is_preview: bool = False) -> None:
-        """Called by RenderManager when a fusion/render job starts."""
+    def _can_close_fusion_showcase(self) -> bool:
+        if not is_qobject_alive(self._showcase):
+            return True
+        if self._showcase.danmaku_overlay.is_composing():
+            return False
+        if self._showcase.comment_drawer.is_open():
+            return False
+        return True
+
+    def on_render_started(self, *, show_fusion: bool = True) -> None:
+        """Pause remote Gallery work and show status for desktop fusion."""
         self.set_fusion_busy(True)
-        # During fusion wait, display the Gallery Showcase in the output panel
-        # when Gallery is enabled and not in wipe/ROI/quick-preview mode.
-        if (
-            not is_preview
-            and self.state_store.gallery_enabled
-            and not getattr(self.window, "wipe_active", False)
-            and not getattr(self.window, "roi_mode_active", False)
-        ):
-            self.show_gallery_showcase()
+        if not show_fusion:
+            return
+        self._fusion_progress = (0, 0, "")
+        if self.is_showing_showcase():
+            self._showcase_window.set_fusion_in_progress()
+        elif self._auto_show_during_fusion:
+            self.show_gallery_showcase(for_fusion=True)
+
+    def on_render_progress(self, done: int, total: int, text: str = "") -> None:
+        if self._closed or self._fusion_progress is None:
+            return
+        self._fusion_progress = (done, total, text)
+        if self.is_showing_showcase():
+            self._showcase_window.set_fusion_in_progress(text=text, done=done, total=total)
 
     def on_render_ended(self) -> None:
         """Called by RenderManager on error, cancellation, or discard."""
         self.set_fusion_busy(False)
+        win = self._showcase_window
+        if is_qobject_alive(win):
+            if self._opened_for_fusion and win.isVisible() and self._can_close_fusion_showcase():
+                win.hide()
+            win.hide_fusion_bar()
+        self._fusion_progress = None
+        self._opened_for_fusion = False
 
     def on_fusion_completed(
         self,
@@ -697,8 +718,28 @@ class GalleryController(QObject):
         is_compare: bool = False,
         is_batch: bool = False,
     ) -> Optional[Any]:
-        """Release compute-avoidance lock and optionally show ``UploadPromptDialog``."""
+        """Release compute-avoidance lock, close/update wait showcase, and prompt upload."""
         self.set_fusion_busy(False)
+        if (
+            self._opened_for_fusion
+            and is_qobject_alive(self._showcase_window)
+            and self._showcase_window.isVisible()
+        ):
+            if self._can_close_fusion_showcase():
+                self._showcase_window.hide()
+                self._opened_for_fusion = False
+                if is_qobject_alive(self.window) and hasattr(self.window, "raise_"):
+                    try:
+                        self.window.raise_()
+                        self.window.activateWindow()
+                    except Exception:
+                        pass
+            else:
+                self._showcase_window.set_fusion_completed()
+        elif self._fusion_progress is not None and is_qobject_alive(self._showcase_window):
+            self._showcase_window.hide_fusion_bar()
+        self._opened_for_fusion = False
+        self._fusion_progress = None
         if self._closed or not self.state_store.gallery_enabled:
             return None
         if fusion_result is None or is_preview or is_compare or is_batch or not interactive:
@@ -878,6 +919,7 @@ class GalleryController(QObject):
         dlg.set_danmaku_translation_mode(self._danmaku_settings.translation_mode)
         self.danmaku_translation_mode_changed.connect(dlg.set_danmaku_translation_mode)
         dlg.download_work_requested.connect(self._download_selected_work)
+        dlg.account_center_requested.connect(self.open_account_center)
         dlg.finished.connect(lambda _code: self._clear_dialog_ref("_hub_dialog", dlg))
         self._hub_dialog = dlg
         dlg.show()
@@ -1087,10 +1129,6 @@ class GalleryController(QObject):
             self.show_result_canvas()
             if is_qobject_alive(self._screensaver):
                 self._screensaver.exit_screensaver()
-        elif self._should_show_showcase_when_idle():
-            if is_qobject_alive(self._showcase):
-                self._showcase.set_works(self.state_store.effective_showcase_works())
-            self.show_gallery_showcase()
 
     def _on_profile_changed(self, _profile: Any) -> None:
         if self._closed:
@@ -1106,11 +1144,7 @@ class GalleryController(QObject):
         if self._closed:
             return
         if is_qobject_alive(self._showcase):
-            self._showcase.set_works(works)
-            for work in works[:2]:
-                wid = getattr(work, "work_id", "") or getattr(work, "id", "")
-                if wid:
-                    self._prefetch_work_image(wid)
+            self._set_showcase_works(works)
         if is_qobject_alive(self._screensaver) and self._screensaver.isVisible():
             self._screensaver.set_works(works, start_index=max(0, self._screensaver.showcase.current_index))
 
@@ -1495,12 +1529,26 @@ class GalleryController(QObject):
     def danmaku_settings(self) -> DanmakuSettings:
         return self._danmaku_settings.normalized()
 
+    def auto_show_during_fusion(self) -> bool:
+        return bool(self._auto_show_during_fusion)
+
+    def set_auto_show_during_fusion(self, enabled: bool, *, persist: bool = True) -> bool:
+        flag = bool(enabled)
+        self._auto_show_during_fusion = flag
+        if is_qobject_alive(self._showcase_window):
+            self._showcase_window.set_auto_show_checked(flag)
+        if persist:
+            persist_auto_show_during_fusion(flag)
+        return flag
+
     def apply_danmaku_settings(self, settings_obj: DanmakuSettings, *, persist: bool = True) -> None:
         """Apply Danmaku settings live to Showcase and Screensaver, and persist."""
         prev_mode = self._danmaku_settings.translation_mode
         norm = settings_obj.normalized()
         self._danmaku_settings = norm
-        if is_qobject_alive(self._showcase):
+        if is_qobject_alive(self._showcase_window):
+            self._showcase_window.set_danmaku_settings(norm)
+        elif is_qobject_alive(self._showcase):
             self._showcase.set_danmaku_settings(norm)
         if is_qobject_alive(self._screensaver):
             self._screensaver.set_danmaku_settings(norm)
@@ -1549,7 +1597,9 @@ class GalleryController(QObject):
     # ---------------------------------------------- theme, i18n, and shutdown
 
     def apply_theme(self, theme: str) -> None:
-        if is_qobject_alive(self._showcase):
+        if is_qobject_alive(self._showcase_window):
+            self._showcase_window.apply_theme(theme)
+        elif is_qobject_alive(self._showcase):
             self._showcase.apply_theme(theme)
         if is_qobject_alive(self._screensaver):
             self._screensaver.apply_theme(theme)
@@ -1559,7 +1609,9 @@ class GalleryController(QObject):
         lang_changed = new_lang != self._active_ui_lang
         self._active_ui_lang = new_lang
         self.update_unread_indicators()
-        if is_qobject_alive(self._showcase):
+        if is_qobject_alive(self._showcase_window):
+            self._showcase_window.retranslate()
+        elif is_qobject_alive(self._showcase):
             self._showcase.retranslate()
         if is_qobject_alive(self._screensaver):
             self._screensaver.retranslate()
@@ -1595,15 +1647,6 @@ class GalleryController(QObject):
             lbl_result = getattr(self.window, "lbl_result_img", None)
             if is_qobject_alive(lbl_result):
                 safe_disconnect(lbl_result.customContextMenuRequested, self.show_result_context_menu)
-                if hasattr(lbl_result, "displayPixmapChanged"):
-                    safe_disconnect(lbl_result.displayPixmapChanged, self._on_result_pixmap_changed)
-            output_list = getattr(self.window, "output_list", None)
-            if is_qobject_alive(output_list):
-                safe_disconnect(output_list.itemClicked, self._on_output_selected)
-                safe_disconnect(output_list.currentRowChanged, self._on_output_row_changed)
-            result_slider = getattr(self.window, "result_slider", None)
-            if is_qobject_alive(result_slider):
-                safe_disconnect(result_slider.valueChanged, self._on_result_slider_changed)
 
         self._disconnect_showcase_signals(self._showcase)
         self._comments_cache.clear()
@@ -1647,7 +1690,18 @@ class GalleryController(QObject):
                     pass
         self._honor_dialogs.clear()
 
-        if is_qobject_alive(self._showcase):
+        if is_qobject_alive(self._showcase_window):
+            try:
+                safe_disconnect(self._showcase_window.return_to_workspace_requested, self._on_showcase_return_requested)
+                safe_disconnect(self._showcase_window.auto_show_toggled, self._on_window_auto_show_toggled)
+                safe_disconnect(self._showcase_window.window_closed, self._on_showcase_window_closed)
+                self._showcase_window.close()
+                self._showcase_window.deleteLater()
+            except Exception:
+                pass
+            self._showcase_window = None
+            self._showcase = None
+        elif is_qobject_alive(self._showcase):
             try:
                 self._showcase.pause_slideshow("shutdown")
             except Exception:

@@ -885,6 +885,9 @@ class AccountCenterDialog(QDialog):
             self.redeem_status.setText(
                 t_gallery("account_center_redeem_success", points=added)
             )
+            refresh = getattr(self._state_store, "refresh_account_after_points_change", None)
+            if callable(refresh):
+                refresh()
 
         self._runner.submit(
             lambda: self._client.redeem_code(code),

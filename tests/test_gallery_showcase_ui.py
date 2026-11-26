@@ -450,6 +450,7 @@ def test_spec_3_3_hud_layout_order_allow_download_gating_and_control_ids(qapp):
     assert showcase.lbl_source_badge.isVisible() is True
     assert showcase.lbl_source_badge.property("sourceBadge") == "following"
     assert showcase.lbl_openfocus_badge.isVisible() is True
+    assert showcase.lbl_openfocus_badge.text() == "OpenFocus Studio"
     assert "OM-1" in showcase.lbl_exif.text()
     assert "M.Zuiko 90mm Macro" in showcase.lbl_exif.text()
     assert "ISO 200" in format_exif_summary(works[0].exif)
@@ -782,3 +783,83 @@ def test_comment_drawer_renders_translation_with_original_toggle(qapp):
         showcase.deleteLater()
     finally:
         trans.set_language(prev_lang)
+
+
+def test_showcase_distinguishes_studio_badge_from_author_name(qapp):
+    showcase = GalleryShowcaseWidget()
+    showcase.resize(640, 360)
+    showcase.show()
+    qapp.processEvents()
+
+    showcase.set_works(
+        [
+            ShowcaseWork(
+                id="w_official",
+                author_id="openfocus_official",
+                author_nickname="OpenFocus",
+                openfocus_badge=True,
+                exif={"lens": "Macro 60mm f/4"},
+                pixmap=_make_pixmap(120, 80, QColor(40, 90, 150)),
+            )
+        ]
+    )
+    qapp.processEvents()
+    assert showcase.btn_author.text() == "OpenFocus"
+    assert showcase.lbl_openfocus_badge.isVisible() is True
+    assert showcase.lbl_openfocus_badge.text() == "OpenFocus Studio"
+    assert showcase.lbl_exif.text() == "Macro 60mm f/4"
+
+    showcase.set_works(
+        [
+            ShowcaseWork(
+                id="w_studio_dup",
+                author_id="openfocus_studio",
+                author_nickname="OpenFocus Studio",
+                openfocus_badge=True,
+                exif={"lens": "Macro 90mm f/2.8"},
+                pixmap=_make_pixmap(120, 80, QColor(40, 90, 150)),
+            )
+        ]
+    )
+    qapp.processEvents()
+    assert showcase.btn_author.text() == "OpenFocus Studio"
+    assert showcase.lbl_openfocus_badge.isVisible()
+    assert showcase.lbl_openfocus_badge.text() == '◆'
+    work = showcase.current_work
+    work.openfocus_badge = False
+    showcase.show_slide(0)
+    assert showcase.btn_author.text() == 'OpenFocus Studio'
+    assert not showcase.lbl_openfocus_badge.isVisible()
+    showcase.deleteLater()
+
+
+def test_standalone_showcase_window_fusion_bar_and_return_flow(qapp):
+    from widgets.gallery_showcase import GalleryShowcaseWindow
+
+    win = GalleryShowcaseWindow()
+    win.set_works([ShowcaseWork(id="w1", title="Beetle", pixmap=_make_pixmap(100, 80, QColor(40, 80, 120)))])
+    assert win.fusion_bar.isVisible() is False
+
+    toggled = []
+    returned = []
+    win.auto_show_toggled.connect(toggled.append)
+    win.return_to_workspace_requested.connect(lambda: returned.append(True))
+
+    win.show()
+    qapp.processEvents()
+    win.set_fusion_in_progress("Fusing 2/4", done=2, total=4)
+    assert win.fusion_bar.isVisible() is True
+    assert win.fusion_progress.maximum() == 4
+    assert win.fusion_progress.value() == 2
+    assert "2/4" in win.lbl_fusion_status.text()
+
+    win.set_fusion_completed()
+    assert win.fusion_progress.value() == 1
+
+    win.chk_auto_show.setChecked(False)
+    assert toggled == [False]
+
+    win.btn_return.click()
+    assert returned == [True]
+    assert win.isVisible() is False
+    win.deleteLater()

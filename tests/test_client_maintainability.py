@@ -697,12 +697,10 @@ def test_gallery_controller_shutdown_and_shared_settings_helpers(qapp, tmp_path)
     assert resolve_gallery_download_dir(settings=ini, create=False) == dl_dir.resolve()
     assert resolve_gallery_cache_dir(settings=ini, create=False) == cache_dir.resolve()
 
-    # GalleryController.attach_ui() is idempotent and shutdown() disconnects signals safely.
+    # GalleryController.attach_ui() is idempotent and handles deleted standalone showcase safely.
     host = QWidget()
     host.view_stack = QStackedWidget(host)
-    host.gallery_showcase_page = GalleryShowcaseWidget(host)
     host.view_stack.addWidget(QWidget(host))
-    host.view_stack.addWidget(host.gallery_showcase_page)
     host.output_list = QListWidget(host)
     host.result_slider = QSlider(host)
     host.ui_objs = {}
@@ -713,9 +711,10 @@ def test_gallery_controller_shutdown_and_shared_settings_helpers(qapp, tmp_path)
     )
     gc.attach_ui()
     gc.attach_ui()  # second call must not double-connect window signals
+    gc.show_gallery_showcase(force=True)
 
     # Deleting showcase early must not crash lifecycle/theme/retranslate calls.
-    sip.delete(host.gallery_showcase_page)
+    sip.delete(gc.showcase)
     gc.apply_theme("dark")
     gc.retranslate()
     gc.set_fusion_busy(True)

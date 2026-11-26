@@ -619,6 +619,29 @@ def test_admission_charges_only_new_source_cache_growth_under_roi(tmp_path, monk
     assert source_frames.source_cache_growth_bytes([pixels]) == 0
 
 
+def test_cpu_a_streams_when_only_hypothetical_cache_growth_exceeds_budget(tmp_path, monkeypatch):
+    from core import multi_focus_fusion
+    from core.algorithm_adapters import openfocus_a_resources
+
+    sources, pixels = zip(*[_source(tmp_path, f'a-{value}.png', value, np.uint8)
+                            for value in (73, 151)])
+    options = dict(algorithm='openfocus_a', use_gpu=False, exposure_match=False,
+                   tile_enabled=False, sort_mode='off')
+    expected = multi_focus_fusion.MultiFocusFusion(**options).fuse(list(pixels), thread_count=1)
+    fixed, worker = openfocus_a_resources(*sources[0].shape[:2], {}, len(sources))
+    budget = fixed + worker + max(map(source_frames.frame_resolution_bytes, sources))
+    monkeypatch.setattr(source_frames, 'SOURCE_CACHE', source_frames.FrameCache(1024 * 1024))
+    monkeypatch.setattr(multi_focus_fusion, 'memory_budget_bytes', lambda: budget)
+    assert source_frames.source_cache_growth_bytes(sources) > 0
+
+    def unavailable(*args, **kwargs):
+        raise frame_storage.ScratchSpaceError(str(tmp_path), 4096, 0)
+
+    monkeypatch.setattr(source_frames, 'materialize_for_repeated_access', unavailable)
+    actual = multi_focus_fusion.MultiFocusFusion(**options).fuse(list(sources), thread_count=1)
+    np.testing.assert_array_equal(actual, expected)
+
+
 @pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
 def test_native_resize_admission_charges_full_source_code_conversion(tmp_path, monkeypatch, dtype):
     from core import resource_policy
