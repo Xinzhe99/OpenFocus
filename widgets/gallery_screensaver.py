@@ -60,6 +60,7 @@ class GalleryScreensaverWindow(QWidget):
             blur_cache=blur_cache,
             danmaku_settings=danmaku_settings,
             clock=clock,
+            auto_retranslate=False,
         )
         # Clicking fullscreen button inside fullscreen exits screensaver cleanly
         self.showcase.fullscreen_requested.connect(self.exit_screensaver)
@@ -89,7 +90,6 @@ class GalleryScreensaverWindow(QWidget):
 
         self.apply_theme("dark")
         self.retranslate()
-        trans.languageChanged.connect(self.retranslate)
 
     # ------------------------------------------------------------ public API
 

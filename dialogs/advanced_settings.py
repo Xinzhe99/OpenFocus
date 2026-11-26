@@ -1,5 +1,6 @@
 """Application preferences, grouped by task and applied together on OK."""
-from PyQt6.QtCore import Qt
+import threading
+from PyQt6.QtCore import Qt, pyqtSignal
 from utils.file_dialogs import FileDialog
 from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QFrame,
@@ -75,9 +76,22 @@ def _disclosure(layout, title, control_id, content):
 class AdvancedSettingsDialog(QDialog):
     """Edit a single draft across independently scrollable preference pages."""
 
+    _gallery_cache_usage_ready = pyqtSignal(int, int)
+    _gallery_cache_cleared = pyqtSignal(int, int, int)
+
     def __init__(self, window, parent=None):
         super().__init__(parent or window)
         self.window_main = window
+        self._gallery_cache_usage_bytes: int | None = None
+        self._gallery_cache_scanned = False
+        self._gallery_cache_scan_seq = 0
+        self._gallery_tab_index: int | None = None
+        self._gallery_cache_usage_ready.connect(
+            self._on_gallery_cache_usage_ready, Qt.ConnectionType.QueuedConnection
+        )
+        self._gallery_cache_cleared.connect(
+            self._on_gallery_cache_cleared, Qt.ConnectionType.QueuedConnection
+        )
         self.setWindowTitle(trans.t("advanced_settings_title"))
         self.resize(min(700, self.screen().availableGeometry().width()), 400)
 
@@ -100,7 +114,9 @@ class AdvancedSettingsDialog(QDialog):
             build(layout)
             layout.addStretch()
             scroll.setWidget(page)
-            self.tabs.addTab(scroll, trans.t(key))
+            tab_idx = self.tabs.addTab(scroll, trans.t(key))
+            if key == "gallery_settings_tab":
+                self._gallery_tab_index = tab_idx
         self._initial_fields = self._field_values()
 
         self.status = QLabel()
@@ -118,7 +134,7 @@ class AdvancedSettingsDialog(QDialog):
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
         ok_btn.setDefault(True)
-        self.tabs.currentChanged.connect(self._fit_page)
+        self.tabs.currentChanged.connect(self._on_tab_changed)
         self.manual_tile_disclosure.toggled.connect(self._fit_page)
         self.sensor_cleanup_disclosure.toggled.connect(self._fit_page)
         self.registration_options_disclosure.toggled.connect(self._fit_page)
@@ -127,6 +143,21 @@ class AdvancedSettingsDialog(QDialog):
     def showEvent(self, event):
         super().showEvent(event)
         self._fit_page()
+        if (
+            self._gallery_tab_index is not None
+            and self.tabs.currentIndex() == self._gallery_tab_index
+            and not self._gallery_cache_scanned
+        ):
+            self._refresh_gallery_cache_usage()
+
+    def _on_tab_changed(self, index: int) -> None:
+        self._fit_page()
+        if (
+            self._gallery_tab_index is not None
+            and index == self._gallery_tab_index
+            and not self._gallery_cache_scanned
+        ):
+            self._refresh_gallery_cache_usage()
 
     def _fit_page(self):
         if not self.isVisible():
@@ -455,7 +486,7 @@ class AdvancedSettingsDialog(QDialog):
             minimum=10, maximum=2048, step=10, decimals=0, value=int(initial_limit_mb)
         )
         self.spin_gallery_cache_limit.setProperty("controlId", "spin_gallery_cache_limit")
-        self.spin_gallery_cache_limit.valueChanged.connect(self._refresh_gallery_cache_usage)
+        self.spin_gallery_cache_limit.valueChanged.connect(self._update_gallery_cache_usage_label)
         storage.addRow(trans.t("gallery_settings_cache_limit"), self.spin_gallery_cache_limit)
 
         usage_row = QWidget()
@@ -470,7 +501,7 @@ class AdvancedSettingsDialog(QDialog):
         self.btn_clear_gallery_cache.clicked.connect(self._clear_gallery_cache)
         usage_lay.addWidget(self.btn_clear_gallery_cache)
         storage.addRow("", usage_row)
-        self._refresh_gallery_cache_usage()
+        self._update_gallery_cache_usage_label()
 
     def _browse_gallery_download_dir(self):
         start_dir = self.gallery_download_dir.text().strip() or self.gallery_download_dir.placeholderText()
@@ -484,32 +515,81 @@ class AdvancedSettingsDialog(QDialog):
         if path:
             self.gallery_cache_dir.setText(path)
 
-    def _refresh_gallery_cache_usage(self, *_args):
-        gallery = getattr(self.window_main, "gallery_controller", None)
-        if gallery is not None:
-            used_bytes = gallery.cache_usage_bytes()
-        else:
-            from core.gallery_cache import GalleryDiskCache
-            from utils.settings_store import get_settings
-            try:
-                used_bytes = GalleryDiskCache(settings=get_settings()).usage_bytes()
-            except Exception:
-                used_bytes = 0
-        used_mb = f"{used_bytes / (1024 * 1024):.1f}"
+    def _update_gallery_cache_usage_label(self, *_args):
+        used_mb = (
+            f"{self._gallery_cache_usage_bytes / (1024 * 1024):.1f}"
+            if self._gallery_cache_usage_bytes is not None
+            else "..."
+        )
         limit_mb = int(self.spin_gallery_cache_limit.value())
         self.lbl_gallery_cache_usage.setText(
             trans.t("gallery_settings_cache_usage").format(used_mb=used_mb, limit_mb=limit_mb)
         )
 
-    def _clear_gallery_cache(self):
+    def _refresh_gallery_cache_usage(self, *_args):
+        self._gallery_cache_scan_seq += 1
+        seq = self._gallery_cache_scan_seq
         gallery = getattr(self.window_main, "gallery_controller", None)
-        if gallery is not None:
-            removed_files, freed_bytes = gallery.clear_disk_cache()
-        else:
-            from core.gallery_cache import GalleryDiskCache
-            from utils.settings_store import get_settings
-            removed_files, freed_bytes = GalleryDiskCache(settings=get_settings()).clear()
-        self._refresh_gallery_cache_usage()
+
+        def _scan():
+            used_bytes = 0
+            if gallery is not None:
+                try:
+                    used_bytes = int(gallery.cache_usage_bytes() or 0)
+                except Exception:
+                    used_bytes = 0
+            else:
+                from core.gallery_cache import GalleryDiskCache
+                from utils.settings_store import get_settings
+                try:
+                    used_bytes = int(GalleryDiskCache(settings=get_settings()).usage_bytes() or 0)
+                except Exception:
+                    used_bytes = 0
+            try:
+                self._gallery_cache_usage_ready.emit(seq, used_bytes)
+            except RuntimeError:
+                pass
+
+        threading.Thread(target=_scan, daemon=True).start()
+
+    def _on_gallery_cache_usage_ready(self, seq: int, used_bytes: int) -> None:
+        if seq != self._gallery_cache_scan_seq:
+            return
+        self._gallery_cache_usage_bytes = max(0, int(used_bytes))
+        self._gallery_cache_scanned = True
+        self._update_gallery_cache_usage_label()
+
+    def _clear_gallery_cache(self):
+        self.btn_clear_gallery_cache.setEnabled(False)
+        self._gallery_cache_scan_seq += 1
+        seq = self._gallery_cache_scan_seq
+        gallery = getattr(self.window_main, "gallery_controller", None)
+
+        def _clear():
+            removed_files, freed_bytes = 0, 0
+            try:
+                if gallery is not None:
+                    removed_files, freed_bytes = gallery.clear_disk_cache()
+                else:
+                    from core.gallery_cache import GalleryDiskCache
+                    from utils.settings_store import get_settings
+                    removed_files, freed_bytes = GalleryDiskCache(settings=get_settings()).clear()
+            except Exception:
+                removed_files, freed_bytes = 0, 0
+            try:
+                self._gallery_cache_cleared.emit(seq, int(removed_files), int(freed_bytes))
+            except RuntimeError:
+                pass
+
+        threading.Thread(target=_clear, daemon=True).start()
+
+    def _on_gallery_cache_cleared(self, seq: int, removed_files: int, freed_bytes: int) -> None:
+        self.btn_clear_gallery_cache.setEnabled(True)
+        if seq != self._gallery_cache_scan_seq:
+            return
+        self._gallery_cache_usage_bytes = 0
+        self._gallery_cache_scanned = True
+        self._update_gallery_cache_usage_label()
         self.status.setText(
             trans.t("gallery_settings_cache_cleared").format(
                 files=removed_files,

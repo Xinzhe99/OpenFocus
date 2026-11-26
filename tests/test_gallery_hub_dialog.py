@@ -356,6 +356,7 @@ def test_watermark_preview_default_on_nickname_fill_toggle_off_and_16bit(qapp, t
     dlg = GalleryHubDialog(state_store=store, initial_tab=2)
     img_path = _write_test_png(tmp_path / "sample.png", color=(230, 230, 230))
     dlg.add_publish_files([img_path])
+    assert dlg.wait_for_idle()
 
     assert dlg.watermark_enabled_check.isChecked() is True
     dlg.watermark_text_edit.clear()
@@ -1081,3 +1082,85 @@ def test_gallery_hub_displays_points_balance_and_dynamic_publish_cost(qapp, tmp_
     assert dlg.cost_hint_label.text() == t_gallery('gallery_publish_batch_estimate', count=2, total=0)
     assert not dlg.insufficient_points_label.isVisible()
     dlg.close()
+
+
+def test_hub_unwrap_envelopes_return_pressed_send_disable_append_and_theme(qapp, tmp_path):
+    from threading import Event
+
+    release_post = Event()
+    entered_post = Event()
+
+    class EnvelopeClient(FakeGalleryClient):
+        def get_work(self, work_id: str):
+            return {
+                "work": {
+                    "id": work_id,
+                    "title": "Wrapped Work",
+                    "author_id": "u-wrap",
+                    "author_nickname": "WrapAuthor",
+                    "likes_count": 3,
+                }
+            }
+
+        def post_comment(self, work_id: str, content: str, **_kwargs):
+            entered_post.set()
+            release_post.wait(timeout=2.0)
+            return {
+                "comment": {
+                    "id": "c-wrapped-1",
+                    "work_id": work_id,
+                    "author_nickname": "Commenter",
+                    "content": content,
+                }
+            }
+
+    client = EnvelopeClient()
+    client.pages = {
+        None: {"items": [{"id": "w-p1", "title": "Page 1"}], "next_cursor": "c2"},
+        "c2": {"items": [{"id": "w-p2", "title": "Page 2"}], "next_cursor": None},
+    }
+    hub = GalleryHubDialog(client=client, state_store=FakeStateStore())
+    hub.refresh_square()
+    assert hub.wait_for_idle()
+    card_p1 = hub._square_grid.itemAt(0).widget()
+    assert card_p1 is not None
+
+    # load_more_square appends new card without rebuilding existing card_p1
+    hub.load_more_btn.click()
+    assert hub.wait_for_idle()
+    assert hub._square_grid.itemAt(0).widget() is card_p1
+    assert len(hub._square_works) == 2
+
+    # open_work_by_id unwraps {"work": ...}
+    hub.open_work_by_id("w-remote-42")
+    assert hub.wait_for_idle()
+    detail = hub.findChild(WorkDetailDialog)
+    assert detail is not None
+    assert detail.work_id == "w-remote-42"
+    assert detail.testAttribute(Qt.WidgetAttribute.WA_DeleteOnClose) is True
+
+    # returnPressed submits comment, disables send button while in-flight, and unwraps {"comment": ...}
+    detail.comment_input.setText("Sharp wing veins!")
+    detail.comment_input.returnPressed.emit()
+    deadline = time.monotonic() + 1.0
+    while not entered_post.is_set() and time.monotonic() < deadline:
+        qapp.processEvents()
+        time.sleep(0.005)
+    assert detail.send_comment_btn.isEnabled() is False
+    release_post.set()
+    assert detail.wait_for_idle()
+    assert detail.send_comment_btn.isEnabled() is True
+    assert any("Commenter: Sharp wing veins!" in detail.comments_list.item(i).text() for i in range(detail.comments_list.count()))
+
+    hub.apply_theme("light")
+    assert hub._theme == "light"
+    assert detail._theme == "light"
+
+    # UploadPromptDialog decodes ndarray preview off-thread
+    arr = np.full((80, 120, 3), 120, dtype=np.uint8)
+    prompt = UploadPromptDialog(preview_source=arr)
+    assert prompt.wait_for_idle()
+    assert prompt.preview_label is not None and not prompt.preview_label.pixmap().isNull()
+    prompt.close()
+    detail.close()
+    hub.close()

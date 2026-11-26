@@ -6,12 +6,13 @@ as danmaku and are reserved for the expandable comment/reply drawer.
 """
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import dataclass
 import math
 import time
 from typing import Any, Callable, Mapping, Sequence
 
-from PyQt6.QtCore import QPoint, QPointF, QRect, QRectF, Qt, QTimer, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QEvent, QPoint, QPointF, QRect, QRectF, Qt, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import (
     QColor,
     QFont,
@@ -808,6 +809,7 @@ class DanmakuOverlay(QWidget):
         settings: DanmakuSettings | None = None,
         clock: Callable[[], float] | None = None,
         controls_parent: QWidget | None = None,
+        auto_retranslate: bool = True,
     ) -> None:
         super().__init__(parent)
         self._settings = (settings or DanmakuSettings()).normalized()
@@ -817,15 +819,26 @@ class DanmakuOverlay(QWidget):
         self._queue: list[DanmakuItem] = []
         self._comments: list[DanmakuItem] = []
         self._paused: bool = False
+        self._fusion_busy: bool = False
         self._spawn_accum: float = 0.0
         self._last_tick: float | None = None
         self._hovered_id: str | None = None
         self._hovered_action: str | None = None
+        self._last_cursor_pointing: bool = False
         self._popover_item_id: str | None = None
         self._toast_text: str = ""
         self._toast_remaining: float = 0.0
         self._toast_duration: float = 2.2
-        self._pixmap_cache: dict[tuple[str, str, int, float, float, bool], QPixmap] = {}
+        self._toast_box_w: float = 0.0
+        self._toast_box_h: float = 30.0
+        self._pixmap_cache: OrderedDict[tuple[str, str, int, float, float, bool], QPixmap] = OrderedDict()
+        self._prev_dirty_rect: QRect = QRect()
+        self._pending_initial_spawn: bool = False
+        self._watched_window: QWidget | None = None
+        self._ui_lang: str = current_ui_language()
+        dark_p = palette("dark")
+        self._accent_color: QColor = QColor(dark_p["accent"])
+        self._danger_color: QColor = QColor(dark_p["danger"])
 
         self.setObjectName("gallery_danmaku_overlay")
         self.setProperty("controlId", "gallery_danmaku_overlay")
@@ -845,11 +858,17 @@ class DanmakuOverlay(QWidget):
         self.composer.comments_drawer_requested.connect(self.comments_drawer_requested.emit)
 
         self._anim_timer = QTimer(self)
-        self._anim_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._anim_timer.setTimerType(Qt.TimerType.CoarseTimer)
         self._anim_timer.setInterval(16)
         self._anim_timer.timeout.connect(self._on_tick)
 
-        trans.languageChanged.connect(self.retranslate)
+        self._spawn_wake_timer = QTimer(self)
+        self._spawn_wake_timer.setSingleShot(True)
+        self._spawn_wake_timer.setTimerType(Qt.TimerType.CoarseTimer)
+        self._spawn_wake_timer.timeout.connect(self._on_spawn_wake)
+
+        if auto_retranslate:
+            trans.languageChanged.connect(self.retranslate)
 
     # ------------------------------------------------------------------ state
 
@@ -881,6 +900,7 @@ class DanmakuOverlay(QWidget):
         QToolTip.hideText()
 
         target_lang = current_ui_language()
+        self._ui_lang = target_lang
         mode = self._settings.translation_mode
         for item in self._comments:
             item.paused = False
@@ -892,7 +912,13 @@ class DanmakuOverlay(QWidget):
             self._queue.append(item)
 
         if self._settings.enabled:
-            self._spawn_initial_batch()
+            if self._has_valid_spawn_geometry():
+                self._pending_initial_spawn = False
+                self._spawn_initial_batch()
+            else:
+                self._pending_initial_spawn = bool(self._queue)
+        else:
+            self._pending_initial_spawn = False
 
     def set_settings(self, settings: DanmakuSettings) -> None:
         old = self._settings
@@ -910,7 +936,7 @@ class DanmakuOverlay(QWidget):
                 self._measure_item(item)
             self._recompute_tracks()
         self._sync_timer()
-        self.update()
+        self._request_repaint()
 
     def set_enabled(self, enabled: bool) -> None:
         self.set_settings(
@@ -926,6 +952,14 @@ class DanmakuOverlay(QWidget):
 
     def set_paused(self, paused: bool) -> None:
         self._paused = bool(paused)
+        self._sync_timer()
+
+    def set_fusion_busy(self, busy: bool) -> None:
+        flag = bool(busy)
+        if flag == self._fusion_busy:
+            return
+        self._fusion_busy = flag
+        self._anim_timer.setInterval(33 if flag else 16)
         self._sync_timer()
 
     def set_limits(self, *, max_chars: int | None = None, cooldown_sec: int | None = None) -> None:
@@ -947,7 +981,7 @@ class DanmakuOverlay(QWidget):
         self._position_composer()
         self._rebuild_bullets()
         self._sync_timer()
-        self.update()
+        self._request_repaint()
 
     def add_comment(
         self,
@@ -962,12 +996,19 @@ class DanmakuOverlay(QWidget):
             return None
         item.is_own = bool(is_own)
         self._comments.append(item)
-        if not should_display_comment_for_mode(item, self._settings.translation_mode, current_ui_language()):
+        if not should_display_comment_for_mode(item, self._settings.translation_mode, self._ui_lang):
             return None
-        if not (immediate and self._settings.enabled and self._spawn_item(item, start_inside=bool(is_own), force=bool(is_own))):
+        if not (
+            immediate
+            and self._settings.enabled
+            and self._has_valid_spawn_geometry()
+            and self._spawn_item(item, start_inside=bool(is_own), force=bool(is_own))
+        ):
             self._queue.append(item)
+            if immediate and self._settings.enabled and not self._has_valid_spawn_geometry():
+                self._pending_initial_spawn = True
         self._sync_timer()
-        self.update()
+        self._request_repaint()
         return item
 
     def show_toast(self, message: str, duration_sec: float = 2.2) -> None:
@@ -978,24 +1019,33 @@ class DanmakuOverlay(QWidget):
         self._toast_text = text
         self._toast_duration = max(0.6, float(duration_sec))
         self._toast_remaining = self._toast_duration
+        font = QFont(self.font())
+        font.setPixelSize(13)
+        font.setWeight(QFont.Weight.Medium)
+        metrics = QFontMetricsF(font)
+        self._toast_box_w = max(84.0, metrics.horizontalAdvance(f"\u2713  {text}") + 28.0)
+        self._toast_box_h = 30.0
         self._sync_timer()
-        self.update()
+        self._request_repaint()
 
     def clear(self) -> None:
         self.popover.dismiss()
         self._active.clear()
         self._queue.clear()
         self._comments.clear()
+        self._pending_initial_spawn = False
         self._hovered_id = None
         self._hovered_action = None
+        self._last_cursor_pointing = False
         self._popover_item_id = None
         self._toast_text = ""
         self._toast_remaining = 0.0
+        self._toast_box_w = 0.0
         self._invalidate_pixmap_cache()
         self.setToolTip("")
         QToolTip.hideText()
         self._sync_timer()
-        self.update()
+        self._request_repaint()
 
     def open_composer(self) -> None:
         self.composer.open_composer()
@@ -1008,11 +1058,17 @@ class DanmakuOverlay(QWidget):
         return self.composer.is_open()
 
     def apply_theme(self, theme: str) -> None:
+        dark_p = palette("dark")
+        self._accent_color = QColor(dark_p["accent"])
+        self._danger_color = QColor(dark_p["danger"])
+        self._invalidate_pixmap_cache()
         self.popover.apply_theme(theme)
         self.composer.apply_theme(theme)
+        self._request_repaint()
 
     @pyqtSlot()
     def retranslate(self) -> None:
+        self._ui_lang = current_ui_language()
         self.popover.retranslate()
         self.composer.retranslate()
         self._position_composer()
@@ -1024,13 +1080,15 @@ class DanmakuOverlay(QWidget):
             self.popover.dismiss()
             self._hovered_id = None
             self._hovered_action = None
+            self._last_cursor_pointing = False
+            self.setCursor(Qt.CursorShape.ArrowCursor)
             self.setToolTip("")
             QToolTip.hideText()
             for item in self._active:
                 item.hovered = False
                 self._measure_item(item)
             self._recompute_tracks()
-        self.update()
+        self._request_repaint()
 
     # --------------------------------------------------------------- geometry
 
@@ -1074,6 +1132,13 @@ class DanmakuOverlay(QWidget):
         step = (span - row_height) / (lane_count - 1) if lane_count > 1 else 0.0
         return y0, step, lane_count
 
+    def _has_valid_spawn_geometry(self) -> bool:
+        if self.width() <= 0 or self.height() <= 0:
+            return False
+        if self.parentWidget() is not None and not self.isVisible() and self.width() <= 100:
+            return False
+        return True
+
     def _spawn_item(self, item: DanmakuItem, *, start_inside: bool = False, force: bool = False) -> bool:
         self._measure_item(item)
         y0, step, lane_count = self._lane_geometry(item.height)
@@ -1099,7 +1164,7 @@ class DanmakuOverlay(QWidget):
             item.x = max(16.0, self.width() - item.width * 0.65 - track * 72.0)
         else:
             item.x = self.width() + 16.0
-        display_text, _ = item.bullet_text(self._settings.translation_mode, current_ui_language())
+        display_text, _ = item.bullet_text(self._settings.translation_mode, self._ui_lang)
         item.speed = base_speed + min(30.0, len(display_text) * 0.5)
         self._active.append(item)
         return True
@@ -1133,14 +1198,62 @@ class DanmakuOverlay(QWidget):
         y = max(SPACE["sm"], self.height() - h - 64)
         self.composer.setGeometry(x, y, w, h)
 
+    def _is_window_minimized(self) -> bool:
+        win = self.window()
+        if win is None:
+            return False
+        return bool(win.isMinimized() or (win.windowState() & Qt.WindowState.WindowMinimized))
+
+    def _attach_window_filter(self) -> None:
+        win = self.window()
+        if win is self._watched_window:
+            return
+        if self._watched_window is not None:
+            try:
+                self._watched_window.removeEventFilter(self)
+            except RuntimeError:
+                pass
+        self._watched_window = win
+        if win is not None and win is not self:
+            win.installEventFilter(self)
+
+    def eventFilter(self, obj: Any, event: Any) -> bool:
+        if (
+            obj is self._watched_window
+            and event is not None
+            and event.type() == QEvent.Type.WindowStateChange
+        ):
+            self._sync_timer()
+        return super().eventFilter(obj, event)
+
+    def changeEvent(self, event: Any) -> None:
+        super().changeEvent(event)
+        if event is not None and event.type() in (
+            QEvent.Type.WindowStateChange,
+            QEvent.Type.ParentChange,
+        ):
+            self._attach_window_filter()
+            self._sync_timer()
+
     def resizeEvent(self, event: Any) -> None:
         super().resizeEvent(event)
         self.popover.dismiss()
-        self._recompute_tracks()
+        if self._pending_initial_spawn and self._settings.enabled and self._has_valid_spawn_geometry():
+            self._pending_initial_spawn = False
+            self._spawn_initial_batch()
+        else:
+            self._recompute_tracks()
         self._position_composer()
+        self._sync_timer()
+        self._request_repaint(full=True)
 
     def showEvent(self, event: Any) -> None:
         super().showEvent(event)
+        self._attach_window_filter()
+        if self._pending_initial_spawn and self._settings.enabled and self.width() > 0 and self.height() > 0:
+            self._pending_initial_spawn = False
+            self._spawn_initial_batch()
+            self._request_repaint()
         self._sync_timer()
 
     def hideEvent(self, event: Any) -> None:
@@ -1150,18 +1263,86 @@ class DanmakuOverlay(QWidget):
 
     # -------------------------------------------------------------- animation
 
+    def _toast_rect(self) -> QRectF:
+        if self._toast_remaining <= 0.0 or not self._toast_text:
+            return QRectF()
+        w = self._toast_box_w if self._toast_box_w > 0.0 else 120.0
+        h = self._toast_box_h
+        x = max(8.0, (self.width() - w) / 2.0)
+        y = max(12.0, self.height() - h - 72.0)
+        return QRectF(x, y, w, h)
+
+    def _item_dirty_rect(self, item: DanmakuItem) -> QRectF:
+        if item.hovered or item.paused:
+            r = self._expanded_item_rect(item)
+        else:
+            r = item.rect()
+        if item.feedback_text and item.feedback_alpha > 0.0:
+            r = r.united(QRectF(r.right() + 4.0, r.top() - 4.0, 52.0, r.height()))
+        return r.adjusted(-4.0, -4.0, 4.0, 4.0)
+
+    def _current_dirty_rect(self) -> QRect:
+        total = QRectF()
+        if self._settings.enabled:
+            for item in self._active:
+                total = total.united(self._item_dirty_rect(item))
+        tr = self._toast_rect()
+        if not tr.isEmpty():
+            total = total.united(tr.adjusted(-4.0, -4.0, 4.0, 4.0))
+        if total.isEmpty():
+            return QRect()
+        return total.toAlignedRect().intersected(self.rect())
+
+    def _request_repaint(self, extra_rect: QRect | None = None, *, full: bool = False) -> None:
+        if full:
+            self._prev_dirty_rect = QRect()
+            self.update()
+            return
+        cur = self._current_dirty_rect()
+        dirty = self._prev_dirty_rect.united(cur) if not self._prev_dirty_rect.isEmpty() else cur
+        if extra_rect is not None and not extra_rect.isEmpty():
+            dirty = dirty.united(extra_rect)
+        self._prev_dirty_rect = cur
+        dirty = dirty.intersected(self.rect())
+        if not dirty.isEmpty():
+            self.update(dirty)
+
     def _sync_timer(self) -> None:
+        can_run = self.isVisible() and not self._is_window_minimized()
         has_toast = self._toast_remaining > 0.0
-        has_bullets = self._settings.enabled and not self._paused and bool(self._active or self._queue)
-        should_run = self.isVisible() and (has_toast or has_bullets)
-        if should_run:
+        bullets_on = self._settings.enabled and not self._paused
+        has_active = bullets_on and bool(self._active)
+        has_queued = bullets_on and bool(self._queue)
+        if can_run and (has_toast or has_active):
+            self._spawn_wake_timer.stop()
             if not self._anim_timer.isActive():
                 self._last_tick = self._clock()
                 self._anim_timer.start()
-        else:
+        elif can_run and not has_toast and not has_active and has_queued:
             if self._anim_timer.isActive():
                 self._anim_timer.stop()
             self._last_tick = None
+            _, spawn_interval, _ = _DENSITY_PARAMS[self._settings.density]
+            wait_ms = max(16, int(round(max(0.0, spawn_interval - self._spawn_accum) * 1000)))
+            if not self._spawn_wake_timer.isActive():
+                self._spawn_wake_timer.start(wait_ms)
+        else:
+            if self._anim_timer.isActive():
+                self._anim_timer.stop()
+            self._spawn_wake_timer.stop()
+            self._last_tick = None
+
+    def _on_spawn_wake(self) -> None:
+        if not self.isVisible() or self._is_window_minimized():
+            return
+        if not self._settings.enabled or self._paused or not self._queue:
+            self._sync_timer()
+            return
+        self._spawn_accum = 0.0
+        if self._spawn_item(self._queue[0]):
+            self._queue.pop(0)
+            self._request_repaint()
+        self._sync_timer()
 
     def _on_tick(self) -> None:
         now = self._clock()
@@ -1174,26 +1355,31 @@ class DanmakuOverlay(QWidget):
         if dt_sec <= 0.0:
             return
 
+        dirty_change = False
         toast_active = self._toast_remaining > 0.0
         if toast_active:
+            dirty_change = True
             self._toast_remaining = max(0.0, self._toast_remaining - dt_sec)
             if self._toast_remaining <= 0.0:
                 self._toast_text = ""
+                self._toast_box_w = 0.0
 
         if not self._settings.enabled or self._paused:
             if toast_active:
                 self._sync_timer()
-                self.update()
+                self._request_repaint()
             return
 
         remaining: list[DanmakuItem] = []
         for item in self._active:
             if not item.paused and not item.hovered:
                 item.x -= item.speed * dt_sec
+                dirty_change = True
             if item.feedback_alpha > 0.0:
                 item.feedback_alpha = max(0.0, item.feedback_alpha - dt_sec * 1.4)
                 if item.feedback_alpha <= 0.0:
                     item.feedback_text = ""
+                dirty_change = True
             if item.x + item.width < -12.0:
                 if item.comment_id == self._popover_item_id:
                     self.popover.dismiss()
@@ -1201,6 +1387,7 @@ class DanmakuOverlay(QWidget):
                 item.paused = False
                 item.hovered = False
                 self._queue.append(item)
+                dirty_change = True
             else:
                 remaining.append(item)
         self._active = remaining
@@ -1211,8 +1398,11 @@ class DanmakuOverlay(QWidget):
             self._spawn_accum = 0.0
             if self._spawn_item(self._queue[0]):
                 self._queue.pop(0)
+                dirty_change = True
 
-        self.update()
+        self._sync_timer()
+        if dirty_change:
+            self._request_repaint()
 
     # ------------------------------------------------------------ interaction
 
@@ -1294,7 +1484,7 @@ class DanmakuOverlay(QWidget):
         )
         if not was_open:
             self.popover_opened.emit()
-        self.update()
+        self._request_repaint()
         return True
 
     def apply_vote(self, comment_id: str, vote: int) -> DanmakuItem | None:
@@ -1322,7 +1512,7 @@ class DanmakuOverlay(QWidget):
         target.viewer_vote = vote
         if self.popover.current_item is target:
             self.popover.refresh_counts()
-        self.update()
+        self._request_repaint(self._item_dirty_rect(target).toAlignedRect())
         return target
 
     def confirm_vote(self, comment_id: str, vote: int, upvotes: int, downvotes: int) -> None:
@@ -1335,6 +1525,7 @@ class DanmakuOverlay(QWidget):
         target.downvotes = downvotes
         if self.popover.current_item is target:
             self.popover.refresh_counts()
+        self._request_repaint(self._item_dirty_rect(target).toAlignedRect())
 
     def _find_item(self, comment_id: str) -> DanmakuItem | None:
         for item in self._comments:
@@ -1360,13 +1551,13 @@ class DanmakuOverlay(QWidget):
             item.feedback_text = gallery_tr("gallery_danmaku_reported")
             item.feedback_alpha = 1.0
         self.comment_reported.emit(comment_id, reason_key)
-        self.update()
+        self._request_repaint()
 
     @pyqtSlot()
     def _on_popover_closed(self) -> None:
         self._release_popover_pin()
         self.popover_closed.emit()
-        self.update()
+        self._request_repaint()
 
     def _inline_tooltip(self, item: DanmakuItem, action: str | None) -> str:
         if action == "upvote":
@@ -1377,7 +1568,7 @@ class DanmakuOverlay(QWidget):
             return gallery_tr("gallery_btn_comment")
         if action == "report":
             return gallery_tr("gallery_danmaku_report")
-        _, is_translated = item.resolved_text(self._settings.translation_mode, current_ui_language())
+        _, is_translated = item.resolved_text(self._settings.translation_mode, self._ui_lang)
         return original_comment_tooltip(item.content) if is_translated else ""
 
     def mouseMoveEvent(self, event: QMouseEvent | None) -> None:
@@ -1386,36 +1577,43 @@ class DanmakuOverlay(QWidget):
             return
         hit = self.bullet_at(event.position())
         hit_id = hit.comment_id if hit is not None else None
-        for item in self._active:
-            item.hovered = item.comment_id == hit_id
         action = self._action_at(hit, event.position()) if hit is not None else None
         changed = (hit_id != self._hovered_id) or (action != self._hovered_action)
-        self._hovered_id = hit_id
-        self._hovered_action = action
-        self.setCursor(
-            Qt.CursorShape.PointingHandCursor if hit is not None else Qt.CursorShape.ArrowCursor
-        )
-        tip = self._inline_tooltip(hit, action) if hit is not None else ""
-        self.setToolTip(tip)
-        if not tip or changed:
-            QToolTip.hideText()
         if changed:
-            self.update()
+            for item in self._active:
+                item.hovered = item.comment_id == hit_id
+            self._hovered_id = hit_id
+            self._hovered_action = action
+            want_pointing = hit is not None
+            if want_pointing != self._last_cursor_pointing:
+                self._last_cursor_pointing = want_pointing
+                self.setCursor(
+                    Qt.CursorShape.PointingHandCursor
+                    if want_pointing
+                    else Qt.CursorShape.ArrowCursor
+                )
+            tip = self._inline_tooltip(hit, action) if hit is not None else ""
+            if tip != self.toolTip():
+                self.setToolTip(tip)
+            QToolTip.hideText()
+            self._request_repaint()
         super().mouseMoveEvent(event)
 
     def leaveEvent(self, event: Any) -> None:
-        changed = self._hovered_action is not None
+        changed = self._hovered_id is not None or self._hovered_action is not None
         for item in self._active:
             if item.hovered:
                 item.hovered = False
                 changed = True
-        self._hovered_id = None
-        self._hovered_action = None
-        self.setToolTip("")
-        QToolTip.hideText()
-        self.setCursor(Qt.CursorShape.ArrowCursor)
-        if changed:
-            self.update()
+        if changed or self._last_cursor_pointing:
+            self._hovered_id = None
+            self._hovered_action = None
+            self._last_cursor_pointing = False
+            if self.toolTip():
+                self.setToolTip("")
+            QToolTip.hideText()
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+            self._request_repaint()
         super().leaveEvent(event)
 
     def mousePressEvent(self, event: QMouseEvent | None) -> None:
@@ -1461,10 +1659,11 @@ class DanmakuOverlay(QWidget):
         cache_key = (item.comment_id, display_text, self._settings.font_size, rounded_alpha, rounded_dpr, item.is_own)
         cached = self._pixmap_cache.get(cache_key)
         if cached is not None:
+            self._pixmap_cache.move_to_end(cache_key)
             return cached
 
-        if len(self._pixmap_cache) >= 128:
-            self._pixmap_cache.clear()
+        while len(self._pixmap_cache) >= 128:
+            self._pixmap_cache.popitem(last=False)
 
         pw = max(1, int(math.ceil(item.width * rounded_dpr)))
         ph = max(1, int(math.ceil(item.height * rounded_dpr)))
@@ -1486,7 +1685,7 @@ class DanmakuOverlay(QWidget):
 
         p.fillPath(path, QColor(15, 17, 21, int(pill_alpha * 255)))
         if item.is_own:
-            own_pen = QColor(palette("dark")["accent"])
+            own_pen = QColor(self._accent_color)
             own_pen.setAlpha(int(min(1.0, self._settings.opacity) * 210))
             p.setPen(QPen(own_pen, 1.2))
             p.drawPath(path)
@@ -1590,14 +1789,9 @@ class DanmakuOverlay(QWidget):
         font.setWeight(QFont.Weight.Medium)
         painter.setFont(font)
         label = f"\u2713  {self._toast_text}"
-        metrics = QFontMetricsF(font)
-        w = max(84.0, metrics.horizontalAdvance(label) + 28.0)
-        h = 30.0
-        x = max(8.0, (self.width() - w) / 2.0)
-        y = max(12.0, self.height() - h - 72.0)
-        toast_rect = QRectF(x, y, w, h)
+        toast_rect = self._toast_rect()
         toast_path = QPainterPath()
-        toast_path.addRoundedRect(toast_rect, h / 2.0, h / 2.0)
+        toast_path.addRoundedRect(toast_rect, toast_rect.height() / 2.0, toast_rect.height() / 2.0)
         painter.fillPath(toast_path, QColor(15, 17, 21, int(alpha * 225)))
         border = QColor(accent_color)
         border.setAlpha(int(alpha * 210))
@@ -1619,10 +1813,10 @@ class DanmakuOverlay(QWidget):
 
         base_font = self._font()
         base_alpha = self._settings.opacity
-        accent_color = QColor(palette("dark")["accent"])
-        danger_color = QColor(palette("dark")["danger"])
+        accent_color = self._accent_color
+        danger_color = self._danger_color
         mode = self._settings.translation_mode
-        target_lang = current_ui_language()
+        target_lang = self._ui_lang
         dpr = float(self.devicePixelRatioF() or 1.0)
 
         focused_items: list[DanmakuItem] = []

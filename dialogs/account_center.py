@@ -293,7 +293,9 @@ class AccountCenterDialog(QDialog):
         self._payment_region: str = "global"
         self._nickname_max_chars: int = DEFAULT_NICKNAME_MAX_CHARS
         self._selected_interest_keys: set[str] = set()
+        self._interests_dirty: bool = False
         self._interest_specs: tuple[Any, ...] = tuple(INTEREST_KEYS)
+        self._activity_loaded_tabs: set[int] = set()
         self._last_saved_privacy: dict[str, bool] = {
             "show_gallery": True,
             "show_following": True,
@@ -354,13 +356,22 @@ class AccountCenterDialog(QDialog):
 
         self._connect_state_store()
         self._sync_from_state_store()
+        self.nav_list.currentRowChanged.connect(self._on_main_tab_changed)
         if 0 <= initial_tab < self.tabs.count():
             self.tabs.setCurrentIndex(initial_tab)
+            self._on_main_tab_changed(initial_tab)
 
     def _shutdown_dialog(self) -> None:
         self._disconnect_state_store()
         self._runner.shutdown()
         self._media_loader.shutdown()
+
+    def apply_theme(self, theme: str) -> None:
+        self._theme = theme
+        self.setStyleSheet(_account_stylesheet(theme))
+        for child in self.findChildren(AuthorShowcaseDialog):
+            if is_qobject_alive(child):
+                child.apply_theme(theme)
 
     def done(self, result: int) -> None:
         self._shutdown_dialog()
@@ -528,7 +539,8 @@ class AccountCenterDialog(QDialog):
                     on_success=self.set_notifications,
                 )
 
-            self._load_activity_lists()
+            if self._pages_stack.currentWidget() is self._activity_tab:
+                self._load_activity_subtab(self.activity_tabs.currentIndex(), force=manual)
         elif manual and not store_handles_profile:
             self._manual_refresh_pending = False
             self.points_status.setText(t_gallery("account_center_refreshed"))
@@ -548,24 +560,46 @@ class AccountCenterDialog(QDialog):
         if notifs:
             self.set_notifications(notifs)
 
-    def _load_activity_lists(self) -> None:
-        if self._client is None:
+    def _on_main_tab_changed(self, index: int) -> None:
+        activity_tab = getattr(self, "_activity_tab", None)
+        if activity_tab is not None and self._pages_stack.widget(index) is activity_tab:
+            self._load_activity_subtab(self.activity_tabs.currentIndex())
+
+    def _on_activity_subtab_changed(self, sub_index: int) -> None:
+        activity_tab = getattr(self, "_activity_tab", None)
+        if activity_tab is not None and self._pages_stack.currentWidget() is activity_tab:
+            self._load_activity_subtab(sub_index)
+
+    def _load_activity_subtab(self, sub_index: int, *, force: bool = False) -> None:
+        if self._client is None or sub_index < 0:
             return
-        for method_name, setter in (
+        if not force and sub_index in self._activity_loaded_tabs:
+            return
+        subtabs = (
             ("get_my_likes", self.set_my_likes),
             ("get_my_comments", self.set_my_comments),
             ("get_following", self.set_following),
             ("get_followers", self.set_followers),
-        ):
-            fn = getattr(self._client, method_name, None)
-            if callable(fn):
+        )
+        if sub_index >= len(subtabs):
+            return
+        method_name, setter = subtabs[sub_index]
+        fn = getattr(self._client, method_name, None)
+        self._activity_loaded_tabs.add(sub_index)
+        if callable(fn):
 
-                def _fetch(call: Callable[[], Any] = fn) -> list[Any]:
-                    resp = call()
-                    items = _get(resp, "items", resp) if isinstance(resp, Mapping) else resp
-                    return list(items or ())
+            def _fetch(call: Callable[[], Any] = fn) -> list[Any]:
+                resp = call()
+                items = _get(resp, "items", resp) if isinstance(resp, Mapping) else resp
+                return list(items or ())
 
-                self._runner.submit(_fetch, key=f"account_{method_name}", on_success=setter)
+            self._runner.submit(_fetch, key=f"account_{method_name}", on_success=setter)
+
+    def _load_activity_lists(self) -> None:
+        if self._client is None:
+            return
+        for idx in range(4):
+            self._load_activity_subtab(idx, force=True)
 
     @staticmethod
     def _wrap_scroll(host: QWidget, cid: str, obj_name: str) -> QScrollArea:
@@ -859,11 +893,7 @@ class AccountCenterDialog(QDialog):
             btn.setProperty("chip", True)
             btn.setChecked(key in self._selected_interest_keys)
             btn.toggled.connect(
-                lambda checked, k=key: (
-                    self._selected_interest_keys.add(k)
-                    if checked
-                    else self._selected_interest_keys.discard(k)
-                )
+                lambda checked, k=key: self._on_interest_chip_toggled(k, checked)
             )
             _set_cid(btn, f"account_interest_chip_{key}")
             self._interest_chip_grid.addWidget(btn, idx // col_count, idx % col_count)
@@ -879,6 +909,7 @@ class AccountCenterDialog(QDialog):
 
         self.activity_tabs = QTabWidget()
         _set_cid(self.activity_tabs, "account_activity_tabs")
+        self.activity_tabs.currentChanged.connect(self._on_activity_subtab_changed)
 
         self._likes_host = QWidget()
         _set_cid(self._likes_host, "account_subtab_likes")
@@ -989,7 +1020,8 @@ class AccountCenterDialog(QDialog):
         self.points_label.setText(
             t_gallery("account_center_points_value", points=points)
         )
-        self.nickname_input.setText(nickname)
+        if not self.nickname_input.hasFocus() and not self.nickname_input.isModified():
+            self.nickname_input.setText(nickname)
 
         if badges:
             badge_keys: list[str] = []
@@ -1010,10 +1042,11 @@ class AccountCenterDialog(QDialog):
             self.badges_label.setText("")
             self.badges_label.setVisible(False)
 
-        self._selected_interest_keys = set(interests)
-        for key, btn in self.interest_chips.items():
-            with block_signals(btn):
-                btn.setChecked(key in interests)
+        if not self._interests_dirty:
+            self._selected_interest_keys = set(interests)
+            for key, btn in self.interest_chips.items():
+                with block_signals(btn):
+                    btn.setChecked(key in interests)
 
         show_gallery = _get(privacy, "show_gallery", True)
         show_following = _get(privacy, "show_following", True)
@@ -1026,10 +1059,19 @@ class AccountCenterDialog(QDialog):
         self._last_saved_privacy = dict(saved_privacy)
         self._set_privacy_checkboxes(saved_privacy)
 
+    def _on_interest_chip_toggled(self, key: str, checked: bool) -> None:
+        self._interests_dirty = True
+        if checked:
+            self._selected_interest_keys.add(key)
+        else:
+            self._selected_interest_keys.discard(key)
+
     def _on_manual_refresh(self) -> None:
         self.refresh_silently(manual=True)
 
     def save_nickname(self) -> bool:
+        if not self.nickname_save_btn.isEnabled():
+            return False
         nickname = self.nickname_input.text().strip()
         if not nickname:
             self.nickname_status.setText(t_gallery("account_center_nickname_empty"))
@@ -1044,15 +1086,20 @@ class AccountCenterDialog(QDialog):
             return False
         if self._client is None or not hasattr(self._client, "update_profile"):
             self._profile["nickname"] = nickname
+            self.nickname_input.setModified(False)
             self.nickname_status.setText(t_gallery("account_center_nickname_saved"))
             return True
 
         def _on_ok(updated: Any) -> None:
+            self.nickname_input.setModified(False)
             if updated is not None:
                 self.apply_profile(updated)
             self._profile["nickname"] = nickname
+            self.nickname_input.setText(nickname)
+            self.nickname_input.setModified(False)
             self.nickname_status.setText(t_gallery("account_center_nickname_saved"))
 
+        self.nickname_save_btn.setEnabled(False)
         self._runner.submit(
             lambda: self._client.update_profile(nickname=nickname),
             key="account_save_nickname",
@@ -1060,12 +1107,24 @@ class AccountCenterDialog(QDialog):
             on_error=lambda exc: self.nickname_status.setText(
                 translate_error(_error_code_from_exc(exc))
             ),
+            on_finally=lambda: (
+                self.nickname_save_btn.setEnabled(True)
+                if is_qobject_alive(self.nickname_save_btn)
+                else None
+            ),
         )
         return True
 
     def start_checkout(self, tier: str) -> None:
         if self._client is None or not hasattr(self._client, "create_checkout"):
             return
+        if any(not btn.isEnabled() for btn in self.tier_buttons.values()):
+            return
+
+        def _set_tiers_enabled(enabled: bool) -> None:
+            for btn in self.tier_buttons.values():
+                if is_qobject_alive(btn):
+                    btn.setEnabled(enabled)
 
         def _on_ok(resp: Any) -> None:
             url = str(
@@ -1081,6 +1140,7 @@ class AccountCenterDialog(QDialog):
                         webbrowser.open(url)
                 self.checkout_status.setText(t_gallery("account_center_checkout_opened"))
 
+        _set_tiers_enabled(False)
         self._runner.submit(
             lambda: self._client.create_checkout(tier),
             key="account_checkout",
@@ -1088,9 +1148,12 @@ class AccountCenterDialog(QDialog):
             on_error=lambda exc: self.checkout_status.setText(
                 translate_error(_error_code_from_exc(exc))
             ),
+            on_finally=lambda: _set_tiers_enabled(True),
         )
 
     def redeem_code(self) -> bool:
+        if not self.redeem_btn.isEnabled():
+            return False
         code = self.redeem_input.text().strip()
         if not code:
             self.redeem_status.setText(t_gallery("account_center_redeem_empty"))
@@ -1120,12 +1183,18 @@ class AccountCenterDialog(QDialog):
             if callable(refresh):
                 refresh()
 
+        self.redeem_btn.setEnabled(False)
         self._runner.submit(
             lambda: self._client.redeem_code(code),
             key="account_redeem",
             on_success=_on_ok,
             on_error=lambda exc: self.redeem_status.setText(
                 translate_error(_error_code_from_exc(exc))
+            ),
+            on_finally=lambda: (
+                self.redeem_btn.setEnabled(True)
+                if is_qobject_alive(self.redeem_btn)
+                else None
             ),
         )
         return True
@@ -1134,19 +1203,30 @@ class AccountCenterDialog(QDialog):
         return [key for key, btn in self.interest_chips.items() if btn.isChecked()]
 
     def save_interests(self) -> bool:
+        if not self.interests_save_btn.isEnabled():
+            return False
         chosen = self.selected_interests()
         if self._client is None or not hasattr(self._client, "update_profile"):
+            self._interests_dirty = False
             self.interests_status.setText(t_gallery("account_center_interests_saved"))
             return True
 
+        def _on_ok(_res: Any) -> None:
+            self._interests_dirty = False
+            self.interests_status.setText(t_gallery("account_center_interests_saved"))
+
+        self.interests_save_btn.setEnabled(False)
         self._runner.submit(
             lambda: self._client.update_profile(interests=chosen),
             key="account_save_interests",
-            on_success=lambda _res: self.interests_status.setText(
-                t_gallery("account_center_interests_saved")
-            ),
+            on_success=_on_ok,
             on_error=lambda exc: self.interests_status.setText(
                 translate_error(_error_code_from_exc(exc))
+            ),
+            on_finally=lambda: (
+                self.interests_save_btn.setEnabled(True)
+                if is_qobject_alive(self.interests_save_btn)
+                else None
             ),
         )
         return True
@@ -1494,21 +1574,63 @@ class AccountCenterDialog(QDialog):
                     )
                 )
                 row.addWidget(jump_btn)
+            elif not is_read:
+                mark_btn = QPushButton("\u2713")
+                _set_cid(mark_btn, f"account_notif_mark_read_{nid}")
+                mark_btn.setToolTip(t_gallery("account_center_mark_all_read"))
+                mark_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                mark_btn.clicked.connect(
+                    lambda _=False, n_id=nid: self._on_notification_clicked(n_id, "")
+                )
+                row.addWidget(mark_btn)
 
             self._messages_layout.addWidget(row_frame)
 
         self._messages_layout.addStretch()
 
+    def _sync_notification_read_to_store(
+        self, *, ids: Sequence[str] | None = None, all: bool = False
+    ) -> None:
+        if self._state_store is None:
+            return
+        mark_local = getattr(self._state_store, "mark_notifications_read_local", None)
+        if callable(mark_local):
+            try:
+                mark_local(ids=ids, all=all)
+            except Exception:
+                pass
+            return
+        refresh = getattr(self._state_store, "refresh_account_silently", None)
+        if callable(refresh):
+            try:
+                refresh()
+            except Exception:
+                pass
+
     def _on_notification_clicked(self, notif_id: str, work_id: str) -> None:
+        prev_states: dict[str, bool] = {}
         for n in self._notifications:
-            if str(n.get("id") or "") == notif_id:
+            nid = str(n.get("id") or "")
+            if nid == notif_id:
+                prev_states[nid] = bool(n.get("is_read", False))
                 n["is_read"] = True
         self._render_notifications()
         if self._client is not None and hasattr(self._client, "mark_notifications_read"):
+            def _rollback(_exc: Exception) -> None:
+                for n in self._notifications:
+                    nid = str(n.get("id") or "")
+                    if nid in prev_states:
+                        n["is_read"] = prev_states[nid]
+                self._render_notifications()
+
             self._runner.submit(
                 lambda: self._client.mark_notifications_read(ids=[notif_id]),
                 key=f"account_mark_read_{notif_id}",
+                on_success=lambda _res: self._sync_notification_read_to_store(ids=[notif_id]),
+                on_error=_rollback,
             )
+        else:
+            self._sync_notification_read_to_store(ids=[notif_id])
         self._jump_to_work(work_id)
 
     def _jump_to_work(self, work_id: str) -> None:
@@ -1523,13 +1645,22 @@ class AccountCenterDialog(QDialog):
             for n in self._notifications:
                 n["is_read"] = True
             self._render_notifications()
+            self._sync_notification_read_to_store(all=True)
 
         if self._client is None or not hasattr(self._client, "mark_notifications_read"):
             _apply_all_read()
             return
 
+        self.mark_all_read_btn.setEnabled(False)
         self._runner.submit(
             lambda: self._client.mark_notifications_read(all=True),
             key="account_mark_all_read",
             on_success=lambda _res: _apply_all_read(),
+            on_finally=lambda: (
+                self.mark_all_read_btn.setEnabled(
+                    any(not n.get("is_read", False) for n in self._notifications)
+                )
+                if is_qobject_alive(self.mark_all_read_btn)
+                else None
+            ),
         )
