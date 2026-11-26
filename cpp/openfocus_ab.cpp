@@ -663,7 +663,6 @@ int of_select_rows_a_cpp(
     const int64_t weight_col = channels;
     const int64_t stat_col = channels + 1;
     const bool has_bg = background.shape[0] > 0;
-    const bool no_bg = (!first) && !has_bg;
 
     auto& m0 = scratch.m0;
     auto& m1 = scratch.m1;
@@ -910,8 +909,8 @@ int of_select_rows_a_cpp(
 
         int32_t* b_row = best_data + y * best.stride[0];
         const int64_t local_y = y - start;
-        if (no_bg) {
-            if (channels == 3 && image.ndim == 3 && output.ndim == 3
+        if (!has_bg) {
+            if (!first && channels == 3 && image.ndim == 3 && output.ndim == 3
                     && !image.is_float && !output.is_float
                     && (image.itemsize == 1 || image.itemsize == 2)
                     && (output.itemsize == 2 || output.itemsize == 4)) {
@@ -946,7 +945,7 @@ int of_select_rows_a_cpp(
                 continue;
             }
             for (int64_t x = 0; x < width; ++x) {
-                const int64_t prev = b_row[x];
+                const int64_t prev = first ? 0 : b_row[x];
                 if (prev == kAMaxResponse) {
                     continue;
                 }
@@ -956,7 +955,7 @@ int of_select_rows_a_cpp(
                 } else if (state == kASaturated) {
                     state = kASharp;
                 }
-                if (sc > prev) {
+                if (first || sc > prev) {
                     b_row[x] = static_cast<int32_t>(sc);
                     if (channels == 1 && output.ndim == 2) {
                         write_int(output, y, x, read_int(image, y, x, 0) * scale);

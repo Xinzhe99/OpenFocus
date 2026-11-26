@@ -249,6 +249,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 - Match scalar and AVX2 rounding in OpenFocus A background accumulation.
+- Initialize OpenFocus A's first selection band safely when no background
+  accumulator is present.
 - Verify all encoded file bytes when reusing file-backed alignment plans and
   preserve decoded BGR fingerprints for directly mapped RGB TIFF frames.
 - Release Retouch pixel buffers as soon as the dialog closes while background
