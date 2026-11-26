@@ -27,6 +27,7 @@ from typing import Any, Callable, Mapping, Optional, Sequence
 
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
+from locales.gallery_i18n import normalize_lang_code
 from utils.frame_pixels import is_qobject_alive
 from utils.gallery_client import (
     AI_TAG_KEYS,
@@ -420,6 +421,10 @@ class GalleryComment:
     created_at: str = ""
     is_author_reply: bool = False
     replies: tuple["GalleryComment", ...] = ()
+    src_lang: str = ""
+    translated_content: str = ""
+    translated_lang: str = ""
+    can_delete: bool = False
 
     @property
     def id(self) -> str:
@@ -460,6 +465,10 @@ class GalleryComment:
             viewer_vote=raw_vote,
             created_at=_as_str(data.get("created_at")),
             is_author_reply=_as_bool(data.get("is_author_reply"), False),
+            src_lang=normalize_lang_code(data.get("src_lang")),
+            translated_content=_as_str(data.get("translated_content")),
+            translated_lang=normalize_lang_code(data.get("translated_lang")),
+            can_delete=_as_bool(data.get("can_delete", data.get("is_mine")), False),
             replies=tuple(replies),
         )
 

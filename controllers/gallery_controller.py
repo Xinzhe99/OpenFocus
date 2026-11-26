@@ -19,13 +19,16 @@ Key invariants:
 """
 from __future__ import annotations
 
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import ContextVar
+from dataclasses import replace
 import os
 from pathlib import Path
 import random
 import re
 import threading
+from time import monotonic
 import urllib.parse
 import urllib.request
 from typing import Any, Callable, Mapping, Optional, Sequence
@@ -45,15 +48,22 @@ from core.gallery_cache import (
 from core.gallery_media import convert_webp_to_jpeg, extract_exif_summary, filter_public_exif
 from core.gallery_state import (
     DEFAULT_POLL_INTERVAL_SEC,
+    GalleryComment,
     GalleryConfig,
     GalleryStateStore,
     GalleryWork,
 )
 from locales import trans
+from locales.gallery_i18n import current_ui_language
 from utils.export_paths import publish_unique
 from utils.file_manager import select_in_file_manager
 from utils.frame_pixels import is_qobject_alive, safe_disconnect
-from utils.gallery_client import DEFAULT_TIMEOUT_SEC, GalleryClient
+from utils.gallery_client import (
+    DEFAULT_TIMEOUT_SEC,
+    GalleryClient,
+    call_get_comments,
+    call_post_comment,
+)
 from utils.logging_setup import get_logger
 from utils.settings_store import get_settings
 from widgets.danmaku_overlay import DanmakuSettings
@@ -67,10 +77,13 @@ DANMAKU_POSITION_KEY = "gallery/danmaku_position"
 DANMAKU_FONT_SIZE_KEY = "gallery/danmaku_font_size"
 DANMAKU_OPACITY_KEY = "gallery/danmaku_opacity"
 DANMAKU_DENSITY_KEY = "gallery/danmaku_density"
+DANMAKU_TRANSLATION_MODE_KEY = "gallery/danmaku_translation_mode"
 GALLERY_AUTO_SHOW_FUSION_KEY = "gallery/auto_show_during_fusion"
 GALLERY_CACHE_MAX_MB_KEY = "gallery/cache_max_mb"
 DEFAULT_CACHE_MAX_MB = DEFAULT_CACHE_MAX_BYTES // (1024 * 1024)
 MAX_DOWNLOAD_BYTES = 16 * 1024 * 1024
+COMMENT_CACHE_TTL_SEC = 60
+COMMENT_CACHE_MAX_ENTRIES = 64
 
 
 def _is_headless_platform() -> bool:
@@ -135,6 +148,7 @@ def load_danmaku_settings(settings: Any = None) -> DanmakuSettings:
         font_size=_read_int_setting(store, DANMAKU_FONT_SIZE_KEY, 16, minimum=12, maximum=32),
         opacity=_read_float_setting(store, DANMAKU_OPACITY_KEY, 0.85, minimum=0.1, maximum=1.0),
         density=_read_str_setting(store, DANMAKU_DENSITY_KEY, "medium"),
+        translation_mode=_read_str_setting(store, DANMAKU_TRANSLATION_MODE_KEY, "auto"),
     ).normalized()
 
 
@@ -147,6 +161,7 @@ def persist_danmaku_settings(settings_obj: DanmakuSettings, settings: Any = None
     store.setValue(DANMAKU_FONT_SIZE_KEY, norm.font_size)
     store.setValue(DANMAKU_OPACITY_KEY, norm.opacity)
     store.setValue(DANMAKU_DENSITY_KEY, norm.density)
+    store.setValue(DANMAKU_TRANSLATION_MODE_KEY, norm.translation_mode)
     store.sync()
     return norm
 
@@ -277,10 +292,14 @@ class GalleryController(QObject):
     download_completed = pyqtSignal(str)
     download_failed = pyqtSignal(str)
     unread_count_changed = pyqtSignal(int)
+    danmaku_translation_mode_changed = pyqtSignal(str)
 
     # Internal thread-to-UI signals
     _slide_image_ready = pyqtSignal(str, bytes)
     _download_done = pyqtSignal(str, str)  # (saved_path, error_message)
+    _work_comments_ready = pyqtSignal(str, str, object, object)  # work, language, request, comments
+    _work_comment_posted = pyqtSignal(str, str, int, object)
+    _comment_vote_saved = pyqtSignal(str, int, object)
 
     def __init__(
         self,
@@ -306,6 +325,10 @@ class GalleryController(QObject):
         self._shown_honor_card_ids: set[str] = set()
         self._prefetch_inflight: set[str] = set()
         self._prefetch_lock = threading.Lock()
+        self._comments_account_epoch = 0
+        self._comments_cache: OrderedDict[tuple[str, str], tuple[float, list[GalleryComment]]] = OrderedDict()
+        self._comments_inflight: dict[tuple[str, str], object] = {}
+        self._active_ui_lang: str = current_ui_language()
         self._rng = rng or random.random
         self.allow_headless_upload_prompt: bool = False
 
@@ -344,9 +367,12 @@ class GalleryController(QObject):
         self._reveal_button: Optional[QPushButton] = None
         self._last_downloaded_path: Optional[str] = None
 
-        # Wire internal thread-marshaling signals
+        # Wire internal thread-to-UI signals
         self._slide_image_ready.connect(self._on_slide_image_ready)
         self._download_done.connect(self._on_download_done)
+        self._work_comments_ready.connect(self._on_work_comments_ready)
+        self._work_comment_posted.connect(self._on_work_comment_posted)
+        self._comment_vote_saved.connect(self._on_comment_vote_saved)
 
         # Wire state store signals
         self.state_store.config_changed.connect(self._on_config_changed)
@@ -413,6 +439,7 @@ class GalleryController(QObject):
         widget.report_work_requested.connect(self._on_showcase_report_work)
         widget.author_clicked.connect(self.open_author_showcase)
         widget.prefetch_requested.connect(self._prefetch_work_image)
+        widget.slide_changed.connect(self._on_showcase_slide_changed)
 
     def _disconnect_showcase_signals(self, widget: Optional[GalleryShowcaseWidget]) -> None:
         if not is_qobject_alive(widget):
@@ -428,6 +455,7 @@ class GalleryController(QObject):
             (widget.report_work_requested, self._on_showcase_report_work),
             (widget.author_clicked, self.open_author_showcase),
             (widget.prefetch_requested, self._prefetch_work_image),
+            (widget.slide_changed, self._on_showcase_slide_changed),
         ):
             safe_disconnect(sig, slot)
 
@@ -464,6 +492,9 @@ class GalleryController(QObject):
             return
         self._active_account_key = owner
         self._account_proxy.session_changed()
+        self._comments_account_epoch += 1
+        self._comments_cache.clear()
+        self._comments_inflight.clear()
         if previous is not None:
             self._retire_account_dialogs()
         self._shown_honor_card_ids.clear()
@@ -637,6 +668,8 @@ class GalleryController(QObject):
                     self._prefetch_current_slide(work.id)
         if is_qobject_alive(self._screensaver):
             self._screensaver.set_fusion_busy(flag)
+        if not flag:
+            self._refresh_current_work_comments()
 
     def _can_close_fusion_showcase(self) -> bool:
         if not is_qobject_alive(self._showcase):
@@ -883,6 +916,8 @@ class GalleryController(QObject):
             prefill_images=prefill_images,
             prefill_openfocus_badge=prefill_openfocus_badge,
         )
+        dlg.set_danmaku_translation_mode(self._danmaku_settings.translation_mode)
+        self.danmaku_translation_mode_changed.connect(dlg.set_danmaku_translation_mode)
         dlg.download_work_requested.connect(self._download_selected_work)
         dlg.account_center_requested.connect(self.open_account_center)
         dlg.finished.connect(lambda _code: self._clear_dialog_ref("_hub_dialog", dlg))
@@ -1186,31 +1221,91 @@ class GalleryController(QObject):
         if work is not None and getattr(work, "is_builtin_fallback", False):
             return
 
+        sender = self.sender()
+        pending_id = sender.pending_danmaku_id(work_id) if isinstance(sender, GalleryShowcaseWidget) else ""
+        epoch = self._comments_account_epoch
+
+        post_lang = current_ui_language()
+
         def _task() -> None:
+            confirmed = None
             try:
-                self.client.post_comment(
+                response = call_post_comment(
+                    self.client,
                     work_id,
                     validation.sanitized_text,
                     parent_id=parent_id or None,
                     is_danmaku=not bool(parent_id),
+                    client_lang=post_lang,
                 )
+                payload = response.get("comment") if isinstance(response, Mapping) else None
+                if isinstance(payload, Mapping):
+                    parsed = GalleryComment.from_dict(payload)
+                    if parsed.comment_id:
+                        confirmed = parsed
             except Exception:
                 _logger.debug("Post comment failed for %s", work_id, exc_info=True)
+            self._emit_safe(self._work_comment_posted, work_id, pending_id, epoch, confirmed)
 
         self._submit_bg(_task)
+
+    def _on_work_comment_posted(
+        self, work_id: str, pending_id: str, epoch: int, confirmed: GalleryComment | None
+    ) -> None:
+        if self._closed or epoch != self._comments_account_epoch:
+            return
+        retired = False
+        if confirmed is not None:
+            retired = self._retire_comment_reads({work_id})
+            for (cached_id, _lang), (_fetched_at, items) in self._comments_cache.items():
+                if cached_id == work_id and all(item.id != confirmed.id for item in items):
+                    items.insert(0, confirmed)
+        for view in self._showcase_views():
+            view.reconcile_danmaku(work_id, pending_id, confirmed)
+        if retired:
+            self._refresh_current_work_comments()
 
     def _on_showcase_comment_voted(self, comment_id: str, vote: int) -> None:
         if self._closed or not comment_id or not self.client.has_session():
             return
         vote_str = "up" if vote > 0 else ("down" if vote < 0 else "none")
+        epoch = self._comments_account_epoch
 
         def _task() -> None:
             try:
-                self.client.vote_comment(comment_id, vote_str)
+                response = self.client.vote_comment(comment_id, vote_str)
+                self._emit_safe(self._comment_vote_saved, comment_id, epoch, response)
             except Exception:
                 _logger.debug("Vote comment failed for %s", comment_id, exc_info=True)
 
         self._submit_bg(_task)
+
+    def _on_comment_vote_saved(self, comment_id: str, epoch: int, response: object) -> None:
+        if self._closed or epoch != self._comments_account_epoch or not isinstance(response, Mapping):
+            return
+        vote = response.get("vote")
+        upvotes = response.get("up_count")
+        downvotes = response.get("down_count")
+        if vote not in ("up", "down", "none") or not isinstance(upvotes, int) or not isinstance(downvotes, int):
+            return
+        fields = {"viewer_vote": vote, "upvotes": upvotes, "downvotes": downvotes}
+        work_ids = set()
+        for (work_id, _lang), (_fetched_at, items) in self._comments_cache.items():
+            for index, item in enumerate(items):
+                if item.id == comment_id:
+                    items[index] = replace(item, **fields)
+                    work_ids.add(work_id)
+                    break
+        for view in self._showcase_views():
+            work_ids.update(view.confirm_comment_vote(comment_id, **fields))
+        if self._retire_comment_reads(work_ids):
+            self._refresh_current_work_comments()
+
+    def _retire_comment_reads(self, work_ids: set[str]) -> bool:
+        retired = [key for key in self._comments_inflight if key[0] in work_ids]
+        for key in retired:
+            del self._comments_inflight[key]
+        return bool(retired)
 
     def _on_showcase_comment_reported(self, comment_id: str, reason: str) -> None:
         if self._closed or not comment_id or not self.client.has_session():
@@ -1247,6 +1342,110 @@ class GalleryController(QObject):
                 _logger.debug("Report work failed for %s", work_id, exc_info=True)
 
         self._submit_bg(_task)
+
+    def _should_fetch_remote_comments(self, work_id: str) -> bool:
+        work = self._find_work(work_id)
+        if work is not None and getattr(work, "is_builtin_fallback", False):
+            return False
+        if any((getattr(w, "work_id", "") or getattr(w, "id", "")) == work_id for w in self.state_store.feed_works):
+            return True
+        if work is not None and bool(getattr(work, "full_url", "") or getattr(work, "image_url", "")):
+            return True
+        return False
+
+    def _on_showcase_slide_changed(self, work_id: str) -> None:
+        if self._closed or not work_id or not self._should_fetch_remote_comments(work_id):
+            return
+        self._fetch_work_comments(work_id)
+
+    def _showcase_views(self):
+        if is_qobject_alive(self._showcase):
+            yield self._showcase
+        if is_qobject_alive(self._screensaver):
+            yield self._screensaver.showcase
+
+    def _apply_comments_to_views(self, work_id: str, items: list[GalleryComment]) -> None:
+        for view in self._showcase_views():
+            view.set_work_comments(work_id, items)
+
+    def _refresh_current_work_comments(self) -> None:
+        work_ids = {view.current_work.id for view in self._showcase_views() if view.current_work is not None}
+        for work_id in work_ids:
+            self._on_showcase_slide_changed(work_id)
+
+    @staticmethod
+    def _parse_work_comments(response: object, requested_lang: str) -> list[GalleryComment]:
+        items = response.get("items", []) if isinstance(response, Mapping) else response
+        comments = []
+        for item in items or ():
+            if isinstance(item, Mapping):
+                item = GalleryComment.from_dict(item)
+            if isinstance(item, GalleryComment) and item.comment_id:
+                if item.translated_content and not item.translated_lang and requested_lang:
+                    item = replace(item, translated_lang=requested_lang)
+                comments.append(item)
+        return comments
+
+    def _fetch_work_comments(self, work_id: str) -> bool:
+        """Fetch comments for *work_id* (requesting localized translation in auto mode)."""
+        if self._closed or self._fusion_busy or not work_id or not self.state_store.gallery_enabled:
+            return False
+        if not self.state_store.can_prefetch_media():
+            return False
+        work = self._find_work(work_id)
+        if work is not None and getattr(work, "is_builtin_fallback", False):
+            return False
+
+        req_lang = current_ui_language() if self._danmaku_settings.translation_mode == "auto" else ""
+        cache_key = (work_id, req_lang)
+
+        cached = self._comments_cache.pop(cache_key, None)
+        if cached is not None and monotonic() - cached[0] < COMMENT_CACHE_TTL_SEC:
+            self._comments_cache[cache_key] = cached
+            self._apply_comments_to_views(work_id, cached[1])
+            return True
+        if cache_key in self._comments_inflight:
+            return False
+        request = object()
+        self._comments_inflight[cache_key] = request
+
+        def _task() -> None:
+            comments = None
+            try:
+                if self._closed or self._fusion_busy:
+                    return
+                resp = call_get_comments(self.client, work_id, lang=req_lang or None)
+                comments = self._parse_work_comments(resp, req_lang)
+                # A page of ordinary comments can hide every floating comment.
+                if isinstance(resp, Mapping) and resp.get("next_cursor") and not any(c.is_danmaku for c in comments):
+                    floating = call_get_comments(self.client, work_id, lang=req_lang or None, danmaku=True)
+                    known_ids = {comment.id for comment in comments}
+                    comments.extend(comment for comment in self._parse_work_comments(floating, req_lang)
+                                    if comment.is_danmaku and comment.id not in known_ids)
+            except Exception:
+                _logger.debug("Fetch comments failed for %s (%s)", work_id, req_lang or "raw", exc_info=True)
+            finally:
+                self._emit_safe(self._work_comments_ready, work_id, req_lang, request, comments)
+
+        self._submit_bg(_task)
+        return True
+
+    def _on_work_comments_ready(
+        self, work_id: str, lang_key: str, request: object, items: list[GalleryComment] | None
+    ) -> None:
+        cache_key = (work_id, lang_key)
+        if self._closed or self._comments_inflight.get(cache_key) is not request:
+            return
+        del self._comments_inflight[cache_key]
+        if items is None:
+            return
+        self._comments_cache[cache_key] = (monotonic(), items)
+        if len(self._comments_cache) > COMMENT_CACHE_MAX_ENTRIES:
+            self._comments_cache.popitem(last=False)
+        expected_lang = current_ui_language() if self._danmaku_settings.translation_mode == "auto" else ""
+        if lang_key != expected_lang:
+            return
+        self._apply_comments_to_views(work_id, items)
 
     # --------------------------------------------------------- media prefetch
 
@@ -1344,6 +1543,7 @@ class GalleryController(QObject):
 
     def apply_danmaku_settings(self, settings_obj: DanmakuSettings, *, persist: bool = True) -> None:
         """Apply Danmaku settings live to Showcase and Screensaver, and persist."""
+        prev_mode = self._danmaku_settings.translation_mode
         norm = settings_obj.normalized()
         self._danmaku_settings = norm
         if is_qobject_alive(self._showcase_window):
@@ -1354,6 +1554,9 @@ class GalleryController(QObject):
             self._screensaver.set_danmaku_settings(norm)
         if persist:
             persist_danmaku_settings(norm)
+        if norm.translation_mode != prev_mode:
+            self.danmaku_translation_mode_changed.emit(norm.translation_mode)
+            self._refresh_current_work_comments()
 
     def cache_max_mb(self) -> int:
         return self._cache_max_mb
@@ -1402,6 +1605,9 @@ class GalleryController(QObject):
             self._screensaver.apply_theme(theme)
 
     def retranslate(self) -> None:
+        new_lang = current_ui_language()
+        lang_changed = new_lang != self._active_ui_lang
+        self._active_ui_lang = new_lang
         self.update_unread_indicators()
         if is_qobject_alive(self._showcase_window):
             self._showcase_window.retranslate()
@@ -1411,6 +1617,8 @@ class GalleryController(QObject):
             self._screensaver.retranslate()
         if is_qobject_alive(self._reveal_button):
             self._reveal_button.setText(trans.t("gallery_download_reveal"))
+        if lang_changed and self._danmaku_settings.translation_mode == "auto":
+            self._refresh_current_work_comments()
 
     @property
     def publication_in_progress(self) -> bool:
@@ -1441,6 +1649,8 @@ class GalleryController(QObject):
                 safe_disconnect(lbl_result.customContextMenuRequested, self.show_result_context_menu)
 
         self._disconnect_showcase_signals(self._showcase)
+        self._comments_cache.clear()
+        self._comments_inflight.clear()
 
         try:
             self.state_store.shutdown()

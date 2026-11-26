@@ -20,9 +20,10 @@ Features:
 from __future__ import annotations
 
 from collections import OrderedDict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import os
 from typing import Any, Callable, Mapping, Sequence
+from uuid import uuid4
 
 import numpy as np
 from PyQt6.QtCore import QPoint, QRect, QSize, Qt, QTimer, pyqtSignal, pyqtSlot
@@ -42,7 +43,13 @@ from PyQt6.QtWidgets import (
 )
 
 from core.gallery_media import format_exif_summary
+from core.gallery_state import GalleryComment
 from locales import trans
+from locales.gallery_i18n import (
+    current_ui_language,
+    resolve_comment_translation,
+    should_display_comment_for_mode,
+)
 from utils.design_tokens import FONT, RADIUS, SPACE, WEIGHT, palette, rgba
 from utils.frame_pixels import block_signals, is_qobject_alive
 from widgets.danmaku_overlay import (
@@ -308,6 +315,7 @@ class CommentReplyDrawer(QFrame):
         super().__init__(parent)
         self._theme = "dark"
         self._comments: list[Any] = []
+        self._translation_mode: str = "auto"
         self._is_open = False
         self.setObjectName("gallery_comment_drawer")
         self.setProperty("controlId", "gallery_comment_drawer")
@@ -346,6 +354,10 @@ class CommentReplyDrawer(QFrame):
         self.apply_theme(self._theme)
         self.retranslate()
         self.hide()
+
+    def set_translation_mode(self, mode: str) -> None:
+        self._translation_mode = mode if mode in ("auto", "original", "same_language") else "auto"
+        self._rebuild_rows()
 
     def is_open(self) -> bool:
         return self._is_open
@@ -418,12 +430,12 @@ class CommentReplyDrawer(QFrame):
 
     def _rebuild_rows(self) -> None:
         self._clear_rows()
-        if not self._comments:
-            empty = QLabel(_tr("gallery_comments_empty"), self.list_container)
-            empty.setObjectName("commentEmpty")
-            self.list_layout.addWidget(empty)
-            self.list_layout.addStretch(1)
-            return
+        lang = current_ui_language()
+        mode = self._translation_mode
+
+        def add_card(comment, *, is_reply):
+            if should_display_comment_for_mode(comment, mode, lang):
+                self.list_layout.addWidget(self._make_comment_card(comment, is_reply=is_reply))
 
         top_level: list[Any] = []
         replies_by_parent: dict[str, list[Any]] = {}
@@ -476,11 +488,15 @@ class CommentReplyDrawer(QFrame):
 
         for comment in top_level:
             cid = str(_first_field(comment, ("id", "comment_id"), "") or "")
-            self.list_layout.addWidget(self._make_comment_card(comment, is_reply=False))
+            add_card(comment, is_reply=False)
             for reply in replies_by_parent.get(cid, ()):
-                self.list_layout.addWidget(self._make_comment_card(reply, is_reply=True))
+                add_card(reply, is_reply=True)
         for reply in orphan_replies:
-            self.list_layout.addWidget(self._make_comment_card(reply, is_reply=True))
+            add_card(reply, is_reply=True)
+        if self.list_layout.count() == 0:
+            empty = QLabel(_tr("gallery_comments_empty"), self.list_container)
+            empty.setObjectName("commentEmpty")
+            self.list_layout.addWidget(empty)
         self.list_layout.addStretch(1)
 
     def _make_comment_card(self, comment: Any, *, is_reply: bool) -> QWidget:
@@ -518,7 +534,13 @@ class CommentReplyDrawer(QFrame):
         meta.addStretch(1)
         layout.addLayout(meta)
 
-        lbl_body = QLabel(content, card)
+        display_text, is_translated = resolve_comment_translation(
+            comment,
+            mode=self._translation_mode,
+            target_lang=current_ui_language(),
+        )
+        lbl_body = QLabel(display_text, card)
+        lbl_body.setTextFormat(Qt.TextFormat.PlainText)
         lbl_body.setObjectName("commentBody")
         lbl_body.setWordWrap(True)
         layout.addWidget(lbl_body)
@@ -539,6 +561,24 @@ class CommentReplyDrawer(QFrame):
         if actionable:
             btn_rep.clicked.connect(lambda _c=False, i=cid, b=btn_rep: self._open_report_menu(i, b))
         actions.addWidget(btn_rep)
+
+        if is_translated:
+            btn_toggle = QPushButton(_tr("gallery_danmaku_toggle_original"), card)
+            btn_toggle.setObjectName("btn_toggle_comment_translation")
+            btn_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+            showing_translated = [True]
+
+            def _toggle_translation(_checked: bool = False) -> None:
+                showing_translated[0] = not showing_translated[0]
+                lbl_body.setText(display_text if showing_translated[0] else content)
+                btn_toggle.setText(
+                    _tr("gallery_danmaku_toggle_original")
+                    if showing_translated[0]
+                    else _tr("gallery_danmaku_toggle_translated")
+                )
+
+            btn_toggle.clicked.connect(_toggle_translation)
+            actions.addWidget(btn_toggle)
 
         if actionable and can_delete:
             btn_del = QPushButton(_tr("gallery_comments_delete"), card)
@@ -846,17 +886,65 @@ class GalleryShowcaseWidget(QWidget):
                 return True
         return False
 
+    def _show_work_comments(self, work: ShowcaseWork) -> None:
+        self.danmaku_overlay.set_comments(work.comments, work_id=work.id)
+        self.comment_drawer.set_comments(work.comments)
+
     def set_work_comments(self, work_id: str, comments: Sequence[Any]) -> bool:
         for idx, work in enumerate(self._works):
             if work.id == work_id:
-                work.comments = list(comments)
-                work.comment_count = len(work.comments)
+                incoming_ids = {_field(item, "id", "") for item in comments}
+                pending = [item for item in work.comments
+                           if str(_field(item, "id", "")).startswith("local-")
+                           and _field(item, "id", "") not in incoming_ids]
+                work.comments = [*comments, *pending]
+                work.comment_count = max(work.comment_count, len(work.comments))
                 if idx == self._current_index:
-                    self.danmaku_overlay.set_comments(work.comments, work_id=work.id)
-                    self.comment_drawer.set_comments(work.comments)
+                    self._show_work_comments(work)
                     self._update_hud_for_current()
                 return True
         return False
+
+    def pending_danmaku_id(self, work_id: str) -> str:
+        work = next((work for work in self._works if work.id == work_id), None)
+        if work is None or not work.comments:
+            return ""
+        comment_id = str(_field(work.comments[-1], "id", ""))
+        return comment_id if comment_id.startswith("local-") else ""
+
+    def reconcile_danmaku(self, work_id: str, pending_id: str, confirmed: GalleryComment | None) -> None:
+        for work in self._works:
+            if work.id != work_id:
+                continue
+            count_before = len(work.comments)
+            if pending_id:
+                work.comments = [item for item in work.comments if _field(item, "id", "") != pending_id]
+            if confirmed is not None and all(_field(item, "id", "") != confirmed.id for item in work.comments):
+                work.comments.insert(0, confirmed)
+            if confirmed is None:
+                work.comment_count -= count_before - len(work.comments)
+            work.comment_count = max(work.comment_count, len(work.comments))
+            if work is self.current_work:
+                self._show_work_comments(work)
+                self._update_hud_for_current()
+            break
+
+    def confirm_comment_vote(
+        self, comment_id: str, *, viewer_vote: str, upvotes: int, downvotes: int
+    ) -> set[str]:
+        changed = set()
+        for work in self._works:
+            for index, comment in enumerate(work.comments):
+                if not isinstance(comment, GalleryComment) or comment.id != comment_id:
+                    continue
+                work.comments[index] = replace(comment, viewer_vote=viewer_vote, upvotes=upvotes, downvotes=downvotes)
+                changed.add(work.id)
+                if work is self.current_work:
+                    vote = {"up": 1, "down": -1}.get(viewer_vote, 0)
+                    self.danmaku_overlay.confirm_vote(comment_id, vote, upvotes, downvotes)
+                    self.comment_drawer.set_comments(work.comments)
+                break
+        return changed
 
     def show_slide(self, index: int) -> bool:
         if not self._works:
@@ -865,8 +953,7 @@ class GalleryShowcaseWidget(QWidget):
         self._current_index = idx
         work = self._works[idx]
         self._ensure_static_blur()
-        self.danmaku_overlay.set_comments(work.comments, work_id=work.id)
-        self.comment_drawer.set_comments(work.comments)
+        self._show_work_comments(work)
         self._update_hud_for_current()
         self._layout_overlays()
         self._sync_slideshow_timer()
@@ -931,6 +1018,7 @@ class GalleryShowcaseWidget(QWidget):
     def set_danmaku_settings(self, settings: DanmakuSettings) -> None:
         norm = settings.normalized()
         self.danmaku_overlay.set_settings(norm)
+        self.comment_drawer.set_translation_mode(norm.translation_mode)
         self.danmaku_settings_changed.emit(norm)
 
     def set_danmaku_limits(
@@ -1113,6 +1201,7 @@ class GalleryShowcaseWidget(QWidget):
         self.btn_like.setText(f"{heart} {work.like_count}")
 
         self.btn_comment.setText(f"\U0001f4ac {work.comment_count}")
+        self.danmaku_overlay.composer.set_comment_count(work.comment_count)
 
         self.btn_download.setVisible(bool(work.allow_download))
         self.btn_download.setEnabled(bool(work.allow_download))
@@ -1158,7 +1247,7 @@ class GalleryShowcaseWidget(QWidget):
         if work is None:
             return
         local_item = {
-            "id": f"local-{len(work.comments) + 1}",
+            "id": f"local-{uuid4().hex}",
             "work_id": work.id,
             "content": content,
             "is_reply": False,
@@ -1169,7 +1258,6 @@ class GalleryShowcaseWidget(QWidget):
         work.comment_count += 1
         if work is self.current_work:
             self.danmaku_overlay.add_comment(local_item, immediate=True)
-            self.danmaku_overlay.composer.set_comment_count(work.comment_count)
             self.comment_drawer.set_comments(work.comments)
             self._update_hud_for_current()
             self._layout_overlays()

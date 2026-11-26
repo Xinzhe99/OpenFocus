@@ -11,6 +11,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   render, and compare the result.
 - Add Gallery Hub, Account Center, and Honor Card dialogs in all supported
   languages. Preserve public camera and exposure metadata in Gallery uploads.
+- Display Gallery comment and danmaku translations when the Gallery service
+  supplies them. Choose automatic, original, or same-language danmaku.
 - Open Gallery and Account Center from the main window. Browse bundled
   showcase images when the Gallery service is unavailable, and finish active
   Gallery publishing before the application closes.

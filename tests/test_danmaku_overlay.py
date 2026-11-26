@@ -188,6 +188,15 @@ def test_hover_pauses_only_hovered_bullet_and_click_opens_popover(qapp):
     assert b1.viewer_vote == -1
     assert b1.feedback_text == "-1"
 
+    overlay.confirm_vote("c1", 2, 8, 4)
+    assert (b1.viewer_vote, b1.upvotes, b1.downvotes) == (1, 8, 4)
+    assert overlay.popover.isVisible() is True
+    assert b1.paused is True
+    assert overlay.popover.btn_upvote.isChecked() is True
+    assert overlay.popover.btn_downvote.isChecked() is False
+    assert "8" in overlay.popover.btn_upvote.text()
+    assert "4" in overlay.popover.btn_downvote.text()
+
     # Report -> uses canonical English snake_case keys and closes popover
     overlay.popover.btn_report.click()
     assert overlay.popover.report_panel.isVisible() is True
@@ -370,3 +379,128 @@ def test_short_canvas_queues_comments_instead_of_overlapping_lanes(qapp):
     assert overlay.active_bullets == [next_comment]
     assert len(overlay.queued_comments) == 4
     overlay.deleteLater()
+
+
+def test_danmaku_translation_modes_hover_tooltip_and_popover(qapp):
+    from PyQt6.QtGui import QMouseEvent
+    from locales import trans
+
+    raw = DanmakuSettings(translation_mode="unknown_mode").normalized()
+    assert raw.translation_mode == "auto"
+    assert DanmakuSettings.from_dict({"translation_mode": "same_language"}).translation_mode == "same_language"
+    assert DanmakuSettings(translation_mode="original").to_dict()["translation_mode"] == "original"
+
+    prev_lang = trans.current_lang
+    try:
+        trans.set_language("zh")
+        overlay = DanmakuOverlay(settings=DanmakuSettings(density="high", translation_mode="auto"))
+        overlay.resize(720, 420)
+        overlay.show()
+        qapp.processEvents()
+
+        comments = [
+            {
+                "id": "c_foreign",
+                "work_id": "w1",
+                "content": "Incredible compound eye detail!",
+                "src_lang": "en",
+                "translated_content": "复眼细节太绝了！",
+                "translated_lang": "zh",
+                "author_nickname": "MacroPro",
+                "upvotes": 2,
+            },
+            {
+                "id": "c_native",
+                "work_id": "w1",
+                "content": "堆栈非常干净",
+                "src_lang": "zh",
+            },
+            {
+                "id": "c_unknown",
+                "work_id": "w1",
+                "content": "Unknown origin keeps visible",
+            },
+        ]
+        overlay.set_comments(comments, work_id="w1")
+        bullets = {item.comment_id: item for item in overlay.active_bullets}
+        assert len(bullets) == 3
+        text_foreign, is_trans = bullets["c_foreign"].bullet_text("auto", "zh")
+        assert is_trans is True
+        assert text_foreign == "复眼细节太绝了！ \U0001f310"
+
+        # Hover over translated bullet sets original tooltip; moving off clears it.
+        b_foreign = bullets["c_foreign"]
+        b_foreign.x = 60.0
+        hover_pt = QPointF(b_foreign.x + 12.0, b_foreign.y + b_foreign.height / 2.0)
+        move_ev = QMouseEvent(
+            QMouseEvent.Type.MouseMove,
+            hover_pt,
+            overlay.mapToGlobal(hover_pt),
+            Qt.MouseButton.NoButton,
+            Qt.MouseButton.NoButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        overlay.mouseMoveEvent(move_ev)
+        assert "Incredible compound eye detail!" in overlay.toolTip()
+
+        assert overlay.open_popover_for("c_foreign") is True
+        assert "复眼细节太绝了！" in overlay.popover.lbl_preview.text()
+        assert overlay.popover.lbl_original.isVisible() is True
+        assert "Incredible compound eye detail!" in overlay.popover.lbl_original.text()
+
+        empty_pt = QPointF(5.0, 5.0)
+        leave_move = QMouseEvent(
+            QMouseEvent.Type.MouseMove,
+            empty_pt,
+            overlay.mapToGlobal(empty_pt),
+            Qt.MouseButton.NoButton,
+            Qt.MouseButton.NoButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        overlay.mouseMoveEvent(leave_move)
+        assert overlay.toolTip() == ""
+
+        # A locale change dismisses the pinned preview and its hover tooltip.
+        overlay.mouseMoveEvent(move_ev)
+        assert overlay.toolTip()
+        assert b_foreign.paused is True
+        trans.set_language("en")
+        assert overlay.toolTip() == ""
+        assert overlay.popover.isVisible() is False
+        assert b_foreign.paused is False
+        assert overlay.open_popover_for("c_foreign") is True
+        assert "Incredible compound eye" in overlay.popover.lbl_preview.text()
+        assert overlay.popover.lbl_original.isVisible() is False
+
+        trans.set_language("zh")
+        votes: list[tuple[str, int]] = []
+        overlay.comment_voted.connect(lambda cid, vote: votes.append((cid, vote)))
+        assert overlay.open_popover_for("c_foreign") is True
+        overlay.popover.btn_upvote.click()
+        assert votes == [("c_foreign", 1)]
+        assert (b_foreign.viewer_vote, b_foreign.upvotes) == (1, 3)
+
+        # Switch live to "original" -> preserves all 3 bullets, disables translated decoration.
+        overlay.set_settings(DanmakuSettings(density="high", translation_mode="original"))
+        orig_map = {item.comment_id: item for item in overlay.active_bullets}
+        assert set(orig_map.keys()) == {"c_foreign", "c_native", "c_unknown"}
+        assert orig_map["c_foreign"].bullet_text("original", "zh") == ("Incredible compound eye detail!", False)
+        assert (orig_map["c_foreign"].viewer_vote, orig_map["c_foreign"].upvotes) == (1, 3)
+
+        # Switch live to "same_language" -> filters out known foreign "en", keeps "zh" + unknown.
+        overlay.set_settings(DanmakuSettings(density="high", translation_mode="same_language"))
+        same_ids = {item.comment_id for item in overlay.active_bullets}
+        assert same_ids == {"c_native", "c_unknown"}
+        assert overlay.open_popover_for("c_foreign") is False
+
+        overlay.set_settings(DanmakuSettings(density="high", translation_mode="auto"))
+        restored = next(item for item in overlay.active_bullets if item.comment_id == "c_foreign")
+        assert (restored.viewer_vote, restored.upvotes) == (1, 3)
+        assert overlay.open_popover_for("c_foreign") is True
+        assert overlay.popover.btn_upvote.isChecked() is True
+        overlay.popover.btn_upvote.click()
+        assert votes == [("c_foreign", 1), ("c_foreign", 0)]
+        assert (restored.viewer_vote, restored.upvotes) == (0, 2)
+        overlay.deleteLater()
+    finally:
+        trans.set_language(prev_lang)

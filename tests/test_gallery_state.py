@@ -518,6 +518,27 @@ def test_retired_gallery_responses_cannot_replace_new_session(qapp, retired_requ
     store.shutdown()
 
 
+def test_gallery_comment_parses_optional_translation_fields():
+    c = gs.GalleryComment.from_dict(
+        {
+            "comment_id": "cmt_1",
+            "work_id": "wrk_1",
+            "content": "Clean antennae!",
+            "src_lang": "en-US",
+            "translated_content": "触角很清晰！",
+            "translated_lang": "zh_CN",
+        }
+    )
+    assert c.src_lang == "en"
+    assert c.translated_content == "触角很清晰！"
+    assert c.translated_lang == "zh"
+
+    c_plain = gs.GalleryComment.from_dict({"comment_id": "cmt_2", "content": "Legacy comment"})
+    assert c_plain.src_lang == ""
+    assert c_plain.translated_content == ""
+    assert c_plain.translated_lang == ""
+
+
 def test_builtin_fallback_works_avoid_duplicate_openfocus_camera_metadata():
     works = gs.build_builtin_fallback_works()
     assert works

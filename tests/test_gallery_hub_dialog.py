@@ -866,6 +866,167 @@ def test_large_translated_layouts_render_cleanly_across_locales(qapp, lang):
         trans.set_language(prev_lang)
 
 
+def test_work_detail_dialog_passes_lang_and_renders_translated_comment_with_tooltip(qapp):
+    from dialogs.gallery_hub import WorkDetailDialog
+    from PyQt6.QtWidgets import QListWidget
+
+    requested = []
+    posted = []
+
+    class _Client:
+        def get_comments(self, work_id, *, cursor=None, limit=None, lang=None, danmaku=None):
+            requested.append((work_id, lang))
+            return {
+                "items": [
+                    {
+                        "id": "c1",
+                        "author_nickname": "Kenji",
+                        "content": "素晴らしいピント合成！ <b>&</b>",
+                        "src_lang": "ja",
+                        "translated_content": "Awesome focus stack!",
+                        "translated_lang": "en",
+                    }
+                ]
+            }
+
+        def post_comment(self, work_id, content, parent_id=None, *, is_danmaku=None, client_lang=None):
+            posted.append((work_id, content, parent_id, is_danmaku, client_lang))
+            return {"comment": {"id": "c2", "author_nickname": "Me", "content": content}}
+
+    prev_lang = trans.current_lang
+    try:
+        trans.set_language("en")
+        dlg = WorkDetailDialog(
+            work={"id": "w_tl", "title": "Beetle", "author_nickname": "Kenji", "likes_count": 3},
+            client=_Client(),
+        )
+        dlg.show()
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            qapp.processEvents()
+            if dlg.findChild(QListWidget).count() > 0:
+                break
+            time.sleep(0.01)
+
+        lw = dlg.findChild(QListWidget)
+        assert requested and requested[0] == ("w_tl", "en")
+        assert lw.count() == 1
+        item = lw.item(0)
+        assert "Awesome focus stack! \U0001f310" in item.text()
+        assert item.toolTip().startswith("<qt>")
+        assert "素晴らしいピント合成！ &lt;b&gt;&amp;&lt;/b&gt;" in item.toolTip()
+
+        dlg.comment_input.setText("Great work!")
+        dlg._submit_comment()
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and not posted:
+            qapp.processEvents()
+            time.sleep(0.01)
+        assert posted and posted[0] == ("w_tl", "Great work!", None, False, "en")
+        dlg.close()
+    finally:
+        trans.set_language(prev_lang)
+
+
+def test_work_detail_discards_pending_comments_in_previous_locale(qapp):
+    english_request_started = Event()
+    release_english_request = Event()
+
+    initial_comment = {
+        "id": "c1",
+        "author_nickname": "Kenji",
+        "content": "素晴らしい！",
+        "src_lang": "ja",
+        "translated_content": "Great!",
+    }
+
+    class Client:
+        def get_comments(self, _work_id, *, lang=None):
+            if lang == "en":
+                english_request_started.set()
+                assert release_english_request.wait(8)
+                return {"items": [{**initial_comment, "translated_content": "Old response"}]}
+            assert lang == "fr"
+            return {"items": [{**initial_comment, "translated_content": "Superbe !"}]}
+
+    detail = WorkDetailDialog(
+        {"id": "w1", "comments": [initial_comment]},
+        client=Client(),
+        translation_mode="auto",
+    )
+    try:
+        assert english_request_started.wait(5)
+        assert detail.comments_list.item(0).text() == "Kenji: Great! 🌐"
+        trans.set_language("fr")
+        assert detail.comments_list.item(0).text() == "Kenji: 素晴らしい！"
+        assert not detail.comments_list.item(0).toolTip()
+
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            qapp.processEvents()
+            if detail.comments_list.item(0).text() == "Kenji: Superbe ! 🌐":
+                break
+            time.sleep(0.01)
+        assert detail.comments_list.item(0).text() == "Kenji: Superbe ! 🌐"
+
+        release_english_request.set()
+        assert detail.wait_for_idle()
+        assert detail.comments_list.count() == 1
+        assert detail.comments_list.item(0).text() == "Kenji: Superbe ! 🌐"
+    finally:
+        release_english_request.set()
+        detail.close()
+
+
+def test_hub_updates_open_and_future_details_for_same_language_mode(qapp):
+    work = {
+        "id": "w1",
+        "comments": [
+            {
+                "id": "parent",
+                "author_nickname": "Camille",
+                "content": "Magnifique !",
+                "src_lang": "fr",
+                "replies": [
+                    {
+                        "id": "reply",
+                        "author_nickname": "Alex",
+                        "content": "Agreed!",
+                        "src_lang": "en-US",
+                    },
+                ],
+            },
+            {"id": "unknown", "author_nickname": "Sam", "content": "👍"},
+        ],
+    }
+
+    def rows(detail):
+        return [
+            detail.comments_list.item(index).text().strip()
+            for index in range(detail.comments_list.count())
+        ]
+
+    hub = GalleryHubDialog()
+    hub.set_danmaku_translation_mode("original")
+    hub.show()
+    detail = hub.open_work_detail(work)
+    try:
+        assert rows(detail) == ["Camille: Magnifique !", "↳ Alex: Agreed!", "Sam: 👍"]
+        hub.set_danmaku_translation_mode("same_language")
+        assert rows(detail) == ["↳ Alex: Agreed!", "Sam: 👍"]
+
+        trans.set_language("fr")
+        assert rows(detail) == ["Camille: Magnifique !", "Sam: 👍"]
+        future_detail = hub.open_work_detail(work)
+        try:
+            assert rows(future_detail) == rows(detail)
+        finally:
+            future_detail.close()
+    finally:
+        detail.close()
+        hub.close()
+
+
 def test_gallery_hub_displays_points_balance_and_dynamic_publish_cost(qapp, tmp_path):
     class _Store:
         def __init__(self):

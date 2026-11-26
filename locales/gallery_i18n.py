@@ -9,6 +9,7 @@ these tables into ``locales/__init__.py``) while remaining usable standalone via
 """
 from __future__ import annotations
 
+from html import escape
 from typing import Any, Mapping
 
 GALLERY_LANGUAGES: tuple[str, ...] = (
@@ -199,6 +200,13 @@ _EN: dict[str, str] = {
     "gallery_danmaku_report": "Report",
     "gallery_danmaku_reported": "Reported",
     "gallery_danmaku_all_comments": "Comments ({count})",
+    "gallery_danmaku_translation": "Danmaku translation",
+    "gallery_danmaku_translate_auto": "Auto-translate to app language (hover for original)",
+    "gallery_danmaku_translate_original": "Always show original text",
+    "gallery_danmaku_translate_same_lang": "Only show comments in app language",
+    "gallery_danmaku_original_tooltip": "Original: {original}",
+    "gallery_danmaku_toggle_original": "Show original",
+    "gallery_danmaku_toggle_translated": "Show translation",
     "gallery_badge_ad": "Sponsored",
     "gallery_badge_following": "Following",
     "gallery_close": "Close",
@@ -575,6 +583,13 @@ _ZH: dict[str, str] = {
     "gallery_danmaku_report": "举报",
     "gallery_danmaku_reported": "已举报",
     "gallery_danmaku_all_comments": "评论 ({count})",
+    "gallery_danmaku_translation": "弹幕与评论翻译",
+    "gallery_danmaku_translate_auto": "自动翻译为界面语言（悬停看原文）",
+    "gallery_danmaku_translate_original": "始终显示原文",
+    "gallery_danmaku_translate_same_lang": "仅看同语言弹幕",
+    "gallery_danmaku_original_tooltip": "原文：{original}",
+    "gallery_danmaku_toggle_original": "查看原文",
+    "gallery_danmaku_toggle_translated": "查看译文",
     "gallery_badge_ad": "推广",
     "gallery_badge_following": "已关注",
     "gallery_close": "关闭",
@@ -933,6 +948,13 @@ _JA: dict[str, str] = {
     "gallery_danmaku_report": "報告",
     "gallery_danmaku_reported": "報告済み",
     "gallery_danmaku_all_comments": "コメント ({count})",
+    "gallery_danmaku_translation": "弾幕とコメントの翻訳",
+    "gallery_danmaku_translate_auto": "アプリ言語に自動翻訳（ホバーで原文表示）",
+    "gallery_danmaku_translate_original": "常に原文を表示",
+    "gallery_danmaku_translate_same_lang": "同じ言語のコメントのみ表示",
+    "gallery_danmaku_original_tooltip": "原文: {original}",
+    "gallery_danmaku_toggle_original": "原文を見る",
+    "gallery_danmaku_toggle_translated": "翻訳を見る",
     "gallery_badge_ad": "広告",
     "gallery_badge_following": "フォロー中",
     "gallery_close": "閉じる",
@@ -1292,6 +1314,13 @@ _ES: dict[str, str] = {
     "gallery_danmaku_report": "Denunciar",
     "gallery_danmaku_reported": "Denunciado",
     "gallery_danmaku_all_comments": "Comentarios ({count})",
+    "gallery_danmaku_translation": "Traducción de comentarios",
+    "gallery_danmaku_translate_auto": "Traducir al idioma de la app (pasar el cursor para ver original)",
+    "gallery_danmaku_translate_original": "Mostrar siempre el texto original",
+    "gallery_danmaku_translate_same_lang": "Mostrar solo comentarios en el idioma de la app",
+    "gallery_danmaku_original_tooltip": "Original: {original}",
+    "gallery_danmaku_toggle_original": "Ver original",
+    "gallery_danmaku_toggle_translated": "Ver traducción",
     "gallery_badge_ad": "Patrocinado",
     "gallery_badge_following": "Siguiendo",
     "gallery_close": "Cerrar",
@@ -1651,6 +1680,13 @@ _DE: dict[str, str] = {
     "gallery_danmaku_report": "Melden",
     "gallery_danmaku_reported": "Gemeldet",
     "gallery_danmaku_all_comments": "Kommentare ({count})",
+    "gallery_danmaku_translation": "Kommentar-Übersetzung",
+    "gallery_danmaku_translate_auto": "Automatisch in App-Sprache übersetzen (Hover für Original)",
+    "gallery_danmaku_translate_original": "Immer Originaltext anzeigen",
+    "gallery_danmaku_translate_same_lang": "Nur Kommentare in der App-Sprache anzeigen",
+    "gallery_danmaku_original_tooltip": "Original: {original}",
+    "gallery_danmaku_toggle_original": "Original anzeigen",
+    "gallery_danmaku_toggle_translated": "Übersetzung anzeigen",
     "gallery_badge_ad": "Gesponsert",
     "gallery_badge_following": "Gefolgt",
     "gallery_close": "Schließen",
@@ -2010,6 +2046,13 @@ _FR: dict[str, str] = {
     "gallery_danmaku_report": "Signaler",
     "gallery_danmaku_reported": "Signalé",
     "gallery_danmaku_all_comments": "Commentaires ({count})",
+    "gallery_danmaku_translation": "Traduction des commentaires",
+    "gallery_danmaku_translate_auto": "Traduire dans la langue de l’app (survol pour l’original)",
+    "gallery_danmaku_translate_original": "Toujours afficher le texte d’origine",
+    "gallery_danmaku_translate_same_lang": "Afficher uniquement les commentaires dans cette langue",
+    "gallery_danmaku_original_tooltip": "Original : {original}",
+    "gallery_danmaku_toggle_original": "Voir l’original",
+    "gallery_danmaku_toggle_translated": "Voir la traduction",
     "gallery_badge_ad": "Sponsorisé",
     "gallery_badge_following": "Abonné",
     "gallery_close": "Fermer",
@@ -2369,6 +2412,13 @@ _IT: dict[str, str] = {
     "gallery_danmaku_report": "Segnala",
     "gallery_danmaku_reported": "Segnalato",
     "gallery_danmaku_all_comments": "Commenti ({count})",
+    "gallery_danmaku_translation": "Traduzione dei commenti",
+    "gallery_danmaku_translate_auto": "Traduci nella lingua dell’app (passa sopra per l’originale)",
+    "gallery_danmaku_translate_original": "Mostra sempre il testo originale",
+    "gallery_danmaku_translate_same_lang": "Mostra solo commenti nella lingua dell’app",
+    "gallery_danmaku_original_tooltip": "Originale: {original}",
+    "gallery_danmaku_toggle_original": "Mostra originale",
+    "gallery_danmaku_toggle_translated": "Mostra traduzione",
     "gallery_badge_ad": "Sponsorizzato",
     "gallery_badge_following": "Seguiti",
     "gallery_close": "Chiudi",
@@ -2728,6 +2778,13 @@ _KO: dict[str, str] = {
     "gallery_danmaku_report": "신고",
     "gallery_danmaku_reported": "신고됨",
     "gallery_danmaku_all_comments": "댓글 ({count})",
+    "gallery_danmaku_translation": "댓글 번역",
+    "gallery_danmaku_translate_auto": "앱 언어로 자동 번역(마우스를 올려 원문 보기)",
+    "gallery_danmaku_translate_original": "항상 원문 표시",
+    "gallery_danmaku_translate_same_lang": "앱 언어와 같은 댓글만 표시",
+    "gallery_danmaku_original_tooltip": "원문: {original}",
+    "gallery_danmaku_toggle_original": "원문 보기",
+    "gallery_danmaku_toggle_translated": "번역 보기",
     "gallery_badge_ad": "스폰서",
     "gallery_badge_following": "팔로잉",
     "gallery_close": "닫기",
@@ -3087,6 +3144,13 @@ _NL: dict[str, str] = {
     "gallery_danmaku_report": "Rapporteren",
     "gallery_danmaku_reported": "Gerapporteerd",
     "gallery_danmaku_all_comments": "Reacties ({count})",
+    "gallery_danmaku_translation": "Vertaling van reacties",
+    "gallery_danmaku_translate_auto": "Automatisch vertalen naar app-taal (zweven voor origineel)",
+    "gallery_danmaku_translate_original": "Altijd originele tekst tonen",
+    "gallery_danmaku_translate_same_lang": "Alleen reacties in app-taal tonen",
+    "gallery_danmaku_original_tooltip": "Origineel: {original}",
+    "gallery_danmaku_toggle_original": "Origineel tonen",
+    "gallery_danmaku_toggle_translated": "Vertaling tonen",
     "gallery_badge_ad": "Gesponsord",
     "gallery_badge_following": "Volgend",
     "gallery_close": "Sluiten",
@@ -3446,6 +3510,13 @@ _PL: dict[str, str] = {
     "gallery_danmaku_report": "Zgłoś",
     "gallery_danmaku_reported": "Zgłoszono",
     "gallery_danmaku_all_comments": "Komentarze ({count})",
+    "gallery_danmaku_translation": "Tłumaczenie komentarzy",
+    "gallery_danmaku_translate_auto": "Automatycznie tłumacz na język aplikacji (najedź po oryginał)",
+    "gallery_danmaku_translate_original": "Zawsze pokazuj oryginał",
+    "gallery_danmaku_translate_same_lang": "Pokazuj tylko komentarze w języku aplikacji",
+    "gallery_danmaku_original_tooltip": "Oryginał: {original}",
+    "gallery_danmaku_toggle_original": "Pokaż oryginał",
+    "gallery_danmaku_toggle_translated": "Pokaż tłumaczenie",
     "gallery_badge_ad": "Sponsorowane",
     "gallery_badge_following": "Obserwowani",
     "gallery_close": "Zamknij",
@@ -3805,6 +3876,13 @@ _PT: dict[str, str] = {
     "gallery_danmaku_report": "Denunciar",
     "gallery_danmaku_reported": "Denunciado",
     "gallery_danmaku_all_comments": "Comentários ({count})",
+    "gallery_danmaku_translation": "Tradução de comentários",
+    "gallery_danmaku_translate_auto": "Traduzir para o idioma do app (passe o cursor para o original)",
+    "gallery_danmaku_translate_original": "Sempre mostrar o texto original",
+    "gallery_danmaku_translate_same_lang": "Mostrar apenas comentários no idioma do app",
+    "gallery_danmaku_original_tooltip": "Original: {original}",
+    "gallery_danmaku_toggle_original": "Ver original",
+    "gallery_danmaku_toggle_translated": "Ver tradução",
     "gallery_badge_ad": "Patrocinado",
     "gallery_badge_following": "Seguindo",
     "gallery_close": "Fechar",
@@ -4164,6 +4242,13 @@ _RU: dict[str, str] = {
     "gallery_danmaku_report": "Пожаловаться",
     "gallery_danmaku_reported": "Жалоба отправлена",
     "gallery_danmaku_all_comments": "Комментарии ({count})",
+    "gallery_danmaku_translation": "Перевод комментариев",
+    "gallery_danmaku_translate_auto": "Автоперевод на язык приложения (наведите для оригинала)",
+    "gallery_danmaku_translate_original": "Всегда показывать оригинал",
+    "gallery_danmaku_translate_same_lang": "Показывать только комментарии на языке приложения",
+    "gallery_danmaku_original_tooltip": "Оригинал: {original}",
+    "gallery_danmaku_toggle_original": "Показать оригинал",
+    "gallery_danmaku_toggle_translated": "Показать перевод",
     "gallery_badge_ad": "Реклама",
     "gallery_badge_following": "Подписки",
     "gallery_close": "Закрыть",
@@ -4654,3 +4739,64 @@ def format_notification(notification: Any, lang: str | None = None) -> str:
         reason=reason,
         detail=detail or notif_type,
     )
+
+
+def normalize_lang_code(raw: Any) -> str:
+    """Normalize a language/locale code to its lowercase primary subtag."""
+    if not isinstance(raw, str):
+        return ""
+    cleaned = raw.strip().lower().replace("_", "-")
+    if not cleaned:
+        return ""
+    primary = cleaned.split("-", 1)[0]
+    if 2 <= len(primary) <= 8 and primary.isascii() and primary.isalpha():
+        return primary
+    return ""
+
+
+def current_ui_language(default: str = "en") -> str:
+    """Return the active OpenFocus UI language code normalized for Gallery APIs."""
+    try:
+        from locales import trans
+
+        lang = normalize_lang_code(getattr(trans, "current_lang", default))
+        return lang or normalize_lang_code(default) or "en"
+    except Exception:
+        return normalize_lang_code(default) or "en"
+
+
+def resolve_comment_translation(
+    comment: Any,
+    *,
+    mode: str = "auto",
+    target_lang: str | None = None,
+) -> tuple[str, bool]:
+    """Return ``(display_text, is_translated)`` for a comment or danmaku item.
+
+    Falls back cleanly to the original ``content`` unless ``mode == 'auto'``,
+    ``translated_content`` is non-empty and differs from ``content``, and
+    ``translated_lang`` (if specified) matches ``target_lang``.
+    """
+    original = str(_field(comment, "content", "") or "").strip()
+    if mode != "auto" or not original:
+        return original, False
+    translated = str(_field(comment, "translated_content", "") or "").strip()
+    if not translated or translated == original:
+        return original, False
+    target = normalize_lang_code(target_lang or current_ui_language())
+    translated_lang = normalize_lang_code(_field(comment, "translated_lang", ""))
+    if translated_lang and target and translated_lang != target:
+        return original, False
+    return translated, True
+
+
+def should_display_comment_for_mode(comment: Any, mode: str, target_lang: str) -> bool:
+    """Keep same-language and unclassified comments in same-language mode."""
+    source = normalize_lang_code(_field(comment, "src_lang", ""))
+    target = normalize_lang_code(target_lang)
+    return mode != "same_language" or not source or not target or source == target
+
+
+def original_comment_tooltip(content: str) -> str:
+    text = t_gallery("gallery_danmaku_original_tooltip", original=content)
+    return f"<qt>{escape(text)}</qt>"
