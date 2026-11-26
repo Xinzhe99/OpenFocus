@@ -392,7 +392,11 @@ def test_gif_cancel_does_not_replace_previous_file(qapp, tmp_path, monkeypatch):
     worker.run()
     assert destination.read_bytes() == b'previous'
     assert outcomes == [(False, 'CANCELLED')]
-    assert list(tmp_path.iterdir()) == [destination]
+    # The encoder's scratch may register a session; the test fixtures keep
+    # that registry in this directory.
+    from core import scratch_registry
+    registry = scratch_registry.registry_directory()
+    assert [path for path in tmp_path.iterdir() if path != registry] == [destination]
 
 
 def test_batch_cancellation_keeps_controls_until_worker_finishes(qapp):

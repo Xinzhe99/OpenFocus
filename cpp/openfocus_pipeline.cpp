@@ -267,8 +267,10 @@ void of_fill_linear_axis_cpp(
 
 namespace {
 
-template <typename SampleT, typename Convert>
-double exposure_mean(const ArrayView& image, int num_threads, Convert convert) {
+// `fast_row(pixels, elems, &sum)` may sum a packed row with SIMD; it returns
+// false to request the element-by-element loop.
+template <typename SampleT, typename Convert, typename FastRow>
+double exposure_mean(const ArrayView& image, int num_threads, Convert convert, FastRow fast_row) {
     const int64_t height = image.shape[0];
     const int64_t width = image.shape[1];
     const int64_t channels = (image.ndim == 2) ? 1 : image.shape[2];
@@ -286,6 +288,7 @@ double exposure_mean(const ArrayView& image, int num_threads, Convert convert) {
     const bool packed_color = channels == 3 && image.stride[1] == 3
                               && (channel_stride == 1 || channel_stride == -1);
     using SumT = decltype(convert(SampleT{}));
+    const bool use_simd = simd::use_avx2() && width * take_c >= 32;
     auto sum_band = [&](int64_t start, int64_t stop) {
         SumT local = 0;
         for (int64_t y = start; y < stop; ++y) {
@@ -294,8 +297,11 @@ double exposure_mean(const ArrayView& image, int num_threads, Convert convert) {
             if (packed_gray || packed_color) {
                 const SampleT* pixels = (channel_stride == -1) ? row - 2 : row;
                 const int64_t elems = width * take_c;
-                for (int64_t i = 0; i < elems; ++i) {
-                    row_sum += convert(pixels[i]);
+                if (!(use_simd && fast_row(pixels, elems, &row_sum))) {
+                    row_sum = 0;
+                    for (int64_t i = 0; i < elems; ++i) {
+                        row_sum += convert(pixels[i]);
+                    }
                 }
             } else {
                 for (int64_t x = 0; x < width; ++x) {
@@ -338,6 +344,9 @@ double of_exposure_mean_cpp(
     if (image.itemsize == 1) {
         return exposure_mean<uint8_t>(image, num_threads, [](uint8_t value) {
             return static_cast<uint64_t>(value);
+        }, [](const uint8_t* pixels, int64_t elems, uint64_t* sum) {
+            *sum = simd::sum_u8_row_avx2(pixels, elems);
+            return true;
         });
     }
     if (normalize_uint16) {
@@ -346,10 +355,15 @@ double of_exposure_mean_cpp(
             constexpr float scale = 255.0f / 65535.0f;
             const float normalized = static_cast<float>(value) * scale;
             return static_cast<double>(normalized);
+        }, [](const uint16_t* pixels, int64_t elems, double* sum) {
+            return simd::sum_u16_normalized_row_avx2(pixels, elems, sum);
         });
     }
     return exposure_mean<uint16_t>(image, num_threads, [](uint16_t value) {
         return static_cast<uint64_t>(value);
+    }, [](const uint16_t* pixels, int64_t elems, uint64_t* sum) {
+        *sum = simd::sum_u16_row_avx2(pixels, elems);
+        return true;
     });
 }
 

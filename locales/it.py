@@ -80,6 +80,7 @@ PACK = {
     "account_email_required": "Inserisci il tuo indirizzo email.",
     "account_terms_unavailable": "La registrazione dell’account non è ancora disponibile: il servizio non può fornire i termini attuali. Riprova più tardi.",
     "account_network_error": "Impossibile contattare il servizio account. Connettiti a Internet e riprova.",
+    "account_tls_error": "Impossibile verificare il certificato del server. Controlla l'ora di sistema o le impostazioni del proxy e riprova.",
     "account_generic_error": "Impossibile completare l’accesso. Riprova.",
     "account_rate_limited": "Troppe richieste. Attendi prima di riprovare.",
     "account_expired": "Il link di accesso è scaduto o è già stato utilizzato. Richiedi un nuovo link.",

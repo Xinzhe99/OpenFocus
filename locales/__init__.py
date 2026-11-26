@@ -527,6 +527,8 @@ class TranslationManager(QObject):
         here = os.path.dirname(os.path.abspath(__file__))
         try:
             files = os.listdir(here)
+        except FileNotFoundError:
+            return set()
         except OSError as exc:
             if warn_on_error:
                 print(f"Warning: cannot scan for language packs: {exc}")

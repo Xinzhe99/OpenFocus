@@ -20,18 +20,20 @@ Features:
 from __future__ import annotations
 
 from collections import OrderedDict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import os
 from typing import Any, Callable, Mapping, Sequence
+from uuid import uuid4
 
 import numpy as np
-from PyQt6.QtCore import QPoint, QRect, QSize, Qt, QTimer, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QColor, QImage, QPainter, QPaintEvent, QPixmap, QResizeEvent
+from PyQt6.QtCore import QEvent, QPoint, QRect, QRectF, QSize, Qt, QTimer, pyqtSignal, pyqtSlot
+from PyQt6.QtGui import QColor, QImage, QKeyEvent, QMouseEvent, QPainter, QPaintEvent, QPixmap, QResizeEvent
 from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
     QMenu,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -40,8 +42,15 @@ from PyQt6.QtWidgets import (
 )
 
 from core.gallery_media import format_exif_summary
+from core.gallery_state import GalleryComment
 from locales import trans
+from locales.gallery_i18n import (
+    current_ui_language,
+    resolve_comment_translation,
+    should_display_comment_for_mode,
+)
 from utils.design_tokens import FONT, RADIUS, SPACE, WEIGHT, palette, rgba
+from utils.frame_pixels import block_signals, is_qobject_alive
 from widgets.danmaku_overlay import (
     DANMAKU_COOLDOWN_SEC,
     DANMAKU_MAX_CHARS,
@@ -50,6 +59,7 @@ from widgets.danmaku_overlay import (
     DanmakuSettings,
     _field,
     _first_field,
+    _normalize_vote,
     gallery_tr as _tr,
     is_actionable_comment_id,
     report_reason_label,
@@ -158,35 +168,32 @@ class ShowcaseWork:
         )
 
 
-def _build_blurred_background(source: QPixmap, target_size: QSize) -> QPixmap:
-    """Compute a static Gaussian-blurred aspect-fill background QPixmap once."""
-    w = max(1, target_size.width())
-    h = max(1, target_size.height())
+def _build_blurred_background(source: QPixmap, target_size: QSize | None = None) -> QPixmap:
+    """Compute a static 160 px Gaussian-blurred proxy QPixmap once per slide."""
     if source.isNull():
-        fallback = QPixmap(w, h)
+        w = max(1, target_size.width()) if target_size is not None else 160
+        h = max(1, target_size.height()) if target_size is not None else 90
+        fallback = QPixmap(min(160, w), min(160, h))
         fallback.fill(QColor(palette("dark")["canvas"]))
         return fallback
 
-    # Downsample to a compact working frame before Gaussian blur so it runs in
-    # ~1-2ms while yielding a smooth, artifact-free backdrop.
     work_long = 160
-    if w >= h:
+    src_w = max(1, source.width())
+    src_h = max(1, source.height())
+    if src_w >= src_h:
         work_w = work_long
-        work_h = max(32, round(work_long * h / w))
+        work_h = max(32, round(work_long * src_h / src_w))
     else:
         work_h = work_long
-        work_w = max(32, round(work_long * w / h))
+        work_w = max(32, round(work_long * src_w / src_h))
 
     scaled = source.scaled(
         work_w,
         work_h,
-        Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+        Qt.AspectRatioMode.KeepAspectRatio,
         Qt.TransformationMode.SmoothTransformation,
     )
-    crop_x = max(0, (scaled.width() - work_w) // 2)
-    crop_y = max(0, (scaled.height() - work_h) // 2)
-    cropped = scaled.copy(crop_x, crop_y, work_w, work_h)
-    img = cropped.toImage().convertToFormat(QImage.Format.Format_RGBA8888)
+    img = scaled.toImage().convertToFormat(QImage.Format.Format_RGBA8888)
 
     blurred_qimg: QImage
     try:
@@ -222,53 +229,52 @@ def _build_blurred_background(source: QPixmap, target_size: QSize) -> QPixmap:
         except Exception:
             blurred_qimg = img
 
-    up = QPixmap.fromImage(blurred_qimg).scaled(
-        w,
-        h,
-        Qt.AspectRatioMode.IgnoreAspectRatio,
-        Qt.TransformationMode.SmoothTransformation,
-    )
+    proxy = QPixmap.fromImage(blurred_qimg)
     # Subtle dark scrim so foreground image edges and translucent HUD stay crisp
-    painter = QPainter(up)
-    painter.fillRect(0, 0, w, h, QColor(0, 0, 0, 72))
+    painter = QPainter(proxy)
+    painter.fillRect(0, 0, proxy.width(), proxy.height(), QColor(0, 0, 0, 72))
     painter.end()
-    return up
+    return proxy
 
 
 class StaticBlurBackgroundCache:
-    """Bounded LRU cache of static precomputed blurred backgrounds per ``(work_id, size)``."""
+    """Bounded LRU cache of 160 px static blurred background proxies per ``work_id``."""
 
     def __init__(self, max_entries: int = 24) -> None:
         self._max_entries = max(1, int(max_entries))
-        self._entries: OrderedDict[tuple[str, int, int], tuple[int | None, QPixmap]] = (
-            OrderedDict()
-        )
+        self._entries: OrderedDict[str, tuple[int | None, QPixmap]] = OrderedDict()
         self.compute_count: int = 0
         self.cache_hits: int = 0
 
-    def get(self, work_id: str, size: QSize) -> QPixmap | None:
-        key = (str(work_id), int(size.width()), int(size.height()))
+    def get(self, work_id: str, size: QSize | None = None) -> QPixmap | None:
+        del size
+        key = str(work_id)
         cached = self._entries.get(key)
         if cached is not None:
             self._entries.move_to_end(key)
             self.cache_hits += 1
             return cached[1]
+        return None
 
     def put(
-        self, work_id: str, size: QSize, pixmap: QPixmap, *, source_key: int | None = None
+        self,
+        work_id: str,
+        size: QSize | None,
+        pixmap: QPixmap,
+        *,
+        source_key: int | None = None,
     ) -> None:
-        w = max(1, int(size.width()))
-        h = max(1, int(size.height()))
-        key = (str(work_id), w, h)
+        del size
+        key = str(work_id)
         self._entries[key] = (source_key, pixmap)
         self._entries.move_to_end(key)
         while len(self._entries) > self._max_entries:
             self._entries.popitem(last=False)
 
-    def get_or_build(self, work_id: str, source: QPixmap, size: QSize) -> QPixmap:
-        w = max(1, int(size.width()))
-        h = max(1, int(size.height()))
-        key = (str(work_id), w, h)
+    def get_or_build(
+        self, work_id: str, source: QPixmap, size: QSize | None = None
+    ) -> QPixmap:
+        key = str(work_id)
         source_key = source.cacheKey()
         cached = self._entries.get(key)
         if cached is not None and cached[0] in (None, source_key):
@@ -276,14 +282,13 @@ class StaticBlurBackgroundCache:
             self.cache_hits += 1
             return cached[1]
 
-        built = _build_blurred_background(source, QSize(w, h))
+        built = _build_blurred_background(source, size)
         self.compute_count += 1
-        self.put(work_id, QSize(w, h), built, source_key=source_key)
+        self.put(key, size, built, source_key=source_key)
         return built
 
     def invalidate_work(self, work_id: str) -> None:
-        for key in [key for key in self._entries if key[0] == work_id]:
-            del self._entries[key]
+        self._entries.pop(str(work_id), None)
 
     def clear(self) -> None:
         self._entries.clear()
@@ -305,6 +310,7 @@ class CommentReplyDrawer(QFrame):
         super().__init__(parent)
         self._theme = "dark"
         self._comments: list[Any] = []
+        self._translation_mode: str = "auto"
         self._is_open = False
         self.setObjectName("gallery_comment_drawer")
         self.setProperty("controlId", "gallery_comment_drawer")
@@ -343,6 +349,10 @@ class CommentReplyDrawer(QFrame):
         self.apply_theme(self._theme)
         self.retranslate()
         self.hide()
+
+    def set_translation_mode(self, mode: str) -> None:
+        self._translation_mode = mode if mode in ("auto", "original", "same_language") else "auto"
+        self._rebuild_rows()
 
     def is_open(self) -> bool:
         return self._is_open
@@ -404,6 +414,7 @@ class CommentReplyDrawer(QFrame):
             f" QPushButton {{ background: transparent; color: {p['textMuted']};"
             f" border: none; font-size: {FONT['caption']}pt; padding: 2px 4px; }}"
             f" QPushButton:hover {{ color: {p['text']}; }}"
+            f" QPushButton:checked {{ color: {p['accent']}; font-weight: {WEIGHT['semibold']}; }}"
         )
 
     def _clear_rows(self) -> None:
@@ -411,16 +422,18 @@ class CommentReplyDrawer(QFrame):
             item = self.list_layout.takeAt(0)
             w = item.widget()
             if w is not None:
+                w.hide()
+                w.setParent(None)
                 w.deleteLater()
 
     def _rebuild_rows(self) -> None:
         self._clear_rows()
-        if not self._comments:
-            empty = QLabel(_tr("gallery_comments_empty"), self.list_container)
-            empty.setObjectName("commentEmpty")
-            self.list_layout.addWidget(empty)
-            self.list_layout.addStretch(1)
-            return
+        lang = current_ui_language()
+        mode = self._translation_mode
+
+        def add_card(comment, *, is_reply):
+            if should_display_comment_for_mode(comment, mode, lang):
+                self.list_layout.addWidget(self._make_comment_card(comment, is_reply=is_reply))
 
         top_level: list[Any] = []
         replies_by_parent: dict[str, list[Any]] = {}
@@ -473,11 +486,15 @@ class CommentReplyDrawer(QFrame):
 
         for comment in top_level:
             cid = str(_first_field(comment, ("id", "comment_id"), "") or "")
-            self.list_layout.addWidget(self._make_comment_card(comment, is_reply=False))
+            add_card(comment, is_reply=False)
             for reply in replies_by_parent.get(cid, ()):
-                self.list_layout.addWidget(self._make_comment_card(reply, is_reply=True))
+                add_card(reply, is_reply=True)
         for reply in orphan_replies:
-            self.list_layout.addWidget(self._make_comment_card(reply, is_reply=True))
+            add_card(reply, is_reply=True)
+        if self.list_layout.count() == 0:
+            empty = QLabel(_tr("gallery_comments_empty"), self.list_container)
+            empty.setObjectName("commentEmpty")
+            self.list_layout.addWidget(empty)
         self.list_layout.addStretch(1)
 
     def _make_comment_card(self, comment: Any, *, is_reply: bool) -> QWidget:
@@ -498,6 +515,7 @@ class CommentReplyDrawer(QFrame):
         )
         content = str(_field(comment, "content", "") or "")
         upvotes = int(_first_field(comment, ("upvotes", "upvote_count"), 0) or 0)
+        viewer_vote = _normalize_vote(_first_field(comment, ("viewer_vote", "my_vote"), 0))
         is_author = bool(
             _first_field(comment, ("is_author", "is_work_author", "is_author_reply"), False)
         )
@@ -515,7 +533,13 @@ class CommentReplyDrawer(QFrame):
         meta.addStretch(1)
         layout.addLayout(meta)
 
-        lbl_body = QLabel(content, card)
+        display_text, is_translated = resolve_comment_translation(
+            comment,
+            mode=self._translation_mode,
+            target_lang=current_ui_language(),
+        )
+        lbl_body = QLabel(display_text, card)
+        lbl_body.setTextFormat(Qt.TextFormat.PlainText)
         lbl_body.setObjectName("commentBody")
         lbl_body.setWordWrap(True)
         layout.addWidget(lbl_body)
@@ -525,9 +549,14 @@ class CommentReplyDrawer(QFrame):
         btn_up = QPushButton(f"\u25b2 {upvotes}", card)
         actionable = is_actionable_comment_id(cid)
         btn_up.setEnabled(actionable)
+        btn_up.setCheckable(True)
+        btn_up.setChecked(viewer_vote == 1)
         btn_up.setCursor(Qt.CursorShape.PointingHandCursor)
         if actionable:
-            btn_up.clicked.connect(lambda _c=False, i=cid: self.comment_voted.emit(i, 1))
+            next_vote = 0 if viewer_vote == 1 else 1
+            btn_up.clicked.connect(
+                lambda _c=False, i=cid, nv=next_vote: self.comment_voted.emit(i, nv)
+            )
         actions.addWidget(btn_up)
 
         btn_rep = QPushButton(_tr("gallery_btn_report"), card)
@@ -536,6 +565,24 @@ class CommentReplyDrawer(QFrame):
         if actionable:
             btn_rep.clicked.connect(lambda _c=False, i=cid, b=btn_rep: self._open_report_menu(i, b))
         actions.addWidget(btn_rep)
+
+        if is_translated:
+            btn_toggle = QPushButton(_tr("gallery_danmaku_toggle_original"), card)
+            btn_toggle.setObjectName("btn_toggle_comment_translation")
+            btn_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+            showing_translated = [True]
+
+            def _toggle_translation(_checked: bool = False) -> None:
+                showing_translated[0] = not showing_translated[0]
+                lbl_body.setText(display_text if showing_translated[0] else content)
+                btn_toggle.setText(
+                    _tr("gallery_danmaku_toggle_original")
+                    if showing_translated[0]
+                    else _tr("gallery_danmaku_toggle_translated")
+                )
+
+            btn_toggle.clicked.connect(_toggle_translation)
+            actions.addWidget(btn_toggle)
 
         if actionable and can_delete:
             btn_del = QPushButton(_tr("gallery_comments_delete"), card)
@@ -589,6 +636,7 @@ class GalleryShowcaseWidget(QWidget):
         danmaku_settings: DanmakuSettings | None = None,
         prefetch_callback: Callable[[str], None] | None = None,
         clock: Callable[[], float] | None = None,
+        auto_retranslate: bool = False,
     ) -> None:
         super().__init__(parent)
         self.setObjectName("gallery_showcase")
@@ -607,10 +655,13 @@ class GalleryShowcaseWidget(QWidget):
             blur_cache if blur_cache is not None else StaticBlurBackgroundCache()
         )
         self._cached_bg_pixmap: QPixmap | None = None
-        self._cached_bg_key: tuple[str, int, int, int] | None = None
+        self._cached_bg_key: tuple[str, int] | None = None
+        self._cached_fg_pixmap: QPixmap | None = None
+        self._cached_fg_key: tuple[str, int, int, float, int] | None = None
         self._prefetch_callback = prefetch_callback
         self._prefetched_ids: set[str] = set()
         self._allow_background_prefetch: bool = True
+        self._top_right_inset: int = 0
 
         # Floating danmaku layer sits over the painted canvas and below corner HUD
         # Interactive controls share the drawer's stacking context.
@@ -619,6 +670,7 @@ class GalleryShowcaseWidget(QWidget):
             settings=danmaku_settings,
             clock=clock,
             controls_parent=self,
+            auto_retranslate=False,
         )
         self.danmaku_overlay.composer_opened.connect(self._on_composer_opened)
         self.danmaku_overlay.composer_closed.connect(self._on_composer_closed)
@@ -670,10 +722,13 @@ class GalleryShowcaseWidget(QWidget):
         self.lbl_openfocus_badge = QLabel("", self.meta_panel)
         self.lbl_openfocus_badge.setObjectName("gallery_openfocus_badge")
         self.lbl_openfocus_badge.setProperty("controlId", "gallery_openfocus_badge")
+        self.lbl_openfocus_badge.setSizePolicy(
+            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
+        )
         self.lbl_openfocus_badge.hide()
 
         author_row.addWidget(self.btn_author)
-        author_row.addWidget(self.lbl_openfocus_badge)
+        author_row.addWidget(self.lbl_openfocus_badge, 0, Qt.AlignmentFlag.AlignVCenter)
         author_row.addStretch(1)
         meta_layout.addLayout(author_row)
 
@@ -735,6 +790,23 @@ class GalleryShowcaseWidget(QWidget):
             action_layout.addWidget(btn)
         self.action_bar.hide()
 
+        # Left/right slide navigation buttons for manual browsing (shown when multiple works exist)
+        self.btn_prev_slide = QPushButton("\u2039", self)
+        self.btn_prev_slide.setObjectName("btn_gallery_prev_slide")
+        self.btn_prev_slide.setProperty("controlId", "btn_gallery_prev_slide")
+        self.btn_prev_slide.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_prev_slide.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_prev_slide.clicked.connect(self._on_prev_clicked)
+        self.btn_prev_slide.hide()
+
+        self.btn_next_slide = QPushButton("\u203a", self)
+        self.btn_next_slide.setObjectName("btn_gallery_next_slide")
+        self.btn_next_slide.setProperty("controlId", "btn_gallery_next_slide")
+        self.btn_next_slide.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_next_slide.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_next_slide.clicked.connect(self._on_next_clicked)
+        self.btn_next_slide.hide()
+
         # Slideshow timer (default 5 seconds)
         self._slide_timer = QTimer(self)
         self._slide_timer.setInterval(int(round(self._slide_interval_sec * 1000)))
@@ -744,7 +816,8 @@ class GalleryShowcaseWidget(QWidget):
         self.retranslate()
         self._raise_hud_layers()
 
-        trans.languageChanged.connect(self.retranslate)
+        if auto_retranslate:
+            trans.languageChanged.connect(self.retranslate)
 
     # ------------------------------------------------------------- properties
 
@@ -809,6 +882,8 @@ class GalleryShowcaseWidget(QWidget):
             self._current_index = -1
             self._cached_bg_pixmap = None
             self._cached_bg_key = None
+            self._cached_fg_pixmap = None
+            self._cached_fg_key = None
             self.danmaku_overlay.clear()
             self.comment_drawer.set_comments([])
             self._update_hud_for_current()
@@ -833,34 +908,87 @@ class GalleryShowcaseWidget(QWidget):
                     self._blur_cache.invalidate_work(work_id)
                 work.pixmap = pm
                 if idx == self._current_index:
+                    self._cached_fg_pixmap = None
+                    self._cached_fg_key = None
                     self._ensure_static_blur()
                     self.update()
+                self._evict_distant_slide_pixmaps()
                 if self._fusion_busy:
                     self._select_cached_slide_if_needed()
                 return True
         return False
 
+    def _show_work_comments(self, work: ShowcaseWork) -> None:
+        self.danmaku_overlay.set_comments(work.comments, work_id=work.id)
+        self.comment_drawer.set_comments(work.comments)
+
     def set_work_comments(self, work_id: str, comments: Sequence[Any]) -> bool:
         for idx, work in enumerate(self._works):
             if work.id == work_id:
-                work.comments = list(comments)
-                work.comment_count = len(work.comments)
+                incoming_ids = {_field(item, "id", "") for item in comments}
+                pending = [item for item in work.comments
+                           if str(_field(item, "id", "")).startswith("local-")
+                           and _field(item, "id", "") not in incoming_ids]
+                work.comments = [*comments, *pending]
+                work.comment_count = max(work.comment_count, len(work.comments))
                 if idx == self._current_index:
-                    self.danmaku_overlay.set_comments(work.comments, work_id=work.id)
-                    self.comment_drawer.set_comments(work.comments)
+                    self._show_work_comments(work)
                     self._update_hud_for_current()
                 return True
         return False
+
+    def pending_danmaku_id(self, work_id: str) -> str:
+        work = next((work for work in self._works if work.id == work_id), None)
+        if work is None or not work.comments:
+            return ""
+        comment_id = str(_field(work.comments[-1], "id", ""))
+        return comment_id if comment_id.startswith("local-") else ""
+
+    def reconcile_danmaku(self, work_id: str, pending_id: str, confirmed: GalleryComment | None) -> None:
+        for work in self._works:
+            if work.id != work_id:
+                continue
+            count_before = len(work.comments)
+            if pending_id:
+                work.comments = [item for item in work.comments if _field(item, "id", "") != pending_id]
+            if confirmed is not None and all(_field(item, "id", "") != confirmed.id for item in work.comments):
+                work.comments.insert(0, confirmed)
+            if confirmed is None:
+                work.comment_count -= count_before - len(work.comments)
+            work.comment_count = max(work.comment_count, len(work.comments))
+            if work is self.current_work:
+                self._show_work_comments(work)
+                self._update_hud_for_current()
+            break
+
+    def confirm_comment_vote(
+        self, comment_id: str, *, viewer_vote: str, upvotes: int, downvotes: int
+    ) -> set[str]:
+        changed = set()
+        for work in self._works:
+            for index, comment in enumerate(work.comments):
+                if not isinstance(comment, GalleryComment) or comment.id != comment_id:
+                    continue
+                work.comments[index] = replace(comment, viewer_vote=viewer_vote, upvotes=upvotes, downvotes=downvotes)
+                changed.add(work.id)
+                if work is self.current_work:
+                    vote = {"up": 1, "down": -1}.get(viewer_vote, 0)
+                    self.danmaku_overlay.confirm_vote(comment_id, vote, upvotes, downvotes)
+                    self.comment_drawer.set_comments(work.comments)
+                break
+        return changed
 
     def show_slide(self, index: int) -> bool:
         if not self._works:
             return False
         idx = int(index) % len(self._works)
         self._current_index = idx
+        self._cached_fg_pixmap = None
+        self._cached_fg_key = None
         work = self._works[idx]
+        self._evict_distant_slide_pixmaps()
         self._ensure_static_blur()
-        self.danmaku_overlay.set_comments(work.comments, work_id=work.id)
-        self.comment_drawer.set_comments(work.comments)
+        self._show_work_comments(work)
         self._update_hud_for_current()
         self._layout_overlays()
         self._sync_slideshow_timer()
@@ -891,6 +1019,7 @@ class GalleryShowcaseWidget(QWidget):
         if self._fusion_busy == new_busy:
             return
         self._fusion_busy = new_busy
+        self.danmaku_overlay.set_fusion_busy(new_busy)
         if self._fusion_busy:
             self._select_cached_slide_if_needed()
         else:
@@ -925,6 +1054,7 @@ class GalleryShowcaseWidget(QWidget):
     def set_danmaku_settings(self, settings: DanmakuSettings) -> None:
         norm = settings.normalized()
         self.danmaku_overlay.set_settings(norm)
+        self.comment_drawer.set_translation_mode(norm.translation_mode)
         self.danmaku_settings_changed.emit(norm)
 
     def set_danmaku_limits(
@@ -1000,6 +1130,23 @@ class GalleryShowcaseWidget(QWidget):
             self._prefetch_callback(next_work.id)
         self.prefetch_requested.emit(next_work.id)
 
+    def _evict_distant_slide_pixmaps(self, keep_radius: int = 2) -> None:
+        """Keep decoded pixmaps only for ``current +- keep_radius`` reloadable slides."""
+        n = len(self._works)
+        if n <= keep_radius * 2 + 1 or self._current_index < 0:
+            return
+        cur = self._current_index
+        for idx, work in enumerate(self._works):
+            dist = min(abs(idx - cur), n - abs(idx - cur))
+            if dist <= keep_radius or work.pixmap is None:
+                continue
+            has_local_file = bool(work.local_path and os.path.isfile(work.local_path))
+            if has_local_file:
+                work.pixmap = None
+            elif work.image_url:
+                work.pixmap = None
+                self._prefetched_ids.discard(work.id)
+
     def _ensure_static_blur(self) -> None:
         work = self.current_work
         if work is None:
@@ -1011,17 +1158,64 @@ class GalleryShowcaseWidget(QWidget):
             self._cached_bg_pixmap = None
             self._cached_bg_key = None
             return
-        sz = self.size()
-        w = max(1, sz.width())
-        h = max(1, sz.height())
-        key = (work.id, w, h, source.cacheKey())
+        key = (work.id, source.cacheKey())
         if self._cached_bg_key == key and self._cached_bg_pixmap is not None:
             return
-        self._cached_bg_pixmap = self._blur_cache.get_or_build(work.id, source, QSize(w, h))
+        self._cached_bg_pixmap = self._blur_cache.get_or_build(work.id, source, self.size())
         self._cached_bg_key = key
+
+    def _scaled_foreground_pixmap(
+        self, work: ShowcaseWork, source: QPixmap, target_size: QSize, dpr: float
+    ) -> QPixmap:
+        tw = max(1, target_size.width())
+        th = max(1, target_size.height())
+        rounded_dpr = round(max(1.0, dpr), 2)
+        key = (work.id, tw, th, rounded_dpr, source.cacheKey())
+        if self._cached_fg_key == key and self._cached_fg_pixmap is not None:
+            return self._cached_fg_pixmap
+        pw = max(1, int(round(tw * rounded_dpr)))
+        ph = max(1, int(round(th * rounded_dpr)))
+        scaled = source.scaled(
+            QSize(pw, ph),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        scaled.setDevicePixelRatio(rounded_dpr)
+        self._cached_fg_pixmap = scaled
+        self._cached_fg_key = key
+        return scaled
+
+    def set_top_right_inset(self, px: int) -> None:
+        """Reserve horizontal space at top-right (e.g., frameless window controls)."""
+        self._top_right_inset = max(0, int(px))
+        self._layout_overlays()
+
+    def _on_prev_clicked(self) -> None:
+        if self.previous_slide() and self._slide_timer.isActive():
+            self._slide_timer.start()
+
+    def _on_next_clicked(self) -> None:
+        if self.next_slide() and self._slide_timer.isActive():
+            self._slide_timer.start()
+
+    def keyPressEvent(self, event: QKeyEvent | None) -> None:
+        if event is not None and not self.danmaku_overlay.is_composing():
+            if event.key() == Qt.Key.Key_Left and self.previous_slide():
+                if self._slide_timer.isActive():
+                    self._slide_timer.start()
+                event.accept()
+                return
+            if event.key() == Qt.Key.Key_Right and self.next_slide():
+                if self._slide_timer.isActive():
+                    self._slide_timer.start()
+                event.accept()
+                return
+        super().keyPressEvent(event)
 
     def _raise_hud_layers(self) -> None:
         self.danmaku_overlay.raise_()
+        self.btn_prev_slide.raise_()
+        self.btn_next_slide.raise_()
         self.lbl_source_badge.raise_()
         self.meta_panel.raise_()
         self.action_bar.raise_()
@@ -1037,11 +1231,22 @@ class GalleryShowcaseWidget(QWidget):
 
         self.danmaku_overlay.setGeometry(0, 0, w, h)
 
+        # Edge previous/next slide controls
+        nav_w, nav_h = 36, 56
+        nav_y = max(margin, (h - nav_h) // 2)
+        self.btn_prev_slide.setGeometry(margin, nav_y, nav_w, nav_h)
+        self.btn_next_slide.setGeometry(max(margin, w - margin - nav_w), nav_y, nav_w, nav_h)
+
         # Top-right source badge
         self.lbl_source_badge.adjustSize()
         badge_w = max(self.lbl_source_badge.sizeHint().width() + SPACE["md"], 48)
         badge_h = max(self.lbl_source_badge.sizeHint().height() + 4, 24)
-        self.lbl_source_badge.setGeometry(w - badge_w - margin, margin, badge_w, badge_h)
+        self.lbl_source_badge.setGeometry(
+            max(margin, w - badge_w - margin - self._top_right_inset),
+            margin,
+            badge_w,
+            badge_h,
+        )
 
         # Bottom-right action bar
         self.action_bar.adjustSize()
@@ -1061,11 +1266,15 @@ class GalleryShowcaseWidget(QWidget):
 
         # Right-side comment/reply drawer
         drawer_w = max(240, min(340, int(w * 0.36)))
-        drawer_h = max(1, bar_y - margin * 2)
-        self.comment_drawer.setGeometry(w - drawer_w - margin, margin, drawer_w, drawer_h)
+        drawer_top = margin + 36 if self._top_right_inset > 0 else margin
+        drawer_h = max(1, bar_y - drawer_top - margin)
+        self.comment_drawer.setGeometry(w - drawer_w - margin, drawer_top, drawer_w, drawer_h)
 
     def _update_hud_for_current(self) -> None:
         work = self.current_work
+        has_multi = len(self._works) > 1
+        self.btn_prev_slide.setVisible(has_multi)
+        self.btn_next_slide.setVisible(has_multi)
         if work is None:
             self.lbl_source_badge.hide()
             self.meta_panel.hide()
@@ -1087,10 +1296,14 @@ class GalleryShowcaseWidget(QWidget):
             self.lbl_source_badge.hide()
 
         # Bottom-left author, OpenFocus badge, EXIF summary
-        self.btn_author.setText(work.author_nickname or work.author_id)
-        self.btn_author.setVisible(bool(work.author_nickname or work.author_id))
-        self.lbl_openfocus_badge.setText(_tr("gallery_badge_openfocus"))
-        self.lbl_openfocus_badge.setVisible(bool(work.openfocus_badge))
+        author_text = (work.author_nickname or work.author_id or "").strip()
+        badge_text = _tr("gallery_badge_openfocus").strip()
+        self.btn_author.setText(author_text)
+        self.btn_author.setVisible(bool(author_text))
+        self.lbl_openfocus_badge.setText("◆" if author_text.casefold() == badge_text.casefold() else badge_text)
+        self.lbl_openfocus_badge.setAccessibleName(badge_text)
+        self.lbl_openfocus_badge.setToolTip(_tr("gallery_publish_openfocus_badge"))
+        self.lbl_openfocus_badge.setVisible(work.openfocus_badge)
         exif_line = format_exif_summary(work.exif)
         self.lbl_exif.setText(exif_line)
         self.lbl_exif.setVisible(bool(exif_line))
@@ -1103,6 +1316,7 @@ class GalleryShowcaseWidget(QWidget):
         self.btn_like.setText(f"{heart} {work.like_count}")
 
         self.btn_comment.setText(f"\U0001f4ac {work.comment_count}")
+        self.danmaku_overlay.composer.set_comment_count(work.comment_count)
 
         self.btn_download.setVisible(bool(work.allow_download))
         self.btn_download.setEnabled(bool(work.allow_download))
@@ -1148,7 +1362,7 @@ class GalleryShowcaseWidget(QWidget):
         if work is None:
             return
         local_item = {
-            "id": f"local-{len(work.comments) + 1}",
+            "id": f"local-{uuid4().hex}",
             "work_id": work.id,
             "content": content,
             "is_reply": False,
@@ -1158,8 +1372,8 @@ class GalleryShowcaseWidget(QWidget):
         work.comments.append(local_item)
         work.comment_count += 1
         if work is self.current_work:
-            self.danmaku_overlay.add_comment(local_item, immediate=True)
-            self.danmaku_overlay.composer.set_comment_count(work.comment_count)
+            self.danmaku_overlay.add_comment(local_item, immediate=True, is_own=True)
+            self.danmaku_overlay.show_toast(_tr("gallery_danmaku_sent_toast"))
             self.comment_drawer.set_comments(work.comments)
             self._update_hud_for_current()
             self._layout_overlays()
@@ -1217,9 +1431,10 @@ class GalleryShowcaseWidget(QWidget):
             f" font-size: {FONT['subtitle']}pt; font-weight: {WEIGHT['semibold']}; }}"
             f" QPushButton#btn_gallery_author:hover {{ color: {accent}; }}"
             f" QLabel#gallery_openfocus_badge {{"
-            f" background-color: {accent}; color: {p['textOnAccent']};"
-            f" border-radius: {RADIUS['xs']}px; padding: 1px 6px;"
-            f" font-size: {FONT['caption']}pt; font-weight: {WEIGHT['semibold']}; }}"
+            f" background-color: {rgba(accent, 0.16)}; color: {p['accentSoftText']};"
+            f" border: 1px solid {rgba(accent, 0.40)};"
+            f" border-radius: {RADIUS['xs']}px; padding: 1px 5px;"
+            f" font-size: 8pt; font-weight: {WEIGHT['medium']}; }}"
             f" QLabel#gallery_exif_summary {{ color: {p['textMuted']};"
             f" font-size: {FONT['caption']}pt; background: transparent; }}"
             f" QFrame#gallery_action_bar QPushButton {{"
@@ -1228,6 +1443,12 @@ class GalleryShowcaseWidget(QWidget):
             f" padding: 4px 8px; font-size: {FONT['body']}pt; }}"
             f" QFrame#gallery_action_bar QPushButton:hover {{"
             f" background-color: {glass_hover}; }}"
+            f" QPushButton#btn_gallery_prev_slide, QPushButton#btn_gallery_next_slide {{"
+            f" background-color: {rgba(p['bg'], 0.48)}; color: {p['text']};"
+            f" border: 1px solid {rgba(p['borderStrong'], 0.42)};"
+            f" border-radius: 18px; font-size: 20pt; padding: 0 0 3px 0; }}"
+            f" QPushButton#btn_gallery_prev_slide:hover, QPushButton#btn_gallery_next_slide:hover {{"
+            f" background-color: {rgba(p['surfaceActive'], 0.85)}; border-color: {accent}; }}"
             f" QPushButton#btn_gallery_like:checked {{"
             f" color: {danger}; font-weight: {WEIGHT['semibold']}; }}"
         )
@@ -1280,18 +1501,448 @@ class GalleryShowcaseWidget(QWidget):
             painter.end()
             return
 
-        # 1. Draw cached static Gaussian-blurred background (zero black bars;
-        #    NEVER recomputed per paint frame!).
-        if self._cached_bg_pixmap is not None and not self._cached_bg_pixmap.isNull():
-            painter.drawPixmap(rect, self._cached_bg_pixmap)
+        # 1. Draw cached 160 px blurred proxy stretched to viewport (zero black bars;
+        #    NEVER recomputed per paint or resize frame!).
+        bg = self._cached_bg_pixmap
+        if bg is not None and not bg.isNull() and bg.width() > 0 and bg.height() > 0 and rect.width() > 0 and rect.height() > 0:
+            bg_w = float(bg.width())
+            bg_h = float(bg.height())
+            scale = max(rect.width() / bg_w, rect.height() / bg_h)
+            crop_w = min(bg_w, rect.width() / scale)
+            crop_h = min(bg_h, rect.height() / scale)
+            src_rect = QRectF((bg_w - crop_w) / 2.0, (bg_h - crop_h) / 2.0, crop_w, crop_h)
+            painter.drawPixmap(QRectF(rect), bg, src_rect)
         else:
             painter.fillRect(rect, QColor(palette(self._theme)["canvas"]))
 
-        # 2. Draw centered lossless foreground image preserving aspect ratio.
+        # 2. Draw cached viewport-fitted lossless foreground image (1:1 blit).
         scaled_size = fg.size()
         scaled_size.scale(rect.size(), Qt.AspectRatioMode.KeepAspectRatio)
         x = (rect.width() - scaled_size.width()) // 2
         y = (rect.height() - scaled_size.height()) // 2
         target = QRect(x, y, scaled_size.width(), scaled_size.height())
-        painter.drawPixmap(target, fg)
+        dpr = float(self.devicePixelRatioF() or 1.0)
+        scaled_fg = self._scaled_foreground_pixmap(work, fg, target.size(), dpr)
+        painter.drawPixmap(target.topLeft(), scaled_fg)
         painter.end()
+
+
+class GalleryShowcaseWindow(QWidget):
+    """Standalone non-modal window hosting the OpenFocus Gallery Showcase.
+
+    Decoupled from the main window's source/result canvas so the workspace stays
+    clean at startup, while optionally opening during active fusion waits.
+    """
+
+    return_to_workspace_requested = pyqtSignal()
+    window_closed = pyqtSignal()
+
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        *,
+        slide_interval_sec: float = 5.0,
+        blur_cache: StaticBlurBackgroundCache | None = None,
+        danmaku_settings: DanmakuSettings | None = None,
+        auto_show_during_fusion: bool = True,
+        clock: Callable[[], float] | None = None,
+    ) -> None:
+        del auto_show_during_fusion
+        super().__init__(parent, Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint)
+        self.setObjectName("gallery_showcase_window")
+        self.setProperty("controlId", "gallery_showcase_window")
+        self.setMinimumSize(640, 420)
+        self.resize(960, 620)
+        self.setMouseTracking(True)
+        self._theme = "dark"
+        self._fusion_done = False
+        self._drag_offset: QPoint | None = None
+        self._resize_margin: int = 6
+        self._resize_edges: Qt.Edge = Qt.Edge(0)
+        self._resize_start_global: QPoint | None = None
+        self._resize_start_geom: QRect | None = None
+        self._edge_cursor_active: bool = False
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        self.showcase = GalleryShowcaseWidget(
+            self,
+            slide_interval_sec=slide_interval_sec,
+            blur_cache=blur_cache,
+            danmaku_settings=danmaku_settings,
+            clock=clock,
+            auto_retranslate=False,
+        )
+        self.showcase.set_top_right_inset(108)
+        root.addWidget(self.showcase, 1)
+
+        # Floating top-right frameless window controls (minimize, maximize, close)
+        self.window_controls = QFrame(self)
+        self.window_controls.setObjectName("gallery_window_controls")
+        self.window_controls.setProperty("controlId", "gallery_window_controls")
+        self.window_controls.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        wc_lay = QHBoxLayout(self.window_controls)
+        wc_lay.setContentsMargins(4, 3, 4, 3)
+        wc_lay.setSpacing(2)
+
+        self.btn_win_min = QPushButton("\u2212", self.window_controls)
+        self.btn_win_min.setObjectName("btn_gallery_win_min")
+        self.btn_win_min.setFixedSize(26, 24)
+        self.btn_win_min.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_win_min.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_win_min.clicked.connect(self.showMinimized)
+
+        self.btn_win_max = QPushButton("\u25a1", self.window_controls)
+        self.btn_win_max.setObjectName("btn_gallery_win_max")
+        self.btn_win_max.setFixedSize(26, 24)
+        self.btn_win_max.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_win_max.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_win_max.clicked.connect(self._toggle_maximized)
+
+        self.btn_win_close = QPushButton("\u2715", self.window_controls)
+        self.btn_win_close.setObjectName("btn_gallery_win_close")
+        self.btn_win_close.setFixedSize(26, 24)
+        self.btn_win_close.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_win_close.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_win_close.clicked.connect(self._on_return_clicked)
+
+        wc_lay.addWidget(self.btn_win_min)
+        wc_lay.addWidget(self.btn_win_max)
+        wc_lay.addWidget(self.btn_win_close)
+
+        self.fusion_bar = QFrame(self)
+        self.fusion_bar.setObjectName("galleryFusionStatusBar")
+        self.fusion_bar.setProperty("controlId", "gallery_fusion_status_bar")
+        bar_lay = QHBoxLayout(self.fusion_bar)
+        bar_lay.setContentsMargins(SPACE["md"], SPACE["xs"], SPACE["md"], SPACE["xs"])
+        bar_lay.setSpacing(SPACE["sm"])
+
+        self.lbl_fusion_status = QLabel("", self.fusion_bar)
+        self.lbl_fusion_status.setObjectName("galleryFusionStatusLabel")
+        self.lbl_fusion_status.setProperty("controlId", "gallery_fusion_status_label")
+        bar_lay.addWidget(self.lbl_fusion_status)
+
+        self.fusion_progress = QProgressBar(self.fusion_bar)
+        self.fusion_progress.setObjectName("galleryFusionProgress")
+        self.fusion_progress.setTextVisible(False)
+        self.fusion_progress.setFixedHeight(6)
+        self.fusion_progress.setMinimumWidth(140)
+        self.fusion_progress.setMaximumWidth(260)
+        self.fusion_progress.setRange(0, 0)
+        bar_lay.addWidget(self.fusion_progress)
+
+        bar_lay.addStretch(1)
+
+        self.btn_return = QPushButton("", self.fusion_bar)
+        self.btn_return.setObjectName("btn_gallery_return_workspace")
+        self.btn_return.setProperty("controlId", "btn_gallery_return_workspace")
+        self.btn_return.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_return.clicked.connect(self._on_return_clicked)
+        bar_lay.addWidget(self.btn_return)
+
+        self.fusion_bar.hide()
+        root.addWidget(self.fusion_bar)
+
+        for watched in (self.showcase, self.showcase.danmaku_overlay, self.fusion_bar):
+            watched.setMouseTracking(True)
+            watched.installEventFilter(self)
+
+        self._layout_window_controls()
+        self.apply_theme(self._theme)
+        self.retranslate()
+
+    def _resize_edges_at(self, pos: QPoint) -> Qt.Edge:
+        if self.isMaximized() or self.isFullScreen():
+            return Qt.Edge(0)
+        m = self._resize_margin
+        edges = Qt.Edge(0)
+        if pos.x() <= m:
+            edges |= Qt.Edge.LeftEdge
+        elif pos.x() >= self.width() - m:
+            edges |= Qt.Edge.RightEdge
+        if pos.y() <= m:
+            edges |= Qt.Edge.TopEdge
+        elif pos.y() >= self.height() - m:
+            edges |= Qt.Edge.BottomEdge
+        return edges
+
+    @staticmethod
+    def _cursor_for_edges(edges: Qt.Edge) -> Qt.CursorShape | None:
+        if (
+            edges == (Qt.Edge.LeftEdge | Qt.Edge.TopEdge)
+            or edges == (Qt.Edge.RightEdge | Qt.Edge.BottomEdge)
+        ):
+            return Qt.CursorShape.SizeFDiagCursor
+        if (
+            edges == (Qt.Edge.RightEdge | Qt.Edge.TopEdge)
+            or edges == (Qt.Edge.LeftEdge | Qt.Edge.BottomEdge)
+        ):
+            return Qt.CursorShape.SizeBDiagCursor
+        if edges in (Qt.Edge.LeftEdge, Qt.Edge.RightEdge):
+            return Qt.CursorShape.SizeHorCursor
+        if edges in (Qt.Edge.TopEdge, Qt.Edge.BottomEdge):
+            return Qt.CursorShape.SizeVerCursor
+        return None
+
+    def _update_edge_cursor(self, pos: QPoint) -> None:
+        shape = self._cursor_for_edges(self._resize_edges_at(pos))
+        if shape is not None:
+            self._edge_cursor_active = True
+            self.setCursor(shape)
+        elif self._edge_cursor_active:
+            self._edge_cursor_active = False
+            self.unsetCursor()
+
+    def _begin_edge_resize(self, edges: Qt.Edge, global_pos: QPoint) -> bool:
+        wh = self.windowHandle()
+        if wh is not None and wh.startSystemResize(edges):
+            return True
+        self._resize_edges = edges
+        self._resize_start_global = global_pos
+        self._resize_start_geom = self.geometry()
+        return True
+
+    def _apply_fallback_resize(self, global_pos: QPoint) -> None:
+        if self._resize_start_global is None or self._resize_start_geom is None:
+            return
+        delta = global_pos - self._resize_start_global
+        geom = QRect(self._resize_start_geom)
+        min_w = max(1, self.minimumWidth())
+        min_h = max(1, self.minimumHeight())
+        if self._resize_edges & Qt.Edge.LeftEdge:
+            new_left = min(geom.right() - min_w + 1, geom.left() + delta.x())
+            geom.setLeft(new_left)
+        elif self._resize_edges & Qt.Edge.RightEdge:
+            geom.setWidth(max(min_w, self._resize_start_geom.width() + delta.x()))
+        if self._resize_edges & Qt.Edge.TopEdge:
+            new_top = min(geom.bottom() - min_h + 1, geom.top() + delta.y())
+            geom.setTop(new_top)
+        elif self._resize_edges & Qt.Edge.BottomEdge:
+            geom.setHeight(max(min_h, self._resize_start_geom.height() + delta.y()))
+        self.setGeometry(geom)
+
+    def eventFilter(self, obj: Any, event: Any) -> bool:
+        if event is None or not is_qobject_alive(self):
+            return False
+        etype = event.type()
+        if etype in (
+            QEvent.Type.MouseMove,
+            QEvent.Type.MouseButtonPress,
+            QEvent.Type.MouseButtonRelease,
+        ):
+            try:
+                showcase = self.showcase if is_qobject_alive(self.showcase) else None
+                overlay = (
+                    showcase.danmaku_overlay
+                    if showcase is not None and is_qobject_alive(showcase.danmaku_overlay)
+                    else None
+                )
+                fusion_bar = self.fusion_bar if is_qobject_alive(self.fusion_bar) else None
+                if obj is showcase or obj is overlay or obj is fusion_bar:
+                    if etype == QEvent.Type.MouseMove:
+                        win_pt = self.mapFromGlobal(event.globalPosition().toPoint())
+                        if self._resize_edges and (event.buttons() & Qt.MouseButton.LeftButton):
+                            self._apply_fallback_resize(event.globalPosition().toPoint())
+                            return True
+                        if not (event.buttons() & Qt.MouseButton.LeftButton):
+                            self._update_edge_cursor(win_pt)
+                    elif etype == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+                        win_pt = self.mapFromGlobal(event.globalPosition().toPoint())
+                        edges = self._resize_edges_at(win_pt)
+                        if edges != Qt.Edge(0):
+                            self._begin_edge_resize(edges, event.globalPosition().toPoint())
+                            return True
+                    elif etype == QEvent.Type.MouseButtonRelease and self._resize_edges:
+                        self._resize_edges = Qt.Edge(0)
+                        self._resize_start_global = None
+                        self._resize_start_geom = None
+                        return True
+            except RuntimeError:
+                return False
+        try:
+            return super().eventFilter(obj, event)
+        except RuntimeError:
+            return False
+
+    def _toggle_maximized(self) -> None:
+        if self.isMaximized():
+            self.showNormal()
+        else:
+            self.showMaximized()
+
+    def _layout_window_controls(self) -> None:
+        self.window_controls.adjustSize()
+        sz = self.window_controls.sizeHint()
+        x = max(SPACE["xs"], self.width() - sz.width() - SPACE["md"])
+        y = SPACE["sm"]
+        self.window_controls.setGeometry(x, y, sz.width(), sz.height())
+        self.window_controls.raise_()
+
+    def resizeEvent(self, event: QResizeEvent | None) -> None:
+        super().resizeEvent(event)
+        self._layout_window_controls()
+
+    def mousePressEvent(self, event: QMouseEvent | None) -> None:
+        if event is not None and event.button() == Qt.MouseButton.LeftButton:
+            pt = event.position().toPoint()
+            edges = self._resize_edges_at(pt)
+            if edges != Qt.Edge(0):
+                self._begin_edge_resize(edges, event.globalPosition().toPoint())
+                event.accept()
+                return
+            # Drag frameless window from fusion status bar or top margin band outside interactive children
+            child = self.childAt(pt)
+            if child in (None, self.fusion_bar, self.lbl_fusion_status, self.fusion_progress) or pt.y() <= 32:
+                self._drag_offset = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent | None) -> None:
+        if event is not None:
+            if self._resize_edges and (event.buttons() & Qt.MouseButton.LeftButton):
+                self._apply_fallback_resize(event.globalPosition().toPoint())
+                event.accept()
+                return
+            if self._drag_offset is not None and (event.buttons() & Qt.MouseButton.LeftButton):
+                if not self.isMaximized():
+                    self.move(event.globalPosition().toPoint() - self._drag_offset)
+                event.accept()
+                return
+            self._update_edge_cursor(event.position().toPoint())
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent | None) -> None:
+        if self._resize_edges:
+            self._resize_edges = Qt.Edge(0)
+            self._resize_start_global = None
+            self._resize_start_geom = None
+            if event is not None:
+                event.accept()
+            return
+        if self._drag_offset is not None:
+            self._drag_offset = None
+            if event is not None:
+                event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent | None) -> None:
+        if event is not None and event.button() == Qt.MouseButton.LeftButton:
+            pt = event.position().toPoint()
+            child = self.childAt(pt)
+            if child in (None, self.fusion_bar, self.lbl_fusion_status) or pt.y() <= 32:
+                self._toggle_maximized()
+                event.accept()
+                return
+        super().mouseDoubleClickEvent(event)
+
+    def set_fusion_in_progress(self, text: str = "", *, done: int = 0, total: int = 0) -> None:
+        self._fusion_done = False
+        self.lbl_fusion_status.setText(text or _tr("gallery_fusion_waiting_status"))
+        if total > 0:
+            self.fusion_progress.setRange(0, int(total))
+            self.fusion_progress.setValue(min(max(0, int(done)), int(total)))
+        else:
+            self.fusion_progress.setRange(0, 0)
+        self.fusion_progress.show()
+        if self.btn_return.property("primary") is not False:
+            self.btn_return.setProperty("primary", False)
+            self.btn_return.style().unpolish(self.btn_return)
+            self.btn_return.style().polish(self.btn_return)
+        self.btn_return.setText(_tr("gallery_fusion_return_btn"))
+        self.fusion_bar.show()
+
+    def set_fusion_completed(self) -> None:
+        self._fusion_done = True
+        self.lbl_fusion_status.setText(_tr("gallery_fusion_done_status"))
+        self.fusion_progress.setRange(0, 1)
+        self.fusion_progress.setValue(1)
+        if self.btn_return.property("primary") is not True:
+            self.btn_return.setProperty("primary", True)
+            self.btn_return.style().unpolish(self.btn_return)
+            self.btn_return.style().polish(self.btn_return)
+        self.btn_return.setText(_tr("gallery_fusion_view_result_btn"))
+        self.fusion_bar.show()
+
+    def hide_fusion_bar(self) -> None:
+        self._fusion_done = False
+        self.fusion_bar.hide()
+
+    def set_works(self, works: Sequence[Any], *, start_index: int = 0) -> None:
+        if is_qobject_alive(self.showcase):
+            self.showcase.set_works(works, start_index=start_index)
+
+    def set_danmaku_settings(self, settings: DanmakuSettings) -> None:
+        if is_qobject_alive(self.showcase):
+            self.showcase.set_danmaku_settings(settings)
+
+    def set_fusion_busy(self, busy: bool) -> None:
+        if is_qobject_alive(self.showcase):
+            self.showcase.set_fusion_busy(busy)
+
+    def apply_theme(self, theme: str) -> None:
+        self._theme = theme
+        # Keep the showcase frame permanently dark for borderless photography immersion.
+        p = palette("dark")
+        glass = rgba(p["bg"], 0.72)
+        self.setStyleSheet(
+            f"QWidget#gallery_showcase_window {{ background-color: {p['canvas']}; border: none; }}"
+            f" QFrame#gallery_window_controls {{ background-color: {glass};"
+            f" border: 1px solid {rgba(p['borderStrong'], 0.50)};"
+            f" border-radius: {RADIUS['md']}px; }}"
+            f" QFrame#gallery_window_controls QPushButton {{ background: transparent;"
+            f" color: {p['textMuted']}; border: none; border-radius: {RADIUS['sm']}px;"
+            f" font-size: {FONT['body']}pt; padding: 0; }}"
+            f" QFrame#gallery_window_controls QPushButton:hover {{ color: {p['text']};"
+            f" background-color: {rgba(p['surfaceActive'], 0.85)}; }}"
+            f" QPushButton#btn_gallery_win_close:hover {{ color: #ffffff;"
+            f" background-color: {p['danger']}; }}"
+            f" QFrame#galleryFusionStatusBar {{ background-color: {rgba(p['surface'], 0.96)};"
+            f" border-top: 1px solid {rgba(p['border'], 0.65)}; }}"
+            f" QLabel#galleryFusionStatusLabel {{ color: {p['text']};"
+            f" font-size: {FONT['caption']}pt; font-weight: {WEIGHT['medium']};"
+            " background: transparent; }"
+            f" QProgressBar#galleryFusionProgress {{ background: {p['bg']};"
+            f" border: none; border-radius: 3px; }}"
+            f" QProgressBar#galleryFusionProgress::chunk {{ background: {p['accent']};"
+            " border-radius: 3px; }"
+            f" QPushButton#btn_gallery_return_workspace {{ background: transparent;"
+            f" color: {p['textMuted']}; border: 1px solid {p['border']};"
+            f" border-radius: {RADIUS['sm']}px; padding: 3px 10px;"
+            f" font-size: {FONT['caption']}pt; font-weight: {WEIGHT['regular']}; }}"
+            f" QPushButton#btn_gallery_return_workspace:hover {{"
+            f" color: {p['text']}; background-color: {p['surfaceHover']};"
+            f" border-color: {p['borderStrong']}; }}"
+            f" QPushButton#btn_gallery_return_workspace[primary=\"true\"] {{"
+            f" background-color: {p['accent']}; color: {p['textOnAccent']}; border: none;"
+            f" padding: 4px 12px; font-weight: {WEIGHT['semibold']}; }}"
+            f" QPushButton#btn_gallery_return_workspace[primary=\"true\"]:hover {{"
+            f" background-color: {p['accentHover']}; }}"
+        )
+        if is_qobject_alive(self.showcase):
+            self.showcase.apply_theme(theme)
+
+    @pyqtSlot()
+    def retranslate(self) -> None:
+        self.setWindowTitle(_tr("gallery_showcase_window_title"))
+        self.btn_win_close.setToolTip(_tr("gallery_close"))
+        if self._fusion_done:
+            self.lbl_fusion_status.setText(_tr("gallery_fusion_done_status"))
+            self.btn_return.setText(_tr("gallery_fusion_view_result_btn"))
+        else:
+            if not self.lbl_fusion_status.text():
+                self.lbl_fusion_status.setText(_tr("gallery_fusion_waiting_status"))
+            self.btn_return.setText(_tr("gallery_fusion_return_btn"))
+        if is_qobject_alive(self.showcase):
+            self.showcase.retranslate()
+
+    def _on_return_clicked(self) -> None:
+        self.return_to_workspace_requested.emit()
+        self.hide()
+
+    def closeEvent(self, event: Any) -> None:
+        self.window_closed.emit()
+        super().closeEvent(event)

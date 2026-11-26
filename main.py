@@ -204,7 +204,6 @@ from controllers.label_manager import LabelManager
 from controllers.export_manager import ExportManager
 from controllers.transform_manager import TransformManager
 from controllers.batch_manager import BatchManager
-from controllers.gallery_controller import GalleryController
 from controllers.update_manager import (
     UpdateManager,
     STATE_DOWNLOADING,
@@ -546,12 +545,16 @@ class OpenFocus(QMainWindow):
         self.transform_manager = TransformManager(self)
         self.batch_manager = BatchManager(self)
         self.update_manager = UpdateManager(self)
+        from controllers.gallery_controller import GalleryController
         self.gallery_controller = GalleryController(self)
         from utils.usage_analytics import UsageAnalytics
         from PyQt6.QtCore import QTimer as _QTimer
         self.usage_analytics = UsageAnalytics(self)
         _QTimer.singleShot(0, self.usage_analytics.start)
-        _QTimer.singleShot(0, self.gallery_controller.start)
+        self._gallery_start_timer = _QTimer(self)
+        self._gallery_start_timer.setSingleShot(True)
+        self._gallery_start_timer.timeout.connect(self.gallery_controller.start)
+        self._gallery_start_timer.start(1500)
 
         # 初始化图像加载器
         self.image_loader = ImageStackLoader()
@@ -685,7 +688,6 @@ class OpenFocus(QMainWindow):
         self.result_control_bar = result_panel.control_bar
         self.result_slider = result_panel.slider
         self.live_preview_page = result_panel.live_preview_page
-        self.gallery_showcase_page = result_panel.gallery_showcase_page
         self.result_slider.actionTriggered.connect(self.render_manager.inspect_previous_output)
         # 连接右侧面板的ROI模式退出请求信号
         self.lbl_result_img.roiModeExitRequested.connect(self._on_roi_mode_exit_requested)
@@ -772,7 +774,6 @@ class OpenFocus(QMainWindow):
         for _attribute, _control in ((
                 "lbl_source_img", "view_source"),
                 ("lbl_result_img", "view_result"),
-                ("gallery_showcase_page", "gallery_showcase"),
                 ("wipe_widget", "wipe_compare"),
                 ("wipe_bar", "wipe_bar"),
                 ("view_stack", "result_view_stack"),
@@ -3850,6 +3851,19 @@ class OpenFocus(QMainWindow):
             return gallery.open_downloads_folder()
         return None
 
+    @property
+    def gallery_showcase_page(self):
+        """Return the standalone Gallery Showcase widget when created."""
+        gallery = getattr(self, 'gallery_controller', None)
+        return gallery.showcase if gallery is not None else None
+
+    def open_gallery_showcase(self):
+        """Open the standalone OpenFocus Gallery Showcase window."""
+        gallery = getattr(self, 'gallery_controller', None)
+        if gallery is not None:
+            return gallery.show_gallery_showcase(force=True)
+        return None
+
     def open_gallery_screensaver(self):
         """Launch the Fullscreen Always-on-Top Gallery Screensaver."""
         gallery = getattr(self, 'gallery_controller', None)
@@ -4638,6 +4652,9 @@ class OpenFocus(QMainWindow):
         from utils.logging_setup import log_action, get_logger
         shutdown_started = perf_counter()
         log_action("shutdown.started", restart=bool(getattr(self, '_restart_for_update', False)))
+        start_timer = getattr(self, "_gallery_start_timer", None)
+        if start_timer is not None:
+            start_timer.stop()
         gallery = getattr(self, "gallery_controller", None)
         if gallery is not None:
             gallery.shutdown()

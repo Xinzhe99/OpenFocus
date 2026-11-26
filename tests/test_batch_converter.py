@@ -510,6 +510,7 @@ def test_converter_mixed_queue_skips_unchanged_and_writes_resized_sibling(
 
 def test_converter_identifies_tiff_off_gui_thread(qapp, tmp_path, monkeypatch, clean_converter_format):
     from threading import Event, get_ident
+    from time import monotonic
     from PyQt6.QtTest import QSignalSpy
     from dialogs.batch_converter import BatchConverterDialog
     from locales import trans
@@ -535,7 +536,12 @@ def test_converter_identifies_tiff_off_gui_thread(qapp, tmp_path, monkeypatch, c
         assert dialog.format_example.text().endswith('原图.tif')
         ready = QSignalSpy(dialog.thumbnail_worker.ready)
         resume.set()
-        assert ready.wait(5000)
+        # The worker thread can emit before this thread starts to wait, and
+        # a wait can end early when something else leaves the event loop.
+        deadline = monotonic() + 5
+        while not len(ready) and monotonic() < deadline:
+            ready.wait(100)
+        assert len(ready)
         qapp.processEvents()
         assert not dialog.start.isEnabled()
         assert trans.t('converter_no_changes') in dialog.format_warning.text()

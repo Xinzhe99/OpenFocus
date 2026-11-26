@@ -387,6 +387,49 @@ def test_unified_depth_only_prefetches_when_both_sources_fit(monkeypatch):
     assert prefetch_modes == [False, True]
 
 
+def test_unified_resident_merge_charges_upload_buffers_before_prefetch(monkeypatch):
+    from core.source_frames import frame_resolution_bytes
+    from fusion_methods.openfocus_bc import openfocus_b_impl
+
+    shape = (64, 96, 3)
+    frames = [np.full(shape, level, np.uint16) for level in (1000, 30000, 60000)]
+    depth = np.zeros(shape[:2], np.float32)
+    depth[:, 48:] = 2
+    snapshot = resource_policy.ResourceSnapshot(available_ram=12 * GiB, total_ram=16 * GiB)
+    monkeypatch.setattr(resource_policy, 'probe_resources', lambda *a, **kw: snapshot)
+    monkeypatch.setattr(resource_policy, 'probe_memory', lambda *a, **kw: snapshot)
+    monkeypatch.setattr(_openfocus_gpu, '_free_vram', lambda _dev: (7 * GiB, 8 * GiB))
+    prefetch_window = _openfocus_gpu._prefetch_window
+    charged = []
+    merges = []
+
+    def record(host_budget, host_staging, *args, **kwargs):
+        charged.append((host_staging, merges[-1]._merge_ping_pong))
+        return prefetch_window(host_budget, host_staging, *args, **kwargs)
+
+    monkeypatch.setattr(_openfocus_gpu, '_prefetch_window', record)
+    fixed = {}
+    for merge, unified in [(_make_fake_merge(), unified) for unified in (False, True)]:
+        merge.device.host_unified_memory = unified
+        merge.failed = merge.used = False
+        merge.rows = shape[0]
+        merges.append(merge)
+        monkeypatch.setattr(_openfocus_gpu, 'Merge', lambda *args, merge=merge: merge)
+        charged.clear()
+        with resource_policy.process_budget(resource_policy.ProcessBudget(4 * GiB, 4 * GiB)):
+            openfocus_b_impl(frames, depth_override=depth, use_gpu=True)
+        assert merge.used and not merge.failed
+        assert len(charged) == 1
+        fixed[unified], ping_pong = charged[0]
+        assert ping_pong
+
+    # Two frame decodes and the uint16 result stay charged on both devices.
+    per_slot = frame_resolution_bytes(frames[0], metadata_only=True) + 2 * frames[0].nbytes
+    assert fixed[False] == 2 * per_slot + int(np.prod(shape)) * 2
+    # Unified memory also charges both uint16 upload buffers from the same RAM.
+    assert fixed[True] == fixed[False] + 2 * int(np.prod(shape)) * 2
+
+
 def test_iter_prefetched_order_context_serial_and_cancel():
     from fusion_methods import _openfocus_execution
 

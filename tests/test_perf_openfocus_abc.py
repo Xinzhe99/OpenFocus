@@ -169,6 +169,10 @@ def test_select_rows_a_avx2_vs_scalar_boundary_scores(dtype, has_bg, first, w):
     np.testing.assert_array_equal(res_avx[2], res_sca[2])
     if has_bg:
         np.testing.assert_array_equal(res_avx[3].view(np.uint32), res_sca[3].view(np.uint32))
+    elif first:
+        np.testing.assert_array_equal(res_avx[2], source.astype(np.uint16) * scale)
+        expected = 0 if np.all(res_avx[1] == 65535 * 16) else 1
+        assert res_avx[0] == expected
 
 
 @pytest.mark.parametrize("dtype", [np.uint8, np.uint16])

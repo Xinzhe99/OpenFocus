@@ -1,6 +1,8 @@
 """Consumer and session isolation contracts for the shipped ONNX models."""
 from collections import OrderedDict
 import json
+from pathlib import Path
+import subprocess
 import sys
 from types import SimpleNamespace
 
@@ -182,55 +184,48 @@ def test_cpu_session_logits_equal_a_session_planned_with_buffer_reuse(monkeypatc
         neural_runtime._clear_sessions()
 
 
-@pytest.mark.skipif(not sys.platform.startswith('linux'), reason='reads /proc/self/statm')
-def test_cpu_session_holds_its_working_set_only_while_it_runs(monkeypatch):
+@pytest.mark.skipif(not sys.platform.startswith('linux'), reason='uses Linux RSS counters')
+def test_cpu_session_holds_its_working_set_only_while_it_runs(isolated_process_env):
     pytest.importorskip('onnxruntime')
-    import os
-    import threading
+    # Large buffers freed by earlier tests can satisfy new arena allocations
+    # without increasing RSS. Start with a fresh allocator for this check.
+    result = subprocess.run(
+        [sys.executable, '-c',
+         'from tests.test_neural_runtime import _check_cpu_working_set; '
+         '_check_cpu_working_set()'],
+        cwd=Path(__file__).resolve().parents[1], env=isolated_process_env,
+        capture_output=True, text=True, timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
-    def resident():
-        with open('/proc/self/statm') as stream:
-            return int(stream.read().split()[1]) * os.sysconf('SC_PAGE_SIZE')
 
-    def run(session):
-        """Resident growth at the highest point of one run, and after it."""
-        before = peak = resident()
-        done = threading.Event()
+def _check_cpu_working_set():
+    def read_kib(path, key):
+        with open(path, encoding='ascii') as stream:
+            return next(int(line.split()[1]) * 1024 for line in stream if line.startswith(key))
 
-        def watch():
-            nonlocal peak
-            while not done.is_set():
-                peak = max(peak, resident())
-                done.wait(0.001)
-
-        watcher = threading.Thread(target=watch)
-        watcher.start()
-        try:
-            session.run(['logits'], {'input': planes})
-        finally:
-            done.set()
-            watcher.join()
-        return peak - before, resident() - before
-
-    monkeypatch.setattr(neural_runtime, '_SESSIONS', OrderedDict())
-    monkeypatch.setattr(neural_runtime, '_TRACED', {})
     shape = (8, 256, 256)
-    planes = np.random.default_rng(5).random((1, *shape), dtype=np.float32)
-    # One quarter-resolution feature tensor of the V3 network: layers x H/4 x W/4 x 48 float32.
+    inputs = {'input': np.random.default_rng(5).random((1, *shape), dtype=np.float32)}
+    # One quarter-resolution V3 feature tensor in float32.
     tokens = shape[0] * (shape[1] // 4) * (shape[2] // 4) * 48 * 4
-    try:
-        session = neural_runtime._session(weights_path('stackmff_v3_final.onnx'), shape, 'CPU', 1)
-        run(session)
-        peak, kept = run(session)
-        # About 16 feature tensors without buffer reuse, 39 with it.
-        assert 8 * tokens < peak < 24 * tokens
-        assert kept < 4 * tokens
-        # The same session keeps its working set when a run does not ask for
-        # the arena back, which is what the limit above would catch.
-        _, kept = run(session.session)
-        assert kept > 8 * tokens
-    finally:
-        neural_runtime._clear_sessions()
+    session = neural_runtime._session(weights_path('stackmff_v3_final.onnx'), shape, 'CPU', 1)
+    session.run(['logits'], inputs)
+    # Measure the warm run using the kernel high-water mark rather than a
+    # sampling thread that can miss a short-lived allocation.
+    with open('/proc/self/clear_refs', 'w', encoding='ascii') as stream:
+        stream.write('5\n')
+    rss_path = '/proc/self/smaps_rollup'
+    before = read_kib(rss_path, 'Rss:')
+    session.run(['logits'], inputs)
+    peak = read_kib('/proc/self/status', 'VmHWM:') - before
+    kept = read_kib(rss_path, 'Rss:') - before
+    # About 16 feature tensors without buffer reuse, 39 with it.
+    assert 8 * tokens < peak < 24 * tokens, (peak, tokens)
+    assert kept < 4 * tokens, (kept, tokens)
+    # A run without arena shrinkage should retain its working set.
+    session.session.run(['logits'], inputs)
+    kept = read_kib(rss_path, 'Rss:') - before
+    assert kept > 8 * tokens, (kept, tokens)
 
 
 def test_accelerator_sessions_keep_two_shapes_and_evict_oldest(monkeypatch, tmp_path):

@@ -954,7 +954,7 @@ class SourceFrame:
                               cancel_on=(RegistrationCancelled,)), \
                 current_profile().stage('source_decode'):
             image = create_frame(self.shape, self.dtype)
-            with frame_region(image, write=True) as destination:
+            with frame_region(image, write=True, writeback=True) as destination:
                 _check_resolution_cancel(should_cancel)
                 decoded = _decode_jpeg_bgr_into(self.path, self.fingerprint[0], destination)
             _check_resolution_cancel(should_cancel)

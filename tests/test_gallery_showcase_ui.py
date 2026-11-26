@@ -142,17 +142,23 @@ def test_static_blur_cache_reused_across_repaints_and_zero_black_bars(qapp):
     assert left_pixel.blue() > 80
     assert left_pixel.blue() > left_pixel.red()
 
-    # Resize to a new size computes once for the new (work_id, size)
+    # Resize to a new size reuses the cached blurred proxy (O(1) resize, zero recompute)
     showcase.resize(800, 450)
     qapp.processEvents()
-    assert cache.compute_count == 2
+    assert cache.compute_count == 1
 
-    # Resizing back hits the existing static blur cache without recomputing
-    hits_before = cache.cache_hits
+    # Resizing back or rendering the same work in a second showcase hits StaticBlurBackgroundCache
     showcase.resize(640, 360)
     qapp.processEvents()
-    assert cache.compute_count == 2
+    assert cache.compute_count == 1
+    hits_before = cache.cache_hits
+    showcase2 = GalleryShowcaseWidget(blur_cache=cache)
+    showcase2.resize(640, 360)
+    showcase2.set_works([works[0]])
+    qapp.processEvents()
+    assert cache.compute_count == 1
     assert cache.cache_hits > hits_before
+    showcase2.deleteLater()
 
     # Replacing the pixmap at another size must also invalidate the previous backdrop.
     showcase.resize(800, 450)
@@ -450,6 +456,7 @@ def test_spec_3_3_hud_layout_order_allow_download_gating_and_control_ids(qapp):
     assert showcase.lbl_source_badge.isVisible() is True
     assert showcase.lbl_source_badge.property("sourceBadge") == "following"
     assert showcase.lbl_openfocus_badge.isVisible() is True
+    assert showcase.lbl_openfocus_badge.text() == "OpenFocus Studio"
     assert "OM-1" in showcase.lbl_exif.text()
     assert "M.Zuiko 90mm Macro" in showcase.lbl_exif.text()
     assert "ISO 200" in format_exif_summary(works[0].exif)
@@ -729,3 +736,234 @@ def test_blur_cache_evicts_lru_and_previous_slide_single_cached_guard(qapp):
     showcase.set_work_pixmap("w3", _make_pixmap(100, 100, QColor(40, 110, 230)))
     assert len(cache) == 2
     showcase.deleteLater()
+
+
+def test_comment_drawer_renders_translation_with_original_toggle(qapp):
+    from PyQt6.QtWidgets import QLabel
+    from locales import trans
+
+    prev_lang = trans.current_lang
+    try:
+        trans.set_language("zh")
+        showcase = GalleryShowcaseWidget()
+        showcase.resize(640, 360)
+        showcase.set_danmaku_settings(DanmakuSettings(translation_mode="auto"))
+        showcase.set_works(
+            [
+                ShowcaseWork(
+                    id="w1",
+                    comment_count=85,
+                    pixmap=_make_pixmap(120, 80, QColor(30, 80, 140)),
+                    comments=[
+                        {
+                            "id": "c1",
+                            "author_nickname": "Hiro",
+                            "content": "Sharp compound eyes!",
+                            "src_lang": "en",
+                            "translated_content": "锐利的复眼！",
+                            "translated_lang": "zh",
+                        }
+                    ],
+                )
+            ]
+        )
+        comments = showcase.current_work.comments
+        assert showcase.set_work_comments("w1", comments)
+        assert showcase.current_work.comment_count == 85
+        assert showcase.btn_comment.text().endswith("85")
+        assert "85" in showcase.danmaku_overlay.composer.btn_all_comments.text()
+        showcase.open_comment_drawer()
+        qapp.processEvents()
+
+        card = showcase.comment_drawer.findChild(QFrame, "commentCard")
+        assert card is not None
+        body = card.findChild(QLabel, "commentBody")
+        toggle = card.findChild(QPushButton, "btn_toggle_comment_translation")
+        assert body is not None and toggle is not None
+        assert body.textFormat() == Qt.TextFormat.PlainText
+        assert body.text() == "锐利的复眼！"
+        toggle.click()
+        assert body.text() == "Sharp compound eyes!"
+        toggle.click()
+        assert body.text() == "锐利的复眼！"
+        showcase.deleteLater()
+    finally:
+        trans.set_language(prev_lang)
+
+
+def test_showcase_distinguishes_studio_badge_from_author_name(qapp):
+    showcase = GalleryShowcaseWidget()
+    showcase.resize(640, 360)
+    showcase.show()
+    qapp.processEvents()
+
+    showcase.set_works(
+        [
+            ShowcaseWork(
+                id="w_official",
+                author_id="openfocus_official",
+                author_nickname="OpenFocus",
+                openfocus_badge=True,
+                exif={"lens": "Macro 60mm f/4"},
+                pixmap=_make_pixmap(120, 80, QColor(40, 90, 150)),
+            )
+        ]
+    )
+    qapp.processEvents()
+    assert showcase.btn_author.text() == "OpenFocus"
+    assert showcase.lbl_openfocus_badge.isVisible() is True
+    assert showcase.lbl_openfocus_badge.text() == "OpenFocus Studio"
+    assert showcase.lbl_exif.text() == "Macro 60mm f/4"
+
+    showcase.set_works(
+        [
+            ShowcaseWork(
+                id="w_studio_dup",
+                author_id="openfocus_studio",
+                author_nickname="OpenFocus Studio",
+                openfocus_badge=True,
+                exif={"lens": "Macro 90mm f/2.8"},
+                pixmap=_make_pixmap(120, 80, QColor(40, 90, 150)),
+            )
+        ]
+    )
+    qapp.processEvents()
+    assert showcase.btn_author.text() == "OpenFocus Studio"
+    assert showcase.lbl_openfocus_badge.isVisible()
+    assert showcase.lbl_openfocus_badge.text() == '◆'
+    work = showcase.current_work
+    work.openfocus_badge = False
+    showcase.show_slide(0)
+    assert showcase.btn_author.text() == 'OpenFocus Studio'
+    assert not showcase.lbl_openfocus_badge.isVisible()
+    showcase.deleteLater()
+
+
+def test_standalone_showcase_window_fusion_bar_and_return_flow(qapp):
+    from widgets.gallery_showcase import GalleryShowcaseWindow
+
+    win = GalleryShowcaseWindow()
+    assert bool(win.windowFlags() & Qt.WindowType.FramelessWindowHint)
+    w1 = ShowcaseWork(id="w1", title="Beetle", pixmap=_make_pixmap(100, 80, QColor(40, 80, 120)))
+    w2 = ShowcaseWork(id="w2", title="Spider", pixmap=_make_pixmap(100, 80, QColor(80, 120, 40)))
+    win.set_works([w1, w2])
+    assert win.fusion_bar.isVisible() is False
+    assert not hasattr(win, "chk_auto_show")
+
+    returned = []
+    win.return_to_workspace_requested.connect(lambda: returned.append(True))
+
+    win.show()
+    qapp.processEvents()
+    assert win.showcase.btn_prev_slide.isVisible() is True
+    assert win.showcase.btn_next_slide.isVisible() is True
+    assert win.showcase.current_work.id == "w1"
+    win.showcase.btn_next_slide.click()
+    assert win.showcase.current_work.id == "w2"
+    win.showcase.btn_prev_slide.click()
+    assert win.showcase.current_work.id == "w1"
+
+    win.set_fusion_in_progress("Fusing 2/4", done=2, total=4)
+    assert win.fusion_bar.isVisible() is True
+    assert win.fusion_progress.maximum() == 4
+    assert win.fusion_progress.value() == 2
+    assert "2/4" in win.lbl_fusion_status.text()
+
+    win.set_fusion_completed()
+    assert win.fusion_progress.value() == 1
+
+    win.btn_return.click()
+    assert returned == [True]
+    assert win.isVisible() is False
+    win.deleteLater()
+
+
+def test_foreground_scaled_cache_slide_lru_eviction_and_drawer_upvote_toggle(qapp, tmp_path):
+    from widgets.gallery_showcase import CommentReplyDrawer, GalleryShowcaseWindow
+
+    # 1. Pre-scaled foreground cache & slide pixmap LRU eviction (keep current +- 2)
+    slides = []
+    for idx in range(7):
+        img_file = tmp_path / f"slide_{idx}.png"
+        _make_pixmap(200, 120, QColor(20 + idx * 25, 90, 180)).save(str(img_file))
+        slides.append(ShowcaseWork(id=f"s{idx}", local_path=str(img_file)))
+
+    showcase = GalleryShowcaseWidget()
+    showcase.resize(480, 300)
+    showcase.set_works(slides, start_index=0)
+    for idx in range(7):
+        slides[idx].load_local_pixmap()
+    showcase.show_slide(0)
+    # Slides outside circular radius 2 from index 0 (indices 3 and 4) are evicted while local_path stays
+    assert slides[0].pixmap is not None
+    assert slides[1].pixmap is not None
+    assert slides[6].pixmap is not None
+    assert slides[3].pixmap is None and slides[3].local_path
+    assert slides[4].pixmap is None and slides[4].local_path
+
+    # Foreground scaled pixmap cached across repaints
+    showcase.grab()
+    fg_key_1 = showcase._cached_fg_key
+    fg_pm_1 = showcase._cached_fg_pixmap
+    assert fg_pm_1 is not None and not fg_pm_1.isNull()
+    showcase.repaint()
+    assert showcase._cached_fg_key == fg_key_1
+    assert showcase._cached_fg_pixmap is fg_pm_1
+    showcase.deleteLater()
+
+    # 2. CommentReplyDrawer upvote toggles 1 <-> 0 and sets checked state
+    drawer = CommentReplyDrawer()
+    votes: list[tuple[str, int]] = []
+    drawer.comment_voted.connect(lambda cid, v: votes.append((cid, v)))
+    drawer.set_comments([
+        {"id": "c-unvoted", "author_nickname": "A", "content": "One", "upvotes": 2, "viewer_vote": 0},
+        {"id": "c-voted", "author_nickname": "B", "content": "Two", "upvotes": 5, "viewer_vote": 1},
+    ])
+    up_btns = [b for b in drawer.findChildren(QPushButton) if b.text().startswith("▲")]
+    assert len(up_btns) == 2
+    assert up_btns[0].isCheckable() and not up_btns[0].isChecked()
+    assert up_btns[1].isCheckable() and up_btns[1].isChecked()
+    up_btns[0].click()
+    up_btns[1].click()
+    assert votes == [("c-unvoted", 1), ("c-voted", 0)]
+    drawer.deleteLater()
+
+    # 3. GalleryShowcaseWindow polish guard + 6px edge resize cursor/fallback
+    win = GalleryShowcaseWindow()
+    win.resize(700, 480)
+    unpolish_calls = []
+    orig_unpolish = win.btn_return.style().unpolish
+    win.btn_return.style().unpolish = lambda w: (unpolish_calls.append(w), orig_unpolish(w))  # type: ignore[method-assign]
+    win.set_fusion_in_progress("1/3", done=1, total=3)
+    count_after_first = len(unpolish_calls)
+    win.set_fusion_in_progress("2/3", done=2, total=3)
+    assert len(unpolish_calls) == count_after_first
+    win.set_fusion_completed()
+    assert len(unpolish_calls) == count_after_first + 1
+    assert win._resize_edges_at(QPoint(2, 2)) == (Qt.Edge.LeftEdge | Qt.Edge.TopEdge)
+    assert win._resize_edges_at(QPoint(698, 240)) == Qt.Edge.RightEdge
+    assert win._resize_edges_at(QPoint(350, 240)) == Qt.Edge(0)
+    win.deleteLater()
+
+
+def test_comment_drawer_clears_empty_label_and_avoids_window_controls_overlap(qapp):
+    from PyQt6.QtWidgets import QLabel
+    from widgets.gallery_showcase import GalleryShowcaseWindow
+
+    win = GalleryShowcaseWindow()
+    win.resize(800, 500)
+    win.show()
+    qapp.processEvents()
+
+    win.showcase.comment_drawer.set_comments(
+        [{"id": "c1", "author_nickname": "Alex", "content": "hi", "upvotes": 1, "viewer_vote": 0}]
+    )
+    assert win.showcase.comment_drawer.list_container.findChildren(QLabel, "commentEmpty") == []
+
+    win.showcase.open_comment_drawer()
+    win.showcase._layout_overlays()
+    qapp.processEvents()
+    assert win.showcase.comment_drawer.geometry().top() > win.window_controls.geometry().bottom()
+    win.close()
+    win.deleteLater()
+    qapp.processEvents()

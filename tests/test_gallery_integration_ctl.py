@@ -4,10 +4,9 @@ Verifies:
 - Top-level Account & Gallery menus discoverable & invocable via ControlServer /
   control_surface, with red-dot unread badges ONLY on Account & Message Box
   (never on Gallery), across all 12 language packs.
-- Startup/idle shows Gallery Showcase; fusion result restores result canvas;
-  right-click "Hide Fusion Result" returns to Gallery Showcase; right-click
-  "Upload to Gallery" opens Publish tab prefilled with fused image +
-  openfocus_badge=True.
+- Keep the workspace visible at startup and open a standalone Showcase during
+  fusion. Right-click "Upload to Gallery" to open Publish with the fusion result
+  and openfocus_badge=True.
 - Opening Danmaku composer pauses the 5s slideshow timer; sending/cancelling
   resumes it.
 - Fullscreen Always-on-Top screensaver launches and exits cleanly on ESC.
@@ -53,6 +52,7 @@ from core.gallery_state import (
 )
 from dialogs.advanced_settings import AdvancedSettingsDialog
 from locales import trans
+from locales.gallery_i18n import t_gallery
 from ui.control_surface import action_catalog, widget_tree
 from utils.gallery_client import GalleryClient
 from utils.image_utils import imwrite_auto
@@ -216,6 +216,7 @@ def test_top_level_account_and_gallery_menus_via_ctl_and_unread_dot(integrated_w
         "action_message_box",
         "action_my_downloads",
         "action_open_gallery",
+        "action_gallery_showcase",
         "action_gallery_screensaver",
     ):
         assert expected in keys, f"{expected} missing from ctl action catalog"
@@ -288,31 +289,55 @@ def test_showcase_startup_hide_result_and_upload_to_gallery(integrated_window, q
     window, _server, _settings, _tmp_path = integrated_window
     gc = window.gallery_controller
 
-    # Startup/idle displays Gallery Showcase automatically.
-    assert window.view_stack.currentWidget() is window.gallery_showcase_page
-    assert gc.is_showing_showcase() is True
+    # Startup stays cleanly on user result canvas; no embedded Gallery replaces canvas.
+    assert window.view_stack.currentIndex() == 0
+    assert gc.is_showing_showcase() is False
+    assert gc.showcase_window is None
 
-    # Displaying a fusion result restores the normal result canvas (index 0).
+    # Starting fusion opens the standalone Gallery Showcase window with progress bar.
+    gc.on_render_started()
+    qapp.processEvents()
+    assert window.view_stack.currentIndex() == 0
+    assert gc.is_showing_showcase() is True
+    assert gc.showcase_window is not None and gc.showcase_window.fusion_bar.isVisible() is True
+
+    window.render_manager.on_render_stage('fusion')
+    window.render_manager.on_render_progress(2, 5)
+    assert gc.showcase_window.fusion_progress.maximum() == 5
+    assert gc.showcase_window.fusion_progress.value() == 2
+    assert "40%" in gc.showcase_window.lbl_fusion_status.text()
+    assert gc.show_gallery_showcase(force=True)
+    assert gc.showcase_window.fusion_progress.value() == 2
+    window.render_manager.on_render_stage('publish')
+    assert gc.showcase_window.fusion_progress.maximum() == 0
+    assert gc.showcase_window.lbl_fusion_status.text() == trans.t('render_stage_publish')
+    window.render_manager._hide_progress_bar()
+
+    # Completing fusion auto-closes the standalone window when user is not composing.
     fused = np.full((64, 96, 3), 140, dtype=np.uint8)
     window.fusion_result = fused
     assert window.output_manager.display_specific_fusion_result(fused) is True
+    gc.on_fusion_completed(fused, interactive=True)
     qapp.processEvents()
     assert window.view_stack.currentIndex() == 0
     assert gc.is_showing_showcase() is False
 
-    # Right-click context menu on lbl_result_img exposes Hide Fusion Result & Upload to Gallery.
+    # While composing danmaku, completion keeps the window open with View Fusion Result action.
+    gc.on_render_started()
+    gc.showcase.open_danmaku_composer()
+    qapp.processEvents()
+    gc.on_fusion_completed(fused, interactive=True)
+    qapp.processEvents()
+    assert gc.is_showing_showcase() is True
+    gc.showcase_window.btn_return.click()
+    qapp.processEvents()
+    assert gc.is_showing_showcase() is False
+
+    # Right-click context menu on lbl_result_img exposes Upload to Gallery.
     menu = gc.build_result_context_menu(window.lbl_result_img)
     actions_by_name = {act.objectName(): act for act in menu.actions()}
-    assert "action_hide_fusion_result" in actions_by_name
     assert "action_upload_to_gallery" in actions_by_name
-    assert actions_by_name["action_hide_fusion_result"].isEnabled()
     assert actions_by_name["action_upload_to_gallery"].isEnabled()
-
-    # Triggering "Hide Fusion Result" switches view_stack back to Gallery Showcase.
-    actions_by_name["action_hide_fusion_result"].trigger()
-    qapp.processEvents()
-    assert window.view_stack.currentWidget() is window.gallery_showcase_page
-    assert gc.is_showing_showcase() is True
 
     # Triggering "Upload to Gallery" opens Publish tab prefilled with fused image & openfocus_badge=True.
     actions_by_name["action_upload_to_gallery"].trigger()
@@ -326,12 +351,104 @@ def test_showcase_startup_hide_result_and_upload_to_gallery(integrated_window, q
     qapp.processEvents()
 
 
+def test_showcase_reopens_and_preserves_workspace_during_fusion(integrated_window, qapp):
+    window, _server, _settings, _tmp_path = integrated_window
+    gallery = window.gallery_controller
+    gallery.show_gallery_showcase(force=True)
+    showcase = gallery.showcase_window
+    qapp.processEvents()
+    assert showcase.showcase.slide_timer.isActive()
+
+    showcase.close()
+    gallery.show_gallery_showcase(force=True)
+    qapp.processEvents()
+    assert showcase.showcase.slide_timer.isActive()
+
+    gallery.on_render_started()
+    window.view_stack.setCurrentWidget(window.live_preview_page)
+    showcase.btn_return.click()
+    assert not showcase.isVisible()
+    assert window.view_stack.currentWidget() is window.live_preview_page
+    gallery.on_render_ended()
+
+    gallery.on_render_started()
+    showcase.showcase.open_danmaku_composer()
+    assert showcase.showcase.danmaku_overlay.is_composing()
+    gallery.on_render_ended()
+    assert showcase.isVisible()
+    assert not showcase.fusion_bar.isVisible()
+
+
+def test_showcase_opens_automatically_with_current_fusion_progress(integrated_window, qapp):
+    window, _server, _settings, _tmp_path = integrated_window
+    gallery = window.gallery_controller
+    # Permanent opt-out is disabled: even calling legacy setter keeps fusion auto-show active.
+    assert gallery.set_auto_show_during_fusion(False) is True
+    assert gallery.auto_show_during_fusion() is True
+
+    gallery.on_render_started()
+    gallery.on_render_progress(2, 3, 'Working')
+    qapp.processEvents()
+    showcase = gallery.showcase_window
+    assert showcase is not None and showcase.isVisible()
+    assert showcase.fusion_progress.maximum() == 3
+    assert showcase.fusion_progress.value() == 2
+
+    # Closing the current showcase dismisses this session only.
+    showcase.btn_return.click()
+    assert not showcase.isVisible()
+
+    gallery.on_fusion_completed(np.zeros((8, 8, 3), np.uint8), interactive=False)
+    assert not showcase.isVisible() and not showcase.fusion_bar.isVisible()
+
+    # Next fusion opens it again automatically.
+    gallery.on_render_started()
+    qapp.processEvents()
+    assert showcase.isVisible()
+    gallery.on_render_ended()
+
+
+@pytest.mark.parametrize('first_open', ['cached-during-fusion', 'uncached-during-fusion', 'idle'])
+def test_showcase_first_open_loads_a_single_remote_work(integrated_window, first_open):
+    window, _server, _settings, _tmp_path = integrated_window
+    gallery = window.gallery_controller
+    url = 'https://media.example/remote.webp'
+    work = GalleryWork(work_id='remote', full_url=url, title='Remote image')
+    gallery.state_store._apply_feed(gallery.state_store._account_generation, [work])
+    fetched = []
+    data = _make_webp_bytes()
+
+    def fetch(media_url):
+        fetched.append(media_url)
+        return data
+
+    gallery._media_fetcher = fetch
+    if first_open == 'cached-during-fusion':
+        assert gallery.disk_cache.put(url, data) is not None
+    assert gallery.showcase_window is None
+    if first_open == 'idle':
+        assert gallery.show_gallery_showcase(force=True)
+        _wait_until(lambda: gallery.showcase.current_work.load_local_pixmap() is not None)
+        assert fetched == [url]
+    else:
+        gallery.on_render_started()
+        current = gallery.showcase.current_work
+        assert current.load_local_pixmap() is not None
+        if first_open == 'cached-during-fusion':
+            assert current.id == 'remote'
+        else:
+            assert current.id.startswith('builtin_')
+        assert not fetched
+        gallery.on_render_ended()
+
+
 # ---------------------------------------------------------------------------
 # 3. Danmaku composer pauses 5s slideshow timer; send/cancel resumes it
 # ---------------------------------------------------------------------------
 
 def test_danmaku_composer_pauses_and_resumes_slide_timer(integrated_window, qapp):
     window, _server, _settings, _tmp_path = integrated_window
+    assert window.gallery_controller.show_gallery_showcase(force=True) is True
     showcase = window.gallery_showcase_page
     showcase.set_works(
         [
@@ -573,6 +690,7 @@ def test_webp_to_jpg_download_honor_card_upload_prompt_and_advanced_settings(int
     adv.spin_danmaku_font_size.setValue(22)
     adv.spin_danmaku_opacity.setValue(60)
     adv.combo_danmaku_density.setCurrentIndex(adv.combo_danmaku_density.findData("low"))
+    assert not hasattr(adv, "chk_gallery_auto_show_fusion")
 
     custom_dl = tmp_path / "custom_dl"
     custom_cache = tmp_path / "custom_cache"
@@ -580,18 +698,21 @@ def test_webp_to_jpg_download_honor_card_upload_prompt_and_advanced_settings(int
     adv.gallery_cache_dir.setText(str(custom_cache))
     adv.spin_gallery_cache_limit.setValue(150)
 
-    # One-click Clear Cache clears current cache immediately.
+    # One-click Clear Cache clears current cache immediately (asynchronously in #299).
     adv.btn_clear_gallery_cache.click()
+    _wait_until(lambda: adv.btn_clear_gallery_cache.isEnabled(), timeout=5.0)
     assert gc.cache_usage_bytes() == 0
 
     adv._apply()
     assert adv.result() == QDialog.DialogCode.Accepted
+    gc.show_gallery_showcase(force=True)
     live_dm = window.gallery_showcase_page.danmaku_overlay.settings
     assert live_dm.enabled is False
     assert live_dm.position == "bottom"
     assert live_dm.font_size == 22
     assert abs(live_dm.opacity - 0.60) < 0.01
     assert live_dm.density == "low"
+    assert gc.auto_show_during_fusion() is True
     assert gc.cache_max_mb() == 150
     assert resolve_gallery_download_dir(create=False) == custom_dl
     assert gc.disk_cache.cache_dir == custom_cache
@@ -713,10 +834,13 @@ def test_http_404_config_and_me_degrade_silently_and_preserve_local_account(
     assert ("account", "not_found") in sync_errors
     assert QApplication.activeModalWidget() is None
 
-    # 2. Idle Gallery showcase stays visible with offline built-in slides.
-    assert window.view_stack.currentWidget() is window.gallery_showcase_page
+    # 2. Main workspace stays clean at idle; standalone Showcase opens on demand with built-in slides.
+    assert window.view_stack.currentIndex() == 0
+    assert gc.show_gallery_showcase(force=True) is True
+    assert gc.is_showing_showcase() is True
     assert len(window.gallery_showcase_page.works) >= 1
     assert any(w.id.startswith("builtin_") for w in window.gallery_showcase_page.works)
+    gc.show_result_canvas()
     gc.allow_headless_upload_prompt = True
     assert gc.on_fusion_completed(np.zeros((8, 8, 3), np.uint8)) is None
 
@@ -729,6 +853,9 @@ def test_http_404_config_and_me_degrade_silently_and_preserve_local_account(
     assert acct_dlg is not None and acct_dlg.isVisible()
     assert "local@example.com" in acct_dlg.email_label.text()
     assert QApplication.activeModalWidget() is None
+    hub = gc.open_gallery_hub(initial_tab=2)
+    assert hub.hub_points_badge.text() == t_gallery('gallery_hub_points_badge', points='—')
+    hub.reject()
     acct_dlg.reject()
     qapp.processEvents()
 
@@ -773,6 +900,65 @@ def test_account_switch_drops_queued_gallery_write_and_retires_old_account_view(
     for operation in queued:
         operation()
     assert writes == [("new-selection", "Bearer new-bearer")]
+
+
+def test_hub_balance_follows_publish_and_voucher_redeem(integrated_window, monkeypatch):
+    window, _server, _settings, root = integrated_window
+    gallery = window.gallery_controller
+    window._account_client = _StubAccountClient()
+    window._refresh_account_action()
+    store = gallery.state_store
+    store.stop_polling()
+    terms = '2026-11-26'
+    apply_config_snapshot(store, {'gallery_terms_version': terms, 'upload_cost_points': 100})
+    balance = 250
+
+    def get_me(**kwargs):
+        return {'user_id': 'usr_alpha', 'points_balance': balance,
+                'gallery_terms_accepted_version': terms}
+
+    def confirm(*args, **kwargs):
+        nonlocal balance
+        balance -= 100
+        return {'work': {'id': 'published'}, 'points_balance': balance}
+
+    def redeem(code):
+        nonlocal balance
+        assert code == 'TEST-CODE'
+        balance += 100
+        return {'points_added': 100, 'points_balance': balance}
+
+    monkeypatch.setattr(GalleryStateStore, 'refresh_account_silently', _ORIG_REFRESH_ACCOUNT)
+    monkeypatch.setattr(gallery.client, 'get_me', get_me)
+    monkeypatch.setattr(gallery.client, 'inspect_upload', lambda *_args: {
+        'upload_id': 'upload-points',
+        'upload_urls': {'full': {'url': 'https://media.example/full'},
+                        'thumb': {'url': 'https://media.example/thumb'}},
+    })
+    monkeypatch.setattr(gallery.client, 'put_presigned_webp', lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(gallery.client, 'confirm_upload', confirm)
+    monkeypatch.setattr(gallery.client, 'redeem_code', redeem)
+    apply_profile_snapshot(store, get_me())
+    hub = gallery.open_gallery_hub(initial_tab=2)
+    paths = [root / f'points-{i}.png' for i in range(3)]
+    for path in paths:
+        assert imwrite_auto(str(path), np.full((48, 64, 3), 130, np.uint8))
+    hub.add_publish_files([str(paths[0])])
+    hub.publish_btn.click()
+    _wait_until(lambda: hub.hub_points_badge.text() == t_gallery('gallery_hub_points_badge', points=150))
+    hub.add_publish_files([str(path) for path in paths[1:]])
+    assert hub.insufficient_points_label.isVisible()
+
+    hub.hub_top_up_btn.click()
+    account = gallery.account_dialog
+    assert account is not None
+    account.redeem_input.setText('TEST-CODE')
+    account.redeem_btn.click()
+    _wait_until(lambda: hub.hub_points_badge.text() == t_gallery('gallery_hub_points_badge', points=250))
+    assert not hub.insufficient_points_label.isVisible()
+    assert account.points_label.text() == t_gallery('account_center_points_value', points=250)
+    account.reject()
+    hub.reject()
 
 
 def test_close_waits_for_gallery_publish_receipt(integrated_window, monkeypatch):
@@ -958,3 +1144,385 @@ def test_magnifier_label_context_menu_single_emit_and_pan_roi_suppression(qapp):
         label.close()
         label.deleteLater()
         qapp.processEvents()
+
+
+def test_danmaku_translation_settings_and_controller_comment_language_sync(integrated_window, qapp):
+    from dialogs.advanced_settings import AdvancedSettingsDialog
+
+    window, _server, _settings, _tmp_path = integrated_window
+    gc = window.gallery_controller
+    requested_langs = []
+
+    def _mock_get_comments(work_id, *, cursor=None, limit=None, lang=None, danmaku=None):
+        requested_langs.append((work_id, lang))
+        if lang == "ja":
+            return {
+                "items": [
+                    {
+                        "id": "c_remote",
+                        "work_id": work_id,
+                        "content": "Clean focus stack",
+                        "src_lang": "en",
+                        "translated_content": "きれいな深度合成",
+                        "translated_lang": "ja",
+                    }
+                ]
+            }
+        return {
+            "items": [
+                {
+                    "id": "c_remote",
+                    "work_id": work_id,
+                    "content": "Clean focus stack",
+                    "src_lang": "en",
+                    "translated_content": "干净的景深合成",
+                    "translated_lang": "zh",
+                }
+            ]
+        }
+
+    gc.client.get_comments = _mock_get_comments
+
+    # Persist translation_mode via AdvancedSettingsDialog.
+    adv = AdvancedSettingsDialog(window)
+    assert adv.combo_danmaku_translation.findData("auto") >= 0
+    adv.combo_danmaku_translation.setCurrentIndex(
+        adv.combo_danmaku_translation.findData("same_language")
+    )
+    adv._apply()
+    assert window.gallery_showcase_page.danmaku_overlay.settings.translation_mode == "same_language"
+
+    # Switch back to auto and test feed + language switch re-fetch.
+    adv2 = AdvancedSettingsDialog(window)
+    adv2.combo_danmaku_translation.setCurrentIndex(adv2.combo_danmaku_translation.findData("auto"))
+    adv2._apply()
+    assert window.gallery_showcase_page.danmaku_overlay.settings.translation_mode == "auto"
+
+    # Compute avoidance: paused during active fusion.
+    gc.set_fusion_busy(True)
+    assert gc._fetch_work_comments("w_trans") is False
+    gc.set_fusion_busy(False)
+
+    trans.set_language("zh")
+    qapp.processEvents()
+    gc.state_store._feed_works = [
+        GalleryWork.from_dict(
+            {
+                "work_id": "w_trans",
+                "title": "Trans Test",
+                "full_url": "https://cdn.openfocus.top/w_trans.webp",
+            }
+        )
+    ]
+    gc._on_feed_changed(list(gc.state_store._feed_works))
+    _wait_until(lambda: ("w_trans", "zh") in requested_langs)
+    _wait_until(
+        lambda: any(
+            b.translated_content == "干净的景深合成"
+            for b in window.gallery_showcase_page.danmaku_overlay.active_bullets
+        )
+    )
+
+    trans.set_language("ja")
+    gc.retranslate()
+    _wait_until(lambda: ("w_trans", "ja") in requested_langs)
+    _wait_until(
+        lambda: any(
+            b.translated_content == "きれいな深度合成"
+            for b in window.gallery_showcase_page.danmaku_overlay.active_bullets
+        )
+    )
+
+
+def test_showcase_discards_old_account_comment_response(integrated_window, monkeypatch):
+    window, _server, _settings, _root = integrated_window
+    gallery = window.gallery_controller
+    monkeypatch.setattr(gallery.state_store, "refresh_account_silently", lambda: False)
+    queued = []
+    monkeypatch.setattr(gallery._executor, "submit", queued.append)
+    monkeypatch.setattr(gallery, "_prefetch_work_image", lambda _work_id: False)
+
+    responses = iter([
+        {"items": [{"id": "old", "content": "old session", "viewer_vote": "up"}]},
+        {"items": [{"id": "new", "content": "new session", "viewer_vote": "down",
+                    "up_count": 4, "author": {"user_id": "writer", "nickname": "Macro Fan"}}]},
+    ])
+    monkeypatch.setattr(gallery.client, "get_comments", lambda *_args, **_kwargs: next(responses))
+
+    def open_same_work(account_id):
+        account = _StubAccountClient(True, account_id, f"{account_id}@example.com", account_id)
+        window._account_client = account
+        gallery.sync_account_session(account)
+        work = GalleryWork.from_dict({"work_id": "shared-work", "title": "Focus stack"})
+        gallery.showcase.set_works([work])
+        queued.clear()
+        assert gallery._fetch_work_comments(work.work_id)
+        request, = queued
+        return request
+
+    old_request = open_same_work("old-account")
+    new_request = open_same_work("new-account")
+    old_request()
+    assert gallery.showcase.current_work.comments == []
+    new_request()
+    comment, = gallery.showcase.current_work.comments
+    assert (comment.id, comment.viewer_vote, comment.upvotes, comment.author_nickname) == (
+        "new", "down", 4, "Macro Fan",
+    )
+
+
+def test_showcase_keeps_pending_danmaku_across_language_fetch_and_reconciles_votes(integrated_window, monkeypatch):
+    window, _server, _settings, _root = integrated_window
+    gallery = window.gallery_controller
+    account = _StubAccountClient(True, "writer", "writer@example.com", "writer")
+    window._account_client = account
+    monkeypatch.setattr(gallery.state_store, "refresh_account_silently", lambda: False)
+    gallery.sync_account_session(account)
+    queued = []
+    monkeypatch.setattr(gallery._executor, "submit", queued.append)
+    monkeypatch.setattr(gallery, "_prefetch_work_image", lambda _work_id: False)
+
+    ordinary = {"id": "regular", "content": "Regular reply", "is_danmaku": False}
+    floating = {"id": "floating", "content": "Older danmaku", "is_danmaku": True}
+    requests = []
+
+    def get_comments(work_id, *, lang=None, danmaku=None):
+        requests.append((work_id, danmaku))
+        if danmaku:
+            return {"items": [floating]}
+        return {"items": [ordinary], "next_cursor": "next"}
+
+    def post_comment(work_id, text, **_kwargs):
+        return {"comment": {"id": "posted", "work_id": work_id, "content": text, "is_danmaku": True}}
+
+    votes = []
+
+    def vote_comment(comment_id, vote):
+        votes.append((comment_id, vote))
+        return {"vote": vote, "up_count": int(vote == "up"), "down_count": 0}
+
+    monkeypatch.setattr(gallery.client, "get_comments", get_comments)
+    monkeypatch.setattr(gallery.client, "post_comment", post_comment)
+    monkeypatch.setattr(gallery.client, "vote_comment", vote_comment)
+    works = [GalleryWork.from_dict({"work_id": "w", "title": "Focus stack"})]
+    gallery.state_store._apply_feed(gallery.state_store._account_generation, works)
+    assert not queued
+    assert gallery.show_gallery_showcase(force=True)
+    assert len(queued) == 1
+    queued.pop(0)()
+    assert requests == [("w", None), ("w", True)]
+    assert {comment.id for comment in gallery.showcase.current_work.comments} == {"regular", "floating"}
+    assert [item.comment_id for item in gallery.showcase.danmaku_overlay.active_bullets] == ["floating"]
+
+    gallery.showcase.open_danmaku_composer()
+    gallery.showcase.danmaku_overlay.comment_submitted.emit("New danmaku")
+    gallery.apply_danmaku_settings(DanmakuSettings(translation_mode="original"), persist=False)
+    post_request, language_request = queued
+    queued.clear()
+    language_request()
+    assert any(item.content == "New danmaku" and item.comment_id.startswith("local-")
+               for item in gallery.showcase.danmaku_overlay.active_bullets)
+    post_request()
+
+    overlay = gallery.showcase.danmaku_overlay
+    assert overlay.open_popover_for("posted")
+    assert not any(item.comment_id.startswith("local-") for item in overlay.active_bullets)
+    overlay.popover.btn_upvote.click()
+    queued.pop(0)()
+    gallery.showcase.show_slide(0)
+    assert overlay.open_popover_for("posted")
+    overlay.popover.btn_upvote.click()
+    queued.pop(0)()
+    assert votes == [("posted", "up"), ("posted", "none")]
+
+
+def test_shutdown_closes_visible_showcase_window(integrated_window, qapp):
+    window, _server, _settings, _tmp_path = integrated_window
+    gallery = window.gallery_controller
+    assert gallery.show_gallery_showcase(force=True)
+    qapp.processEvents()
+    showcase = gallery.showcase_window
+    assert showcase is not None and showcase.isVisible()
+
+    gallery.shutdown()
+    qapp.processEvents()
+    assert not showcase.isVisible()
+    assert gallery.showcase_window is None
+
+
+def test_controller_fluency_lifecycle_rollback_delete_screensaver_pause_and_theme(
+    integrated_window, qapp, monkeypatch
+):
+    from utils import gallery_client as gc_mod
+    from utils.gallery_client import GalleryClientError
+
+    window, _server, _settings, _root = integrated_window
+    gallery = window.gallery_controller
+
+    # 1. Open screensaver pauses showcase slideshow + danmaku overlay and resumes on close.
+    assert gallery.show_gallery_showcase(force=True)
+    showcase = gallery.showcase
+    showcase.set_works([
+        {"id": "w1", "title": "One", "pixmap": _make_pixmap(Qt.GlobalColor.red)},
+        {"id": "w2", "title": "Two", "pixmap": _make_pixmap(Qt.GlobalColor.blue)},
+    ])
+    qapp.processEvents()
+    scr = gallery.open_screensaver()
+    assert scr is not None
+    qapp.processEvents()
+    assert showcase.is_slideshow_paused()
+    assert "screensaver" in showcase.active_pause_reasons()
+    assert showcase.danmaku_overlay._paused is True
+    scr.exit_screensaver()
+    _wait_until(lambda: not scr.isVisible())
+    assert "screensaver" not in showcase.active_pause_reasons()
+    assert showcase.danmaku_overlay._paused is False
+
+    # 2. Signed-out / rejected danmaku & like revert optimistically without recording cooldown.
+    gallery.sync_account_session(_StubAccountClient(False))
+    showcase.show_slide(0)
+    showcase.open_danmaku_composer()
+    showcase.danmaku_overlay.comment_submitted.emit("Signed out comment")
+    qapp.processEvents()
+    assert gallery.state_store.danmaku_cooldown_remaining() == 0.0
+    assert not any(getattr(c, "content", None) == "Signed out comment" or (isinstance(c, dict) and c.get("content") == "Signed out comment")
+                   for c in showcase.current_work.comments)
+    assert showcase.danmaku_overlay._toast_text == t_gallery("gallery_err_unauthorized")
+
+    showcase._on_like_clicked()
+    qapp.processEvents()
+    assert showcase.current_work.viewer_liked is False
+    assert showcase.current_work.like_count == 0
+
+    # 3. Signed-in failed post_comment / like_work revert & show error toast; delete purges cache & view.
+    acct = _StubAccountClient(True, "usr_fluency", "f@example.com", "tok_f")
+    window._account_client = acct
+    gallery.sync_account_session(acct)
+    queued = []
+    orig_submit = gallery._executor.submit
+    monkeypatch.setattr(gallery._executor, "submit", queued.append)
+    monkeypatch.setattr(gallery.client, "post_comment", lambda *_a, **_k: (_ for _ in ()).throw(GalleryClientError("rate_limited")))
+    monkeypatch.setattr(gallery.client, "like_work", lambda *_a, **_k: (_ for _ in ()).throw(GalleryClientError("forbidden")))
+    deleted_ids = []
+    monkeypatch.setattr(gallery.client, "delete_comment", lambda cid: deleted_ids.append(cid) or {"deleted": True})
+
+    # Sensitive word rejected locally -> reverts and does not hit network.
+    showcase.open_danmaku_composer()
+    showcase.danmaku_overlay.comment_submitted.emit("Visit https://spam.example now")
+    assert queued == []
+    assert gallery.state_store.danmaku_cooldown_remaining() == 0.0
+    assert showcase.danmaku_overlay._toast_text == t_gallery("gallery_err_content_rejected")
+
+    # Server rejection reverts bullet and displays toast.
+    showcase.open_danmaku_composer()
+    showcase.danmaku_overlay.comment_submitted.emit("Valid focus stack")
+    assert len(queued) == 1
+    queued.pop(0)()
+    qapp.processEvents()
+    assert showcase.danmaku_overlay._toast_text == t_gallery("gallery_err_rate_limited")
+    assert showcase.current_work.comments == []
+
+    # Failed like reverts state.
+    showcase._on_like_clicked()
+    assert showcase.current_work.viewer_liked is True
+    assert len(queued) == 1
+    queued.pop(0)()
+    qapp.processEvents()
+    assert showcase.current_work.viewer_liked is False
+    assert showcase.current_work.like_count == 0
+    assert showcase.danmaku_overlay._toast_text == t_gallery("gallery_err_forbidden")
+
+    # Comment delete purges from _comments_cache and showcase view.
+    from core.gallery_state import GalleryComment
+    cmt = GalleryComment(comment_id="cmt_del_1", work_id="w1", content="Delete me", can_delete=True)
+    gallery._comments_cache[("w1", "en")] = (time.monotonic(), [cmt])
+    showcase.set_work_comments("w1", [cmt])
+    assert len(showcase.current_work.comments) == 1
+    showcase.comment_deleted.emit("cmt_del_1")
+    assert len(queued) == 1
+    queued.pop(0)()
+    qapp.processEvents()
+    assert deleted_ids == ["cmt_del_1"]
+    assert gallery._comments_cache[("w1", "en")][1] == []
+    assert showcase.current_work.comments == []
+
+    # 4. Prefetch decodes QImage off-thread and never calls is_unmetered_network on GUI thread.
+    monkeypatch.setattr(gallery._executor, "submit", orig_submit)
+    is_main_thread_calls = []
+    import threading
+    main_ident = threading.get_ident()
+    gc_mod.set_unmetered_network_checker(lambda: is_main_thread_calls.append(threading.get_ident()) or True)
+    try:
+        webp = _make_webp_bytes()
+        gallery._media_fetcher = lambda _url: webp
+        remote_work = GalleryWork(work_id="w_bg", full_url="https://cdn.example/w_bg.webp", title="BG")
+        remote_work2 = GalleryWork(work_id="w_bg2", full_url="https://cdn.example/w_bg2.webp", title="BG2")
+        remote_work3 = GalleryWork(work_id="w_bg3", full_url="https://cdn.example/w_bg3.webp", title="BG3")
+        gallery.state_store._apply_feed(gallery.state_store._account_generation, [remote_work, remote_work2, remote_work3])
+        _wait_until(lambda: gallery.showcase.works[0].pixmap is not None)
+        assert gallery._prefetch_work_image("w_bg3") is True
+        _wait_until(lambda: gallery.showcase.works[2].pixmap is not None)
+        assert all(tid != main_ident for tid in is_main_thread_calls)
+    finally:
+        gc_mod.set_unmetered_network_checker(None)
+
+    # 5. Open dialog dedupes initial refresh, forwards apply_theme, disconnects hub signals, and releases UploadPromptDialog ref.
+    refresh_calls = []
+    monkeypatch.setattr(gallery.state_store, "refresh_account_silently", lambda **k: refresh_calls.append("acct") or True)
+    monkeypatch.setattr(gallery.state_store, "refresh_notifications", lambda **k: refresh_calls.append("notif") or True)
+    hub = gallery.open_gallery_hub(initial_tab=0)
+    qapp.processEvents()
+    assert refresh_calls.count("acct") == 1
+    themed = []
+    hub.apply_theme = lambda t: themed.append(t)
+    gallery.apply_theme("light")
+    assert themed == ["light"]
+    mode_calls = []
+    hub.set_danmaku_translation_mode = lambda m: mode_calls.append(m)
+    hub.reject()
+    qapp.processEvents()
+    assert gallery.hub_dialog is None
+    gallery.danmaku_translation_mode_changed.emit("original")
+    assert mode_calls == []
+
+    refresh_calls.clear()
+    acct_dlg = gallery.open_account_center(0)
+    qapp.processEvents()
+    assert refresh_calls.count("acct") == 1
+    assert refresh_calls.count("notif") == 1
+    acct_dlg.reject()
+    qapp.processEvents()
+    assert gallery.account_dialog is None
+
+    import gc as py_gc
+    import weakref
+
+    class _ArrayHolder(np.ndarray):
+        pass
+
+    arr = np.zeros((16, 16, 3), dtype=np.uint8).view(_ArrayHolder)
+    arr_ref = weakref.ref(arr)
+    apply_config_snapshot(gallery.state_store, {
+        "gallery_enabled": True,
+        "upload_prompt_probability": 1.0,
+        "gallery_terms_version": "2026-11-26",
+    })
+    gallery.allow_headless_upload_prompt = True
+    prompt = gallery.on_fusion_completed(arr, interactive=True)
+    del arr
+    assert prompt is not None
+    prompt.reject()
+    qapp.processEvents()
+    from PyQt6.QtCore import QCoreApplication, QEvent
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    qapp.processEvents()
+    py_gc.collect()
+    assert arr_ref() is None
+
+    # shutdown() closes ShowcaseWindow cleanly even though auto_show_toggled was removed.
+    showcase_win = gallery.showcase_window
+    assert showcase_win is not None
+    assert not hasattr(showcase_win, "auto_show_toggled")
+    gallery.shutdown()
+    assert gallery.showcase_window is None
+    assert gallery._closed is True

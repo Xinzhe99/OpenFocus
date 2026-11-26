@@ -916,3 +916,20 @@ def test_collecting_snapshot_during_admission_reclaims_budget_without_deadlock(t
         cwd=Path(__file__).resolve().parents[1],
         capture_output=True, text=True, timeout=20)
     assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
+def test_flush_mapped_frame_handles_mapped_and_ram_arrays(tmp_path):
+    plain = np.zeros((4, 4, 3), np.uint8)
+    assert frame_storage.flush_mapped_frame(plain) is False
+
+    mapped = frame_storage.create_frame((8, 8, 3), np.uint8, directory=str(tmp_path))
+    with frame_storage.frame_region(mapped, slice(0, 4), write=True) as region:
+        region[...] = 19
+    ro_view = frame_storage.open_frame(frame_storage.describe_frame(mapped))
+    try:
+        assert frame_storage.flush_mapped_frame(ro_view) is False
+        assert frame_storage.flush_mapped_frame(mapped) is True
+        assert np.all(mapped[:4] == 19)
+    finally:
+        del ro_view, mapped
+        gc.collect()
