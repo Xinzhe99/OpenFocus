@@ -11,6 +11,7 @@ from threading import Lock
 
 import numpy as np
 
+from core.frame_storage import async_upload_view
 from fusion_methods._openfocus_pixels import frame_codes
 from fusion_methods.openfocus_ab import _check_cancel
 from fusion_methods.openfocus_a import _hard_pyramid_shapes
@@ -593,7 +594,7 @@ class GpuA:
                     )
                     wait_upload = _event_wait_list(upload) if uploader.separate_queue else None
                 else:
-                    upload = self.cl.enqueue_copy(self.q, src_buf, host_src, is_blocking=False)
+                    upload = self.cl.enqueue_copy(self.q, src_buf, async_upload_view(host_src), is_blocking=False)
                     wait_upload = None
                 _check_cancel(should_cancel)
                 rh, rw = pyr_shapes[1]

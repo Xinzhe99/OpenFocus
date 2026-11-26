@@ -13,6 +13,8 @@ from threading import Event, Lock
 
 import numpy as np
 
+from core.frame_storage import async_upload_view
+
 _device_lock = Lock()
 _context_lock = Lock()
 _cache_lock = Lock()
@@ -328,13 +330,14 @@ class _PinnedUploader:
         wait_list = wait_for if (wait_for and self.separate_queue) else None
         try:
             ev = self._cl.enqueue_copy(
-                self._tq, dev_buf, host_array, is_blocking=False, wait_for=wait_list,
+                self._tq, dev_buf, async_upload_view(host_array), is_blocking=False,
+                wait_for=wait_list,
             )
         except TypeError:
             if wait_list:
                 for item in wait_list:
                     _wait_event(item, cancel)
-            ev = self._cl.enqueue_copy(self._tq, dev_buf, host_array, is_blocking=False)
+            ev = self._cl.enqueue_copy(self._tq, dev_buf, async_upload_view(host_array), is_blocking=False)
         self._dma_events[slot] = ev
         if self.separate_queue and hasattr(self._tq, 'flush'):
             self._tq.flush()
@@ -1439,7 +1442,7 @@ class Merge:
                 )
                 wait_upload = _event_wait_list(upload) if uploader.separate_queue else None
             else:
-                upload = cl.enqueue_copy(self.queue, src_buf, image, is_blocking=False)
+                upload = cl.enqueue_copy(self.queue, src_buf, async_upload_view(image), is_blocking=False)
                 wait_upload = None
             height, width = self._merge_shape[:2]
             channels = 1 if image.ndim == 2 else image.shape[2]
@@ -2174,7 +2177,7 @@ class _GpuB:
                 upload = uploader.upload(slot, ib, host_buf, wait_for=wait_for, cancel=cancel)
                 wait_upload = _event_wait_list(upload) if uploader.separate_queue else None
             else:
-                upload = self.cl.enqueue_copy(self.q, ib, host_buf, is_blocking=False)
+                upload = self.cl.enqueue_copy(self.q, ib, async_upload_view(host_buf), is_blocking=False)
                 wait_upload = None
             kern = self.kernels['gray_u8' if is_u8 else 'gray_u16']
             _enqueue_kernel(kern, self.q, (width, height), None, ib, gray_buf,
@@ -2186,7 +2189,7 @@ class _GpuB:
             upload = uploader.upload(slot, gray_buf, host_buf, wait_for=wait_for, cancel=cancel)
             wait_upload = _event_wait_list(upload) if uploader.separate_queue else None
             return upload, wait_upload
-        return self.cl.enqueue_copy(self.q, gray_buf, host_buf, is_blocking=False), None
+        return self.cl.enqueue_copy(self.q, gray_buf, async_upload_view(host_buf), is_blocking=False), None
 
     # -- depth_map equivalent ---------------------------------------------
     def depth(self, frames, kernel_size, smoothing, feather, shape, count,
