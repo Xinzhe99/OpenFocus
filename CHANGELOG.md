@@ -279,6 +279,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   installer against the release's published size and SHA-256 digest.
 - Use the Darwin C ABI for system memory and CPU topology probes, including
   64-bit page sizes and validated system counter lengths.
+- Choose a discrete GPU whose free memory can be read when more than one is
+  installed. A larger GPU without that reading, such as an Intel discrete GPU
+  on Linux, was chosen before, and most GPU work then fell back to the CPU.
 - Admit large JPEG stacks for ECC using reduced grayscale decodes, including
   with GPU acceleration enabled. Keep registration warps at full resolution.
 - Budget sequential decode and processing peaks separately. Decode RGB JPEGs
