@@ -721,6 +721,7 @@ def _select_band_u32_generic(image, gray, half_gray, laps, levels, response,
                              best, output, start, stop, scale, first, background):
     state = A_SATURATED
     width = response.size
+    has_bg = background.shape[0] > 0
     h0, w0 = half_gray.shape
     n_out = (width + 1) // 2 + 1
     m0 = np.empty(w0 + 2, np.uint32)
@@ -783,7 +784,7 @@ def _select_band_u32_generic(image, gray, half_gray, laps, levels, response,
                 continue
             score = min(np.int64(response[x]), A_MAX_RESPONSE)
             take = first or score > previous
-            collect = previous < A_BLEND_LIMIT and score < A_BLEND_LIMIT
+            collect = has_bg and previous < A_BLEND_LIMIT and score < A_BLEND_LIMIT
             if collect:
                 state = A_BACKGROUND
             elif state == A_SATURATED and score != A_MAX_RESPONSE:
@@ -941,6 +942,7 @@ def _select_rows_scalar(image, gray, half_gray, laplacians, levels, response, be
     state = A_SATURATED
     channels = 1 if image.ndim == 2 else image.shape[2]
     weight_column, stat_column = channels, channels + 1
+    has_bg = background.shape[0] > 0
     statistics = background.view(np.uint32)
     for y in range(start, stop):
         local_y = y - start
@@ -953,7 +955,7 @@ def _select_rows_scalar(image, gray, half_gray, laplacians, levels, response, be
             # Every contribution is nonnegative, so clamp only the final sum.
             score = min(np.int64(response[x]), A_MAX_RESPONSE)
             take = first or score > previous
-            collect = previous < A_BLEND_LIMIT and score < A_BLEND_LIMIT
+            collect = has_bg and previous < A_BLEND_LIMIT and score < A_BLEND_LIMIT
             if collect:
                 state = A_BACKGROUND
             elif state == A_SATURATED and score != A_MAX_RESPONSE:
