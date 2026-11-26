@@ -2233,14 +2233,11 @@ void align_fast_downsize_u16_row_avx2(
 }
 
 void align_warp_alignment_row_avx2(
-    const void* img_data, int64_t img_s0, int64_t img_s1, bool is_u8,
-    void* out_row, int64_t out_s1,
-    int64_t src_h, int64_t src_w, int64_t src_y0, int64_t x_off, int64_t rw,
+    const void* img_data, int64_t img_s0, int64_t img_w, bool is_u8,
+    void* out_row, int64_t src_h, int64_t src_w, int64_t src_y0, int64_t x_off, int64_t rw,
     int64_t channels, bool bgr_rev,
     float cx, float p08, float p18, float tx, float ty, float v_dy, float u_dy
 ) {
-    (void)img_s1;
-    (void)out_s1;
     const float wf = static_cast<float>(static_cast<int32_t>(src_w));
     const float hf = static_cast<float>(static_cast<int32_t>(src_h));
     const float w_m1 = static_cast<float>(static_cast<int32_t>(src_w) - 1);
@@ -2276,7 +2273,9 @@ void align_warp_alignment_row_avx2(
 
     alignas(32) int32_t ix_buf[8], jx_buf[8], iy_buf[8], jy_buf[8];
     alignas(32) uint32_t fx_buf[8], fy_buf[8];
-    const int32_t chunk_len_x = static_cast<int32_t>(src_w);
+    // Region warps map coordinates in the logical source, but packed loads
+    // must also fit inside the pixels present in the supplied row.
+    const int32_t readable_w = static_cast<int32_t>(std::min(img_w, src_w));
 
     int64_t ox = 0;
     for (; ox + 8 <= rw; ox += 8) {
@@ -2325,21 +2324,21 @@ void align_warp_alignment_row_avx2(
             const auto* src_t = static_cast<const uint8_t*>(img_data);
             auto* dst_t = static_cast<uint8_t*>(out_row);
             if (channels == 1) {
-                warp_chunk_8<uint8_t, 1, false>(src_t, img_s0, src_y0, dst_t, ox, ix_buf, jx_buf, iy_buf, jy_buf, fx_buf, fy_buf, inv_mask, chunk_len_x, ox + 8 < rw);
+                warp_chunk_8<uint8_t, 1, false>(src_t, img_s0, src_y0, dst_t, ox, ix_buf, jx_buf, iy_buf, jy_buf, fx_buf, fy_buf, inv_mask, readable_w, ox + 8 < rw);
             } else if (bgr_rev) {
-                warp_chunk_8<uint8_t, 3, true>(src_t, img_s0, src_y0, dst_t, ox, ix_buf, jx_buf, iy_buf, jy_buf, fx_buf, fy_buf, inv_mask, chunk_len_x, ox + 8 < rw);
+                warp_chunk_8<uint8_t, 3, true>(src_t, img_s0, src_y0, dst_t, ox, ix_buf, jx_buf, iy_buf, jy_buf, fx_buf, fy_buf, inv_mask, readable_w, ox + 8 < rw);
             } else {
-                warp_chunk_8<uint8_t, 3, false>(src_t, img_s0, src_y0, dst_t, ox, ix_buf, jx_buf, iy_buf, jy_buf, fx_buf, fy_buf, inv_mask, chunk_len_x, ox + 8 < rw);
+                warp_chunk_8<uint8_t, 3, false>(src_t, img_s0, src_y0, dst_t, ox, ix_buf, jx_buf, iy_buf, jy_buf, fx_buf, fy_buf, inv_mask, readable_w, ox + 8 < rw);
             }
         } else {
             const auto* src_t = static_cast<const uint16_t*>(img_data);
             auto* dst_t = static_cast<uint16_t*>(out_row);
             if (channels == 1) {
-                warp_chunk_8<uint16_t, 1, false>(src_t, img_s0, src_y0, dst_t, ox, ix_buf, jx_buf, iy_buf, jy_buf, fx_buf, fy_buf, inv_mask, chunk_len_x, ox + 8 < rw);
+                warp_chunk_8<uint16_t, 1, false>(src_t, img_s0, src_y0, dst_t, ox, ix_buf, jx_buf, iy_buf, jy_buf, fx_buf, fy_buf, inv_mask, readable_w, ox + 8 < rw);
             } else if (bgr_rev) {
-                warp_chunk_8<uint16_t, 3, true>(src_t, img_s0, src_y0, dst_t, ox, ix_buf, jx_buf, iy_buf, jy_buf, fx_buf, fy_buf, inv_mask, chunk_len_x, ox + 8 < rw);
+                warp_chunk_8<uint16_t, 3, true>(src_t, img_s0, src_y0, dst_t, ox, ix_buf, jx_buf, iy_buf, jy_buf, fx_buf, fy_buf, inv_mask, readable_w, ox + 8 < rw);
             } else {
-                warp_chunk_8<uint16_t, 3, false>(src_t, img_s0, src_y0, dst_t, ox, ix_buf, jx_buf, iy_buf, jy_buf, fx_buf, fy_buf, inv_mask, chunk_len_x, ox + 8 < rw);
+                warp_chunk_8<uint16_t, 3, false>(src_t, img_s0, src_y0, dst_t, ox, ix_buf, jx_buf, iy_buf, jy_buf, fx_buf, fy_buf, inv_mask, readable_w, ox + 8 < rw);
             }
         }
     }
@@ -4445,7 +4444,7 @@ void align_down_half_horiz_row_avx2(const uint32_t*, uint16_t*, int64_t, int64_t
 void align_fast_downsize_u16_row_avx2(const uint16_t*, const uint16_t*, uint16_t*, int64_t, int64_t) {}
 void align_warp_translation_rgb_row_avx2(const void*, const void*, bool, void*, int64_t, const int32_t*, const int32_t*, const uint32_t*, const uint8_t*, uint32_t, bool, int64_t) {}
 void align_refine_dense_row_avx2(const uint16_t*, const uint16_t*, const uint16_t*, const int32_t*, int64_t, uint32_t, int64_t*, int64_t*) {}
-void align_warp_alignment_row_avx2(const void*, int64_t, int64_t, bool, void*, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, bool, float, float, float, float, float, float, float) {}
+void align_warp_alignment_row_avx2(const void*, int64_t, int64_t, bool, void*, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, bool, float, float, float, float, float, float, float) {}
 void align_score_chunk_packed_avx2(const uint16_t*, int64_t, const uint16_t*, int64_t, int64_t, int64_t, const float*, int64_t, const float*, int64_t, const float*, const float*, const float*, const float*, const float*, const float*, const float*, const float*, const int64_t*, int64_t, int64_t, int64_t*, int64_t*, int64_t*) {}
 void align_score_grid_4d_packed_avx2(const uint16_t*, int64_t, const uint16_t*, int64_t, int64_t, int64_t, const float*, int64_t, const float*, int64_t, float, float, const float*, const float*, const float*, int64_t, int64_t, const float*, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t*, float*, int64_t) {}
 void resample_u16_vert_acc_row_avx2_fma(const uint16_t*, float*, int64_t, float) {}

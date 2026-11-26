@@ -37,8 +37,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   your phone or computer to sign in automatically on the desktop.
 
 ### Changed
-- Run the full CI suite in parallel slices and fail the run if test collection
-  fails.
+- Run the full CI suite in parallel slices. Preserve pytest selection and
+  collection errors, isolate temporary directories, and replay a crashing
+  slice for native diagnostics.
 - Distribute OpenFocus source under Apache 2.0 and retain prior attribution
   and model terms. View bundled licenses and any release EULA in Help.
 - Build desktop packages and platform wheels with C++17 CPU kernels for
@@ -252,6 +253,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Speed up packed OpenFocus A, B, and C fusion, exposure adjustment, tile
   reduction, and alignment with AVX2 on supported CPUs. Preserve scalar pixel
   arithmetic for strided views, wide integer sums, and float rounding.
+- Bound packed RGB alignment loads to the supplied input row width.
 - Use AVX2 for OpenFocus A/B depth selection, RGB tile accumulation, and ECC
   affine and homography refinement. Use fused multiply-add for depth
   resampling on supported CPUs. Retain scalar update order for overlapping
@@ -314,8 +316,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   blends on an integrated GPU with little free RAM.
 - Plan OpenFocus B's mapped integer-frame fusion using its bounded RAM
   working set and release source mappings after their depth and merge passes.
-- Upload frames held in temporary files to the GPU from a read-only view of
-  the file. A non-blocking upload from the writable mapping could stall on
+- Upload frames in OpenFocus-owned scratch files to the GPU from a read-only
+  view. A non-blocking upload from the writable mapping could stall on
   Linux with an Intel GPU while the system rewrote the file to disk over and
   over: a 40-frame OpenFocus B render with its frame cache on disk wrote about
   6 TB and took 100 minutes in power-saver mode.

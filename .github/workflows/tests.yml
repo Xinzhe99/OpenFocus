@@ -121,7 +121,8 @@ jobs:
           # Consecutive slices of the suite, one pytest process per runner
           # core. The processes compete for the cores, so a test gets twice
           # the time limit that the single-process checks above use.
-          python tools/parallel_tests.py --capture=fd --durations=10 --timeout=180 --timeout-method=thread
+          python tools/parallel_tests.py --capture=fd --durations=10 --timeout=180 --timeout-method=thread \
+            --crash-selection "$RUNNER_TEMP/openfocus-pytest-crash.json"
           pytest_exit=$?
           echo "exit_code=$pytest_exit" >> "$GITHUB_OUTPUT"
           exit "$pytest_exit"
@@ -135,13 +136,20 @@ jobs:
           QT_QPA_PLATFORM: offscreen
           PYTHONFAULTHANDLER: '1'
         run: |
+          crash_selection="$RUNNER_TEMP/openfocus-pytest-crash.json"
+          if [[ -s "$crash_selection" ]]; then
+            export OPENFOCUS_PYTEST_SLICE_FILE="$crash_selection"
+            pytest_args=(-p tools.parallel_tests)
+          else
+            pytest_args=(--collect-only)
+          fi
           lldb --batch \
             -o 'settings set target.process.stop-on-exec false' \
             -o 'process handle SIGILL -s true -n false -p true' \
             -o run -k 'thread backtrace all' -k 'register read' \
             -k 'disassemble --pc --count 16' -k 'image list' \
-            -- python -m pytest -o addopts='' -vv -s -x \
-               --timeout=90 --timeout-method=thread 2>&1 | tee "$RUNNER_TEMP/macos-lldb.txt"
+            -- python -m pytest -o addopts='' -vv -s \
+               --timeout=180 --timeout-method=thread "${pytest_args[@]}" 2>&1 | tee "$RUNNER_TEMP/macos-lldb.txt"
 
       - name: Upload macOS native crash diagnostics
         if: ${{ failure() && runner.os == 'macOS' }}

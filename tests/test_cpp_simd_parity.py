@@ -962,6 +962,70 @@ def test_alignment_rgb_warps_avx2_vs_scalar_bit_exact(dtype):
         np.testing.assert_array_equal(a, b)
 
 
+def _check_alignment_region_rgb_short_rows():
+    import ctypes
+    import mmap
+    import os
+
+    mod = _require_avx2()
+    page_size = mmap.PAGESIZE
+    shape = (2, 2, 3)
+    with mmap.mmap(-1, 2 * page_size, access=mmap.ACCESS_WRITE) as storage:
+        guard = ctypes.c_void_p(ctypes.addressof(ctypes.c_char.from_buffer(storage)) + page_size)
+        if os.name == "nt":
+            protect = ctypes.WinDLL("kernel32", use_last_error=True).VirtualProtect
+            old_protection = ctypes.c_ulong()
+            if not protect(guard, ctypes.c_size_t(page_size), 0x01, ctypes.byref(old_protection)):  # PAGE_NOACCESS
+                raise ctypes.WinError(ctypes.get_last_error())
+        else:
+            protect = ctypes.CDLL(None, use_errno=True).mprotect
+            if protect(guard, ctypes.c_size_t(page_size), 0) != 0:  # PROT_NONE
+                error = ctypes.get_errno()
+                raise OSError(error, os.strerror(error))
+
+        for dtype in (np.uint16, np.uint8):
+            # Both taps fit in the final row, whose end abuts the guard page.
+            pixels = (np.arange(12, dtype=dtype) * 16).reshape(shape)
+            image = np.ndarray(shape, dtype=dtype, buffer=storage, offset=page_size - pixels.nbytes)
+            image[:] = pixels
+            expected = 30 + 3 * np.arange(8)[None, :, None] + 16 * np.arange(3)[None, None, :]
+
+            def run():
+                results = []
+                for bgr_rev in (False, True):
+                    output = np.empty((1, 8, 3), dtype=dtype)
+                    mod.of_align_warp_alignment_region_int_rows(
+                        image, output, 2, 8, 0, 0, 0,
+                        0.125, 0.25, 0.0, 0.0, 0.0, 0.0, 0.0625, 0.0625, 0, 1, bgr_rev,
+                    )
+                    results.append(output)
+                return results
+
+            simd, scalar = _scalar_and_simd(mod, run)
+            np.testing.assert_array_equal(scalar[0], expected)
+            np.testing.assert_array_equal(scalar[1], expected[..., ::-1])
+            _assert_same_bytes(simd, scalar)
+
+
+def test_alignment_region_rgb_does_not_overread_short_rows():
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    _require_avx2()
+    test_file = Path(__file__).resolve()
+    # Isolate a fault so pytest can report it without ending the suite.
+    code = (
+        "import runpy, sys\n"
+        "runpy.run_path(sys.argv[1])['_check_alignment_region_rgb_short_rows']()"
+    )
+    result = subprocess.run(
+        [sys.executable, "-X", "faulthandler", "-c", code, str(test_file)],
+        cwd=test_file.parents[1], capture_output=True, text=True, timeout=60, check=False,
+    )
+    assert result.returncode == 0, f"Guarded RGB warp exited with {result.returncode}\n{result.stderr}"
+
+
 @pytest.mark.parametrize("grid", [(3, 2), (8, 5), (12, 9), (17, 3)])
 def test_alignment_score_flat_grid_avx2_vs_scalar_bit_exact(grid):
     """Sample grids are scored as one padded list, including rejected samples."""

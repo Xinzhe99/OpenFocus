@@ -206,9 +206,8 @@ void align_fast_downsize_u16_row_avx2(
     const uint16_t* r0, const uint16_t* r1, uint16_t* dst, int64_t ow, int64_t w);
 
 void align_warp_alignment_row_avx2(
-    const void* img_data, int64_t img_s0, int64_t img_s1, bool is_u8,
-    void* out_row, int64_t out_s1,
-    int64_t src_h, int64_t src_w, int64_t src_y0, int64_t x_off, int64_t rw,
+    const void* img_data, int64_t img_s0, int64_t img_w, bool is_u8,
+    void* out_row, int64_t src_h, int64_t src_w, int64_t src_y0, int64_t x_off, int64_t rw,
     int64_t channels, bool bgr_rev,
     float cx, float p08, float p18, float tx, float ty, float v_dy, float u_dy);
 

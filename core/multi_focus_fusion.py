@@ -1204,7 +1204,9 @@ class MultiFocusFusion:
                         ram_budget_override=memory_budget_bytes(),
                     )
                 except policy.ResourceLimitError:
-                    if not openfocus_native_family or not policy.probe_memory().ram_known:
+                    # Resizing keeps both the source and resized planes in RAM.
+                    if (img_resize is not None or not openfocus_native_family
+                            or not policy.probe_memory().ram_known):
                         raise
                     import gc
                     from core.source_frames import SOURCE_CACHE
@@ -1219,9 +1221,7 @@ class MultiFocusFusion:
                         min_worker = max(1, decode_peak or min(per_worker, min(height, 128) * width * 64))
                     else:
                         min_worker = max(1, min(per_worker, min(height, 128) * width * 64))
-                    # Resizing keeps full-source and resized planes in RAM, so
-                    # only an unresized render can fall back to this floor.
-                    if img_resize is not None or min_fixed + min_worker > budget_now:
+                    if min_fixed + min_worker > budget_now:
                         raise
                     plan = policy.plan_execution(
                         policy.Workload(

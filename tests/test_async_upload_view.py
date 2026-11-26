@@ -1,4 +1,4 @@
-"""Non-blocking device uploads never read from a writable file mapping."""
+"""Non-blocking uploads use read-only views of writable scratch mappings."""
 import ast
 import gc
 import os
@@ -53,13 +53,56 @@ def test_writable_mapping_is_reopened_read_only_over_the_same_bytes(key):
 
 
 @pytest.mark.skipif(os.name == 'nt', reason='Windows keeps the writable mapping')
-def test_reopened_view_keeps_its_mapping_after_the_frame_is_released():
-    frame = frame_storage.create_frame((6, 5), np.float32)
-    frame[:] = 3.5
-    view = async_upload_view(frame)
+@pytest.mark.parametrize('stored', [False, True], ids=['created', 'stored'])
+def test_reopened_view_keeps_its_mapping_after_the_frame_is_released(stored):
+    pixels = np.full((6, 5), 3.5, dtype=np.float32)
+    if stored:
+        frame = frame_storage.store_frame(pixels, prefer_ram=False)
+    else:
+        frame = frame_storage.create_frame(pixels.shape, pixels.dtype)
+        frame[:] = pixels
+    path = Path(frame.filename)
+    view = async_upload_view(np.asarray(frame)[::-1, ::2])
     del frame
     gc.collect()
-    assert np.all(view == 3.5)
+    assert not path.exists()
+    np.testing.assert_array_equal(view, pixels[::-1, ::2])
+
+
+@pytest.mark.skipif(os.name == 'nt', reason='Windows keeps the writable mapping')
+@pytest.mark.parametrize('adopted', [False, True], ids=['created', 'adopted'])
+def test_writable_scratch_region_is_reopened_read_only(adopted):
+    frame = frame_storage.create_frame((6, 5), np.uint16)
+    if adopted:
+        frame = frame_storage.open_frame(frame_storage.describe_frame(frame), owned=True)
+    with frame_storage.frame_region(frame, np.s_[1:5, :], write=True) as region:
+        region[:] = 21
+        view = async_upload_view(region[::-1, ::2])
+        assert _mapped_base(view).mode == 'r'
+        assert not view.flags.writeable
+    assert np.all(view == 21)
+
+
+@pytest.mark.skipif(os.name != 'posix', reason='requires replacing a path with live mappings')
+@pytest.mark.parametrize('tracked_path', [False, True], ids=['user-path', 'scratch-path'])
+def test_borrowed_writable_mapping_keeps_pixels_after_path_replacement(tmp_path, tracked_path):
+    pixels = np.arange(12, dtype=np.uint16).reshape(3, 4)
+    if tracked_path:
+        owner = frame_storage.create_frame(pixels.shape, pixels.dtype)
+        owner[:] = pixels
+        path = Path(owner.filename)
+    else:
+        path = tmp_path / 'pixels.bin'
+        pixels.tofile(path)
+    mapping = np.memmap(path, dtype=pixels.dtype, mode='r+', shape=pixels.shape)
+    replacement = tmp_path / 'replacement.bin'
+    np.full_like(pixels, 100).tofile(replacement)
+    with frame_storage.frame_region(mapping, write=True) as region:
+        replacement.replace(path)
+        for source in (np.asarray(mapping)[::-1, ::2], region[::-1, ::2]):
+            view = async_upload_view(source)
+            np.testing.assert_array_equal(view, pixels[::-1, ::2])
+            assert view is source
 
 
 def test_ram_read_only_and_private_sources_are_returned_unchanged(tmp_path):

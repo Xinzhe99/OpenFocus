@@ -497,8 +497,8 @@ void of_align_warp_alignment_int_rows_cpp(
                 ? static_cast<void*>(static_cast<uint8_t*>(out.data) + y * out.stride[0])
                 : static_cast<void*>(static_cast<uint16_t*>(out.data) + y * out.stride[0]);
             simd::align_warp_alignment_row_avx2(
-                image.data, image.stride[0], image.stride[1], image.itemsize == 1,
-                out_row, out.stride[1], h, w, 0, 0, w, channels, bgr_rev,
+                image.data, image.stride[0], w, image.itemsize == 1,
+                out_row, h, w, 0, 0, w, channels, bgr_rev,
                 cx, p08, p18, tx, ty, v_dy, u_dy);
             continue;
         }
@@ -1031,8 +1031,8 @@ void of_align_warp_alignment_region_int_rows_cpp(
                 ? static_cast<void*>(static_cast<uint8_t*>(out.data) + oy * out.stride[0])
                 : static_cast<void*>(static_cast<uint16_t*>(out.data) + oy * out.stride[0]);
             simd::align_warp_alignment_row_avx2(
-                image.data, image.stride[0], image.stride[1], image.itemsize == 1,
-                out_row, out.stride[1], src_h, src_w, src_y0, x_off, rw, channels, bgr_rev,
+                image.data, image.stride[0], image.shape[1], image.itemsize == 1,
+                out_row, src_h, src_w, src_y0, x_off, rw, channels, bgr_rev,
                 cx, p08, p18, tx, ty, v_dy, u_dy);
             continue;
         }
