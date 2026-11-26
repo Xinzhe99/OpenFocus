@@ -199,8 +199,9 @@ class TensorRT:
         self.logger.recent.clear()
         free, _ = self.torch.cuda.mem_get_info(0)
         if workspace > free // 2:
-            raise MemoryError(f'TensorRT workspace requires {workspace >> 20} MiB with '
-                              f'only {free >> 20} MiB free')
+            from utils.memory import InsufficientMemoryError
+            raise InsufficientMemoryError(f'TensorRT workspace requires {workspace >> 20} MiB with '
+                                          f'only {free >> 20} MiB free')
         builder = trt.Builder(self.logger)
         network = builder.create_network(0)
         parser = trt.OnnxParser(network, self.logger)
