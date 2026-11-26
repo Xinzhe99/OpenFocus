@@ -394,6 +394,74 @@ int select_a_no_bg_packed_row(
     return state;
 }
 
+// Samples of one row are adjacent in memory (packed channels, unit steps).
+inline bool rows_are_packed(const ArrayView& v) {
+    if (v.ndim == 2) {
+        return v.stride[1] == 1;
+    }
+    return v.stride[2] == 1 && v.stride[1] == v.shape[2];
+}
+
+template <typename SrcT, typename DstT>
+void copy_scaled_rows_typed(const ArrayView& dst, const ArrayView& src,
+                            int64_t start, int64_t stop, int64_t elems, uint32_t scale) {
+    const SrcT* sb = static_cast<const SrcT*>(src.data);
+    DstT* db = static_cast<DstT*>(dst.data);
+    for (int64_t y = start; y < stop; ++y) {
+        const SrcT* sr = sb + y * src.stride[0];
+        DstT* dr = db + y * dst.stride[0];
+        if (scale == 1u && sizeof(SrcT) == sizeof(DstT)) {
+            std::memcpy(dr, sr, static_cast<size_t>(elems) * sizeof(DstT));
+            continue;
+        }
+        for (int64_t i = 0; i < elems; ++i) {
+            // Only the low bits survive the store, so 32-bit wraparound is exact.
+            dr[i] = static_cast<DstT>(static_cast<uint32_t>(sr[i]) * scale);
+        }
+    }
+}
+
+// dst[y, ...] = src[y, ...] * scale for packed integer rows of equal shape.
+// Returns false when the layout needs the generic accessors.
+bool copy_scaled_rows(const ArrayView& dst, const ArrayView& src,
+                      int64_t start, int64_t stop, int64_t scale) {
+    if (src.is_float || dst.is_float || src.ndim != dst.ndim
+            || (src.itemsize != 1 && src.itemsize != 2)
+            || (dst.itemsize != 2 && dst.itemsize != 4)
+            || !rows_are_packed(src) || !rows_are_packed(dst)
+            || src.shape[1] != dst.shape[1]
+            || (src.ndim == 3 && src.shape[2] != dst.shape[2])) {
+        return false;
+    }
+    const int64_t elems = dst.shape[1] * (dst.ndim == 3 ? dst.shape[2] : 1);
+    if (start >= stop || elems <= 0) {
+        return true;
+    }
+    // Overlapping planes keep the element-by-element order of the generic path.
+    const auto low_address = [start, stop](const ArrayView& v) {
+        const int64_t y = v.stride[0] < 0 ? stop - 1 : start;
+        return static_cast<const uint8_t*>(v.data) + y * v.stride[0] * v.itemsize;
+    };
+    const auto extent = [start, stop, elems](const ArrayView& v) {
+        const int64_t sy = v.stride[0] < 0 ? -v.stride[0] : v.stride[0];
+        return static_cast<uint64_t>(((stop - start - 1) * sy + elems) * v.itemsize);
+    };
+    if (byte_ranges_overlap(low_address(src), extent(src), low_address(dst), extent(dst))) {
+        return false;
+    }
+    const uint32_t scale32 = static_cast<uint32_t>(scale);
+    if (src.itemsize == 1 && dst.itemsize == 2) {
+        copy_scaled_rows_typed<uint8_t, uint16_t>(dst, src, start, stop, elems, scale32);
+    } else if (src.itemsize == 1) {
+        copy_scaled_rows_typed<uint8_t, int32_t>(dst, src, start, stop, elems, scale32);
+    } else if (dst.itemsize == 2) {
+        copy_scaled_rows_typed<uint16_t, uint16_t>(dst, src, start, stop, elems, scale32);
+    } else {
+        copy_scaled_rows_typed<uint16_t, int32_t>(dst, src, start, stop, elems, scale32);
+    }
+    return true;
+}
+
 }  // namespace
 
 void of_gray_rows_cpp(const ArrayView& image, const ArrayView& output,
@@ -1898,6 +1966,10 @@ void of_merge_rows_cpp(
 ) {
     const int64_t width = accumulator.shape[1];
     if (first) {
+        // Packed integer rows copy as typed rows; other layouts use the loops below.
+        if (copy_scaled_rows(accumulator, image, start, stop, scale)) {
+            return;
+        }
         if (image.ndim == 2) {
             for (int64_t y = start; y < stop; ++y) {
                 for (int64_t x = 0; x < width; ++x) {

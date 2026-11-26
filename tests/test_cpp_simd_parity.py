@@ -212,6 +212,59 @@ def test_ab_packed_gray_down2_merge_select_avx2_vs_scalar(w):
         assert np.array_equal(arr_a, arr_s)
 
 
+def test_merge_first_frame_copy_matches_scaled_source():
+    """The first frame is copied as typed rows when both layouts are packed."""
+    from core import _native
+
+    mod = _native.load_native()
+    assert mod is not None
+    rng = np.random.default_rng(940)
+    depth = np.zeros((9, 21), dtype=np.uint16)
+    for dtype, scale in ((np.uint8, 256), (np.uint8, 1), (np.uint16, 1)):
+        rgb = rng.integers(0, np.iinfo(dtype).max + 1, (9, 21, 3), dtype=dtype)
+        for source in (rgb, rgb[:, :, ::-1], np.ascontiguousarray(rgb[:, :, 0]), rgb[::-1]):
+            for acc_dtype in (np.uint16, np.int32):
+                acc = np.full(source.shape, 7, dtype=acc_dtype)
+                mod.of_merge_rows(acc, source, depth, 0, 100, 2, 7, scale, True, False)
+                expected = np.full(source.shape, 7, dtype=acc_dtype)
+                expected[2:7] = source[2:7].astype(acc_dtype) * scale
+                np.testing.assert_array_equal(acc, expected)
+
+
+def test_merge_first_frame_copy_keeps_element_order_for_overlapping_views():
+    """An accumulator that shares memory with the frame is filled one element at a time."""
+    from core import _native
+
+    mod = _native.load_native()
+    assert mod is not None
+    rng = np.random.default_rng(941)
+    h, w = 5, 9
+    depth = np.zeros((h, w), dtype=np.uint16)
+    base = rng.integers(0, 65536, (h + 1, w * 3 + 3), dtype=np.uint16)
+
+    def views(buffer, shift_rows, shift_samples):
+        flat = buffer.reshape(-1)
+        row = buffer.shape[1]
+        source = np.lib.stride_tricks.as_strided(
+            flat, shape=(h, w, 3), strides=(row * 2, 6, 2))
+        target = np.lib.stride_tricks.as_strided(
+            flat[shift_rows * row + shift_samples:], shape=(h, w, 3), strides=(row * 2, 6, 2))
+        return source, target
+
+    for scale in (1, 3):
+        for shift_rows, shift_samples in ((0, 0), (0, 1), (0, 3), (1, 0), (1, 2)):
+            actual = base.copy()
+            source, target = views(actual, shift_rows, shift_samples)
+            mod.of_merge_rows(target, source, depth, 0, 100, 0, h, scale, True, False)
+            expected = base.copy()
+            source, target = views(expected, shift_rows, shift_samples)
+            for y in range(h):
+                for x in range(w):
+                    for ch in range(3):
+                        target[y, x, ch] = (int(source[y, x, ch]) * scale) & 0xFFFF
+            np.testing.assert_array_equal(actual, expected)
+
+
 def test_ab_gray_and_downsample_preserve_wide_codes():
     mod = _require_avx2()
     rgb = np.full((2, 17, 3), 40000, dtype=np.uint16)

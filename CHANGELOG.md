@@ -80,6 +80,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Adapt decoded-frame caches and transient RAM to available memory. Spill
   OpenFocus alignment planes to scratch under pressure while reserving RAM
   for source decoding. Keep OpenFocus B staging optional when streaming fits.
+- Copy the first frame into the OpenFocus B result as whole rows on the CPU,
+  with identical output. On the laptop used for testing, CPU fusion of six
+  5-megapixel frames with OpenFocus B ran 1.1 to 1.2 times as fast.
 - Write disk-backed frames, preview pixels and imported video frames to scratch
   in chunks up to 8 MiB, with bounded packing of strided images and exact pixel
   bytes in C order.
