@@ -97,6 +97,15 @@ void quantize_f32_to_u16_row_avx2(
 void quantize_f32_to_u8_row_avx2(
     const float* sr, uint8_t* dr, int64_t elems);
 
+// Exact integer sums of a packed row.
+uint64_t sum_u8_row_avx2(const uint8_t* p, int64_t n);
+uint64_t sum_u16_row_avx2(const uint16_t* p, int64_t n);
+
+// Sum of double(float(v) * (255 / 65535)) over a row. Returns true and writes
+// the sum when it is provably identical to adding the terms one by one;
+// returns false when the row must be summed in scalar order instead.
+bool sum_u16_normalized_row_avx2(const uint16_t* p, int64_t n, double* out);
+
 void exposure_gain_u16_row_avx2(
     const uint16_t* sr, uint16_t* dr, int64_t elems, float gain, float limit);
 
@@ -164,6 +173,20 @@ void pyr_up_horiz_3c_row_avx2(
 void pyr_down_horiz_f32_3c_row_avx2(
     const float* sr, float* h_row, int64_t ix_stop, float d0, float d1);
 
+// One row of a packed three-channel translation warp. row0/row1 are the two
+// source rows of src_w pixels; ix/jx/fx/inv_x are the per-column samples.
+void align_warp_translation_rgb_row_avx2(
+    const void* row0, const void* row1, bool is_u8, void* out_row, int64_t rw,
+    const int32_t* ix, const int32_t* jx, const uint32_t* fx, const uint8_t* inv_x,
+    uint32_t fy, bool bgr_rev, int64_t src_w);
+
+// Adds the sum and the sum of squares of a_row[k] - bilinear(b)[k] for `count`
+// columns (a multiple of eight, at most 262144) whose sources are consecutive:
+// column k blends b_row[k] and b_row[k + 1] with weights[k] = gx | fx << 16.
+void align_refine_dense_row_avx2(
+    const uint16_t* a_row, const uint16_t* b_row0, const uint16_t* b_row1,
+    const int32_t* weights, int64_t count, uint32_t fy, int64_t* sum, int64_t* sq);
+
 void align_valid_mask_row_avx2(
     uint8_t* mr, int64_t w,
     float cx, float p08, float p18, float tx, float ty, float v_dy, float u_dy,
@@ -183,9 +206,8 @@ void align_fast_downsize_u16_row_avx2(
     const uint16_t* r0, const uint16_t* r1, uint16_t* dst, int64_t ow, int64_t w);
 
 void align_warp_alignment_row_avx2(
-    const void* img_data, int64_t img_s0, int64_t img_s1, bool is_u8,
-    void* out_row, int64_t out_s1,
-    int64_t src_h, int64_t src_w, int64_t src_y0, int64_t x_off, int64_t rw,
+    const void* img_data, int64_t img_s0, int64_t img_w, bool is_u8,
+    void* out_row, int64_t src_h, int64_t src_w, int64_t src_y0, int64_t x_off, int64_t rw,
     int64_t channels, bool bgr_rev,
     float cx, float p08, float p18, float tx, float ty, float v_dy, float u_dy);
 

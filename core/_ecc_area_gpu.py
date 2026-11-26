@@ -9,6 +9,8 @@ from threading import Lock
 import cv2
 import numpy as np
 
+from core.frame_storage import async_upload_view
+
 
 # OpenCV 5.0.0 modules/imgproc/src/resize.cpp, computeResizeAreaTab and
 # ResizeArea_Invoker: ordered binary32 products and sums on the MSVC SSE
@@ -317,7 +319,7 @@ class ExactAreaGpu:
                         stripe_args = (*args, first, np.int32(row))
                     band = source_view[first:last]
                     # Keep the host buffer export alive through the blocking readback.
-                    upload = self._cl.enqueue_copy(self._queue, src, band, is_blocking=False)
+                    upload = self._cl.enqueue_copy(self._queue, src, async_upload_view(band), is_blocking=False)
                     kernel(self._queue, (width * channels, stop - row), None, src, dst, *stripe_args)
                     self._cl.enqueue_copy(self._queue, output[row:stop], dst, is_blocking=True)
                     del upload

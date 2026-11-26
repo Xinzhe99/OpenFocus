@@ -12,6 +12,7 @@ import cv2
 import numpy as np
 
 from core._ecc_area_gpu import _cpu_contract
+from core.frame_storage import async_upload_view
 from fusion_methods._openfocus_gpu import _device, _device_cache_key, _free_vram, opencl_device_name
 
 _MIN_PIXELS = 1024 * 1024
@@ -544,7 +545,7 @@ class ExactPerspectiveGpu:
                          else (sy1 - sy0, sx1 - sx0))
                 band = stage[:count].reshape(shape)
                 np.copyto(band, image[sy0:sy1, sx0:sx1])
-            upload = cl.enqueue_copy(queue, d_src, band, is_blocking=False)
+            upload = cl.enqueue_copy(queue, d_src, async_upload_view(band), is_blocking=False)
             kernel(
                 queue, (width, rows), None, d_src, d_dst, weights, d_repair,
                 np.int32(src_w), np.int32(src_h),

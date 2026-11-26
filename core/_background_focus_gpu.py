@@ -88,6 +88,21 @@ def _band_pixels(device, frames, index_bytes):
     return pixels
 
 
+def _ieee_float32(cl, device):
+    required = cl.device_fp_config.DENORM | cl.device_fp_config.INF_NAN | cl.device_fp_config.ROUND_TO_NEAREST
+    return device.single_fp_config & required == required
+
+
+def device_available():
+    """Return whether `reduce_focus` has a device to try; its band budget may still decline."""
+    try:
+        import pyopencl as cl
+        device = _device(cl)
+        return device is not None and _ieee_float32(cl, device)
+    except Exception:
+        return False
+
+
 def _get_or_build_kernel(cl, device):
     """Return cached (ctx, queue, kernel) for this OpenCL device."""
     ctx = _get_shared_context(cl, device)
@@ -117,8 +132,7 @@ def reduce_focus(energy, check_cancel):
             device = _device(cl)
             if device is None:
                 raise GpuError('No available OpenCL GPU')
-            required = cl.device_fp_config.DENORM | cl.device_fp_config.INF_NAN | cl.device_fp_config.ROUND_TO_NEAREST
-            if device.single_fp_config & required != required:
+            if not _ieee_float32(cl, device):
                 raise GpuError('OpenCL device lacks IEEE float32 arithmetic')
             band = min(height * width, _band_pixels(device, frames, np.dtype(indices_type).itemsize))
             ctx, queue, kernel = _get_or_build_kernel(cl, device)
