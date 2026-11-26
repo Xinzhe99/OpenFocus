@@ -270,3 +270,27 @@ def test_native_cancellation_during_pass1_and_pass2():
             should_cancel=lambda: bool(calls_p2 and calls_p2[-1] > len(frames)),
         )
     assert calls_p2[-1] < 2 * len(frames) + 1
+
+
+@pytest.mark.parametrize("shape,channels,dtype", [
+    ((512, 512), 3, np.uint8),
+    ((513, 515), 1, np.uint8),
+    ((512, 512), 3, np.uint16),
+])
+def test_native_row_parallel_matches_serial_bit_exact(shape, channels, dtype):
+    frames = _focus_stack(count=3, shape=shape, dtype=dtype, channels=channels)
+    expected = module._dtcwt_impl(frames, None, 3, False, thread_count=1)
+    actual = module._dtcwt_impl(frames, None, 3, False, thread_count=4)
+    np.testing.assert_array_equal(actual, expected)
+
+
+def test_native_row_parallel_cancellation():
+    frames = _focus_stack(count=4, shape=(512, 512), dtype=np.uint8, channels=3)
+    steps = []
+    with pytest.raises(RegistrationCancelled):
+        module._dtcwt_impl(
+            frames, None, 3, False, thread_count=4,
+            progress_callback=lambda done, _total: steps.append(done),
+            should_cancel=lambda: bool(steps and steps[-1] >= 2),
+        )
+    assert steps and steps[-1] < 2 * len(frames) + 1
