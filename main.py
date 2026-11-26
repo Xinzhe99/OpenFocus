@@ -204,7 +204,6 @@ from controllers.label_manager import LabelManager
 from controllers.export_manager import ExportManager
 from controllers.transform_manager import TransformManager
 from controllers.batch_manager import BatchManager
-from controllers.gallery_controller import GalleryController
 from controllers.update_manager import (
     UpdateManager,
     STATE_DOWNLOADING,
@@ -546,12 +545,16 @@ class OpenFocus(QMainWindow):
         self.transform_manager = TransformManager(self)
         self.batch_manager = BatchManager(self)
         self.update_manager = UpdateManager(self)
+        from controllers.gallery_controller import GalleryController
         self.gallery_controller = GalleryController(self)
         from utils.usage_analytics import UsageAnalytics
         from PyQt6.QtCore import QTimer as _QTimer
         self.usage_analytics = UsageAnalytics(self)
         _QTimer.singleShot(0, self.usage_analytics.start)
-        _QTimer.singleShot(0, self.gallery_controller.start)
+        self._gallery_start_timer = _QTimer(self)
+        self._gallery_start_timer.setSingleShot(True)
+        self._gallery_start_timer.timeout.connect(self.gallery_controller.start)
+        self._gallery_start_timer.start(1500)
 
         # 初始化图像加载器
         self.image_loader = ImageStackLoader()
@@ -4649,6 +4652,9 @@ class OpenFocus(QMainWindow):
         from utils.logging_setup import log_action, get_logger
         shutdown_started = perf_counter()
         log_action("shutdown.started", restart=bool(getattr(self, '_restart_for_update', False)))
+        start_timer = getattr(self, "_gallery_start_timer", None)
+        if start_timer is not None:
+            start_timer.stop()
         gallery = getattr(self, "gallery_controller", None)
         if gallery is not None:
             gallery.shutdown()
