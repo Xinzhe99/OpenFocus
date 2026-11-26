@@ -40,7 +40,9 @@ from locales.gallery_i18n import (
     REPORT_REASON_KEYS as REPORT_REASONS,
     current_ui_language,
     normalize_lang_code,
+    original_comment_tooltip,
     resolve_comment_translation,
+    should_display_comment_for_mode,
     t_gallery,
     translate_report_reason,
 )
@@ -183,22 +185,6 @@ class DanmakuSettings:
         ).normalized()
 
 
-def should_display_danmaku_for_mode(
-    item: "DanmakuItem",
-    mode: str = "auto",
-    target_lang: str | None = None,
-) -> bool:
-    """Return True if *item* should be displayed under *mode*.
-
-    Under ``same_language``, items with an identified ``src_lang`` differing from
-    ``target_lang`` are filtered out; items lacking ``src_lang`` stay visible.
-    """
-    if mode != "same_language" or not item.src_lang:
-        return True
-    target = normalize_lang_code(target_lang or current_ui_language())
-    return not target or item.src_lang == target
-
-
 @dataclass
 class DanmakuItem:
     """Runtime representation of one floating top-level danmaku bullet."""
@@ -303,6 +289,7 @@ class DanmakuActionPopover(QFrame):
         header = QHBoxLayout()
         header.setSpacing(SPACE["xs"])
         self.lbl_preview = QLabel("", self)
+        self.lbl_preview.setTextFormat(Qt.TextFormat.PlainText)
         self.lbl_preview.setObjectName("danmakuPopoverPreview")
         self.lbl_preview.setWordWrap(False)
         self.lbl_preview.setMaximumWidth(220)
@@ -316,6 +303,7 @@ class DanmakuActionPopover(QFrame):
         root.addLayout(header)
 
         self.lbl_original = QLabel("", self)
+        self.lbl_original.setTextFormat(Qt.TextFormat.PlainText)
         self.lbl_original.setObjectName("danmakuPopoverOriginal")
         self.lbl_original.setWordWrap(True)
         self.lbl_original.setMaximumWidth(220)
@@ -823,7 +811,7 @@ class DanmakuOverlay(QWidget):
         self._work_id: str = ""
         self._active: list[DanmakuItem] = []
         self._queue: list[DanmakuItem] = []
-        self._raw_comments: list[Any] = []
+        self._comments: list[DanmakuItem] = []
         self._paused: bool = False
         self._spawn_accum: float = 0.0
         self._last_tick: float | None = None
@@ -867,7 +855,7 @@ class DanmakuOverlay(QWidget):
     def queued_comments(self) -> list[DanmakuItem]:
         return list(self._queue)
 
-    def _rebuild_bullets_from_raw(self) -> None:
+    def _rebuild_bullets(self) -> None:
         self.popover.dismiss()
         self._active.clear()
         self._queue.clear()
@@ -879,13 +867,12 @@ class DanmakuOverlay(QWidget):
 
         target_lang = current_ui_language()
         mode = self._settings.translation_mode
-        for raw in self._raw_comments:
-            if not is_floating_danmaku_comment(raw):
-                continue
-            item = DanmakuItem.from_comment(raw, default_work_id=self._work_id)
-            if item.is_reply or item.parent_id or not item.is_danmaku:
-                continue
-            if not should_display_danmaku_for_mode(item, mode, target_lang):
+        for item in self._comments:
+            item.paused = False
+            item.hovered = False
+            item.feedback_text = ""
+            item.feedback_alpha = 0.0
+            if not should_display_comment_for_mode(item, mode, target_lang):
                 continue
             self._queue.append(item)
 
@@ -895,8 +882,8 @@ class DanmakuOverlay(QWidget):
     def set_settings(self, settings: DanmakuSettings) -> None:
         old_mode = self._settings.translation_mode
         self._settings = settings.normalized()
-        if self._settings.translation_mode != old_mode and self._raw_comments:
-            self._rebuild_bullets_from_raw()
+        if self._settings.translation_mode != old_mode and self._comments:
+            self._rebuild_bullets()
         else:
             for item in self._active:
                 self._measure_item(item)
@@ -923,25 +910,31 @@ class DanmakuOverlay(QWidget):
     def set_limits(self, *, max_chars: int | None = None, cooldown_sec: int | None = None) -> None:
         self.composer.set_limits(max_chars=max_chars, cooldown_sec=cooldown_sec)
 
-    def set_comments(self, comments: Sequence[Any], work_id: str = "") -> None:
-        """Load comments for a work, filtering strictly to top-level danmaku."""
-        self._work_id = str(work_id or "")
-        self._raw_comments = list(comments)
-        self.composer.set_comment_count(len(comments))
-        self._position_composer()
-        self._rebuild_bullets_from_raw()
-        self._sync_timer()
-        self.update()
-
-    def add_comment(self, comment: Any, *, immediate: bool = True) -> DanmakuItem | None:
-        """Add one top-level danmaku comment. Replies are strictly ignored."""
+    def _floating_item(self, comment: Any) -> DanmakuItem | None:
         if not is_floating_danmaku_comment(comment):
             return None
         item = DanmakuItem.from_comment(comment, default_work_id=self._work_id)
         if item.is_reply or item.parent_id or not item.is_danmaku:
             return None
-        self._raw_comments.append(comment)
-        if not should_display_danmaku_for_mode(item, self._settings.translation_mode, current_ui_language()):
+        return item
+
+    def set_comments(self, comments: Sequence[Any], work_id: str = "") -> None:
+        """Load comments for a work, filtering strictly to top-level danmaku."""
+        self._work_id = str(work_id or "")
+        self._comments = [item for comment in comments if (item := self._floating_item(comment)) is not None]
+        self.composer.set_comment_count(len(comments))
+        self._position_composer()
+        self._rebuild_bullets()
+        self._sync_timer()
+        self.update()
+
+    def add_comment(self, comment: Any, *, immediate: bool = True) -> DanmakuItem | None:
+        """Add one top-level danmaku comment. Replies are strictly ignored."""
+        item = self._floating_item(comment)
+        if item is None:
+            return None
+        self._comments.append(item)
+        if not should_display_comment_for_mode(item, self._settings.translation_mode, current_ui_language()):
             return None
         if not (immediate and self._settings.enabled and self._spawn_item(item)):
             self._queue.append(item)
@@ -953,7 +946,7 @@ class DanmakuOverlay(QWidget):
         self.popover.dismiss()
         self._active.clear()
         self._queue.clear()
-        self._raw_comments.clear()
+        self._comments.clear()
         self._hovered_id = None
         self._popover_item_id = None
         self.setToolTip("")
@@ -980,11 +973,16 @@ class DanmakuOverlay(QWidget):
         self.popover.retranslate()
         self.composer.retranslate()
         self._position_composer()
-        if self._settings.translation_mode == "same_language" and self._raw_comments:
-            self._rebuild_bullets_from_raw()
+        if self._settings.translation_mode == "same_language" and self._comments:
+            self._rebuild_bullets()
             self._sync_timer()
         else:
+            self.popover.dismiss()
+            self._hovered_id = None
+            self.setToolTip("")
+            QToolTip.hideText()
             for item in self._active:
+                item.hovered = False
                 self._measure_item(item)
             self._recompute_tracks()
         self.update()
@@ -1219,11 +1217,19 @@ class DanmakuOverlay(QWidget):
         self.update()
         return target
 
+    def confirm_vote(self, comment_id: str, vote: int, upvotes: int, downvotes: int) -> None:
+        """Replace the optimistic vote and counts with the server receipt."""
+        target = self._find_item(comment_id)
+        if target is None:
+            return
+        target.viewer_vote = 1 if vote > 0 else (-1 if vote < 0 else 0)
+        target.upvotes = upvotes
+        target.downvotes = downvotes
+        if self.popover.current_item is target:
+            self.popover.refresh_counts()
+
     def _find_item(self, comment_id: str) -> DanmakuItem | None:
-        for item in self._active:
-            if item.comment_id == comment_id:
-                return item
-        for item in self._queue:
+        for item in self._comments:
             if item.comment_id == comment_id:
                 return item
         return None
@@ -1270,7 +1276,7 @@ class DanmakuOverlay(QWidget):
         if hit is not None:
             _, is_translated = hit.resolved_text(self._settings.translation_mode, current_ui_language())
             if is_translated:
-                tip = gallery_tr("gallery_danmaku_original_tooltip", original=hit.content)
+                tip = original_comment_tooltip(hit.content)
                 self.setToolTip(tip)
                 if changed:
                     QToolTip.showText(event.globalPosition().toPoint(), tip, self)

@@ -9,6 +9,7 @@ these tables into ``locales/__init__.py``) while remaining usable standalone via
 """
 from __future__ import annotations
 
+from html import escape
 from typing import Any, Mapping
 
 GALLERY_LANGUAGES: tuple[str, ...] = (
@@ -4582,6 +4583,8 @@ def format_notification(notification: Any, lang: str | None = None) -> str:
         reason=reason,
         detail=detail or notif_type,
     )
+
+
 def normalize_lang_code(raw: Any) -> str:
     """Normalize a language/locale code to its lowercase primary subtag."""
     if not isinstance(raw, str):
@@ -4629,3 +4632,15 @@ def resolve_comment_translation(
     if translated_lang and target and translated_lang != target:
         return original, False
     return translated, True
+
+
+def should_display_comment_for_mode(comment: Any, mode: str, target_lang: str) -> bool:
+    """Keep same-language and unclassified comments in same-language mode."""
+    source = normalize_lang_code(_field(comment, "src_lang", ""))
+    target = normalize_lang_code(target_lang)
+    return mode != "same_language" or not source or not target or source == target
+
+
+def original_comment_tooltip(content: str) -> str:
+    text = t_gallery("gallery_danmaku_original_tooltip", original=content)
+    return f"<qt>{escape(text)}</qt>"

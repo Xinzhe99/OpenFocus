@@ -861,7 +861,7 @@ def test_work_detail_dialog_passes_lang_and_renders_translated_comment_with_tool
                     {
                         "id": "c1",
                         "author_nickname": "Kenji",
-                        "content": "素晴らしいピント合成！",
+                        "content": "素晴らしいピント合成！ <b>&</b>",
                         "src_lang": "ja",
                         "translated_content": "Awesome focus stack!",
                         "translated_lang": "en",
@@ -893,7 +893,8 @@ def test_work_detail_dialog_passes_lang_and_renders_translated_comment_with_tool
         assert lw.count() == 1
         item = lw.item(0)
         assert "Awesome focus stack! \U0001f310" in item.text()
-        assert "素晴らしいピント合成！" in item.toolTip()
+        assert item.toolTip().startswith("<qt>")
+        assert "素晴らしいピント合成！ &lt;b&gt;&amp;&lt;/b&gt;" in item.toolTip()
 
         dlg.comment_input.setText("Great work!")
         dlg._submit_comment()
@@ -905,3 +906,102 @@ def test_work_detail_dialog_passes_lang_and_renders_translated_comment_with_tool
         dlg.close()
     finally:
         trans.set_language(prev_lang)
+
+
+def test_work_detail_discards_pending_comments_in_previous_locale(qapp):
+    english_request_started = Event()
+    release_english_request = Event()
+
+    initial_comment = {
+        "id": "c1",
+        "author_nickname": "Kenji",
+        "content": "素晴らしい！",
+        "src_lang": "ja",
+        "translated_content": "Great!",
+    }
+
+    class Client:
+        def get_comments(self, _work_id, *, lang=None):
+            if lang == "en":
+                english_request_started.set()
+                assert release_english_request.wait(8)
+                return {"items": [{**initial_comment, "translated_content": "Old response"}]}
+            assert lang == "fr"
+            return {"items": [{**initial_comment, "translated_content": "Superbe !"}]}
+
+    detail = WorkDetailDialog(
+        {"id": "w1", "comments": [initial_comment]},
+        client=Client(),
+        translation_mode="auto",
+    )
+    try:
+        assert english_request_started.wait(5)
+        assert detail.comments_list.item(0).text() == "Kenji: Great! 🌐"
+        trans.set_language("fr")
+        assert detail.comments_list.item(0).text() == "Kenji: 素晴らしい！"
+        assert not detail.comments_list.item(0).toolTip()
+
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            qapp.processEvents()
+            if detail.comments_list.item(0).text() == "Kenji: Superbe ! 🌐":
+                break
+            time.sleep(0.01)
+        assert detail.comments_list.item(0).text() == "Kenji: Superbe ! 🌐"
+
+        release_english_request.set()
+        assert detail.wait_for_idle()
+        assert detail.comments_list.count() == 1
+        assert detail.comments_list.item(0).text() == "Kenji: Superbe ! 🌐"
+    finally:
+        release_english_request.set()
+        detail.close()
+
+
+def test_hub_updates_open_and_future_details_for_same_language_mode(qapp):
+    work = {
+        "id": "w1",
+        "comments": [
+            {
+                "id": "parent",
+                "author_nickname": "Camille",
+                "content": "Magnifique !",
+                "src_lang": "fr",
+                "replies": [
+                    {
+                        "id": "reply",
+                        "author_nickname": "Alex",
+                        "content": "Agreed!",
+                        "src_lang": "en-US",
+                    },
+                ],
+            },
+            {"id": "unknown", "author_nickname": "Sam", "content": "👍"},
+        ],
+    }
+
+    def rows(detail):
+        return [
+            detail.comments_list.item(index).text().strip()
+            for index in range(detail.comments_list.count())
+        ]
+
+    hub = GalleryHubDialog()
+    hub.set_danmaku_translation_mode("original")
+    hub.show()
+    detail = hub.open_work_detail(work)
+    try:
+        assert rows(detail) == ["Camille: Magnifique !", "↳ Alex: Agreed!", "Sam: 👍"]
+        hub.set_danmaku_translation_mode("same_language")
+        assert rows(detail) == ["↳ Alex: Agreed!", "Sam: 👍"]
+
+        trans.set_language("fr")
+        assert rows(detail) == ["Camille: Magnifique !", "Sam: 👍"]
+        future_detail = hub.open_work_detail(work)
+        try:
+            assert rows(future_detail) == rows(detail)
+        finally:
+            future_detail.close()
+    finally:
+        detail.close()
+        hub.close()

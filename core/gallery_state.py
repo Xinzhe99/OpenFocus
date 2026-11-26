@@ -420,10 +420,11 @@ class GalleryComment:
     viewer_vote: str = "none"
     created_at: str = ""
     is_author_reply: bool = False
+    replies: tuple["GalleryComment", ...] = ()
     src_lang: str = ""
     translated_content: str = ""
     translated_lang: str = ""
-    replies: tuple["GalleryComment", ...] = ()
+    can_delete: bool = False
 
     @property
     def id(self) -> str:
@@ -467,6 +468,7 @@ class GalleryComment:
             src_lang=normalize_lang_code(data.get("src_lang")),
             translated_content=_as_str(data.get("translated_content")),
             translated_lang=normalize_lang_code(data.get("translated_lang")),
+            can_delete=_as_bool(data.get("can_delete", data.get("is_mine")), False),
             replies=tuple(replies),
         )
 

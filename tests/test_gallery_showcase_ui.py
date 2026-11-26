@@ -745,6 +745,7 @@ def test_comment_drawer_renders_translation_with_original_toggle(qapp):
             [
                 ShowcaseWork(
                     id="w1",
+                    comment_count=85,
                     pixmap=_make_pixmap(120, 80, QColor(30, 80, 140)),
                     comments=[
                         {
@@ -759,6 +760,11 @@ def test_comment_drawer_renders_translation_with_original_toggle(qapp):
                 )
             ]
         )
+        comments = showcase.current_work.comments
+        assert showcase.set_work_comments("w1", comments)
+        assert showcase.current_work.comment_count == 85
+        assert showcase.btn_comment.text().endswith("85")
+        assert "85" in showcase.danmaku_overlay.composer.btn_all_comments.text()
         showcase.open_comment_drawer()
         qapp.processEvents()
 
@@ -767,6 +773,7 @@ def test_comment_drawer_renders_translation_with_original_toggle(qapp):
         body = card.findChild(QLabel, "commentBody")
         toggle = card.findChild(QPushButton, "btn_toggle_comment_translation")
         assert body is not None and toggle is not None
+        assert body.textFormat() == Qt.TextFormat.PlainText
         assert body.text() == "锐利的复眼！"
         toggle.click()
         assert body.text() == "Sharp compound eyes!"

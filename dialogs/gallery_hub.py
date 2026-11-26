@@ -59,12 +59,16 @@ from core.gallery_media import (
     format_exif_summary,
     prepare_gallery_upload,
 )
+from locales import trans
 from locales.gallery_i18n import (
     AI_TAG_KEYS,
     LEADERBOARD_PERIOD_KEYS,
     REPORT_REASON_KEYS,
     current_ui_language,
+    normalize_lang_code,
+    original_comment_tooltip,
     resolve_comment_translation,
+    should_display_comment_for_mode,
     t_gallery,
     translate_badge,
     translate_error,
@@ -1489,6 +1493,7 @@ class WorkDetailDialog(QDialog):
         media_fetcher: Callable[[str], bytes] | None = None,
         parent: QWidget | None = None,
         theme: str = "dark",
+        translation_mode: str | None = None,
     ):
         super().__init__(parent)
         _set_cid(self, "gallery_work_detail_dialog", object_name="galleryWorkDetailDialog")
@@ -1501,7 +1506,14 @@ class WorkDetailDialog(QDialog):
             _get(work, "likes_count", 0) or _get(work, "like_count", 0) or 0
         )
         self._reply_parent_id: str | None = None
-        self._comments: list[Any] = []
+        self._comments = list(_get(work, "comments", None) or ())
+        self._translation_mode = (
+            translation_mode
+            if translation_mode is not None
+            else self._load_translation_mode()
+        )
+        self._ui_language = current_ui_language()
+        self._comments_language: str | None = self._ui_language
         self._runner = _DialogTaskRunner(self, client)
         self._media_loader = _BoundedMediaLoader(self, fetcher=media_fetcher)
 
@@ -1614,9 +1626,12 @@ class WorkDetailDialog(QDialog):
         close_row.addWidget(close_btn)
         root.addLayout(close_row)
 
+        trans.languageChanged.connect(self._on_language_changed)
+        self._render_comments()
         self.load_comments()
 
     def _shutdown_dialog(self) -> None:
+        safe_disconnect(trans.languageChanged, self._on_language_changed)
         self._runner.shutdown()
         self._media_loader.shutdown()
 
@@ -1695,7 +1710,8 @@ class WorkDetailDialog(QDialog):
             ),
         )
 
-    def _translation_mode(self) -> str:
+    @staticmethod
+    def _load_translation_mode() -> str:
         try:
             from controllers.gallery_controller import load_danmaku_settings
 
@@ -1703,15 +1719,29 @@ class WorkDetailDialog(QDialog):
         except Exception:
             return "auto"
 
+    def set_danmaku_translation_mode(self, mode: str) -> None:
+        if self._translation_mode == mode:
+            return
+        was_auto = self._translation_mode == "auto"
+        self._translation_mode = mode
+        self._render_comments()
+        if was_auto != (mode == "auto"):
+            self.load_comments()
+
+    def _on_language_changed(self) -> None:
+        language = current_ui_language()
+        if language == self._ui_language:
+            return
+        self._ui_language = language
+        self._render_comments()
+        if self._translation_mode == "auto":
+            self.load_comments()
+
     def load_comments(self) -> None:
-        initial = _get(self.work, "comments", None)
-        if initial:
-            self._comments = list(initial)
-            self._render_comments()
         if self._client is None or not hasattr(self._client, "get_comments"):
             return
 
-        req_lang = current_ui_language() if self._translation_mode() == "auto" else None
+        req_lang = self._ui_language if self._translation_mode == "auto" else None
 
         def _fetch() -> list[Any]:
             resp = call_get_comments(self._client, self.work_id, lang=req_lang)
@@ -1720,6 +1750,7 @@ class WorkDetailDialog(QDialog):
 
         def _apply(items: list[Any]) -> None:
             self._comments = items
+            self._comments_language = req_lang
             self._render_comments()
 
         self._runner.submit(_fetch, key="work_comments", on_success=_apply)
@@ -1727,8 +1758,9 @@ class WorkDetailDialog(QDialog):
     def _render_comments(self) -> None:
         self.comments_list.clear()
         seen_ids: set[str] = set()
-        mode = self._translation_mode()
-        target_lang = current_ui_language()
+        mode = self._translation_mode
+        target_lang = self._ui_language
+        cached_for_current_language = self._comments_language in (None, target_lang)
 
         def _append_comment(comment: Any, *, force_reply: bool = False) -> None:
             cid = str(_get(comment, "comment_id", "") or _get(comment, "id", ""))
@@ -1736,31 +1768,42 @@ class WorkDetailDialog(QDialog):
                 return
             if cid:
                 seen_ids.add(cid)
-            author = _comment_author(comment)
-            content = str(_get(comment, "content", ""))
-            display_content, is_translated = resolve_comment_translation(
-                comment,
-                mode=mode,
-                target_lang=target_lang,
-            )
-            rendered = f"{display_content} \U0001f310" if is_translated else (display_content or content)
-            is_reply = bool(
-                force_reply
-                or _get(comment, "parent_id", None)
-                or _get(comment, "is_reply", False)
-                or _get(comment, "is_author_reply", False)
-            )
-            prefix = "    ↳ " if is_reply else ""
-            author_tag = (
-                f"[{t_gallery('gallery_comments_author_badge')}] "
-                if bool(_get(comment, "is_author_reply", False))
-                else ""
-            )
-            item = QListWidgetItem(f"{prefix}{author_tag}{author}: {rendered}")
-            if is_translated:
-                item.setToolTip(t_gallery("gallery_danmaku_original_tooltip", original=content))
-            item.setData(Qt.ItemDataRole.UserRole, (cid, author))
-            self.comments_list.addItem(item)
+            if should_display_comment_for_mode(comment, mode, target_lang):
+                author = _comment_author(comment)
+                content = str(_get(comment, "content", ""))
+                # Untagged translations inherit the locale of their response.
+                translation_mode = mode
+                if not cached_for_current_language and not normalize_lang_code(
+                    _get(comment, "translated_lang", "")
+                ):
+                    translation_mode = "original"
+                display_content, is_translated = resolve_comment_translation(
+                    comment,
+                    mode=translation_mode,
+                    target_lang=target_lang,
+                )
+                rendered = (
+                    f"{display_content} \U0001f310"
+                    if is_translated
+                    else (display_content or content)
+                )
+                is_reply = bool(
+                    force_reply
+                    or _get(comment, "parent_id", None)
+                    or _get(comment, "is_reply", False)
+                    or _get(comment, "is_author_reply", False)
+                )
+                prefix = "    ↳ " if is_reply else ""
+                author_tag = (
+                    f"[{t_gallery('gallery_comments_author_badge')}] "
+                    if bool(_get(comment, "is_author_reply", False))
+                    else ""
+                )
+                item = QListWidgetItem(f"{prefix}{author_tag}{author}: {rendered}")
+                if is_translated:
+                    item.setToolTip(original_comment_tooltip(content))
+                item.setData(Qt.ItemDataRole.UserRole, (cid, author))
+                self.comments_list.addItem(item)
 
             nested_replies = _get(comment, "replies", None) or ()
             for reply in nested_replies:
@@ -1861,6 +1904,7 @@ class GalleryHubDialog(QDialog):
         self._media_helper = media_helper
         self._media_fetcher = media_fetcher
         self._theme = theme
+        self._danmaku_translation_mode: str | None = None
         self._did_initial_refresh = False
         self._runner = _DialogTaskRunner(self, client)
         self._media_loader = _BoundedMediaLoader(
@@ -2252,6 +2296,12 @@ class GalleryHubDialog(QDialog):
 
         return card
 
+    def set_danmaku_translation_mode(self, mode: str) -> None:
+        self._danmaku_translation_mode = mode
+        for dialog in self.findChildren(WorkDetailDialog):
+            if dialog.isVisible():
+                dialog.set_danmaku_translation_mode(mode)
+
     def open_work_detail(self, work: Any) -> WorkDetailDialog:
         dlg = WorkDetailDialog(
             work,
@@ -2259,6 +2309,7 @@ class GalleryHubDialog(QDialog):
             media_fetcher=self._media_fetcher,
             parent=self,
             theme=self._theme,
+            translation_mode=self._danmaku_translation_mode,
         )
         dlg.author_clicked.connect(self.open_author_showcase)
         dlg.download_requested.connect(self.download_work_requested.emit)

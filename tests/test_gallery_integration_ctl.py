@@ -1046,3 +1046,103 @@ def test_danmaku_translation_settings_and_controller_comment_language_sync(integ
             for b in window.gallery_showcase_page.danmaku_overlay.active_bullets
         )
     )
+
+
+def test_showcase_discards_old_account_comment_response(integrated_window, monkeypatch):
+    window, _server, _settings, _root = integrated_window
+    gallery = window.gallery_controller
+    monkeypatch.setattr(gallery.state_store, "refresh_account_silently", lambda: False)
+    queued = []
+    monkeypatch.setattr(gallery._executor, "submit", queued.append)
+    monkeypatch.setattr(gallery, "_prefetch_work_image", lambda _work_id: False)
+
+    responses = iter([
+        {"items": [{"id": "old", "content": "old session", "viewer_vote": "up"}]},
+        {"items": [{"id": "new", "content": "new session", "viewer_vote": "down",
+                    "up_count": 4, "author": {"user_id": "writer", "nickname": "Macro Fan"}}]},
+    ])
+    monkeypatch.setattr(gallery.client, "get_comments", lambda *_args, **_kwargs: next(responses))
+
+    def open_same_work(account_id):
+        account = _StubAccountClient(True, account_id, f"{account_id}@example.com", account_id)
+        window._account_client = account
+        gallery.sync_account_session(account)
+        work = GalleryWork.from_dict({"work_id": "shared-work", "title": "Focus stack"})
+        gallery.showcase.set_works([work])
+        queued.clear()
+        assert gallery._fetch_work_comments(work.work_id)
+        request, = queued
+        return request
+
+    old_request = open_same_work("old-account")
+    new_request = open_same_work("new-account")
+    old_request()
+    assert gallery.showcase.current_work.comments == []
+    new_request()
+    comment, = gallery.showcase.current_work.comments
+    assert (comment.id, comment.viewer_vote, comment.upvotes, comment.author_nickname) == (
+        "new", "down", 4, "Macro Fan",
+    )
+
+
+def test_showcase_keeps_pending_danmaku_across_language_fetch_and_reconciles_votes(integrated_window, monkeypatch):
+    window, _server, _settings, _root = integrated_window
+    gallery = window.gallery_controller
+    account = _StubAccountClient(True, "writer", "writer@example.com", "writer")
+    window._account_client = account
+    monkeypatch.setattr(gallery.state_store, "refresh_account_silently", lambda: False)
+    gallery.sync_account_session(account)
+    queued = []
+    monkeypatch.setattr(gallery._executor, "submit", queued.append)
+    monkeypatch.setattr(gallery, "_prefetch_work_image", lambda _work_id: False)
+
+    ordinary = {"id": "regular", "content": "Regular reply", "is_danmaku": False}
+    floating = {"id": "floating", "content": "Older danmaku", "is_danmaku": True}
+    requests = []
+
+    def get_comments(work_id, *, lang=None, danmaku=None):
+        requests.append((work_id, danmaku))
+        if danmaku:
+            return {"items": [floating]}
+        return {"items": [ordinary], "next_cursor": "next"}
+
+    def post_comment(work_id, text, **_kwargs):
+        return {"comment": {"id": "posted", "work_id": work_id, "content": text, "is_danmaku": True}}
+
+    votes = []
+
+    def vote_comment(comment_id, vote):
+        votes.append((comment_id, vote))
+        return {"vote": vote, "up_count": int(vote == "up"), "down_count": 0}
+
+    monkeypatch.setattr(gallery.client, "get_comments", get_comments)
+    monkeypatch.setattr(gallery.client, "post_comment", post_comment)
+    monkeypatch.setattr(gallery.client, "vote_comment", vote_comment)
+    works = [GalleryWork.from_dict({"work_id": "w", "title": "Focus stack"})]
+    gallery.state_store._feed_works = works
+    gallery._on_feed_changed(works)
+    queued.pop(0)()
+    assert requests == [("w", None), ("w", True)]
+    assert {comment.id for comment in gallery.showcase.current_work.comments} == {"regular", "floating"}
+    assert [item.comment_id for item in gallery.showcase.danmaku_overlay.active_bullets] == ["floating"]
+
+    gallery.showcase.open_danmaku_composer()
+    gallery.showcase.danmaku_overlay.comment_submitted.emit("New danmaku")
+    gallery.apply_danmaku_settings(DanmakuSettings(translation_mode="original"), persist=False)
+    post_request, language_request = queued
+    queued.clear()
+    language_request()
+    assert any(item.content == "New danmaku" and item.comment_id.startswith("local-")
+               for item in gallery.showcase.danmaku_overlay.active_bullets)
+    post_request()
+
+    overlay = gallery.showcase.danmaku_overlay
+    assert overlay.open_popover_for("posted")
+    assert not any(item.comment_id.startswith("local-") for item in overlay.active_bullets)
+    overlay.popover.btn_upvote.click()
+    queued.pop(0)()
+    gallery.showcase.show_slide(0)
+    assert overlay.open_popover_for("posted")
+    overlay.popover.btn_upvote.click()
+    queued.pop(0)()
+    assert votes == [("posted", "up"), ("posted", "none")]

@@ -1839,11 +1839,13 @@ def _accepted_kwargs(fn: Any, candidates: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def call_get_comments(client: Any, work_id: str, *, lang: Optional[str] = None) -> Any:
-    """Invoke ``client.get_comments`` passing ``lang`` only if supported."""
+def call_get_comments(
+    client: Any, work_id: str, *, lang: Optional[str] = None, danmaku: Optional[bool] = None
+) -> Any:
+    """Invoke ``client.get_comments`` with the supported language and filter."""
     norm_lang = normalize_lang_code(lang)
     fn = client.get_comments
-    kwargs = _accepted_kwargs(fn, {"lang": norm_lang or None})
+    kwargs = _accepted_kwargs(fn, {"lang": norm_lang or None, "danmaku": danmaku})
     return fn(work_id, **kwargs)
 
 
