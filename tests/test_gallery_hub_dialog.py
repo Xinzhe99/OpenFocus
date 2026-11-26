@@ -11,9 +11,10 @@ from typing import Any
 
 import numpy as np
 import pytest
-from PyQt6.QtCore import QTimer
+from PyQt6.QtCore import QTimer, Qt
 from PyQt6.QtGui import QColor, QImage, QPixmap
-from PyQt6.QtWidgets import QApplication, QPushButton
+from PyQt6.QtTest import QTest
+from PyQt6.QtWidgets import QApplication, QLabel, QPushButton
 
 from dialogs.gallery_hub import (
     MAX_BATCH_UPLOAD,
@@ -26,7 +27,7 @@ from dialogs.gallery_hub import (
     render_watermark_preview,
 )
 from locales import trans
-from locales.gallery_i18n import AI_TAG_KEYS, LEADERBOARD_PERIOD_KEYS
+from locales.gallery_i18n import AI_TAG_KEYS, LEADERBOARD_PERIOD_KEYS, t_gallery
 
 
 @pytest.fixture(autouse=True)
@@ -475,6 +476,7 @@ def test_terms_consent_and_safe_confirm_retry_zero_double_charge(qapp, tmp_path)
     store.config["gallery_terms_version"] = ""
     client = ThreeStageClient()
     dlg = GalleryHubDialog(client=client, state_store=store, initial_tab=2)
+    dlg.show()
     dlg.add_publish_files([_write_test_png(tmp_path / "safe.png")])
 
     # Attempt 1: terms accepted -> inspect -> 2 R2 PUTs -> confirm times out
@@ -489,6 +491,11 @@ def test_terms_consent_and_safe_confirm_retry_zero_double_charge(qapp, tmp_path)
     first_idem = items[0].idempotency_key
     assert first_idem
     assert "no double charge" in items[0].status_message.lower()
+    store.profile['points_balance'] = 0
+    dlg._on_store_profile_changed(store.profile)
+    assert not dlg.insufficient_points_label.isVisible()
+    assert dlg.cost_hint_label.text() == t_gallery(
+        'gallery_publish_cost_hint', cost=store.config['upload_cost_points'])
 
     # Attempt 2 (Retry Confirm): MUST NOT re-run inspect or PUT; reuses exact upload_id + Idempotency-Key!
     items = dlg.publish_all(wait=True)
@@ -830,6 +837,19 @@ def test_pr264_model_interop_honor_card_nested_replies_and_report_kwarg(qapp, mo
     detail.close()
 
 
+@pytest.mark.parametrize('badged', [False, True])
+def test_work_detail_distinguishes_studio_badge_from_author_name(qapp, badged):
+    detail = WorkDetailDialog({'id': 'w-studio', 'title': 'Photo', 'openfocus_badge': badged,
+                               'author': {'user_id': 'u-studio', 'nickname': 'OpenFocus Studio'}})
+    assert detail.author_btn.text() == 'OpenFocus Studio'
+    badge = detail.findChild(QLabel, 'badgeOpenFocus')
+    if badged:
+        assert badge.text() == '◆' and badge.accessibleName() == 'OpenFocus Studio'
+    else:
+        assert badge is None
+    detail.close()
+
+
 @pytest.mark.parametrize("lang", ["de", "ru", "fr", "pl", "zh", "ja"])
 def test_large_translated_layouts_render_cleanly_across_locales(qapp, lang):
     prev_lang = trans.current_lang
@@ -844,3 +864,58 @@ def test_large_translated_layouts_render_cleanly_across_locales(qapp, lang):
         dlg.close()
     finally:
         trans.set_language(prev_lang)
+
+
+def test_gallery_hub_displays_points_balance_and_dynamic_publish_cost(qapp, tmp_path):
+    class _Store:
+        def __init__(self):
+            self.profile = {"user_id": "u1", "nickname": "Tester", "points_balance": 100}
+            self.config = {"upload_cost_points": 100}
+
+        def refresh_account_silently(self):
+            return True
+
+    img1 = tmp_path / "shot1.png"
+    img2 = tmp_path / "shot2.png"
+    QImage(24, 24, QImage.Format.Format_RGB32).save(str(img1))
+    QImage(24, 24, QImage.Format.Format_RGB32).save(str(img2))
+
+    store = _Store()
+    dlg = GalleryHubDialog(state_store=store, initial_tab=2)
+    dlg.show()
+    qapp.processEvents()
+
+    assert "100" in dlg.hub_points_badge.text()
+    assert "100" in dlg.publish_balance_label.text()
+    assert dlg.insufficient_points_label.isVisible() is False
+
+    account_requests = []
+    dlg.account_center_requested.connect(lambda: account_requests.append(True))
+    dlg.hub_top_up_btn.setFocus()
+    dlg.publish_title_edit.setFocus()
+    QTest.keyClick(dlg.publish_title_edit, Qt.Key.Key_Return)
+    assert not account_requests
+    dlg.hub_top_up_btn.click()
+    assert account_requests == [True]
+
+    dlg.add_publish_files([str(img1)])
+    qapp.processEvents()
+    assert "100" in dlg.cost_hint_label.text()
+    assert dlg.insufficient_points_label.isVisible() is False
+
+    dlg.add_publish_files([str(img2)])
+    qapp.processEvents()
+    assert "200" in dlg.cost_hint_label.text()
+    assert dlg.insufficient_points_label.isVisible() is True
+    trans.set_language('de')
+    dlg.resize(760, 560)
+    qapp.processEvents()
+    assert dlg.hub_top_up_btn.isVisible()
+    assert dlg.hub_top_up_btn.text() == t_gallery('gallery_hub_top_up_btn')
+    assert dlg.insufficient_points_label.text() == t_gallery('gallery_publish_insufficient_points')
+
+    store.config['upload_cost_points'] = 0
+    dlg._on_store_config_changed(store.config)
+    assert dlg.cost_hint_label.text() == t_gallery('gallery_publish_batch_estimate', count=2, total=0)
+    assert not dlg.insufficient_points_label.isVisible()
+    dlg.close()

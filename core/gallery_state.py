@@ -648,7 +648,7 @@ def build_builtin_fallback_works(assets_dir: Optional[Path] = None) -> list[Gall
             "author_nickname": "OpenFocus",
             "rel_path": os.path.join("Examples", "a00.jpg"),
             "ai_tags": ("botanical", "microscopy"),
-            "exif": {"camera": "OpenFocus Sample Stack", "lens": "Macro 90mm f/2.8"},
+            "exif": {"lens": "Macro 90mm f/2.8"},
         },
         {
             "work_id": "builtin_openfocus_demo_02",
@@ -657,7 +657,7 @@ def build_builtin_fallback_works(assets_dir: Optional[Path] = None) -> list[Gall
             "author_nickname": "OpenFocus",
             "rel_path": os.path.join("demo_stack", "demo_01.jpg"),
             "ai_tags": ("product_still_life", "abstract_texture"),
-            "exif": {"camera": "OpenFocus Demo", "lens": "Macro 60mm f/4"},
+            "exif": {"lens": "Macro 60mm f/4"},
         },
         {
             "work_id": "builtin_openfocus_brand_03",
@@ -666,7 +666,7 @@ def build_builtin_fallback_works(assets_dir: Optional[Path] = None) -> list[Gall
             "author_nickname": "OpenFocus",
             "rel_path": "comparison_ai_vs_gff.png",
             "ai_tags": ("microscopy",),
-            "exif": {"camera": "OpenFocus Studio"},
+            "exif": {"lens": "Macro Focus Stack"},
         },
     )
 
@@ -696,7 +696,7 @@ def build_builtin_fallback_works(assets_dir: Optional[Path] = None) -> list[Gall
                 author_id="openfocus_official",
                 author_nickname="OpenFocus",
                 title="OpenFocus Focus Stacking Showcase",
-                exif={"camera": "OpenFocus"},
+                exif={"lens": "Macro Focus Stack"},
                 ai_tags=("other",),
                 openfocus_badge=True,
                 allow_download=False,
@@ -729,7 +729,7 @@ class GalleryStateStore(QObject):
 
     # Internal thread-marshaling signals
     _config_loaded = pyqtSignal(object)
-    _profile_loaded = pyqtSignal(int, object)
+    _profile_loaded = pyqtSignal(int, object, int)
     _feed_loaded = pyqtSignal(int, object)
     _notifications_loaded = pyqtSignal(int, object)
     _operation_failed = pyqtSignal(object, str, str)
@@ -766,6 +766,7 @@ class GalleryStateStore(QObject):
         self._deferred_poll: bool = False
         self._closed: bool = False
         self._account_generation = 0
+        self._profile_refresh_revision = 0
         self._inflight_lock = threading.Lock()
         self._inflight_ops: set[tuple[str, Optional[int]]] = set()
 
@@ -1019,19 +1020,29 @@ class GalleryStateStore(QObject):
             return False
 
         generation = self._account_generation
+        revision = self._profile_refresh_revision
 
         def _work() -> None:
             try:
                 raw = self._client.get_me(bypass_backoff=bypass_backoff)
                 profile = AccountProfile.from_dict(raw)
-                self._safe_emit("_profile_loaded", generation, profile)
+                self._safe_emit("_profile_loaded", generation, profile, revision)
             except GalleryClientError as exc:
                 self._safe_emit("_operation_failed", generation, "account", exc.code)
             except Exception:
                 _logger.debug("Unexpected gallery account refresh error", exc_info=True)
                 self._safe_emit("_operation_failed", generation, "account", "internal_error")
 
-        return self._submit("account", _work, generation=generation)
+        return self._submit(f"account:{revision}", _work, generation=generation)
+
+    def refresh_account_after_points_change(self) -> None:
+        """Refresh the shared profile after a publish or voucher changes points."""
+        # An earlier request may have read the balance before the change.
+        self._profile_refresh_revision += 1
+        if self._fusion_busy:
+            self._deferred_poll = True
+        else:
+            self.refresh_account_silently()
 
     def refresh_feed(
         self,
@@ -1124,8 +1135,10 @@ class GalleryStateStore(QObject):
             if not cfg.gallery_enabled:
                 self.feed_changed.emit([])
 
-    def _apply_profile(self, generation: int, profile: AccountProfile) -> None:
+    def _apply_profile(self, generation: int, profile: AccountProfile, revision: int | None = None) -> None:
         if self._closed or generation != self._account_generation:
+            return
+        if revision is not None and revision != self._profile_refresh_revision:
             return
         self._profile = profile
         self.profile_changed.emit(profile)

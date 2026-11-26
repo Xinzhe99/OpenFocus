@@ -430,6 +430,36 @@ def test_scheduled_gallery_poll_respects_backoff_and_stop(qapp):
     store.shutdown()
 
 
+def test_points_refresh_supersedes_an_earlier_profile_read(qapp):
+    running, release = Event(), Event()
+    tasks = []
+    balances = iter((100, 200))
+
+    def transport(method, url, headers, body, timeout):
+        balance = next(balances)
+        if balance == 100:
+            running.set()
+            assert release.wait(5)
+        return _json_response({'user_id': 'u', 'points_balance': balance})
+
+    client = gc.GalleryClient(token='tok', transport=transport)
+    store = gs.GalleryStateStore(client, background_runner=tasks.append)
+    assert store.refresh_account_silently()
+    worker = Thread(target=tasks.pop())
+    worker.start()
+    try:
+        assert running.wait(5)
+        store.refresh_account_after_points_change()
+        tasks.pop()()
+    finally:
+        release.set()
+        worker.join(timeout=5)
+    assert not worker.is_alive()
+    qapp.processEvents()
+    assert store.profile.points_balance == 200
+    store.shutdown()
+
+
 @pytest.mark.parametrize("retired_request_fails", [False, True])
 def test_retired_gallery_responses_cannot_replace_new_session(qapp, retired_request_fails):
     release = Event()
@@ -486,3 +516,11 @@ def test_retired_gallery_responses_cannot_replace_new_session(qapp, retired_requ
     assert store.notifications == []
     assert store.feed_works == []
     store.shutdown()
+
+
+def test_builtin_fallback_works_avoid_duplicate_openfocus_camera_metadata():
+    works = gs.build_builtin_fallback_works()
+    assert works
+    for work in works:
+        cam = str(work.exif.get("camera", "") or "")
+        assert "openfocus" not in cam.lower()
