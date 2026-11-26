@@ -929,7 +929,42 @@ def frame_region(image, key=Ellipsis, *, write=False):
         yield borrowed
     finally:
         _owned_mappings.pop(id(mapping), None)
+        if write and os.name == 'nt':
+            try:
+                mapping._mmap.flush()
+            except (AttributeError, OSError, ValueError):
+                pass
         mapping._mmap.close()
+
+
+def flush_mapped_frame(image, *, sync=False) -> bool:
+    """Flush dirty pages for a writable mapped frame; optionally fsync its file."""
+    root = _mapped_base(image)
+    if root is None or getattr(root, 'mode', None) in ('r', 'c'):
+        return False
+    mmap_obj = getattr(root, '_mmap', None)
+    if mmap_obj is None:
+        return False
+    try:
+        mmap_obj.flush()
+    except (AttributeError, OSError, ValueError):
+        return False
+    if sync:
+        path = getattr(root, 'filename', None)
+        if path:
+            fd = None
+            try:
+                fd = os.open(os.fspath(path), os.O_RDWR | getattr(os, 'O_BINARY', 0))
+                os.fsync(fd)
+            except OSError:
+                pass
+            finally:
+                if fd is not None:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+    return True
 
 
 def _reopen_mapped(region, root, *, write):

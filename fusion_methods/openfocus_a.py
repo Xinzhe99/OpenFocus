@@ -1,10 +1,13 @@
 """OpenFocus A: Burt response with low-detail background blending."""
 
+import gc
+import os
+
 import cv2
 import numpy as np
 from core.frame_storage import (
     create_transient_frame as create_frame, create_frame as create_disk_frame,
-    frame_region,
+    flush_mapped_frame, frame_region, is_mapped_frame,
 )
 from fusion_methods._openfocus_pixels import frame_codes, frame_gray_codes, gray_codes, output_codes
 from fusion_methods._openfocus_execution import execution_job, configure_rows, run_bands
@@ -264,32 +267,37 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
         progress_callback(0, len(frames))
     _check_cancel(should_cancel)
 
+    from core.source_frames import resolve_frame, without_source_cache_growth
+
     def produce_response(index, cancelled):
         source = frames[index]
-        code = frame_codes(source, img_resize, cancelled)
+        with without_source_cache_growth():
+            code = frame_codes(source, img_resize, cancelled)
         return _response(code, radius, cancelled, _check_cancel,
                          u8=source.dtype == np.uint8)
 
     def produce(index, cancelled):
         source = frames[index]
         if native_hard and source.dtype in (np.uint8, np.uint16):
-            from core.source_frames import resolve_frame
-
             _check_cancel(cancelled)
-            frame = resolve_frame(source, should_cancel=cancelled)
+            with without_source_cache_growth():
+                frame = resolve_frame(source, should_cancel=cancelled)
             _check_cancel(cancelled)
             gray = frame_gray_codes(frame, None, cancelled)
             return frame, (gray, *_hard_pyramid(gray, radius, cancelled, _check_cancel))
-        code = frame_codes(source, img_resize, cancelled)
+        with without_source_cache_growth():
+            code = frame_codes(source, img_resize, cancelled)
         if hard:
             gray = gray_codes(code, cancelled, u8=source.dtype == np.uint8)
             return code, (gray, *_hard_pyramid(gray, radius, cancelled, _check_cancel))
         response = _response(code, radius, cancelled, _check_cancel,
                              u8=source.dtype == np.uint8)
-        return _prepare_frame(source, img_resize, cancelled), response
+        with without_source_cache_growth():
+            return _prepare_frame(source, img_resize, cancelled), response
 
     def prepare(index, cancelled):
-        return _prepare_frame(frames[index], img_resize, cancelled)
+        with without_source_cache_growth():
+            return _prepare_frame(frames[index], img_resize, cancelled)
 
     soft = blend_mode == 'soft'
     feather = blend_mode == 'feather'
@@ -507,6 +515,17 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
                     _check_cancel(should_cancel)
                     live_preview.update_best(best, index, len(frames))
                 del frame, pyramid
+                if index + 1 < len(frames) and (is_mapped_frame(background) or is_mapped_frame(output)):
+                    from core import resource_policy as policy
+                    from core.source_frames import SOURCE_CACHE
+
+                    if os.name == 'nt' and is_mapped_frame(output):
+                        flush_mapped_frame(output)
+                    if policy.ram_ceiling(policy.probe_memory()) < 256 * 1024 * 1024:
+                        flush_mapped_frame(background, sync=True)
+                        flush_mapped_frame(output, sync=True)
+                        SOURCE_CACHE.clear()
+                        gc.collect()
                 if progress_callback is not None:
                     progress_callback(index + 1, len(frames))
                 _check_cancel(should_cancel)
