@@ -335,6 +335,68 @@ def test_openfocus_b_low_ram_auto_degrades_to_serial(monkeypatch):
         fusion.fuse(frames, thread_count=4)
 
 
+def test_openfocus_low_ram_retry_releases_source_cache_before_rejecting(monkeypatch):
+    from core import multi_focus_fusion as mff, source_frames
+
+    GiB = 1024 ** 3
+    rng = np.random.default_rng(43)
+    frames = [rng.integers(0, 256, (64, 64, 3), dtype=np.uint8) for _ in range(4)]
+    roomy = resource_policy.ResourceSnapshot(
+        available_ram=6 * GiB, total_ram=8 * GiB, physical_cores=4, logical_cpus=8,
+    )
+    reserve = max(
+        resource_policy.RESERVE_BYTES,
+        min(int(resource_policy.RESERVE_RATIO * roomy.total_ram), resource_policy.RESERVE_CAP_BYTES),
+    )
+    # Known RAM with nothing above the desktop reserve until cached frames are released.
+    squeezed = replace(roomy, available_ram=reserve)
+    assert squeezed.ram_known and resource_policy.ram_ceiling(squeezed) == 0
+    pressure, released = [], []
+    clear = source_frames.SOURCE_CACHE.clear
+
+    def release():
+        if pressure:
+            released.append(True)
+        clear()
+
+    monkeypatch.setattr(source_frames.SOURCE_CACHE, 'clear', release)
+    probe = lambda *args, **kwargs: squeezed if pressure and not released else roomy
+    monkeypatch.setattr(resource_policy, 'probe_resources', probe)
+    monkeypatch.setattr(resource_policy, 'probe_memory', probe)
+    fusion = MultiFocusFusion('openfocus_b', use_gpu=False, tile_enabled=False, exposure_match=False)
+    expected = fusion.fuse(frames, thread_count=4)
+
+    original_plan = resource_policy.plan_execution
+    threads = []
+
+    def tight_plan(workload, **kwargs):
+        if workload.algorithm == 'openfocus_b':
+            threads.append(kwargs.get('user_threads'))
+            if len(threads) == 1:
+                # Free RAM falls to the desktop reserve at admission.
+                pressure.append(True)
+                raise resource_policy.ResourceLimitError('tight memory simulation')
+        return original_plan(workload, **kwargs)
+
+    monkeypatch.setattr(resource_policy, 'plan_execution', tight_plan)
+    events = []
+    monkeypatch.setattr(mff, 'log_action', lambda event, **kw: events.append(event))
+    result = fusion.fuse(frames, thread_count=4)
+    assert released
+    assert len(threads) >= 2 and threads[1] == 1
+    assert 'openfocus_low_ram_degrade' in events
+    np.testing.assert_array_equal(result, expected)
+
+    # Unknown RAM still rejects at once and keeps the cached frames.
+    pressure.clear()
+    released.clear()
+    threads.clear()
+    squeezed = resource_policy.ResourceSnapshot()
+    with pytest.raises(resource_policy.ResourceLimitError):
+        fusion.fuse(frames, thread_count=4)
+    assert not released
+
+
 def test_ecc_plan_falls_back_to_cpu_resize_when_gpu_stripe_exceeds_budget(monkeypatch):
     frames = [np.broadcast_to(np.zeros((1, 1, 3), np.uint8), (4320, 7680, 3))] * 4
     native_snap = resource_policy.ResourceSnapshot(
@@ -587,6 +649,53 @@ def test_openfocus_alignment_low_ram_spill_degrade_and_zero_budget_reject(monkey
     )
     est_12k = estimate_render_memory([frame_12k] * 100, 'openfocus_b', {}, register=True, alignment='openfocus')
     assert not est_12k.ram_short
+
+
+def test_openfocus_alignment_releases_source_cache_before_rejecting_low_ram(monkeypatch, tmp_path):
+    from core import frame_storage, source_frames
+    from utils import logging_setup
+
+    GiB = 1024 ** 3
+    first = np.random.default_rng(41).integers(0, 256, size=(384, 384), dtype=np.uint8)
+    sources = [first, np.roll(first, 2, axis=1)]
+    parameters = {'max_shift_ratio': 0.02, 'magnification': 0.0}
+    expected = openfocus_alignment.estimate_alignment_plan(sources, **parameters)
+
+    roomy = resource_policy.ResourceSnapshot(
+        available_ram=6 * GiB, total_ram=16 * GiB, physical_cores=8, logical_cpus=16,
+    )
+    reserve = max(
+        resource_policy.RESERVE_BYTES,
+        min(int(resource_policy.RESERVE_RATIO * roomy.total_ram), resource_policy.RESERVE_CAP_BYTES),
+    )
+    # Known RAM with nothing above the desktop reserve until cached frames are released.
+    squeezed = replace(roomy, available_ram=reserve)
+    assert squeezed.ram_known and resource_policy.ram_ceiling(squeezed) == 0
+    released = []
+    clear = source_frames.SOURCE_CACHE.clear
+
+    def release():
+        released.append(True)
+        clear()
+
+    monkeypatch.setattr(source_frames.SOURCE_CACHE, 'clear', release)
+    probe = lambda *args, **kwargs: roomy if released else squeezed
+    monkeypatch.setattr(resource_policy, 'probe_resources', probe)
+    monkeypatch.setattr(resource_policy, 'probe_memory', probe)
+    events = []
+    monkeypatch.setattr(logging_setup, 'log_action', lambda event, **kw: events.append(event))
+    with frame_storage.scratch_directory(explicit_directory=tmp_path):
+        plan = openfocus_alignment.estimate_alignment_plan(sources, **parameters)
+    assert released
+    assert 'openfocus_alignment_low_ram_degrade' in events
+    assert plan == expected
+
+    # Unknown RAM still rejects at once and keeps the cached frames.
+    released.clear()
+    squeezed = resource_policy.ResourceSnapshot()
+    with pytest.raises(resource_policy.ResourceLimitError):
+        openfocus_alignment.estimate_alignment_plan(sources, **parameters)
+    assert not released
 
 
 def test_openfocus_b_unmapped_source_admits_first_pass_without_degrade(tmp_path, monkeypatch):

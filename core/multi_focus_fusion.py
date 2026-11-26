@@ -1204,7 +1204,7 @@ class MultiFocusFusion:
                         ram_budget_override=memory_budget_bytes(),
                     )
                 except policy.ResourceLimitError:
-                    if not openfocus_native_family or memory_budget_bytes() <= 0:
+                    if not openfocus_native_family or not policy.probe_memory().ram_known:
                         raise
                     import gc
                     from core.source_frames import SOURCE_CACHE
