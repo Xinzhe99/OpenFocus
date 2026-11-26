@@ -90,7 +90,7 @@ def laplacian_sharpness(bgr_img):
 
 
 @pytest.fixture(scope="session")
-def qapp(tmp_path_factory):
+def qapp(request):
     """Session-lifetime QApplication.
 
     The C++ object must outlive every QSettings the suite creates: a
@@ -99,6 +99,11 @@ def qapp(tmp_path_factory):
     object of type QSettings has been deleted).
     """
     pytest.importorskip("PyQt6")
+    return request.getfixturevalue("_session_qapplication")
+
+
+@pytest.fixture(scope="session")
+def _session_qapplication(tmp_path_factory):
     from PyQt6.QtCore import QSettings
     from PyQt6.QtWidgets import QApplication
     # 必须在第一个 QSettings 单例诞生前配置沙箱路径：晚了单例会指向
@@ -119,6 +124,23 @@ def qapp(tmp_path_factory):
         os.environ.pop("OPENFOCUS_DATA_DIR", None)
     else:
         os.environ["OPENFOCUS_DATA_DIR"] = previous_data_dir
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _session_owns_the_qapplication(request):
+    """Create the session QApplication before any test can create one.
+
+    Several modules fall back to ``QApplication([])`` when none exists. The
+    module that creates the first one owns it, and when that module's
+    fixtures are released Qt destroys the application together with shared
+    objects later tests use, such as the translation manager. That only
+    happened when a run started with such a module, for example a run of a
+    few selected files. The fixture is requested by a name no module
+    overrides.
+    """
+    import importlib.util
+    if importlib.util.find_spec("PyQt6") is not None:
+        request.getfixturevalue("_session_qapplication")
 
 
 @pytest.fixture
