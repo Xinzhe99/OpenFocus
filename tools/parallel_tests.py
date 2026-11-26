@@ -29,6 +29,7 @@ SLICES = 16
 # pytest lists one test per line ("file.py::test") or, when quieter, one file
 # per line with its number of tests ("file.py: 12").
 _NODE = re.compile(r"^(" + TESTS + r"/[^:\s]+\.py)(?:::|: (\d+)$)")
+_ERROR = re.compile(r"^ERROR (" + TESTS + r"/[^:\s]+\.py)(?:\s|$)")
 
 
 def split_files(counts, slices):
@@ -54,24 +55,72 @@ def split_files(counts, slices):
     return groups
 
 
-def collect(pytest_options):
-    """Return {file: test count} in collection order, uncollected files last."""
-    command = [sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider",
-               *pytest_options]
-    listing = subprocess.run(command, cwd=ROOT, capture_output=True, text=True,
-                             encoding="utf-8", errors="replace")
-    counts = {}
-    for line in listing.stdout.splitlines():
-        match = _NODE.match(line.replace("\\", "/"))
+def parse_listing(text):
+    """Read pytest's collection listing: ({file: test count}, [files that failed to collect])."""
+    counts, broken = {}, []
+    for line in text.splitlines():
+        line = line.replace("\\", "/")
+        match = _NODE.match(line)
         if match:
             counts[match.group(1)] = counts.get(match.group(1), 0) + int(match.group(2) or 1)
+            continue
+        match = _ERROR.match(line)
+        if match and match.group(1) not in broken:
+            broken.append(match.group(1))
+    return counts, broken
+
+
+def without_option(options, name):
+    """Drop ``name VALUE`` and ``name=VALUE`` from a list of pytest options."""
+    kept, skip = [], False
+    for option in options:
+        if skip:
+            skip = False
+        elif option == name:
+            skip = True
+        elif not option.startswith(name + "="):
+            kept.append(option)
+    return kept
+
+
+def slice_options(options, index):
+    """The pytest options for one slice.
+
+    pytest empties ``--basetemp`` when it starts, so slices that shared one
+    would delete each other's temporary files. Each gets a folder inside it.
+    """
+    result, take_value = [], False
+    for option in options:
+        if take_value:
+            result.append(os.path.join(option, f"slice-{index}"))
+            take_value = False
+        elif option == "--basetemp":
+            result.append(option)
+            take_value = True
+        elif option.startswith("--basetemp="):
+            result.append("--basetemp=" + os.path.join(option.split("=", 1)[1], f"slice-{index}"))
+        else:
+            result.append(option)
+    return result
+
+
+def collect(pytest_options):
+    """Return {file: test count} in collection order, uncollected files last."""
+    # The last verbosity option wins, so the listing has one test per line
+    # whatever -v or -q the caller passes for the runs themselves.
+    command = [sys.executable, "-m", "pytest", "--collect-only", "-p", "no:cacheprovider",
+               *without_option(pytest_options, "--basetemp"), "--verbosity=-1"]
+    listing = subprocess.run(command, cwd=ROOT, capture_output=True, text=True,
+                             encoding="utf-8", errors="replace")
+    counts, broken = parse_listing(listing.stdout)
+    # A file that failed to import has no tests listed. Keep it, so the slice
+    # that runs it reports the error. Files whose tests were all deselected
+    # stay out: a slice with nothing to run would fail.
+    for name in broken:
+        counts.setdefault(name, 0)
     if not counts:
         sys.stdout.write(listing.stdout + listing.stderr)
         raise SystemExit(listing.returncode or 1)
-    # A file that failed to import has no tests listed. Keep it, so the slice
-    # that runs it reports the error.
-    for path in sorted((ROOT / TESTS).rglob("test_*.py")):
-        counts.setdefault(path.relative_to(ROOT).as_posix(), 0)
     return counts
 
 
@@ -95,7 +144,7 @@ def run(groups, jobs, pytest_options):
                 output = open(os.path.join(scratch, f"slice-{index}.txt"), "w+",
                               encoding="utf-8", errors="replace")
                 command = [sys.executable, "-m", "pytest", "-p", "no:cacheprovider",
-                           *pytest_options, *files]
+                           *slice_options(pytest_options, index), *files]
                 process = subprocess.Popen(command, cwd=ROOT, stdout=output,
                                            stderr=subprocess.STDOUT)
                 running[index] = (process, output, files, time.monotonic())
@@ -130,6 +179,12 @@ def main(argv=None):
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(errors="replace")  # test output may not fit the console encoding
     jobs = max(1, options.jobs)
+    for position, option in enumerate(pytest_options):
+        # pytest creates a slice's base temp folder but not its parent.
+        if option.startswith("--basetemp="):
+            os.makedirs(option.split("=", 1)[1], exist_ok=True)
+        elif option == "--basetemp" and position + 1 < len(pytest_options):
+            os.makedirs(pytest_options[position + 1], exist_ok=True)
     counts = collect(pytest_options)
     groups = split_files(counts, options.slices)
     print(f"{sum(counts.values())} tests in {len(counts)} files, {len(groups)} slices, "
