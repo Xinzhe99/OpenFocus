@@ -597,6 +597,9 @@ _observed_files = set()
 _disowned_files = set()
 _cleanup_directories = {}
 _temp_observers = []
+# A separate mapping can borrow a scratch pathname without owning its pixels.
+# Track the live mappings themselves before reopening by pathname for upload.
+_owned_mappings = weakref.WeakValueDictionary()
 
 
 
@@ -821,6 +824,7 @@ def create_frame(shape, dtype, *, directory=None):
         if state is not None:
             state.retain()
         weakref.finalize(mapped, _release, mapped._mmap, key, state)
+        _owned_mappings[id(mapped)] = mapped
         return mapped
     except OSError as exc:
         if fd is not None:
@@ -884,6 +888,7 @@ def store_frame(image, *, prefer_ram=True):
         if state is not None:
             state.retain()
         weakref.finalize(mapped, _release, mapped._mmap, key, state)
+        _owned_mappings[id(mapped)] = mapped
         return mapped
     except OSError as exc:
         if fd is not None:
@@ -916,20 +921,57 @@ def frame_region(image, key=Ellipsis, *, write=False):
     if root is None:
         yield region
         return
+    borrowed, mapping = _reopen_mapped(region, root, write=write)
+    try:
+        # The original scratch mapping stays alive throughout the region lease.
+        if _owned_mappings.get(id(root)) is root:
+            _owned_mappings[id(mapping)] = mapping
+        yield borrowed
+    finally:
+        _owned_mappings.pop(id(mapping), None)
+        mapping._mmap.close()
+
+
+def _reopen_mapped(region, root, *, write):
+    """Map only ``region``'s bytes of ``root``'s file again, as (view, mapping)."""
     offset = root.offset + region.ctypes.data - root.ctypes.data
     extent = [(size - 1) * stride for size, stride in zip(region.shape, region.strides)]
     start = offset + sum(min(0, value) for value in extent)
     stop = offset + sum(max(0, value) for value in extent) + region.dtype.itemsize
     mapping = np.memmap(root.filename, dtype=np.uint8,
                         mode='r+' if write else 'r', offset=start, shape=(stop - start,))
-    try:
-        borrowed = np.ndarray(region.shape, dtype=region.dtype, buffer=mapping,
-                              offset=offset - start, strides=region.strides)
-        if not write:
-            borrowed.flags.writeable = False
-        yield borrowed
-    finally:
-        mapping._mmap.close()
+    view = np.ndarray(region.shape, dtype=region.dtype, buffer=mapping,
+                      offset=offset - start, strides=region.strides)
+    if not write:
+        view.flags.writeable = False
+    return view, mapping
+
+
+# Windows cannot delete a file while any view of it is mapped, and a pending
+# copy may hold a reopened view after the frame's owner has released the file.
+_READ_ONLY_UPLOADS = os.name != 'nt'
+
+
+def async_upload_view(image):
+    """``image`` as the host source of a non-blocking host-to-device copy.
+
+    A non-blocking OpenCL copy from a writable shared file mapping can stall
+    while the system writes the file back over and over: on Linux with an
+    Intel integrated GPU, one such upload of a 116 MB frame had not finished
+    after 90 seconds and kept the disk writing at about 1 GB/s, while the same
+    bytes mapped read-only uploaded in under 0.1 s. A writable scratch mapping
+    is reopened read-only over the same bytes without copying them, and the
+    view keeps that mapping alive until the copy releases it. Borrowed mappings
+    keep their original pixels even if another file replaces their pathname.
+    """
+    if not _READ_ONLY_UPLOADS or not isinstance(image, np.ndarray) or not image.size:
+        return image
+    root = _mapped_base(image)
+    if root is None or getattr(root, 'mode', None) in ('r', 'c'):
+        return image
+    if _owned_mappings.get(id(root)) is not root:
+        return image
+    return _reopen_mapped(image, root, write=False)[0]
 
 
 def _mapped_base(image):
@@ -1087,6 +1129,7 @@ def open_frame(description, *, owned=False):
     if adopt:
         key = _own_file(path, cleanup)
         weakref.finalize(mapping, _release_mapping, mapping._mmap, key)
+        _owned_mappings[id(mapping)] = mapping
     else:
         weakref.finalize(mapping, _close_mapping, mapping._mmap)
     return image

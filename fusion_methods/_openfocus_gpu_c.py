@@ -12,6 +12,7 @@ from threading import Lock
 
 import numpy as np
 
+from core.frame_storage import async_upload_view
 from fusion_methods.openfocus_bc import _pyramid_levels, _source_codes
 from fusion_methods.openfocus_ab import _check_cancel
 
@@ -678,7 +679,7 @@ class GpuC:
                     )
                     wait_upload = _event_wait_list(upload) if uploader.separate_queue else None
                 else:
-                    upload = self.cl.enqueue_copy(self.q, src, codes, is_blocking=False)
+                    upload = self.cl.enqueue_copy(self.q, src, async_upload_view(codes), is_blocking=False)
                     wait_upload = None
                 last_event = None
                 src_done_event = None

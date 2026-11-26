@@ -13,6 +13,8 @@ from threading import Event, Lock
 
 import numpy as np
 
+from core.frame_storage import async_upload_view
+
 _device_lock = Lock()
 _context_lock = Lock()
 _cache_lock = Lock()
@@ -328,13 +330,14 @@ class _PinnedUploader:
         wait_list = wait_for if (wait_for and self.separate_queue) else None
         try:
             ev = self._cl.enqueue_copy(
-                self._tq, dev_buf, host_array, is_blocking=False, wait_for=wait_list,
+                self._tq, dev_buf, async_upload_view(host_array), is_blocking=False,
+                wait_for=wait_list,
             )
         except TypeError:
             if wait_list:
                 for item in wait_list:
                     _wait_event(item, cancel)
-            ev = self._cl.enqueue_copy(self._tq, dev_buf, host_array, is_blocking=False)
+            ev = self._cl.enqueue_copy(self._tq, dev_buf, async_upload_view(host_array), is_blocking=False)
         self._dma_events[slot] = ev
         if self.separate_queue and hasattr(self._tq, 'flush'):
             self._tq.flush()
@@ -604,7 +607,18 @@ def _device(cl):
                 index += 1
     if not candidates:
         return None
-    return max(candidates, key=lambda item: _device_rank(item[1], item[0]))[1]
+    ranked = sorted(candidates, key=lambda item: _device_rank(item[1], item[0]), reverse=True)
+    discrete = [device for index, device in ranked if _device_rank(device, index)[0]]
+    if len(discrete) > 1:
+        # Budgeted paths decline a discrete GPU whose free VRAM cannot be read,
+        # so prefer the highest-ranked discrete GPU that has a reading.
+        for device in discrete:
+            try:
+                if _free_vram(device) is not None:
+                    return device
+            except Exception:
+                pass
+    return ranked[0][1]
 
 
 def opencl_device_name(device):
@@ -1080,6 +1094,7 @@ class Merge:
             self._merge_slot_hosts = [None, None]
             self._merge_slot = 0
             self._merge_ping_pong = False
+            self._merge_unified_bytes = 0
             self._merge_u16_depth = False
             self._merge_needs_drain = False
             self.rows = rows
@@ -1336,6 +1351,10 @@ class Merge:
             self._merge_slot_hosts = [None, None]
             self._merge_slot = 0
             self._merge_ping_pong = ping_pong
+            # Unified memory allocates the upload buffers from host RAM after the merge
+            # sizes its prefetch window, unlike the depth and accumulator buffers below.
+            self._merge_unified_bytes = (extra_src * (2 if ping_pong else 1)
+                                         if self.device.host_unified_memory else 0)
             self._merge_needs_drain = False
             self._merge_depth = cl.Buffer(self.context, cl.mem_flags.READ_ONLY |
                                           cl.mem_flags.COPY_HOST_PTR, hostbuf=codes)
@@ -1360,6 +1379,7 @@ class Merge:
             self._merge_slot_hosts = [None, None]
             self._merge_slot = 0
             self._merge_ping_pong = False
+            self._merge_unified_bytes = 0
             self._merge_u16_depth = False
             self._merge_needs_drain = False
             self.release()
@@ -1439,7 +1459,7 @@ class Merge:
                 )
                 wait_upload = _event_wait_list(upload) if uploader.separate_queue else None
             else:
-                upload = cl.enqueue_copy(self.queue, src_buf, image, is_blocking=False)
+                upload = cl.enqueue_copy(self.queue, src_buf, async_upload_view(image), is_blocking=False)
                 wait_upload = None
             height, width = self._merge_shape[:2]
             channels = 1 if image.ndim == 2 else image.shape[2]
@@ -1546,6 +1566,7 @@ class Merge:
         self._merge_src_bytes = self._merge_src_alt_bytes = 0
         self._merge_slot = 0
         self._merge_ping_pong = False
+        self._merge_unified_bytes = 0
         self._merge_u16_depth = False
         self._merge_needs_drain = False
         self.release()
@@ -2174,7 +2195,7 @@ class _GpuB:
                 upload = uploader.upload(slot, ib, host_buf, wait_for=wait_for, cancel=cancel)
                 wait_upload = _event_wait_list(upload) if uploader.separate_queue else None
             else:
-                upload = self.cl.enqueue_copy(self.q, ib, host_buf, is_blocking=False)
+                upload = self.cl.enqueue_copy(self.q, ib, async_upload_view(host_buf), is_blocking=False)
                 wait_upload = None
             kern = self.kernels['gray_u8' if is_u8 else 'gray_u16']
             _enqueue_kernel(kern, self.q, (width, height), None, ib, gray_buf,
@@ -2186,7 +2207,7 @@ class _GpuB:
             upload = uploader.upload(slot, gray_buf, host_buf, wait_for=wait_for, cancel=cancel)
             wait_upload = _event_wait_list(upload) if uploader.separate_queue else None
             return upload, wait_upload
-        return self.cl.enqueue_copy(self.q, gray_buf, host_buf, is_blocking=False), None
+        return self.cl.enqueue_copy(self.q, gray_buf, async_upload_view(host_buf), is_blocking=False), None
 
     # -- depth_map equivalent ---------------------------------------------
     def depth(self, frames, kernel_size, smoothing, feather, shape, count,

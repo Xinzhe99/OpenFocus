@@ -37,6 +37,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   your phone or computer to sign in automatically on the desktop.
 
 ### Changed
+- Run the full CI suite in parallel slices. Preserve pytest selection and
+  collection errors, isolate temporary directories, and replay a crashing
+  slice for native diagnostics.
 - Distribute OpenFocus source under Apache 2.0 and retain prior attribution
   and model terms. View bundled licenses and any release EULA in Help.
 - Build desktop packages and platform wheels with C++17 CPU kernels for
@@ -45,11 +48,18 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   OpenFocus depth codes and pyramid rounding across platform builds.
 - Read stack previews and metadata in a single scan and reuse compatible
   isolated render workers between renders.
+- Sum exposure means with integer vector sums on AVX2 processors, with
+  identical values. On the laptop used for testing, the exposure mean of a
+  5-megapixel frame took about a quarter of the time for 8-bit frames and a
+  sixth for normalized 16-bit frames.
 - Load dialogs and language packs on demand. Generate eligible 4K PNG previews
   and prepare alignment frames in parallel within CPU and memory budgets.
   Read TIFF calibration during the stack metadata scan.
 - Accelerate eligible mapped alignment warps, TIFF decoding, and 16-bit display
   conversion. Use shared memory for eligible render process transfers.
+- Speed up the OpenFocus alignment search, refinement, and RGB warps on AVX2
+  processors with identical output. On the laptop used for testing, aligning
+  four 5-megapixel frames ran about 1.5 times as fast.
 - Use OpenCL for eligible large integer ECC reductions, including 8×8 area
   downsizing. Apply exact Lanczos4 warps for large 8-bit and 16-bit frames
   during ECC and homography registration and whenever a GPU render resolves
@@ -68,9 +78,18 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   OpenCL binaries across launches. Keep exact pixel checks on alignment plans,
   estimate registration memory from imported metadata, and retain enough
   working memory for ECC's OpenCV fallback.
+- Speed up OpenFocus A and B on the CPU on AVX2 processors with identical
+  output. Activity and detail rows no longer use gather instructions, which
+  are slow on processors that mitigate gather data sampling, and packed RGB
+  rows convert to gray with byte shuffles. On the laptop used for testing,
+  CPU fusion of six 5-megapixel frames ran 1.1 to 1.2 times as fast with
+  OpenFocus B and up to 1.1 times as fast with OpenFocus A.
 - Adapt decoded-frame caches and transient RAM to available memory. Spill
   OpenFocus alignment planes to scratch under pressure while reserving RAM
   for source decoding. Keep OpenFocus B staging optional when streaming fits.
+- Copy the first frame into the OpenFocus B result as whole rows on the CPU,
+  with identical output. On the laptop used for testing, CPU fusion of six
+  5-megapixel frames with OpenFocus B ran 1.1 to 1.2 times as fast.
 - Write disk-backed frames, preview pixels and imported video frames to scratch
   in chunks up to 8 MiB, with bounded packing of strided images and exact pixel
   bytes in C order.
@@ -234,6 +253,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Speed up packed OpenFocus A, B, and C fusion, exposure adjustment, tile
   reduction, and alignment with AVX2 on supported CPUs. Preserve scalar pixel
   arithmetic for strided views, wide integer sums, and float rounding.
+- Bound packed RGB alignment loads to the supplied input row width.
 - Use AVX2 for OpenFocus A/B depth selection, RGB tile accumulation, and ECC
   affine and homography refinement. Use fused multiply-add for depth
   resampling on supported CPUs. Retain scalar update order for overlapping
@@ -249,6 +269,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 - Match scalar and AVX2 rounding in OpenFocus A background accumulation.
+- Initialize OpenFocus A's first selection band safely when no background
+  accumulator is present.
 - Verify all encoded file bytes when reusing file-backed alignment plans and
   preserve decoded BGR fingerprints for directly mapped RGB TIFF frames.
 - Release Retouch pixel buffers as soon as the dialog closes while background
@@ -279,6 +301,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   installer against the release's published size and SHA-256 digest.
 - Use the Darwin C ABI for system memory and CPU topology probes, including
   64-bit page sizes and validated system counter lengths.
+- Choose a discrete GPU whose free memory can be read when more than one is
+  installed. A larger GPU without that reading, such as an Intel discrete GPU
+  on Linux, was chosen before, and most GPU work then fell back to the CPU.
 - Admit large JPEG stacks for ECC using reduced grayscale decodes, including
   with GPU acceleration enabled. Keep registration warps at full resolution.
 - Budget sequential decode and processing peaks separately. Decode RGB JPEGs
@@ -287,12 +312,25 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Use scratch-backed decode, perspective warps, and exposure matching for
   eligible full-size JPEGs that exceed the staging RAM budget. Map compressed
   input read-only and release temporary views after each source pass.
+- Keep OpenFocus B from reading ahead more frames than memory allows when it
+  blends on an integrated GPU with little free RAM.
 - Plan OpenFocus B's mapped integer-frame fusion using its bounded RAM
   working set and release source mappings after their depth and merge passes.
+- Upload frames in OpenFocus-owned scratch files to the GPU from a read-only
+  view. A non-blocking upload from the writable mapping could stall on
+  Linux with an Intel GPU while the system rewrote the file to disk over and
+  over: a 40-frame OpenFocus B render with its frame cache on disk wrote about
+  6 TB and took 100 minutes in power-saver mode.
 - Bound OpenFocus alignment memory for deep stacks by reusing cached source
   pixels during estimation and staging the resolved frames during fusion.
+- Stop retrying resized OpenFocus A, B and C renders requested through the
+  Python API with the low-memory plan. That plan did not count the RAM that
+  resizing needs, so a render rejected for memory could still start.
 - Release the isolated render worker after a memory error so the next render
   starts with fresh native memory and device contexts.
+- Free cached source frames and retry at reduced memory before refusing
+  OpenFocus alignment or OpenFocus A, B, or C fusion when free memory has
+  fallen to the amount kept for the rest of the system.
 - Default new watermarks to fusion results. Apply removes unchecked watermark
   scopes, scale bars on the selected target, and unchecked labels.
 - Retain OpenFocus B's prepared images when switching fusion methods with
@@ -302,6 +340,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Process large Auto Background stacks at full resolution by moving focus
   tables to scratch storage when RAM is limited and reading aligned frames and
   validity masks one at a time.
+- Plan Auto Background memory for CPU focus analysis when GPU acceleration is
+  enabled but no compatible OpenCL GPU is available. Large stacks that fit in
+  RAM no longer move focus tables to scratch storage or fail when temporary
+  storage is short.
 - Show live focus layers on new full renders started from an earlier output,
   including when output history is browsed during alignment or preparation.
 - Keep the source loupe visible during a render, then replace its preview

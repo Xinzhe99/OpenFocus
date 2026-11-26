@@ -14,6 +14,7 @@ from threading import Lock
 import cv2
 import numpy as np
 
+from core.frame_storage import async_upload_view
 from fusion_methods.dct import _ensure_color_image
 from fusion_methods.openfocus_ab import _check_cancel
 from utils.image_utils import fuse_output_dtype
@@ -815,7 +816,7 @@ class GpuGfg:
             # Frame 0 upload + dominant channel selection (same argmax over channel sums).
             host0, ch0, kind0 = prepare_upload(0)
             in_flight = True
-            self.cl.enqueue_copy(self.q, src_buf, host0, is_blocking=False)
+            self.cl.enqueue_copy(self.q, src_buf, async_upload_view(host0), is_blocking=False)
             self._run(self.k[f'gfg_chan_sum_{kind0}'], red_groups * 256,
                       src_buf, wg4_buf, np.int32(n), np.int32(ch0), lsize=256)
             wg4_host = np.empty((red_groups, 4), dtype=np.float32)
@@ -840,7 +841,7 @@ class GpuGfg:
                     else:
                         h_src, cur_ch, cur_kind = prepare_upload(index)
                         in_flight = True
-                        self.cl.enqueue_copy(self.q, src_buf, h_src, is_blocking=False)
+                        self.cl.enqueue_copy(self.q, src_buf, async_upload_view(h_src), is_blocking=False)
                     in_flight = True
                     self._run(self.k[f'gfg_extract_{cur_kind}'], n,
                               src_buf, gray_buf, np.int32(n), np.int32(cur_ch), np.int32(channel_idx))
@@ -876,7 +877,7 @@ class GpuGfg:
                     # Re-use frame 0 already resident in src_buf when scale <= 0
                     if scale > 0.0:
                         in_flight = True
-                        self.cl.enqueue_copy(self.q, src_buf, host0, is_blocking=False)
+                        self.cl.enqueue_copy(self.q, src_buf, async_upload_view(host0), is_blocking=False)
                     cur_ch, cur_kind = ch0, kind0
                 else:
                     if host0 is not None:
@@ -884,7 +885,7 @@ class GpuGfg:
                         host0 = None
                     h_src, cur_ch, cur_kind = prepare_upload(index)
                     in_flight = True
-                    self.cl.enqueue_copy(self.q, src_buf, h_src, is_blocking=False)
+                    self.cl.enqueue_copy(self.q, src_buf, async_upload_view(h_src), is_blocking=False)
 
                 in_flight = True
                 self._run(self.k[f'gfg_extract_{cur_kind}'], n,
@@ -968,7 +969,7 @@ class GpuGfg:
                     continue
                 h_src, cur_ch, cur_kind = prepare_upload(index)
                 in_flight = True
-                self.cl.enqueue_copy(self.q, src_buf, h_src, is_blocking=False)
+                self.cl.enqueue_copy(self.q, src_buf, async_upload_view(h_src), is_blocking=False)
 
                 self._run(self.k[f'gfg_extract_{cur_kind}'], n,
                           src_buf, gray_buf, np.int32(n), np.int32(cur_ch), np.int32(channel_idx))
