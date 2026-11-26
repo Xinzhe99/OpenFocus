@@ -586,4 +586,3 @@ def test_gfg_row_parallel_cpu_and_large_kernel_gpu_parity(dtype, shape, kernel_s
         assert np.mean(diff == 0) >= 0.95
     else:
         assert diff.max() <= 0.05
-

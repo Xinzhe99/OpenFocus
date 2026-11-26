@@ -526,4 +526,3 @@ def test_guided_filter_gpu_large_kernel_slide_fallback(monkeypatch):
     diff = np.abs(gpu_out.astype(np.float64) - cpu_out.astype(np.float64))
     assert diff.max() <= 1
     assert np.mean(diff == 0) >= 0.999
-
