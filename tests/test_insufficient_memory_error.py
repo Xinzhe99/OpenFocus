@@ -39,15 +39,42 @@ def test_converter_admission_reports_the_safe_type(monkeypatch, tmp_path, availa
     assert raised is InsufficientMemoryError
 
 
-def test_tensorrt_workspace_limit_reports_the_safe_type():
+_TENSORRT_LIMIT = textwrap.dedent('''
+    import sys
+    sys.path.insert(0, sys.argv[1])  # only the worker's files, not the checkout
+
+    from types import SimpleNamespace
+
     from core.inference_tensorrt import TensorRT
 
     backend = object.__new__(TensorRT)
     backend.trt = None
     backend.logger = SimpleNamespace(recent=[])
     backend.torch = SimpleNamespace(cuda=SimpleNamespace(mem_get_info=lambda device: (64 << 20, 128 << 20)))
-    raised = _raised_type(lambda: backend._build(None, None, False, 48 << 20))
-    assert raised is InsufficientMemoryError
+    try:
+        backend._build(None, None, False, 48 << 20)
+    except MemoryError as error:
+        kind = type(error)
+        print(kind.__module__, kind.__name__, kind is not MemoryError, flush=True)
+''')
+
+
+def test_tensorrt_workspace_limit_reports_the_safe_type_in_the_worker_layout(tmp_path):
+    """The packaged inference worker has core/inference_tensorrt.py but no utils package."""
+    import json
+    import shutil
+
+    manifest = json.loads((ROOT / 'packaging' / 'runtime_resources.json').read_text(encoding='utf-8'))
+    patterns = [name for name in manifest['include'] if name.startswith('core/') and name.endswith('.py')]
+    shipped = sorted({path.relative_to(ROOT) for pattern in patterns for path in ROOT.glob(pattern)})
+    assert Path('core/inference_tensorrt.py') in shipped
+    for name in shipped:
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(ROOT / name, tmp_path / name)
+    result = subprocess.run([sys.executable, '-I', '-c', _TENSORRT_LIMIT, str(tmp_path)], cwd=tmp_path,
+                            capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == ['core.inference_tensorrt', 'TensorRTWorkspaceError', 'True']
 
 
 def test_flat_field_preview_failure_reports_the_safe_type(qapp, monkeypatch):

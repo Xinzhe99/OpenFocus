@@ -152,6 +152,15 @@ def _specialize(graph, shape, stable_attention):
     return model.SerializeToString()
 
 
+class TensorRTWorkspaceError(MemoryError):
+    """The GPU has too little free memory for the TensorRT workspace.
+
+    A MemoryError subclass, for the reason given in utils.memory's
+    InsufficientMemoryError. It is defined here because the packaged
+    inference worker runs this file without the utils package.
+    """
+
+
 class TensorRT:
     def __init__(self, torch):
         try:
@@ -199,9 +208,8 @@ class TensorRT:
         self.logger.recent.clear()
         free, _ = self.torch.cuda.mem_get_info(0)
         if workspace > free // 2:
-            from utils.memory import InsufficientMemoryError
-            raise InsufficientMemoryError(f'TensorRT workspace requires {workspace >> 20} MiB with '
-                                          f'only {free >> 20} MiB free')
+            raise TensorRTWorkspaceError(f'TensorRT workspace requires {workspace >> 20} MiB with '
+                                         f'only {free >> 20} MiB free')
         builder = trt.Builder(self.logger)
         network = builder.create_network(0)
         parser = trt.OnnxParser(network, self.logger)
