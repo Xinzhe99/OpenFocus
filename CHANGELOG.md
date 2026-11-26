@@ -127,6 +127,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Accelerate OpenFocus A Burt selection and shared A/B integer row kernels.
   Use scalar selection on small images to limit first-render compilation
   and include the expanded-row workspace in the large-image memory budget.
+- Select OpenFocus A background pixels eight at a time on AVX2 processors,
+  with identical output. On the laptop used for testing, the row selection
+  took 1.3 to 1.5 times less time, and CPU fusion with OpenFocus A took 1.15
+  to 1.3 times fewer processor cycles.
 - Plan StackMFF V1 and V3 tiles before building the grid. Put the manual
   tile controls in a collapsible section.
 - Reuse OpenCL contexts and compiled kernels across OpenFocus A/B/C and ECC
