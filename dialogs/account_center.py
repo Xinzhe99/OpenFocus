@@ -167,6 +167,8 @@ def _account_stylesheet(theme: str = "dark") -> str:
     r = RADIUS
     return f"""
         QDialog {{ background: {c['bg']}; color: {c['text']}; }}
+        QScrollArea, QWidget#accountScrollHost {{ background: transparent; border: none; }}
+        QLabel, QCheckBox {{ color: {c['text']}; background: transparent; }}
         QListWidget#accountNavRail {{
             background: {c['surface']};
             border: 1px solid {c['border']};
@@ -567,6 +569,8 @@ class AccountCenterDialog(QDialog):
 
     @staticmethod
     def _wrap_scroll(host: QWidget, cid: str, obj_name: str) -> QScrollArea:
+        if not host.objectName():
+            host.setObjectName("accountScrollHost")
         scroll = QScrollArea()
         _set_cid(scroll, cid, object_name=obj_name)
         scroll.setWidgetResizable(True)
@@ -641,8 +645,7 @@ class AccountCenterDialog(QDialog):
         # Privacy Toggles: strictly show_gallery, show_following, show_followers
         # (default all ON; NEVER expose can_hide_gallery!)
         privacy_group = QFrame()
-        privacy_group.setObjectName("accountSectionCard")
-        _set_cid(privacy_group, "account_privacy_group")
+        _set_cid(privacy_group, "account_privacy_group", object_name="accountSectionCard")
         priv_lay = QVBoxLayout(privacy_group)
         priv_lay.setContentsMargins(SPACE["md"], SPACE["md"], SPACE["md"], SPACE["md"])
         priv_lay.setSpacing(SPACE["xs"])
@@ -696,8 +699,7 @@ class AccountCenterDialog(QDialog):
         layout.addLayout(self._billing_layout)
 
         self.recharge_group = QFrame()
-        self.recharge_group.setObjectName("accountSectionCard")
-        _set_cid(self.recharge_group, "account_recharge_group")
+        _set_cid(self.recharge_group, "account_recharge_group", object_name="accountSectionCard")
         rec_lay = QVBoxLayout(self.recharge_group)
         rec_lay.setContentsMargins(SPACE["md"], SPACE["md"], SPACE["md"], SPACE["md"])
         rec_lay.setSpacing(SPACE["sm"])
@@ -756,8 +758,7 @@ class AccountCenterDialog(QDialog):
         rec_lay.addWidget(self.checkout_status)
 
         self.redeem_group = QFrame()
-        self.redeem_group.setObjectName("accountSectionCard")
-        _set_cid(self.redeem_group, "account_redeem_group")
+        _set_cid(self.redeem_group, "account_redeem_group", object_name="accountSectionCard")
         red_lay = QVBoxLayout(self.redeem_group)
         red_lay.setContentsMargins(SPACE["md"], SPACE["md"], SPACE["md"], SPACE["md"])
         red_lay.setSpacing(SPACE["sm"])
@@ -798,8 +799,7 @@ class AccountCenterDialog(QDialog):
         layout.setSpacing(SPACE["md"])
 
         interests_group = QFrame()
-        interests_group.setObjectName("accountSectionCard")
-        _set_cid(interests_group, "account_interests_group")
+        _set_cid(interests_group, "account_interests_group", object_name="accountSectionCard")
         int_lay = QVBoxLayout(interests_group)
         int_lay.setContentsMargins(SPACE["md"], SPACE["md"], SPACE["md"], SPACE["md"])
         int_lay.setSpacing(SPACE["sm"])

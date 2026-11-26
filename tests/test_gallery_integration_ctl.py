@@ -1333,3 +1333,17 @@ def test_showcase_keeps_pending_danmaku_across_language_fetch_and_reconciles_vot
     overlay.popover.btn_upvote.click()
     queued.pop(0)()
     assert votes == [("posted", "up"), ("posted", "none")]
+
+
+def test_shutdown_closes_visible_showcase_window(integrated_window, qapp):
+    window, _server, _settings, _tmp_path = integrated_window
+    gallery = window.gallery_controller
+    assert gallery.show_gallery_showcase(force=True)
+    qapp.processEvents()
+    showcase = gallery.showcase_window
+    assert showcase is not None and showcase.isVisible()
+
+    gallery.shutdown()
+    qapp.processEvents()
+    assert not showcase.isVisible()
+    assert gallery.showcase_window is None

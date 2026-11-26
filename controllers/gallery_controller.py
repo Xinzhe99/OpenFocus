@@ -556,9 +556,6 @@ class GalleryController(QObject):
         if self.is_showing_showcase():
             self._prefetch_work_image(work_id)
 
-    def _on_window_auto_show_toggled(self, checked: bool) -> None:
-        self.set_auto_show_during_fusion(checked, persist=True)
-
     def _on_showcase_return_requested(self) -> None:
         self.show_result_canvas()
         if is_qobject_alive(self.window) and hasattr(self.window, "raise_"):
@@ -1682,7 +1679,6 @@ class GalleryController(QObject):
         if is_qobject_alive(self._showcase_window):
             try:
                 safe_disconnect(self._showcase_window.return_to_workspace_requested, self._on_showcase_return_requested)
-                safe_disconnect(self._showcase_window.auto_show_toggled, self._on_window_auto_show_toggled)
                 safe_disconnect(self._showcase_window.window_closed, self._on_showcase_window_closed)
                 self._showcase_window.close()
                 self._showcase_window.deleteLater()

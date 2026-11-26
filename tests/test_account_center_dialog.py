@@ -574,4 +574,8 @@ def test_dict_badges_after_nickname_save_and_server_dynamic_interests(qapp):
     dlg.show()
     qapp.processEvents()
     assert dlg.badges_label.isVisible() is True
+    assert dlg.recharge_group.objectName() == "accountSectionCard"
+    assert dlg.recharge_group.property("controlId") == "account_recharge_group"
+    assert dlg.redeem_group.objectName() == "accountSectionCard"
+    assert dlg.redeem_group.property("controlId") == "account_redeem_group"
     dlg.close()
