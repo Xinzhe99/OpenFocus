@@ -119,9 +119,11 @@ def test_magnifier_label_reuses_ping_pong_backing_buffers_and_refines(qapp):
         lbl._update_scaled_pixmap()
         assert tuple(pixmap.cacheKey() >> 32 for pixmap in lbl._backing_pixmaps) == backing_storage
 
-    # Waiting past the refine timer restores smooth transform automatically.
+    # Loaded CI runners can deliver the refinement timer late.
     lbl._is_panning = False
-    QTest.qWait(150)
+    deadline = time.monotonic() + 3.0
+    while lbl._interactive_transform and time.monotonic() < deadline:
+        QTest.qWait(10)
     assert lbl._interactive_transform is False
 
 
