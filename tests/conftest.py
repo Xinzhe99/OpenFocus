@@ -235,11 +235,24 @@ def two_focus_stack():
 def _test_http_servers_skip_reverse_dns():
     """Tests serve HTTP from loopback. http.server names each new server
     through getfqdn(), a reverse DNS lookup that blocked the first server in
-    every test process for 35 seconds on the macOS runners."""
+    every test process for 35 seconds on the macOS runners.
+
+    Only servers the tests own skip the lookup: http.server's classes used
+    directly and subclasses defined under tests/. A server class of the
+    application, such as the sign-in callback server, keeps its own
+    behaviour, so test_account_client still notices if it starts to resolve.
+    """
     import http.server
     import socketserver
 
+    original = http.server.HTTPServer.server_bind
+    tests_directory = os.path.dirname(os.path.abspath(__file__)) + os.sep
+
     def server_bind(self):
+        module = sys.modules.get(type(self).__module__)
+        defined_in = os.path.abspath(getattr(module, "__file__", None) or "")
+        if type(self).__module__ != "http.server" and not defined_in.startswith(tests_directory):
+            return original(self)
         socketserver.TCPServer.server_bind(self)
         self.server_name, self.server_port = self.server_address[:2]
 
