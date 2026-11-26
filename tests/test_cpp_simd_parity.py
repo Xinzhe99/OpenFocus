@@ -226,6 +226,74 @@ def test_ab_gray_and_downsample_preserve_wide_codes():
     np.testing.assert_array_equal(down, [[1 << 30] * 8 + [-(1 << 30)]])
 
 
+@pytest.mark.parametrize("w", [7, 8, 9, 23, 64, 131])
+@pytest.mark.parametrize("dtype", [np.uint8, np.uint16])
+def test_gray_rows_rgb_sum_avx2_vs_scalar_bit_exact(w, dtype):
+    """Packed RGB rows are deinterleaved with shuffles, eight pixels at a time."""
+    mod = _require_avx2()
+    rng = np.random.default_rng(920 + w)
+    h = 9
+    hi = 256 if dtype == np.uint8 else 65536
+    rgb = rng.integers(0, hi, (h, w, 3), dtype=dtype)
+    rgb[0] = hi - 1
+    scale = 256 if dtype == np.uint8 else 1
+
+    def run():
+        results = []
+        for depth_color in (False, True):
+            for out_dtype in (np.uint16, np.int32):
+                out = np.empty((h, w), dtype=out_dtype)
+                mod.of_gray_rows(rgb, out, 0, h, scale, depth_color)
+                results.append(out)
+        return results
+
+    try:
+        mod.set_force_scalar(False)
+        simd = run()
+        mod.set_force_scalar(True)
+        scalar = run()
+    finally:
+        mod.set_force_scalar(False)
+    for a, b in zip(simd, scalar):
+        np.testing.assert_array_equal(a, b)
+    total = rgb.astype(np.int64).sum(axis=2)
+    np.testing.assert_array_equal(simd[1], (total // 3) * scale)
+    np.testing.assert_array_equal(simd[3], (total * scale * 85) >> 8)
+
+
+def test_activity_normalised_difference_matches_integer_division():
+    """The vector path divides in float and corrects; the result is a floor quotient."""
+    mod = _require_avx2()
+    rng = np.random.default_rng(911)
+    special = np.array([0, 1, 2, 9, 10, 11, 254, 255, 256, 655, 656, 1310, 32767, 32768,
+                        65279, 65280, 65534, 65535], dtype=np.uint16)
+    values = np.concatenate([special, rng.integers(0, 65536, 238, dtype=np.uint16)])
+    gray = np.ascontiguousarray(np.broadcast_to(values[:, None], (values.size, values.size)))
+    fine = np.ascontiguousarray(np.broadcast_to(values[None, :], (values.size, values.size)))
+
+    def run():
+        out = np.empty_like(gray)
+        mod.of_activity_rows(gray, fine, out, 0, gray.shape[0])
+        detail = np.empty((gray.shape[0] // 2, gray.shape[1] // 2), dtype=np.uint16)
+        mod.of_detail_rows(gray + fine // 3, detail, 0)
+        return out, detail
+
+    try:
+        mod.set_force_scalar(False)
+        simd = run()
+        mod.set_force_scalar(True)
+        scalar = run()
+    finally:
+        mod.set_force_scalar(False)
+    for a, b in zip(simd, scalar):
+        np.testing.assert_array_equal(a, b)
+    v = gray.astype(np.int64)
+    mean = fine.astype(np.int64)
+    divisor = 10 + (np.maximum(v, mean) * 100) // 65535
+    expected = np.minimum(65535, (110 * np.abs(v - mean)) // divisor)
+    np.testing.assert_array_equal(simd[0], expected.astype(np.uint16))
+
+
 @pytest.mark.parametrize('channels', [1, 3])
 def test_float_tile_finalize_handles_nan_in_vector_and_tail(channels):
     mod = _require_avx2()

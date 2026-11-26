@@ -71,6 +71,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   OpenCL binaries across launches. Keep exact pixel checks on alignment plans,
   estimate registration memory from imported metadata, and retain enough
   working memory for ECC's OpenCV fallback.
+- Speed up OpenFocus A and B on the CPU on AVX2 processors with identical
+  output. Activity and detail rows no longer use gather instructions, which
+  are slow on processors that mitigate gather data sampling, and packed RGB
+  rows convert to gray with byte shuffles. On the laptop used for testing,
+  CPU fusion of six 5-megapixel frames ran 1.1 to 1.2 times as fast with
+  OpenFocus B and up to 1.1 times as fast with OpenFocus A.
 - Adapt decoded-frame caches and transient RAM to available memory. Spill
   OpenFocus alignment planes to scratch under pressure while reserving RAM
   for source decoding. Keep OpenFocus B staging optional when streaming fits.
