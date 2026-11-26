@@ -37,6 +37,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   your phone or computer to sign in automatically on the desktop.
 
 ### Changed
+- Run the full CI suite in parallel slices and fail the run if test collection
+  fails.
 - Distribute OpenFocus source under Apache 2.0 and retain prior attribution
   and model terms. View bundled licenses and any release EULA in Help.
 - Build desktop packages and platform wheels with C++17 CPU kernels for

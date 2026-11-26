@@ -3,6 +3,7 @@ import os
 
 import pytest
 
+from tools import parallel_tests
 from tools.parallel_tests import (collect, exit_code, parse_listing, slice_options,
                                   split_files, without_option)
 
@@ -51,22 +52,25 @@ def test_listing_counts_tests_per_file_in_either_format():
         "tests/test_a.py::test_one",
         "tests/test_a.py::TestGroup::test_two[case 1]",
         "tests\\test_b.py::test_three",
-        "tests/test_c.py: 12",
+        "tests/test c.py: 12",
         "",
         "3 tests collected in 0.10s",
     ])
-    assert parse_listing(listing) == ({"tests/test_a.py": 2, "tests/test_b.py": 1, "tests/test_c.py": 12}, [])
+    assert parse_listing(listing) == {"tests/test_a.py": 2, "tests/test_b.py": 1, "tests/test c.py": 12}
 
 
-def test_listing_names_files_that_failed_to_collect_once():
-    listing = "\n".join([
-        "tests/test_a.py::test_one",
-        "==== ERRORS ====",
-        "ERROR tests/test_broken.py - ModuleNotFoundError: No module named 'missing'",
-        "ERROR tests/test_broken.py",
-        "ERROR collecting something else",
-    ])
-    assert parse_listing(listing) == ({"tests/test_a.py": 1}, ["tests/test_broken.py"])
+def test_parallel_run_stops_when_a_file_fails_collection(tmp_path, monkeypatch, capsys):
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_ready.py").write_text("def test_ready():\n    pass\n", encoding="utf-8")
+    (tests / "test_broken.py").write_text("raise RuntimeError('broken collection')\n", encoding="utf-8")
+    monkeypatch.setattr(parallel_tests, "ROOT", tmp_path)
+
+    with pytest.raises(SystemExit) as error:
+        parallel_tests.main(["--jobs", "2"])
+
+    assert error.value.code == 2
+    assert "broken collection" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("options,expected", [

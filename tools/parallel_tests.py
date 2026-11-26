@@ -28,8 +28,7 @@ TESTS = "tests"
 SLICES = 16
 # pytest lists one test per line ("file.py::test") or, when quieter, one file
 # per line with its number of tests ("file.py: 12").
-_NODE = re.compile(r"^(" + TESTS + r"/[^:\s]+\.py)(?:::|: (\d+)$)")
-_ERROR = re.compile(r"^ERROR (" + TESTS + r"/[^:\s]+\.py)(?:\s|$)")
+_NODE = re.compile(r"^(" + TESTS + r"/[^:\r\n]+\.py)(?:::|: (\d+)$)")
 
 
 def split_files(counts, slices):
@@ -56,18 +55,14 @@ def split_files(counts, slices):
 
 
 def parse_listing(text):
-    """Read pytest's collection listing: ({file: test count}, [files that failed to collect])."""
-    counts, broken = {}, []
+    """Read pytest's collection listing as a mapping of files to test counts."""
+    counts = {}
     for line in text.splitlines():
         line = line.replace("\\", "/")
         match = _NODE.match(line)
         if match:
             counts[match.group(1)] = counts.get(match.group(1), 0) + int(match.group(2) or 1)
-            continue
-        match = _ERROR.match(line)
-        if match and match.group(1) not in broken:
-            broken.append(match.group(1))
-    return counts, broken
+    return counts
 
 
 def without_option(options, name):
@@ -105,22 +100,20 @@ def slice_options(options, index):
 
 
 def collect(pytest_options):
-    """Return {file: test count} in collection order, uncollected files last."""
+    """Collect the full selection before starting any test process."""
     # The last verbosity option wins, so the listing has one test per line
     # whatever -v or -q the caller passes for the runs themselves.
     command = [sys.executable, "-m", "pytest", "--collect-only", "-p", "no:cacheprovider",
                *without_option(pytest_options, "--basetemp"), "--verbosity=-1"]
     listing = subprocess.run(command, cwd=ROOT, capture_output=True, text=True,
                              encoding="utf-8", errors="replace")
-    counts, broken = parse_listing(listing.stdout)
-    # A file that failed to import has no tests listed. Keep it, so the slice
-    # that runs it reports the error. Files whose tests were all deselected
-    # stay out: a slice with nothing to run would fail.
-    for name in broken:
-        counts.setdefault(name, 0)
+    if listing.returncode:
+        sys.stdout.write(listing.stdout + listing.stderr)
+        raise SystemExit(exit_code(listing.returncode))
+    counts = parse_listing(listing.stdout)
     if not counts:
         sys.stdout.write(listing.stdout + listing.stderr)
-        raise SystemExit(listing.returncode or 1)
+        raise SystemExit(1)
     return counts
 
 
