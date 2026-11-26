@@ -67,9 +67,9 @@ def test_a_stops_mapping_background_for_sharp_bands(monkeypatch):
     mapped = []
     original = openfocus_a.frame_region
 
-    def region(frame, key, *, write=False):
+    def region(frame, key, *, write=False, **kwargs):
         mapped.append((key.start, write))
-        return original(frame, key, write=write)
+        return original(frame, key, write=write, **kwargs)
 
     monkeypatch.setattr(openfocus_a, 'frame_region', region)
     monkeypatch.setattr(openfocus_a, '_BACKGROUND_RAM_LIMIT_BYTES', 0)
@@ -119,11 +119,19 @@ def test_a_gpu_reads_output_in_chunks(dtype, monkeypatch):
     np.testing.assert_array_equal(actual, expected)
 
 
-def test_a_cpu_does_not_grow_source_cache(tmp_path):
+def test_a_cpu_does_not_grow_source_cache(tmp_path, monkeypatch):
     import cv2
     from core.source_frames import SOURCE_CACHE, scan_source
 
     SOURCE_CACHE.clear()
+    original_put = SOURCE_CACHE.put
+    retained = []
+
+    def track_put(key, image, **kwargs):
+        retained.append(key)
+        return original_put(key, image, **kwargs)
+
+    monkeypatch.setattr(SOURCE_CACHE, 'put', track_put)
     try:
         shape = (32, 32, 3)
         rng = np.random.default_rng(101)
@@ -134,12 +142,14 @@ def test_a_cpu_does_not_grow_source_cache(tmp_path):
             frames.extend(scan_source(str(path), header_only=True))
         result = openfocus_a.openfocus_a_impl(frames, thread_count=1, use_gpu=False)
         assert result.shape == shape
-        assert SOURCE_CACHE.bytes == 0
+        assert not retained, 'CPU A stored decoded sources during fusion'
     finally:
         SOURCE_CACHE.clear()
 
 
 def test_a_flushes_mapped_planes_when_headroom_tight(monkeypatch, tmp_path):
+    import os
+
     from core import frame_storage, resource_policy
 
     shape = (64, 48, 3)
@@ -151,20 +161,25 @@ def test_a_flushes_mapped_planes_when_headroom_tight(monkeypatch, tmp_path):
     monkeypatch.setattr(frame_storage, '_storage_directory', str(tmp_path))
     monkeypatch.setattr(openfocus_a, '_BACKGROUND_RAM_LIMIT_BYTES', 0)
     monkeypatch.setattr(resource_policy, 'frame_ram_budget', lambda _snap: 0)
-    monkeypatch.setattr(resource_policy, 'ram_ceiling', lambda _snap: 64 * 1024 * 1024)
+    monkeypatch.setattr(resource_policy, '_detected_ram_ceiling', lambda _snap: 64 * 1024 * 1024)
 
     flushes = []
     original_flush = openfocus_a.flush_mapped_frame
 
-    def spy_flush(image, *, sync=False):
-        ok = original_flush(image, sync=sync)
-        flushes.append((ok, sync))
+    def spy_flush(image):
+        ok = original_flush(image)
+        if ok:
+            flushes.append(image.dtype)
         return ok
 
     monkeypatch.setattr(openfocus_a, 'flush_mapped_frame', spy_flush)
     actual = openfocus_a.openfocus_a_impl([f0, f1], thread_count=1, use_gpu=False)
     np.testing.assert_array_equal(actual, expected)
-    assert any(ok and sync for ok, sync in flushes)
+    if os.name == 'nt':
+        assert np.dtype(np.int32) in flushes
+        assert np.dtype(np.uint16) in flushes
+    else:
+        assert not flushes
 
 
 def test_mapped_jpeg_warp_reclaims_source_cache_before_rejecting(monkeypatch, tmp_path):

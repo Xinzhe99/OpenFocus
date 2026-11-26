@@ -903,12 +903,15 @@ def store_frame(image, *, prefer_ram=True):
 
 
 @contextlib.contextmanager
-def frame_region(image, key=Ellipsis, *, write=False):
+def frame_region(image, key=Ellipsis, *, write=False, writeback=False):
     """Borrow one region without retaining its mapped pages after the context.
 
     The original array and its file owner remain valid. Consumers must copy
     arrays retained after this context; disk views close with the lease.
     ``None`` represents an absent optional source mask.
+
+    On Windows, ``writeback`` also flushes a writable view before it closes
+    so the system can reclaim its modified pages.
     """
     if image is None:
         yield None
@@ -929,7 +932,7 @@ def frame_region(image, key=Ellipsis, *, write=False):
         yield borrowed
     finally:
         _owned_mappings.pop(id(mapping), None)
-        if write and os.name == 'nt':
+        if write and writeback and os.name == 'nt':
             try:
                 mapping._mmap.flush()
             except (AttributeError, OSError, ValueError):
@@ -937,8 +940,8 @@ def frame_region(image, key=Ellipsis, *, write=False):
         mapping._mmap.close()
 
 
-def flush_mapped_frame(image, *, sync=False) -> bool:
-    """Flush dirty pages for a writable mapped frame; optionally fsync its file."""
+def flush_mapped_frame(image) -> bool:
+    """Request writeback of a writable mapped frame's dirty pages."""
     root = _mapped_base(image)
     if root is None or getattr(root, 'mode', None) in ('r', 'c'):
         return False
@@ -949,21 +952,6 @@ def flush_mapped_frame(image, *, sync=False) -> bool:
         mmap_obj.flush()
     except (AttributeError, OSError, ValueError):
         return False
-    if sync:
-        path = getattr(root, 'filename', None)
-        if path:
-            fd = None
-            try:
-                fd = os.open(os.fspath(path), os.O_RDWR | getattr(os, 'O_BINARY', 0))
-                os.fsync(fd)
-            except OSError:
-                pass
-            finally:
-                if fd is not None:
-                    try:
-                        os.close(fd)
-                    except OSError:
-                        pass
     return True
 
 

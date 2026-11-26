@@ -858,7 +858,7 @@ class PerspectiveWarp:
             self.source.validate_pixels(pixels, cancel_fn, source=source_frame)
             output = create_frame(_perspective_output_shape(image.shape, self.dsize), image.dtype)
             # Close the written view before the root mapping enters the staged stack.
-            with frame_region(output, write=True) as destination:
+            with frame_region(output, write=True, writeback=True) as destination:
                 _check_cancel(cancel_fn)
                 warped = self._apply_to_image(pixels, should_cancel=cancel_fn, destination=destination)
                 if warped is not destination:

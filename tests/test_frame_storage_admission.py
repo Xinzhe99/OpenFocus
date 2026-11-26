@@ -836,8 +836,7 @@ def test_flush_mapped_frame_handles_mapped_and_ram_arrays(tmp_path):
     ro_view = frame_storage.open_frame(frame_storage.describe_frame(mapped))
     try:
         assert frame_storage.flush_mapped_frame(ro_view) is False
-        assert frame_storage.flush_mapped_frame(mapped, sync=False) is True
-        assert frame_storage.flush_mapped_frame(mapped, sync=True) is True
+        assert frame_storage.flush_mapped_frame(mapped) is True
         assert np.all(mapped[:4] == 19)
     finally:
         del ro_view, mapped
