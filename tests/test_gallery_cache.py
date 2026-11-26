@@ -286,3 +286,45 @@ def test_static_blur_cache_bounded_lru_and_invalidate():
     assert not cache.contains("w1", 80, 60)
     assert cache.clear() == 1
     assert len(cache) == 0
+
+
+def test_disk_cache_lazy_mkdir_non_touching_peek_and_in_memory_index(tmp_path, monkeypatch):
+    cache_dir = tmp_path / "lazy_cache"
+    cache = GalleryDiskCache(cache_dir=cache_dir, max_bytes=2000)
+    assert not cache_dir.exists()
+    assert cache.peek_path("missing") is None
+    assert not cache_dir.exists()
+
+    p1 = cache.put("k1", b"1" * 900)
+    p2 = cache.put("k2", b"2" * 900)
+    assert cache_dir.is_dir()
+    assert p1 is not None and p2 is not None
+
+    # peek_path does not touch mtime or call os.utime; get_path does.
+    utime_calls = []
+    orig_utime = gallery_cache.os.utime
+
+    def tracked_utime(path, *args, **kwargs):
+        utime_calls.append(Path(path).name)
+        return orig_utime(path, *args, **kwargs)
+
+    monkeypatch.setattr(gallery_cache.os, "utime", tracked_utime)
+    assert cache.peek_path("k1") == p1
+    assert utime_calls == []
+    assert cache.get_path("k1") == p1
+    assert utime_calls == [p1.name]
+
+    # Subsequent puts & evictions use the in-memory index without rescanning via os.scandir.
+    scandir_calls = []
+
+    def forbid_scandir(*args, **kwargs):
+        scandir_calls.append(args)
+        raise AssertionError("os.scandir should not run on every put()")
+
+    monkeypatch.setattr(gallery_cache.os, "scandir", forbid_scandir)
+    cache.put("k3", b"3" * 900)
+    assert scandir_calls == []
+    assert cache.usage_bytes() <= 2000
+    assert cache.contains("k1")
+    assert not cache.contains("k2")
+    assert cache.contains("k3")

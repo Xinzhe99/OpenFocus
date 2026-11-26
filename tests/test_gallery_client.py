@@ -913,3 +913,121 @@ def test_comments_endpoints_forward_normalized_lang_when_provided():
     posted_body = json.loads(calls[2][2].decode("utf-8"))
     assert posted_body["client_lang"] == "en"
     assert posted_body["is_danmaku"] is True
+
+
+def test_is_unmetered_network_caches_os_probe_with_ttl(monkeypatch):
+    import sys
+    clock = _FakeClock(100.0)
+    probes = []
+    verdict = {"value": True}
+
+    def fake_probe():
+        probes.append(clock.now)
+        return verdict["value"]
+
+    gc.set_unmetered_network_checker(None)
+    gc.clear_unmetered_network_cache()
+    monkeypatch.setattr(gc.time, "monotonic", clock)
+    if sys.platform == "win32":
+        monkeypatch.setattr(gc, "_is_unmetered_windows", fake_probe)
+    elif sys.platform == "darwin":
+        monkeypatch.setattr(gc, "_is_unmetered_macos", fake_probe)
+    else:
+        monkeypatch.setattr(gc, "_is_unmetered_linux", fake_probe)
+
+    try:
+        assert gc.is_unmetered_network() is True
+        assert len(probes) == 1
+
+        # Cached within TTL even if underlying OS state flips.
+        verdict["value"] = False
+        clock.advance(gc.UNMETERED_CACHE_TTL_SEC - 1.0)
+        assert gc.is_unmetered_network() is True
+        assert len(probes) == 1
+
+        # Re-probes once TTL expires.
+        clock.advance(2.0)
+        assert gc.is_unmetered_network() is False
+        assert len(probes) == 2
+    finally:
+        gc.clear_unmetered_network_cache()
+
+
+def test_gallery_client_retries_once_on_401_and_notifies_on_session_expiry():
+    # Case 1: 401 -> account_client.refresh() rotates token -> single retry succeeds.
+    state = {"token": "expired-tok", "signed_in": True, "refresh_calls": 0}
+    seen_auth = []
+    invalidated = []
+
+    class FakeAccount:
+        def is_signed_in(self):
+            return state["signed_in"]
+
+        def token(self, *, deadline=None):
+            return state["token"] if state["signed_in"] else None
+
+        def refresh(self, *, _expected_token=None, _deadline=None):
+            state["refresh_calls"] += 1
+            state["token"] = "fresh-tok"
+            return True
+
+    def transport(method, url, headers, body, timeout):
+        seen_auth.append(headers.get("Authorization"))
+        if headers.get("Authorization") == "Bearer expired-tok":
+            return _json_response({"error": "unauthorized"}, status=401)
+        return _json_response({"user_id": "u1", "points_balance": 100})
+
+    client = gc.GalleryClient(
+        account_client=FakeAccount(),
+        transport=transport,
+        on_session_invalidated=lambda: invalidated.append(True),
+    )
+    me = client.get_me()
+    assert me["user_id"] == "u1"
+    assert state["refresh_calls"] == 1
+    assert seen_auth == ["Bearer expired-tok", "Bearer fresh-tok"]
+    assert invalidated == []
+
+    # Case 2: refresh raises 401 AccountError and invalidates session -> notifies callback once.
+    class ExpiringAccount:
+        def is_signed_in(self):
+            return state["signed_in"]
+
+        def token(self, *, deadline=None):
+            return "dead-tok" if state["signed_in"] else None
+
+        def refresh(self, *, _expected_token=None, _deadline=None):
+            state["signed_in"] = False
+            raise account_client.AccountError("http", status=401)
+
+    state["signed_in"] = True
+    expiring_client = gc.GalleryClient(
+        account_client=ExpiringAccount(),
+        transport=lambda *_a: _json_response({"error": "unauthorized"}, status=401),
+        on_session_invalidated=lambda: invalidated.append("expired"),
+    )
+    with pytest.raises(gc.GalleryClientError) as exc:
+        expiring_client.get_me()
+    assert exc.value.code == "unauthorized"
+    assert invalidated == ["expired"]
+
+
+def test_tls_create_ssl_context_caches_by_ca_env_vars(monkeypatch, tmp_path):
+    from utils import tls
+
+    for key in ("SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"):
+        monkeypatch.delenv(key, raising=False)
+    tls.clear_ssl_context_cache()
+    try:
+        ctx1 = tls.create_ssl_context()
+        ctx2 = tls.create_ssl_context()
+        assert ctx1 is ctx2
+
+        ca_file = tmp_path / "custom.pem"
+        ca_file.write_text("dummy", encoding="utf-8")
+        monkeypatch.setenv("SSL_CERT_FILE", str(ca_file))
+        ctx3 = tls.create_ssl_context()
+        assert ctx3 is not ctx1
+        assert tls.create_ssl_context() is ctx3
+    finally:
+        tls.clear_ssl_context_cache()

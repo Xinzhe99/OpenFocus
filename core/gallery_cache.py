@@ -17,10 +17,10 @@ import threading
 import time
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Callable, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Optional, Tuple
 
-import cv2
-import numpy as np
+if TYPE_CHECKING:
+    import numpy as np
 
 GALLERY_CACHE_DIR_KEY = "gallery/cache_dir"
 GALLERY_DOWNLOAD_DIR_KEY = "gallery/download_dir"
@@ -241,19 +241,37 @@ class GalleryDiskCache:
         settings: Any = None,
     ):
         if cache_dir is None:
-            self.cache_dir = resolve_gallery_cache_dir(settings=settings, create=True)
+            self.cache_dir = resolve_gallery_cache_dir(settings=settings, create=False)
         else:
             self.cache_dir = _validated_gallery_dir(Path(cache_dir))
-            self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.max_bytes = max(0, int(max_bytes))
         self._lock = threading.RLock()
         self._last_touch_ns = 0
+        self._dir_ensured = False
+        self._index: Optional[dict[str, Tuple[int, int]]] = None
+        self._total_bytes = 0
 
     def _entry_path(self, key: str) -> Path:
         digest = hashlib.sha256(str(key).encode("utf-8")).hexdigest()
         return self.cache_dir / f"{_ENTRY_PREFIX}{digest}{_ENTRY_SUFFIX}"
 
-    def _touch(self, path: Path) -> None:
+    def _ensure_index_locked(self) -> dict[str, Tuple[int, int]]:
+        if self._index is None:
+            index: dict[str, Tuple[int, int]] = {}
+            total = 0
+            for mtime_ns, name, size, _path in self._iter_entries():
+                index[name] = (mtime_ns, size)
+                total += size
+            self._index = index
+            self._total_bytes = total
+        return self._index
+
+    def warm_index(self) -> None:
+        """Populate the in-memory size/mtime index off the GUI thread."""
+        with self._lock:
+            self._ensure_index_locked()
+
+    def _touch(self, path: Path) -> int:
         """Advance mtime monotonically so rapid accesses keep strict LRU order."""
         now_ns = time.time_ns()
         if now_ns <= self._last_touch_ns:
@@ -263,6 +281,10 @@ class GalleryDiskCache:
             os.utime(path, ns=(now_ns, now_ns))
         except OSError:
             pass
+        if self._index is not None and path.name in self._index:
+            _old_mtime, size = self._index[path.name]
+            self._index[path.name] = (now_ns, size)
+        return now_ns
 
     def _iter_entries(self) -> list[Tuple[int, str, int, Path]]:
         entries = []
@@ -282,19 +304,39 @@ class GalleryDiskCache:
             return []
         return entries
 
-    def contains(self, key: str) -> bool:
+    def _drop_from_index_locked(self, name: str) -> None:
+        if self._index is not None:
+            old = self._index.pop(name, None)
+            if old is not None:
+                self._total_bytes = max(0, self._total_bytes - old[1])
+
+    def peek_path(self, key: str) -> Optional[Path]:
+        """Return the cached file path if present without touching mtime."""
         with self._lock:
             path = self._entry_path(key)
-            return not path.is_symlink() and path.is_file()
+            if self._index is not None and path.name not in self._index:
+                return None
+            if path.is_symlink() or not path.is_file():
+                self._drop_from_index_locked(path.name)
+                return None
+            return path
+
+    def contains(self, key: str) -> bool:
+        return self.peek_path(key) is not None
 
     def get(self, key: str) -> Optional[bytes]:
         with self._lock:
             path = self._entry_path(key)
+            if self._index is not None and path.name not in self._index:
+                return None
             if path.is_symlink() or not path.is_file():
+                self._drop_from_index_locked(path.name)
                 return None
             try:
                 data = path.read_bytes()
             except OSError:
+                if not path.is_file():
+                    self._drop_from_index_locked(path.name)
                 return None
             self._touch(path)
             return data
@@ -302,8 +344,8 @@ class GalleryDiskCache:
     def get_path(self, key: str) -> Optional[Path]:
         """Return the cached file path if present, updating LRU recency."""
         with self._lock:
-            path = self._entry_path(key)
-            if path.is_symlink() or not path.is_file():
+            path = self.peek_path(key)
+            if path is None:
                 return None
             self._touch(path)
             return path
@@ -311,6 +353,7 @@ class GalleryDiskCache:
     def put(self, key: str, data: bytes | bytearray | memoryview) -> Optional[Path]:
         payload = bytes(data)
         with self._lock:
+            index = self._ensure_index_locked()
             target = self._entry_path(key)
             if self.max_bytes <= 0 or len(payload) > self.max_bytes:
                 if target.is_file():
@@ -318,9 +361,12 @@ class GalleryDiskCache:
                         target.unlink()
                     except OSError:
                         pass
+                self._drop_from_index_locked(target.name)
                 return None
 
-            _validated_gallery_dir(self.cache_dir).mkdir(parents=True, exist_ok=True)
+            if not self._dir_ensured or not self.cache_dir.is_dir():
+                _validated_gallery_dir(self.cache_dir).mkdir(parents=True, exist_ok=True)
+                self._dir_ensured = True
             tmp_path: Optional[str] = None
             try:
                 fd, tmp_path = tempfile.mkstemp(
@@ -333,7 +379,11 @@ class GalleryDiskCache:
                     handle.flush()
                 os.replace(tmp_path, target)
                 tmp_path = None
-                self._touch(target)
+                mtime_ns = self._touch(target)
+                self._drop_from_index_locked(target.name)
+                size = len(payload)
+                index[target.name] = (mtime_ns, size)
+                self._total_bytes += size
             finally:
                 if tmp_path and os.path.exists(tmp_path):
                     try:
@@ -349,35 +399,44 @@ class GalleryDiskCache:
             path = self._entry_path(key)
             try:
                 path.unlink()
+                self._drop_from_index_locked(path.name)
                 return True
             except FileNotFoundError:
+                self._drop_from_index_locked(path.name)
                 return False
             except OSError:
                 return False
 
     def usage_bytes(self) -> int:
         with self._lock:
-            return sum(size for _, _, size, _ in self._iter_entries())
+            self._ensure_index_locked()
+            return self._total_bytes
 
     def _evict_locked(self, *, protected_name: Optional[str] = None) -> tuple[int, int]:
-        entries = self._iter_entries()
-        total = sum(size for _, _, size, _ in entries)
-        if total <= self.max_bytes:
+        index = self._ensure_index_locked()
+        if self._total_bytes <= self.max_bytes:
             return 0, 0
         # Oldest mtime first.
-        entries.sort(key=lambda item: (item[0], item[1]))
+        ordered = sorted(
+            ((mtime_ns, name, size) for name, (mtime_ns, size) in index.items()),
+            key=lambda item: (item[0], item[1]),
+        )
         removed_files = 0
         freed_bytes = 0
-        for _mtime, name, size, path in entries:
-            if total <= self.max_bytes:
+        for _mtime, name, size in ordered:
+            if self._total_bytes <= self.max_bytes:
                 break
             if protected_name is not None and name == protected_name:
                 continue
+            path = self.cache_dir / name
             try:
                 path.unlink()
+            except FileNotFoundError:
+                pass
             except OSError:
                 continue
-            total -= size
+            index.pop(name, None)
+            self._total_bytes = max(0, self._total_bytes - size)
             removed_files += 1
             freed_bytes += size
         return removed_files, freed_bytes
@@ -399,6 +458,8 @@ class GalleryDiskCache:
                     continue
                 removed_files += 1
                 freed_bytes += size
+            self._index = {}
+            self._total_bytes = 0
             return removed_files, freed_bytes
 
 
@@ -417,6 +478,8 @@ def compute_static_blur_backdrop(
     """
     target_w = max(1, int(width))
     target_h = max(1, int(height))
+    import cv2
+    import numpy as np
     arr = np.asarray(image)
     if arr.dtype != np.uint8:
         from utils.image_utils import to_display_uint8
@@ -511,6 +574,7 @@ class StaticBlurCache:
             return frame
 
     def put(self, work_id: str, width: int, height: int, frame: np.ndarray) -> np.ndarray:
+        import numpy as np
         key = self._make_key(work_id, width, height)
         arr = np.ascontiguousarray(frame)
         with self._lock:

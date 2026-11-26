@@ -188,3 +188,29 @@ def test_t_gallery_delegates_to_trans_when_registered_and_falls_back():
             trans.translations["zh"].pop("_test_gallery_override_key", None)
     finally:
         trans.set_language(prev_lang)
+
+
+def test_lazy_gallery_translations_defers_inactive_packs():
+    from locales.gallery_i18n import _LAZY_PACK_BUILDERS, _LazyGalleryTranslations
+
+    built = []
+
+    def make_builder(code):
+        def _build():
+            built.append(code)
+            return {"k": f"val-{code}"}
+        return _build
+
+    lazy = _LazyGalleryTranslations(
+        {"en": {"k": "val-en"}},
+        {lang: make_builder(lang) for lang in GALLERY_LANGUAGES if lang != "en"},
+    )
+    assert len(lazy) == len(_LAZY_PACK_BUILDERS) + 1
+    assert "zh" in lazy
+    assert list(lazy.keys()) == list(GALLERY_LANGUAGES)
+    assert built == []
+
+    assert lazy.get("zh") == {"k": "val-zh"}
+    assert built == ["zh"]
+    assert lazy["zh"] == {"k": "val-zh"}
+    assert built == ["zh"]
