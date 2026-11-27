@@ -289,6 +289,19 @@ class AdvancedSettingsDialog(QDialog):
         self.chk_render_complete_sound.setToolTip(trans.t("render_complete_sound_hint"))
         output.addRow(self.chk_render_complete_sound)
 
+        export_color = _section(page_lay, trans.t("advanced_export_color_section"))
+        self.chk_strip_exif_on_export = QCheckBox(trans.t("export_strip_exif"))
+        self.chk_strip_exif_on_export.setProperty("controlId", "chk_strip_exif_on_export")
+        self.chk_strip_exif_on_export.setChecked(bool(getattr(w, "strip_exif_on_export", False)))
+        self.chk_strip_exif_on_export.setToolTip(trans.t("export_strip_exif_hint"))
+        export_color.addRow(self.chk_strip_exif_on_export)
+
+        self.chk_ui_icc_preview = QCheckBox(trans.t("ui_icc_preview_setting"))
+        self.chk_ui_icc_preview.setProperty("controlId", "chk_ui_icc_preview")
+        self.chk_ui_icc_preview.setChecked(bool(getattr(w, "enable_ui_icc_preview", True)))
+        self.chk_ui_icc_preview.setToolTip(trans.t("ui_icc_preview_setting_hint"))
+        export_color.addRow(self.chk_ui_icc_preview)
+
         from core.raw_develop import load_raw_develop_settings
         raw_cfg = load_raw_develop_settings()
         raw_section = _section(page_lay, trans.t("raw_develop_section"))
@@ -1112,6 +1125,8 @@ class AdvancedSettingsDialog(QDialog):
             'resource_preference': self.combo_resources.currentData(),
             'reg_downscale_width': int(self.spin_reg_width.value()),
             'output_name_prefix': self.output_prefix.text(),
+            'strip_exif_on_export': self.chk_strip_exif_on_export.isChecked(),
+            'enable_ui_icc_preview': self.chk_ui_icc_preview.isChecked(),
             'output_filename_template': self.output_template.text().strip(),
             'render_complete_sound': self.chk_render_complete_sound.isChecked(),
             'restore_last_stack': self.chk_restore.isChecked(),
@@ -1254,6 +1269,10 @@ class AdvancedSettingsDialog(QDialog):
                 settings.setValue(REPORTS_CHOICE_KEY, 'chosen')
             for key, value in draft.items():
                 setattr(w, key, value)
+            if "enable_ui_icc_preview" in draft:
+                setter = getattr(w, "set_ui_icc_preview", None)
+                if callable(setter):
+                    setter(draft["enable_ui_icc_preview"])
             if "_registration_parameters_by_method" in draft:
                 refresh = getattr(w, "refresh_registration_parameters", None)
                 if callable(refresh):

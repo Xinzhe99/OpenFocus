@@ -164,6 +164,22 @@ def setup_menus(window: QMainWindow) -> None:
     file_menu.addAction(export_all_action)
     window.ui_objs['menu_export_all'] = export_all_action
 
+    export_psd_action = QAction(trans.t('action_export_layered_psd'), window)
+    export_psd_action.setProperty('trans_key', 'action_export_layered_psd')
+    export_psd_action.triggered.connect(
+        lambda: getattr(window.export_manager, 'export_layered_psd_dialog', lambda: None)()
+    )
+    file_menu.addAction(export_psd_action)
+    window.ui_objs['action_export_layered_psd'] = export_psd_action
+
+    export_contrast_action = QAction(trans.t('action_export_contrast_map'), window)
+    export_contrast_action.setProperty('trans_key', 'action_export_contrast_map')
+    export_contrast_action.triggered.connect(
+        lambda: getattr(window.export_manager, 'export_contrast_map_dialog', lambda: None)()
+    )
+    file_menu.addAction(export_contrast_action)
+    window.ui_objs['action_export_contrast_map'] = export_contrast_action
+
     save_stack_menu = file_menu.addMenu(trans.t('menu_save_stack'))
     window.ui_objs['menu_save_stack'] = save_stack_menu
 
@@ -556,6 +572,17 @@ def setup_menus(window: QMainWindow) -> None:
     gpu_action.triggered.connect(window.set_use_gpu)
     settings_menu.addAction(gpu_action)
     window.ui_objs['action_gpu_accel'] = gpu_action
+
+    icc_preview_action = QAction(trans.t('action_ui_icc_preview'), window)
+    icc_preview_action.setCheckable(True)
+    icc_preview_action.setChecked(bool(getattr(window, 'enable_ui_icc_preview', True)))
+    icc_preview_action.setToolTip(trans.t('action_ui_icc_preview_hint'))
+    icc_preview_action.setProperty('trans_key', 'action_ui_icc_preview')
+    icc_preview_action.triggered.connect(
+        lambda checked: getattr(window, 'set_ui_icc_preview', lambda *_a: None)(checked)
+    )
+    settings_menu.addAction(icc_preview_action)
+    window.ui_objs['action_ui_icc_preview'] = icc_preview_action
     pack_action = QAction(trans.t('ai_pack_title'), window)
     pack_action.setProperty('trans_key', 'ai_pack_title')
     pack_action.triggered.connect(lambda: window.accelerator_banner.open_settings())
