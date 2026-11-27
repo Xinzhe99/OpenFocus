@@ -22,6 +22,39 @@ class _UnavailableToolHint(QObject):
         return super().eventFilter(watched, event)
 
 
+_COMMUNITY_MENU_KEYS = ('menu_account', 'menu_gallery')
+_COMMUNITY_ACTION_KEYS = (
+    'action_my_account',
+    'action_message_box',
+    'action_open_gallery',
+    'action_gallery_showcase',
+    'action_gallery_screensaver',
+    'action_my_downloads',
+)
+
+
+def apply_community_menu_visibility(window: QMainWindow, enabled: bool) -> None:
+    """Show or hide top-level Community menus while keeping Help -> Account intact."""
+    visible = bool(enabled)
+    ui_objs = getattr(window, 'ui_objs', None) or {}
+    for key in _COMMUNITY_MENU_KEYS:
+        menu = ui_objs.get(key)
+        if menu is not None:
+            menu.setEnabled(visible)
+            menu_action = menu.menuAction()
+            if menu_action is not None:
+                menu_action.setVisible(visible)
+                menu_action.setEnabled(visible)
+    for key in _COMMUNITY_ACTION_KEYS:
+        action = ui_objs.get(key)
+        if action is not None:
+            action.setVisible(visible)
+            action.setEnabled(visible)
+    help_account = ui_objs.get('action_account')
+    if help_account is not None:
+        help_account.setVisible(True)
+
+
 def update_development_actions(window: QMainWindow) -> None:
     """Retranslate the unavailable tools after the standard menu sweep."""
     for key in ('mosaic_title', 'menu_dust_map'):
@@ -661,11 +694,6 @@ def setup_menus(window: QMainWindow) -> None:
     help_menu.addAction(support_action)
     window.ui_objs['support_title'] = support_action
 
-    quickstart_action = QAction(trans.t('menu_quick_start'), window)
-    quickstart_action.triggered.connect(window.show_quick_start)
-    help_menu.addAction(quickstart_action)
-    window.ui_objs['menu_quick_start'] = quickstart_action
-
     guided_tour_action = QAction(trans.t('menu_guided_tour'), window)
     guided_tour_action.setProperty('trans_key', 'menu_guided_tour')
     guided_tour_action.triggered.connect(
@@ -707,3 +735,6 @@ def setup_menus(window: QMainWindow) -> None:
     menubar.addMenu(extensions_menu)
     window.ui_objs['menu_extensions'] = extensions_menu
     window.ui_objs['development_unavailable_hint'] = unavailable_action
+
+    from core.developer_options import is_community_enabled
+    apply_community_menu_visibility(window, is_community_enabled())

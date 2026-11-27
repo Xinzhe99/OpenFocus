@@ -439,6 +439,7 @@ def _restore_storage_directory(window):
 class OpenFocus(QMainWindow):
     storage_fallback_notice = pyqtSignal(str, str, str)
     account_session_loaded = pyqtSignal(object, object)
+    _developer_grant_revalidated = pyqtSignal(object)
 
     def __init__(self):
         super().__init__()
@@ -551,10 +552,17 @@ class OpenFocus(QMainWindow):
         from PyQt6.QtCore import QTimer as _QTimer
         self.usage_analytics = UsageAnalytics(self)
         _QTimer.singleShot(0, self.usage_analytics.start)
+        self._developer_grant_revalidated.connect(
+            self._on_developer_grant_revalidated, Qt.ConnectionType.QueuedConnection
+        )
         self._gallery_start_timer = _QTimer(self)
         self._gallery_start_timer.setSingleShot(True)
         self._gallery_start_timer.timeout.connect(self.gallery_controller.start)
-        self._gallery_start_timer.start(1500)
+        from core.developer_options import is_community_enabled, load_developer_grant
+        if is_community_enabled():
+            self._gallery_start_timer.start(1500)
+        if load_developer_grant() is not None:
+            _QTimer.singleShot(250, self._start_developer_grant_revalidation)
 
         # 初始化图像加载器
         self.image_loader = ImageStackLoader()
@@ -3871,6 +3879,59 @@ class OpenFocus(QMainWindow):
             return gallery.open_screensaver()
         return None
 
+    def apply_community_feature_state(self, *, start_remote: bool = True) -> bool:
+        """Apply live Community menu visibility and GalleryController lifecycle state."""
+        from core.developer_options import is_community_enabled
+        from ui.menus import apply_community_menu_visibility
+
+        enabled = is_community_enabled()
+        apply_community_menu_visibility(self, enabled)
+        start_timer = getattr(self, "_gallery_start_timer", None)
+        if not enabled and start_timer is not None and start_timer.isActive():
+            start_timer.stop()
+        gallery = getattr(self, "gallery_controller", None)
+        if gallery is not None:
+            gallery.set_community_enabled(enabled, start_remote=start_remote)
+        return enabled
+
+    def _start_developer_grant_revalidation(self) -> None:
+        """Background-revalidate any saved developer grant without blocking the UI thread."""
+        if getattr(self, "_shutting_down", False):
+            return
+        from core.developer_options import load_developer_grant, revalidate_saved_developer_grant
+
+        if load_developer_grant() is None:
+            return
+
+        import threading
+        client = getattr(self, "_account_client", None)
+        bearer = None
+        if client is not None and hasattr(client, "is_signed_in"):
+            try:
+                if client.is_signed_in() and hasattr(client, "token"):
+                    bearer = client.token()
+            except Exception:
+                bearer = None
+
+        def _worker() -> None:
+            try:
+                result = revalidate_saved_developer_grant(bearer_token=bearer)
+            except Exception:
+                result = None
+            if not getattr(self, "_shutting_down", False):
+                try:
+                    self._developer_grant_revalidated.emit(result)
+                except RuntimeError:
+                    pass
+
+        threading.Thread(target=_worker, daemon=True, name="openfocus-dev-revalidate").start()
+
+    def _on_developer_grant_revalidated(self, result: object) -> None:
+        if getattr(self, "_shutting_down", False) or result is None:
+            return
+        if getattr(result, "revoked", False):
+            self.apply_community_feature_state(start_remote=False)
+
     def show_feedback_dialog(self) -> None:
         """Report a bug or suggestion, with the session log attached."""
         from dialogs.feedback import FeedbackDialog
@@ -5101,6 +5162,9 @@ class OpenFocus(QMainWindow):
         gallery = getattr(self, "gallery_controller", None)
         if gallery is not None:
             gallery.retranslate()
+        from core.developer_options import is_community_enabled
+        from ui.menus import apply_community_menu_visibility
+        apply_community_menu_visibility(self, is_community_enabled())
 
 
 if __name__ == "__main__":
