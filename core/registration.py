@@ -472,14 +472,20 @@ def _align_homography_impl(input_source, output_path=None, img_filenames=None, d
     # --- 2. 并行特征提取 ---
     print("  - Step 1/3: Extracting features concurrently...")
 
+    from core.frame_resolution_cache import within_retention_limit
+    large_stack = not within_retention_limit(images)
+
     def get_features_task(img):
-        from core.source_frames import resolve_frame
+        from core.source_frames import resolve_frame, without_source_cache_growth
         from core.openfocus_alignment import _can_use_file_digest
         source = img
-        img = resolve_frame(img, should_cancel=should_cancel)
-        identity = (_perspective_source_file(source, should_cancel)
-                    if _can_use_file_digest(source)
-                    else _perspective_source(source, img, should_cancel))
+        use_file_digest = _can_use_file_digest(source)
+        identity = _perspective_source_file(source, should_cancel) if use_file_digest else None
+        cache_scope = without_source_cache_growth() if large_stack else nullcontext()
+        with cache_scope:
+            img = resolve_frame(img, should_cancel=should_cancel)
+        if identity is None:
+            identity = _perspective_source(source, img, should_cancel)
         # 在线程中创建独立的检测器，确保线程安全
         local_detector = cv2.SIFT_create()
         h, w = img.shape[:2]
@@ -487,6 +493,8 @@ def _align_homography_impl(input_source, output_path=None, img_filenames=None, d
         if scale < 1.0:
             # 使用 INTER_LINEAR 速度更快，对于特征检测通常足够
             img_small = cv2.resize(img, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_LINEAR)
+            # Release full-resolution source pixels before quantization and SIFT.
+            del img
         else:
             img_small = img
         if img_small.dtype != np.uint8:
@@ -1172,11 +1180,12 @@ def _perspective_cpu_tile_bytes(dsize):
 def _perspective_scratch_bytes(frame, warp, shape):
     from core.source_frames import SourceFrame
 
-    if (type(frame) is not SourceFrame or not frame._jpeg_components
+    if (type(frame) is not SourceFrame or frame._rgb_tiff_offset is not None
+            or not (frame._jpeg_components or frame.raw_sensor_shape)
             or frame.scale != 1.0 or frame.transforms):
         return None
-    # JPEG decode, orientation and resolution-cache reads all return packed
-    # pixels. OpenCV can borrow that input and write one independent output.
+    # Decoded JPEG and RAW sources resolve to packed C-contiguous BGR arrays.
+    # OpenCV can borrow that input and write one independent output.
     output = math.prod(shape) * frame.dtype.itemsize
     hash_bytes = 128 * 1024
     if warp._is_integer_crop(frame.shape, frame.dtype):
@@ -1781,9 +1790,11 @@ def _plan_deferred_ecc(images, downscale_width, accelerate_ecc, preference, thre
         decode = frame_resolution_bytes(frame)
         # Source hashing uses one band, independently of any pack that OpenCV
         # needs for resize or conversion. A direct TIFF still faults in pixels.
+        from core.source_frames import SourceFrame
         decoded = frame.nbytes if decode else 0
         packed = (0 if ((isinstance(frame, np.ndarray)
                          and (frame.flags.c_contiguous or _is_bgr_rev(frame)))
+                        or (type(frame) is SourceFrame and frame._rgb_tiff_offset is None)
                         or (is_direct_rgb_tiff(frame)
                             and frame._rgb_tiff_offset % frame.dtype.alignment == 0))
                   else frame.nbytes)
@@ -1796,7 +1807,7 @@ def _plan_deferred_ecc(images, downscale_width, accelerate_ecc, preference, thre
             # frames, and gracefully falls back if that headroom is absent.
             resize_scratch = 32 * (sum(frame.shape[:2]) + h + w * channels)
             prepare_cpu = max(prepare, decoded + packed + color + resize_scratch, color + gray)
-            if accelerate_ecc:
+            if accelerate_ecc and frame.dtype == np.uint8:
                 stripe_src_rows = min(frame.shape[0], math.ceil(_TILE_ROWS / max(scale, 1e-6)) + 2)
                 gpu_stripe = (
                     min(frame.nbytes, stripe_src_rows * frame.shape[1] * channels * itemsize)
@@ -1910,10 +1921,13 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
     recent_pairs = OrderedDict() if len(images) > 2 else None
     recent_pairs_lock = threading.Lock()
 
+    from core.frame_resolution_cache import within_retention_limit
+    large_stack = not within_retention_limit(images)
+
     # 预处理函数：转灰度 + 降采样 + 高斯模糊 + 归一化
     def preprocess(source):
         from core.openfocus_alignment import _can_use_file_digest, _is_bgr_rev
-        from core.source_frames import resolve_frame, source_area_resizer
+        from core.source_frames import resolve_frame, source_area_resizer, without_source_cache_growth
         # Resizing during JPEG decode avoids loading and transferring full-size
         # color pixels. Keep OpenCL area resizing for sources that need it.
         jpeg = (stage_budget.jpeg_inputs.get(id(source)) if stage_budget is not None
@@ -1926,7 +1940,8 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
             # released as soon as resize or color conversion no longer needs it.
             use_file_digest = _can_use_file_digest(source)
             identity = _perspective_source_file(source, should_cancel) if use_file_digest else None
-            with source_area_resizer(area_gpu):
+            cache_scope = without_source_cache_growth() if large_stack else nullcontext()
+            with cache_scope, source_area_resizer(area_gpu):
                 pixels = resolve_frame(source, should_cancel=should_cancel)
             if identity is None:
                 identity = _perspective_source(source, pixels, should_cancel)
@@ -2564,11 +2579,25 @@ class ImageRegistration:
             if not deferred or self.steps != ('ecc',):
                 height, width = images[0].shape[:2]
                 channels = images[0].shape[2] if images[0].ndim == 3 else 1
-                # Other aligners and eager warps retain their existing shared budget.
                 from core.resource_policy import registration_working_set
                 from core.source_frames import frame_resolution_bytes
-                fixed, per_worker = registration_working_set(height, width,
-                    max(image.size * 16 + frame_resolution_bytes(image) for image in images))
+                if deferred and all(step in ('homography', 'ecc') for step in self.steps):
+                    # Deferred homography/combined estimation downscales each frame to
+                    # at most downscale_width (1024px for >=2048px sources) for SIFT
+                    # and never materializes full-resolution warps during registration.
+                    dw = 1024 if max(height, width) >= 2048 else self.downscale_width
+                    scale = min(1.0, dw / float(max(1, width)))
+                    scaled_px = max(1, round(height * scale) * round(width * scale))
+                    feature_scratch = scaled_px * 32 + 16 * 1024 * 1024
+                    fixed = 0
+                    per_worker = max(
+                        max(frame_resolution_bytes(image), image.nbytes) + feature_scratch
+                        for image in images
+                    )
+                else:
+                    # Other aligners and eager warps retain their existing shared budget.
+                    fixed, per_worker = registration_working_set(height, width,
+                        max(image.size * 16 + frame_resolution_bytes(image) for image in images))
                 plan = plan_execution(Workload(
                     algorithm='registration', frames=len(images), height=height,
                     width=width, channels=channels, itemsize=images[0].dtype.itemsize,

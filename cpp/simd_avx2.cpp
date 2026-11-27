@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <type_traits>
 #include <vector>
 
 #if defined(__x86_64__) || defined(_M_X64)
@@ -1905,6 +1906,258 @@ inline void warp_chunk_8(
     }
 }
 
+// ---- Dense warp chunks
+// When the eight outputs of a chunk take their left taps from consecutive
+// source columns ix0 .. ix0 + 7 and their right taps from ix0 + 1 .. ix0 + 8,
+// all on the same two rows, the taps are read as whole spans instead of pixel
+// by pixel. Every output sample keeps the scalar arithmetic: per row
+// a * (256 - fx) + b * fx, then (top * (256 - fy) + bot * fy) >> 16, exact in
+// 32 bits. `fx` and `fy` hold the eight outputs' fractions in 32-bit lanes.
+// Loads stay inside columns ix0 .. ix0 + 8 and exactly eight pixels are stored.
+
+// (256 - f) in the low and f in the high 16 bits of each lane, for madd.
+inline __m256i dense_weights(__m256i frac) {
+    return _mm256_or_si256(_mm256_sub_epi32(_mm256_set1_epi32(256), frac), _mm256_slli_epi32(frac, 16));
+}
+
+inline __m256i dense_vertical(__m256i top, __m256i bot, __m256i fy) {
+    return _mm256_srli_epi32(
+        _mm256_add_epi32(_mm256_slli_epi32(top, 8), _mm256_mullo_epi32(_mm256_sub_epi32(bot, top), fy)), 16);
+}
+
+inline int32_t lane0_epi32(__m256i v) {
+    return _mm_cvtsi128_si32(_mm256_castsi256_si128(v));
+}
+
+// True when output k of the chunk reads columns ix[0] + k and ix[0] + k + 1 of
+// one pair of rows for every k.
+inline bool dense_chunk(__m256i ix, __m256i jx, __m256i iy, __m256i jy) {
+    const __m256i first = _mm256_setzero_si256();
+    const __m256i steps = _mm256_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7);
+    const __m256i columns = _mm256_and_si256(
+        _mm256_cmpeq_epi32(ix, _mm256_add_epi32(_mm256_permutevar8x32_epi32(ix, first), steps)),
+        _mm256_cmpeq_epi32(jx, _mm256_add_epi32(ix, _mm256_set1_epi32(1))));
+    const __m256i rows = _mm256_and_si256(
+        _mm256_cmpeq_epi32(iy, _mm256_permutevar8x32_epi32(iy, first)),
+        _mm256_cmpeq_epi32(jy, _mm256_permutevar8x32_epi32(jy, first)));
+    return _mm256_movemask_epi8(_mm256_and_si256(columns, rows)) == -1;
+}
+
+// The same test for a translation row, whose two rows are fixed.
+inline bool dense_columns(const int32_t* ix, const int32_t* jx, const uint8_t* inv_x) {
+    uint64_t invalid = 0;
+    std::memcpy(&invalid, inv_x, sizeof(invalid));
+    if (invalid != 0) {
+        return false;
+    }
+    const __m256i vix = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(ix));
+    const __m256i vjx = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(jx));
+    const __m256i same = _mm256_and_si256(
+        _mm256_cmpeq_epi32(vix, _mm256_add_epi32(_mm256_set1_epi32(ix[0]), _mm256_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7))),
+        _mm256_cmpeq_epi32(vjx, _mm256_add_epi32(vix, _mm256_set1_epi32(1))));
+    return _mm256_movemask_epi8(same) == -1;
+}
+
+// Horizontal sums of one gray row for eight outputs.
+inline __m256i dense_gray_row(const uint16_t* s, __m256i w) {
+    const __m128i bias = _mm_set1_epi16(static_cast<int16_t>(0x8000));
+    const __m128i a = _mm_xor_si128(_mm_loadu_si128(reinterpret_cast<const __m128i*>(s)), bias);
+    const __m128i b = _mm_xor_si128(_mm_loadu_si128(reinterpret_cast<const __m128i*>(s + 1)), bias);
+    const __m256i pairs = _mm256_inserti128_si256(
+        _mm256_castsi128_si256(_mm_unpacklo_epi16(a, b)), _mm_unpackhi_epi16(a, b), 1);
+    return _mm256_add_epi32(_mm256_madd_epi16(pairs, w), _mm256_set1_epi32(1 << 23));
+}
+
+inline __m256i dense_gray_row(const uint8_t* s, __m256i w) {
+    const __m128i a = _mm_loadl_epi64(reinterpret_cast<const __m128i*>(s));
+    const __m128i b = _mm_loadl_epi64(reinterpret_cast<const __m128i*>(s + 1));
+    return _mm256_madd_epi16(_mm256_cvtepu8_epi16(_mm_unpacklo_epi8(a, b)), w);
+}
+
+inline void dense_store_gray(__m256i v, uint16_t* dp) {
+    _mm_storeu_si128(reinterpret_cast<__m128i*>(dp),
+                     _mm_packus_epi32(_mm256_castsi256_si128(v), _mm256_extracti128_si256(v, 1)));
+}
+
+inline void dense_store_gray(__m256i v, uint8_t* dp) {
+    const __m128i words = _mm_packus_epi32(_mm256_castsi256_si128(v), _mm256_extracti128_si256(v, 1));
+    _mm_storel_epi64(reinterpret_cast<__m128i*>(dp), _mm_packus_epi16(words, words));
+}
+
+template <typename T>
+inline void dense_gray8(const T* s0, const T* s1, T* dp, __m256i fx, __m256i fy) {
+    const __m256i w = dense_weights(fx);
+    dense_store_gray(dense_vertical(dense_gray_row(s0, w), dense_gray_row(s1, w), fy), dp);
+}
+
+// Eight packed RGB pixels hold 24 output samples, taken in three groups of
+// eight. Group g covers samples 8g .. 8g + 7; this maps each to its pixel.
+template <int G>
+inline __m256i dense_rgb_pixels() {
+    if constexpr (G == 0) {
+        return _mm256_setr_epi32(0, 0, 0, 1, 1, 1, 2, 2);
+    } else if constexpr (G == 1) {
+        return _mm256_setr_epi32(2, 3, 3, 3, 4, 4, 4, 5);
+    } else {
+        return _mm256_setr_epi32(5, 5, 6, 6, 6, 7, 7, 7);
+    }
+}
+
+// Horizontal sums of one row for group G, in source channel order: sample j
+// pairs with sample j + 3 of the same channel one column right. Lane 0 reads
+// s + 8G for samples 8G .. 8G + 3, lane 1 reads s + 8G + 3 for 8G + 4 ..
+// 8G + 7, so group 2 ends at sample 26, the last channel of column ix0 + 8.
+// The 0x8000 bias makes the sample pairs signed for madd; 1 << 23 removes it.
+template <int G>
+inline __m256i dense_rgb_row(const uint16_t* s, __m256i w) {
+    const __m256i shuf = _mm256_setr_epi8(
+        0, 1, 6, 7, 2, 3, 8, 9, 4, 5, 10, 11, 6, 7, 12, 13,
+        2, 3, 8, 9, 4, 5, 10, 11, 6, 7, 12, 13, 8, 9, 14, 15);
+    const __m256i span = _mm256_inserti128_si256(
+        _mm256_castsi128_si256(_mm_loadu_si128(reinterpret_cast<const __m128i*>(s + 8 * G))),
+        _mm_loadu_si128(reinterpret_cast<const __m128i*>(s + 8 * G + 3)), 1);
+    const __m256i pairs = _mm256_xor_si256(
+        _mm256_shuffle_epi8(span, shuf), _mm256_set1_epi16(static_cast<int16_t>(0x8000)));
+    return _mm256_add_epi32(_mm256_madd_epi16(pairs, w), _mm256_set1_epi32(1 << 23));
+}
+
+// The same for 8-bit samples, in output channel order: one 16-byte span holds
+// every tap of the group, so the shuffle also reverses the channels. Spans
+// start at 0, 8 (6 reversed) and 11 and end by sample 26.
+template <int G, bool BgrRev>
+inline __m256i dense_rgb_row(const uint8_t* s, __m256i w) {
+    constexpr int start = (G == 0) ? 0 : ((G == 1) ? (BgrRev ? 6 : 8) : 11);
+    __m256i shuf;
+    if constexpr (!BgrRev && G < 2) {
+        shuf = _mm256_setr_epi8(
+            0, -1, 3, -1, 1, -1, 4, -1, 2, -1, 5, -1, 3, -1, 6, -1,
+            4, -1, 7, -1, 5, -1, 8, -1, 6, -1, 9, -1, 7, -1, 10, -1);
+    } else if constexpr (!BgrRev) {
+        shuf = _mm256_setr_epi8(
+            5, -1, 8, -1, 6, -1, 9, -1, 7, -1, 10, -1, 8, -1, 11, -1,
+            9, -1, 12, -1, 10, -1, 13, -1, 11, -1, 14, -1, 12, -1, 15, -1);
+    } else if constexpr (G == 0) {
+        shuf = _mm256_setr_epi8(
+            2, -1, 5, -1, 1, -1, 4, -1, 0, -1, 3, -1, 5, -1, 8, -1,
+            4, -1, 7, -1, 3, -1, 6, -1, 8, -1, 11, -1, 7, -1, 10, -1);
+    } else if constexpr (G == 1) {
+        shuf = _mm256_setr_epi8(
+            0, -1, 3, -1, 5, -1, 8, -1, 4, -1, 7, -1, 3, -1, 6, -1,
+            8, -1, 11, -1, 7, -1, 10, -1, 6, -1, 9, -1, 11, -1, 14, -1);
+    } else {
+        shuf = _mm256_setr_epi8(
+            5, -1, 8, -1, 4, -1, 7, -1, 9, -1, 12, -1, 8, -1, 11, -1,
+            7, -1, 10, -1, 12, -1, 15, -1, 11, -1, 14, -1, 10, -1, 13, -1);
+    }
+    const __m128i bytes = _mm_loadu_si128(reinterpret_cast<const __m128i*>(s + start));
+    const __m256i span = _mm256_inserti128_si256(_mm256_castsi128_si256(bytes), bytes, 1);
+    return _mm256_madd_epi16(_mm256_shuffle_epi8(span, shuf), w);
+}
+
+// Stores 24 samples given in source channel order, reversing each pixel's
+// channels when BgrRev.
+template <bool BgrRev>
+inline void dense_store_rgb(__m256i g0, __m256i g1, __m256i g2, uint16_t* dp) {
+    const __m256i low = _mm256_permute4x64_epi64(_mm256_packus_epi32(g0, g1), 0xD8);
+    const __m128i s16 = _mm_packus_epi32(_mm256_castsi256_si128(g2), _mm256_extracti128_si256(g2, 1));
+    if constexpr (!BgrRev) {
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(dp), low);
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(dp + 16), s16);
+    } else {
+        const __m128i s0 = _mm256_castsi256_si128(low);
+        const __m128i s8 = _mm256_extracti128_si256(low, 1);
+        const __m128i o0 = _mm_or_si128(
+            _mm_shuffle_epi8(s0, _mm_setr_epi8(4, 5, 2, 3, 0, 1, 10, 11, 8, 9, 6, 7, -1, -1, 14, 15)),
+            _mm_shuffle_epi8(s8, _mm_setr_epi8(-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 0, 1, -1, -1)));
+        const __m128i o1 = _mm_or_si128(
+            _mm_or_si128(
+                _mm_shuffle_epi8(s0, _mm_setr_epi8(12, 13, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1)),
+                _mm_shuffle_epi8(s8, _mm_setr_epi8(-1, -1, 6, 7, 4, 5, 2, 3, 12, 13, 10, 11, 8, 9, -1, -1))),
+            _mm_shuffle_epi8(s16, _mm_setr_epi8(-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 2, 3)));
+        const __m128i o2 = _mm_or_si128(
+            _mm_shuffle_epi8(s8, _mm_setr_epi8(-1, -1, 14, 15, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1)),
+            _mm_shuffle_epi8(s16, _mm_setr_epi8(0, 1, -1, -1, 8, 9, 6, 7, 4, 5, 14, 15, 12, 13, 10, 11)));
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(dp), o0);
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(dp + 8), o1);
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(dp + 16), o2);
+    }
+}
+
+// Stores 24 samples already in output channel order.
+inline void dense_store_rgb(__m256i g0, __m256i g1, __m256i g2, uint8_t* dp) {
+    // Words [0-3, 8-11 | 4-7, 12-15] and [16-19, 16-19 | 20-23, 20-23], then
+    // bytes whose dwords are reordered to 0-3, 4-7, ..., 20-23.
+    const __m256i bytes = _mm256_packus_epi16(_mm256_packus_epi32(g0, g1), _mm256_packus_epi32(g2, g2));
+    const __m256i ordered = _mm256_permutevar8x32_epi32(bytes, _mm256_setr_epi32(0, 4, 1, 5, 2, 6, 3, 7));
+    _mm_storeu_si128(reinterpret_cast<__m128i*>(dp), _mm256_castsi256_si128(ordered));
+    _mm_storel_epi64(reinterpret_cast<__m128i*>(dp + 16), _mm256_extracti128_si256(ordered, 1));
+}
+
+// Eight packed RGB outputs. With RowFy, `fy` is one value for the whole row;
+// otherwise each pixel's fraction is spread to its samples like `fx`.
+template <int G, typename T, bool BgrRev, bool RowFy>
+inline __m256i dense_rgb_group(const T* s0, const T* s1, __m256i w, __m256i fy) {
+    const __m256i pixels = dense_rgb_pixels<G>();
+    const __m256i wg = _mm256_permutevar8x32_epi32(w, pixels);
+    const __m256i fyg = RowFy ? fy : _mm256_permutevar8x32_epi32(fy, pixels);
+    if constexpr (std::is_same<T, uint8_t>::value) {
+        return dense_vertical(dense_rgb_row<G, BgrRev>(s0, wg), dense_rgb_row<G, BgrRev>(s1, wg), fyg);
+    } else {
+        return dense_vertical(dense_rgb_row<G>(s0, wg), dense_rgb_row<G>(s1, wg), fyg);
+    }
+}
+
+template <typename T, bool BgrRev, bool RowFy>
+inline void dense_rgb8(const T* s0, const T* s1, T* dp, __m256i fx, __m256i fy) {
+    const __m256i w = dense_weights(fx);
+    const __m256i g0 = dense_rgb_group<0, T, BgrRev, RowFy>(s0, s1, w, fy);
+    const __m256i g1 = dense_rgb_group<1, T, BgrRev, RowFy>(s0, s1, w, fy);
+    const __m256i g2 = dense_rgb_group<2, T, BgrRev, RowFy>(s0, s1, w, fy);
+    if constexpr (std::is_same<T, uint8_t>::value) {
+        dense_store_rgb(g0, g1, g2, dp);
+    } else {
+        dense_store_rgb<BgrRev>(g0, g1, g2, dp);
+    }
+}
+
+}  // namespace
+
+namespace {
+
+template <typename T, bool BgrRev>
+void warp_translation_rgb_row(
+    const T* r0, const T* r1, T* dst, int64_t rw,
+    const int32_t* ix, const int32_t* jx, const uint32_t* fx, const uint8_t* inv_x,
+    uint32_t fy, int32_t len_x
+) {
+    const __m256i v_fy = _mm256_set1_epi32(static_cast<int32_t>(fy));
+    const auto one = [&](int64_t ox) {
+        T* dp = dst + ox * 3;
+        if (inv_x[ox]) {
+            dp[0] = 0;
+            dp[1] = 0;
+            dp[2] = 0;
+            return;
+        }
+        warp_pixel<T, 3, BgrRev>(r0, r1, dp, ix[ox], jx[ox], fx[ox], fy, len_x, ox + 1 < rw);
+    };
+    int64_t ox = 0;
+    for (; ox + 8 <= rw; ox += 8) {
+        if (dense_columns(ix + ox, jx + ox, inv_x + ox)) {
+            const int64_t first = static_cast<int64_t>(ix[ox]) * 3;
+            dense_rgb8<T, BgrRev, true>(r0 + first, r1 + first, dst + ox * 3,
+                                        _mm256_loadu_si256(reinterpret_cast<const __m256i*>(fx + ox)), v_fy);
+            continue;
+        }
+        for (int64_t k = ox; k < ox + 8; ++k) {
+            one(k);
+        }
+    }
+    for (; ox < rw; ++ox) {
+        one(ox);
+    }
+}
+
 }  // namespace
 
 void align_warp_translation_rgb_row_avx2(
@@ -1913,36 +2166,78 @@ void align_warp_translation_rgb_row_avx2(
     uint32_t fy, bool bgr_rev, int64_t src_w
 ) {
     const int32_t len_x = static_cast<int32_t>(src_w);
-    const auto run = [&](auto* r0, auto* r1, auto* dst, auto pixel) {
-        for (int64_t ox = 0; ox < rw; ++ox) {
-            auto* dp = dst + ox * 3;
-            if (inv_x[ox]) {
-                dp[0] = 0;
-                dp[1] = 0;
-                dp[2] = 0;
-                continue;
-            }
-            pixel(r0, r1, dp, ix[ox], jx[ox], fx[ox], fy, len_x, ox + 1 < rw);
-        }
-    };
     if (is_u8) {
         const auto* r0 = static_cast<const uint8_t*>(row0);
         const auto* r1 = static_cast<const uint8_t*>(row1);
         auto* dst = static_cast<uint8_t*>(out_row);
         if (bgr_rev) {
-            run(r0, r1, dst, warp_pixel<uint8_t, 3, true>);
+            warp_translation_rgb_row<uint8_t, true>(r0, r1, dst, rw, ix, jx, fx, inv_x, fy, len_x);
         } else {
-            run(r0, r1, dst, warp_pixel<uint8_t, 3, false>);
+            warp_translation_rgb_row<uint8_t, false>(r0, r1, dst, rw, ix, jx, fx, inv_x, fy, len_x);
         }
     } else {
         const auto* r0 = static_cast<const uint16_t*>(row0);
         const auto* r1 = static_cast<const uint16_t*>(row1);
         auto* dst = static_cast<uint16_t*>(out_row);
         if (bgr_rev) {
-            run(r0, r1, dst, warp_pixel<uint16_t, 3, true>);
+            warp_translation_rgb_row<uint16_t, true>(r0, r1, dst, rw, ix, jx, fx, inv_x, fy, len_x);
         } else {
-            run(r0, r1, dst, warp_pixel<uint16_t, 3, false>);
+            warp_translation_rgb_row<uint16_t, false>(r0, r1, dst, rw, ix, jx, fx, inv_x, fy, len_x);
         }
+    }
+}
+
+namespace {
+
+template <typename T>
+void warp_translation_gray_row(
+    const T* r0, const T* r1, T* dst, int64_t rw,
+    const int32_t* ix, const int32_t* jx, const uint32_t* fx, const uint8_t* inv_x, uint32_t fy
+) {
+    const __m256i v_fy = _mm256_set1_epi32(static_cast<int32_t>(fy));
+    const uint32_t gy = 256u - fy;
+    const auto one = [&](int64_t ox) {
+        if (inv_x[ox]) {
+            dst[ox] = 0;
+            return;
+        }
+        const uint32_t fxx = fx[ox];
+        const uint32_t gxx = 256u - fxx;
+        const uint32_t top = static_cast<uint32_t>(r0[ix[ox]]) * gxx + static_cast<uint32_t>(r0[jx[ox]]) * fxx;
+        const uint32_t bot = static_cast<uint32_t>(r1[ix[ox]]) * gxx + static_cast<uint32_t>(r1[jx[ox]]) * fxx;
+        dst[ox] = static_cast<T>((top * gy + bot * fy) >> 16u);
+    };
+    int64_t ox = 0;
+    for (; ox + 8 <= rw; ox += 8) {
+        if (dense_columns(ix + ox, jx + ox, inv_x + ox)) {
+            dense_gray8<T>(r0 + ix[ox], r1 + ix[ox], dst + ox,
+                           _mm256_loadu_si256(reinterpret_cast<const __m256i*>(fx + ox)), v_fy);
+            continue;
+        }
+        for (int64_t k = ox; k < ox + 8; ++k) {
+            one(k);
+        }
+    }
+    for (; ox < rw; ++ox) {
+        one(ox);
+    }
+}
+
+}  // namespace
+
+void align_warp_translation_gray_row_avx2(
+    const void* row0, const void* row1, bool is_u8, void* out_row, int64_t rw,
+    const int32_t* ix, const int32_t* jx, const uint32_t* fx, const uint8_t* inv_x,
+    uint32_t fy
+) {
+    if (is_u8) {
+        warp_translation_gray_row<uint8_t>(
+            static_cast<const uint8_t*>(row0), static_cast<const uint8_t*>(row1),
+            static_cast<uint8_t*>(out_row), rw, ix, jx, fx, inv_x, fy);
+    } else {
+        warp_translation_gray_row<uint16_t>(
+            static_cast<const uint16_t*>(row0), static_cast<const uint16_t*>(row1),
+            static_cast<uint16_t*>(out_row), rw, ix, jx, fx, inv_x, fy);
     }
 }
 
@@ -2232,10 +2527,16 @@ void align_fast_downsize_u16_row_avx2(
     }
 }
 
-void align_warp_alignment_row_avx2(
-    const void* img_data, int64_t img_s0, int64_t img_w, bool is_u8,
-    void* out_row, int64_t src_h, int64_t src_w, int64_t src_y0, int64_t x_off, int64_t rw,
-    int64_t channels, bool bgr_rev,
+namespace {
+
+// One output row of the similarity warp for one sample type, channel count and
+// channel order. The coordinates follow the scalar sequence eight columns at a
+// time; chunks whose taps are consecutive columns of one pair of rows take the
+// dense path, the others the per-pixel one.
+template <typename T, int Channels, bool BgrRev>
+void warp_alignment_row(
+    const T* img, int64_t img_s0, int64_t img_w, T* out_row,
+    int64_t src_h, int64_t src_w, int64_t src_y0, int64_t x_off, int64_t rw,
     float cx, float p08, float p18, float tx, float ty, float v_dy, float u_dy
 ) {
     const float wf = static_cast<float>(static_cast<int32_t>(src_w));
@@ -2289,11 +2590,7 @@ void align_warp_alignment_row_avx2(
 
         vx = _mm256_add_ps(vx, v_step);
         if (inv_mask == 0xFF) {
-            if (is_u8) {
-                std::memset(static_cast<uint8_t*>(out_row) + ox * channels, 0, static_cast<size_t>(8 * channels));
-            } else {
-                std::memset(static_cast<uint16_t*>(out_row) + ox * channels, 0, static_cast<size_t>(8 * channels) * 2u);
-            }
+            std::memset(out_row + ox * Channels, 0, sizeof(T) * 8u * Channels);
             continue;
         }
 
@@ -2313,34 +2610,26 @@ void align_warp_alignment_row_avx2(
         const __m256i viy = _mm256_min_epi32(_mm256_max_epi32(vidx, vi_zero), vi_hm1);
         const __m256i vjy = _mm256_min_epi32(_mm256_max_epi32(_mm256_add_epi32(vidx, vi_one), vi_zero), vi_hm1);
 
+        if (inv_mask == 0 && lane0_epi32(uix) + 8 < readable_w && dense_chunk(uix, ujx, viy, vjy)) {
+            const int64_t first = static_cast<int64_t>(lane0_epi32(uix)) * Channels;
+            const T* s0 = img + (static_cast<int64_t>(lane0_epi32(viy)) - src_y0) * img_s0 + first;
+            const T* s1 = img + (static_cast<int64_t>(lane0_epi32(vjy)) - src_y0) * img_s0 + first;
+            if constexpr (Channels == 1) {
+                dense_gray8<T>(s0, s1, out_row + ox, ufx, vfy);
+            } else {
+                dense_rgb8<T, BgrRev, false>(s0, s1, out_row + ox * 3, ufx, vfy);
+            }
+            continue;
+        }
+
         _mm256_store_si256(reinterpret_cast<__m256i*>(ix_buf), uix);
         _mm256_store_si256(reinterpret_cast<__m256i*>(jx_buf), ujx);
         _mm256_store_si256(reinterpret_cast<__m256i*>(iy_buf), viy);
         _mm256_store_si256(reinterpret_cast<__m256i*>(jy_buf), vjy);
         _mm256_store_si256(reinterpret_cast<__m256i*>(fx_buf), ufx);
         _mm256_store_si256(reinterpret_cast<__m256i*>(fy_buf), vfy);
-
-        if (is_u8) {
-            const auto* src_t = static_cast<const uint8_t*>(img_data);
-            auto* dst_t = static_cast<uint8_t*>(out_row);
-            if (channels == 1) {
-                warp_chunk_8<uint8_t, 1, false>(src_t, img_s0, src_y0, dst_t, ox, ix_buf, jx_buf, iy_buf, jy_buf, fx_buf, fy_buf, inv_mask, readable_w, ox + 8 < rw);
-            } else if (bgr_rev) {
-                warp_chunk_8<uint8_t, 3, true>(src_t, img_s0, src_y0, dst_t, ox, ix_buf, jx_buf, iy_buf, jy_buf, fx_buf, fy_buf, inv_mask, readable_w, ox + 8 < rw);
-            } else {
-                warp_chunk_8<uint8_t, 3, false>(src_t, img_s0, src_y0, dst_t, ox, ix_buf, jx_buf, iy_buf, jy_buf, fx_buf, fy_buf, inv_mask, readable_w, ox + 8 < rw);
-            }
-        } else {
-            const auto* src_t = static_cast<const uint16_t*>(img_data);
-            auto* dst_t = static_cast<uint16_t*>(out_row);
-            if (channels == 1) {
-                warp_chunk_8<uint16_t, 1, false>(src_t, img_s0, src_y0, dst_t, ox, ix_buf, jx_buf, iy_buf, jy_buf, fx_buf, fy_buf, inv_mask, readable_w, ox + 8 < rw);
-            } else if (bgr_rev) {
-                warp_chunk_8<uint16_t, 3, true>(src_t, img_s0, src_y0, dst_t, ox, ix_buf, jx_buf, iy_buf, jy_buf, fx_buf, fy_buf, inv_mask, readable_w, ox + 8 < rw);
-            } else {
-                warp_chunk_8<uint16_t, 3, false>(src_t, img_s0, src_y0, dst_t, ox, ix_buf, jx_buf, iy_buf, jy_buf, fx_buf, fy_buf, inv_mask, readable_w, ox + 8 < rw);
-            }
-        }
+        warp_chunk_8<T, Channels, BgrRev>(img, img_s0, src_y0, out_row, ox, ix_buf, jx_buf, iy_buf, jy_buf,
+                                          fx_buf, fy_buf, inv_mask, readable_w, ox + 8 < rw);
     }
 
     auto clamp_i32 = [](int32_t v, int32_t hi) -> int32_t {
@@ -2354,12 +2643,8 @@ void align_warp_alignment_row_avx2(
         const float u = ((dx_ * p18) + u_dy) + tx;
         const bool invalid = (u >= wf || u < 0.0f || v >= hf || v < 0.0f);
         if (invalid) {
-            for (int64_t c = 0; c < channels; ++c) {
-                if (is_u8) {
-                    static_cast<uint8_t*>(out_row)[ox * channels + c] = 0;
-                } else {
-                    static_cast<uint16_t*>(out_row)[ox * channels + c] = 0;
-                }
+            for (int c = 0; c < Channels; ++c) {
+                out_row[ox * Channels + c] = 0;
             }
             continue;
         }
@@ -2368,34 +2653,56 @@ void align_warp_alignment_row_avx2(
         const int32_t uidx = static_cast<int32_t>(uc);
         const uint32_t fxx = static_cast<uint32_t>((uc - static_cast<float>(uidx)) * 256.0f);
         const uint32_t gxx = 256u - fxx;
-        const int64_t ixx = static_cast<int64_t>(clamp_i32(uidx, len_x - 1)) * channels;
-        const int64_t jxx = static_cast<int64_t>(clamp_i32(uidx + 1, len_x - 1)) * channels;
+        const int64_t ixx = static_cast<int64_t>(clamp_i32(uidx, len_x - 1)) * Channels;
+        const int64_t jxx = static_cast<int64_t>(clamp_i32(uidx + 1, len_x - 1)) * Channels;
 
         float vc = (v >= h_m1) ? v_clamp : v;
         if (vc < 0.0f) vc = 0.0f;
         const int32_t vidx = static_cast<int32_t>(vc);
         const uint32_t fyy = static_cast<uint32_t>((vc - static_cast<float>(vidx)) * 256.0f);
         const uint32_t gyy = 256u - fyy;
-        const int64_t iy_b = static_cast<int64_t>(clamp_i32(vidx, len_y - 1)) - src_y0;
-        const int64_t jy_b = static_cast<int64_t>(clamp_i32(vidx + 1, len_y - 1)) - src_y0;
+        const T* r0 = img + (static_cast<int64_t>(clamp_i32(vidx, len_y - 1)) - src_y0) * img_s0;
+        const T* r1 = img + (static_cast<int64_t>(clamp_i32(vidx + 1, len_y - 1)) - src_y0) * img_s0;
 
-        for (int64_t c = 0; c < channels; ++c) {
-            const int64_t sc = (bgr_rev && channels == 3) ? (2 - c) : c;
-            if (is_u8) {
-                const uint8_t* src_t = static_cast<const uint8_t*>(img_data);
-                const uint8_t* r0 = src_t + iy_b * img_s0;
-                const uint8_t* r1 = src_t + jy_b * img_s0;
-                const uint32_t top = static_cast<uint32_t>(r0[ixx + sc]) * gxx + static_cast<uint32_t>(r0[jxx + sc]) * fxx;
-                const uint32_t bot = static_cast<uint32_t>(r1[ixx + sc]) * gxx + static_cast<uint32_t>(r1[jxx + sc]) * fxx;
-                static_cast<uint8_t*>(out_row)[ox * channels + c] = static_cast<uint8_t>((top * gyy + bot * fyy) >> 16u);
-            } else {
-                const uint16_t* src_t = static_cast<const uint16_t*>(img_data);
-                const uint16_t* r0 = src_t + iy_b * img_s0;
-                const uint16_t* r1 = src_t + jy_b * img_s0;
-                const uint32_t top = static_cast<uint32_t>(r0[ixx + sc]) * gxx + static_cast<uint32_t>(r0[jxx + sc]) * fxx;
-                const uint32_t bot = static_cast<uint32_t>(r1[ixx + sc]) * gxx + static_cast<uint32_t>(r1[jxx + sc]) * fxx;
-                static_cast<uint16_t*>(out_row)[ox * channels + c] = static_cast<uint16_t>((top * gyy + bot * fyy) >> 16u);
-            }
+        for (int c = 0; c < Channels; ++c) {
+            const int sc = (BgrRev && Channels == 3) ? (2 - c) : c;
+            const uint32_t top = static_cast<uint32_t>(r0[ixx + sc]) * gxx + static_cast<uint32_t>(r0[jxx + sc]) * fxx;
+            const uint32_t bot = static_cast<uint32_t>(r1[ixx + sc]) * gxx + static_cast<uint32_t>(r1[jxx + sc]) * fxx;
+            out_row[ox * Channels + c] = static_cast<T>((top * gyy + bot * fyy) >> 16u);
+        }
+    }
+}
+
+}  // namespace
+
+void align_warp_alignment_row_avx2(
+    const void* img_data, int64_t img_s0, int64_t img_w, bool is_u8,
+    void* out_row, int64_t src_h, int64_t src_w, int64_t src_y0, int64_t x_off, int64_t rw,
+    int64_t channels, bool bgr_rev,
+    float cx, float p08, float p18, float tx, float ty, float v_dy, float u_dy
+) {
+    const auto run = [&](auto* src, auto* dst, auto row) {
+        row(src, img_s0, img_w, dst, src_h, src_w, src_y0, x_off, rw, cx, p08, p18, tx, ty, v_dy, u_dy);
+    };
+    if (is_u8) {
+        const auto* src = static_cast<const uint8_t*>(img_data);
+        auto* dst = static_cast<uint8_t*>(out_row);
+        if (channels == 1) {
+            run(src, dst, warp_alignment_row<uint8_t, 1, false>);
+        } else if (bgr_rev) {
+            run(src, dst, warp_alignment_row<uint8_t, 3, true>);
+        } else {
+            run(src, dst, warp_alignment_row<uint8_t, 3, false>);
+        }
+    } else {
+        const auto* src = static_cast<const uint16_t*>(img_data);
+        auto* dst = static_cast<uint16_t*>(out_row);
+        if (channels == 1) {
+            run(src, dst, warp_alignment_row<uint16_t, 1, false>);
+        } else if (bgr_rev) {
+            run(src, dst, warp_alignment_row<uint16_t, 3, true>);
+        } else {
+            run(src, dst, warp_alignment_row<uint16_t, 3, false>);
         }
     }
 }
@@ -4024,6 +4331,337 @@ int select_a_with_bg_row_impl(
     return state;
 }
 
+// Memory channels 0, 1 and 2 of eight packed RGB pixels (24 samples at p) as
+// eight int32 lanes each. Both 32-byte loads stay inside the 24 samples.
+inline void deinterleave_rgb8(const uint16_t* p, __m256i& c0, __m256i& c1, __m256i& c2) {
+    const __m256i lo = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(p));      // 0..15
+    const __m256i hi = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(p + 8));  // 8..23
+    c0 = _mm256_or_si256(
+        _mm256_shuffle_epi8(lo, _mm256_setr_epi8(
+            0, 1, -1, -1, 6, 7, -1, -1, 12, 13, -1, -1, -1, -1, -1, -1,
+            8, 9, -1, -1, 14, 15, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1)),
+        _mm256_shuffle_epi8(hi, _mm256_setr_epi8(
+            -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 2, 3, -1, -1,
+            -1, -1, -1, -1, -1, -1, -1, -1, 4, 5, -1, -1, 10, 11, -1, -1)));
+    c1 = _mm256_or_si256(
+        _mm256_shuffle_epi8(lo, _mm256_setr_epi8(
+            2, 3, -1, -1, 8, 9, -1, -1, 14, 15, -1, -1, -1, -1, -1, -1,
+            10, 11, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1)),
+        _mm256_shuffle_epi8(hi, _mm256_setr_epi8(
+            -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 4, 5, -1, -1,
+            -1, -1, -1, -1, 0, 1, -1, -1, 6, 7, -1, -1, 12, 13, -1, -1)));
+    c2 = _mm256_or_si256(
+        _mm256_shuffle_epi8(lo, _mm256_setr_epi8(
+            4, 5, -1, -1, 10, 11, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+            12, 13, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1)),
+        _mm256_shuffle_epi8(hi, _mm256_setr_epi8(
+            -1, -1, -1, -1, -1, -1, -1, -1, 0, 1, -1, -1, 6, 7, -1, -1,
+            -1, -1, -1, -1, 2, 3, -1, -1, 8, 9, -1, -1, 14, 15, -1, -1)));
+}
+
+inline void deinterleave_rgb8(const uint8_t* p, __m256i& c0, __m256i& c1, __m256i& c2) {
+    // Lane 0 holds bytes 0..15 (pixels 0..3), lane 1 bytes 8..23 (pixels 4..7).
+    const __m256i src = _mm256_inserti128_si256(
+        _mm256_castsi128_si256(_mm_loadu_si128(reinterpret_cast<const __m128i*>(p))),
+        _mm_loadu_si128(reinterpret_cast<const __m128i*>(p + 8)), 1);
+    c0 = _mm256_shuffle_epi8(src, _mm256_setr_epi8(
+        0, -1, -1, -1, 3, -1, -1, -1, 6, -1, -1, -1, 9, -1, -1, -1,
+        4, -1, -1, -1, 7, -1, -1, -1, 10, -1, -1, -1, 13, -1, -1, -1));
+    c1 = _mm256_shuffle_epi8(src, _mm256_setr_epi8(
+        1, -1, -1, -1, 4, -1, -1, -1, 7, -1, -1, -1, 10, -1, -1, -1,
+        5, -1, -1, -1, 8, -1, -1, -1, 11, -1, -1, -1, 14, -1, -1, -1));
+    c2 = _mm256_shuffle_epi8(src, _mm256_setr_epi8(
+        2, -1, -1, -1, 5, -1, -1, -1, 8, -1, -1, -1, 11, -1, -1, -1,
+        6, -1, -1, -1, 9, -1, -1, -1, 12, -1, -1, -1, 15, -1, -1, -1));
+}
+
+// Reverses the channels of eight packed RGB pixels whose 24 uint16 samples are
+// held in s0, s8 and s16: output sample 3k + c is source sample 3k + 2 - c.
+inline void reverse_rgb_u16x24(__m128i s0, __m128i s8, __m128i s16, __m128i out[3]) {
+    out[0] = _mm_or_si128(
+        _mm_shuffle_epi8(s0, _mm_setr_epi8(4, 5, 2, 3, 0, 1, 10, 11, 8, 9, 6, 7, -1, -1, 14, 15)),
+        _mm_shuffle_epi8(s8, _mm_setr_epi8(-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 0, 1, -1, -1)));
+    out[1] = _mm_or_si128(
+        _mm_or_si128(
+            _mm_shuffle_epi8(s0, _mm_setr_epi8(12, 13, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1)),
+            _mm_shuffle_epi8(s8, _mm_setr_epi8(-1, -1, 6, 7, 4, 5, 2, 3, 12, 13, 10, 11, 8, 9, -1, -1))),
+        _mm_shuffle_epi8(s16, _mm_setr_epi8(-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 2, 3)));
+    out[2] = _mm_or_si128(
+        _mm_shuffle_epi8(s8, _mm_setr_epi8(-1, -1, 14, 15, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1)),
+        _mm_shuffle_epi8(s16, _mm_setr_epi8(0, 1, -1, -1, 8, 9, 6, 7, 4, 5, 14, 15, 12, 13, 10, 11)));
+}
+
+// The 24 output samples of eight pixels: the source samples scaled to 16 bits
+// (by 1 for uint16, by 256 for uint8), in output channel order.
+template <bool Rev>
+inline void a_output_samples(const uint16_t* p, __m128i out[3]) {
+    const __m128i s0 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(p));
+    const __m128i s8 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(p + 8));
+    const __m128i s16 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(p + 16));
+    if constexpr (!Rev) {
+        out[0] = s0;
+        out[1] = s8;
+        out[2] = s16;
+    } else {
+        reverse_rgb_u16x24(s0, s8, s16, out);
+    }
+}
+
+template <bool Rev>
+inline void a_output_samples(const uint8_t* p, __m128i out[3]) {
+    // Byte b becomes the 16-bit sample b << 8. Windows start at bytes 0, 4 and 8.
+    const __m128i w0 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(p));
+    const __m128i w4 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(p + 4));
+    const __m128i w8 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(p + 8));
+    if constexpr (!Rev) {
+        out[0] = _mm_shuffle_epi8(w0, _mm_setr_epi8(-1, 0, -1, 1, -1, 2, -1, 3, -1, 4, -1, 5, -1, 6, -1, 7));
+        out[1] = _mm_shuffle_epi8(w4, _mm_setr_epi8(-1, 4, -1, 5, -1, 6, -1, 7, -1, 8, -1, 9, -1, 10, -1, 11));
+        out[2] = _mm_shuffle_epi8(w8, _mm_setr_epi8(-1, 8, -1, 9, -1, 10, -1, 11, -1, 12, -1, 13, -1, 14, -1, 15));
+    } else {
+        out[0] = _mm_shuffle_epi8(w0, _mm_setr_epi8(-1, 2, -1, 1, -1, 0, -1, 5, -1, 4, -1, 3, -1, 8, -1, 7));
+        out[1] = _mm_shuffle_epi8(w4, _mm_setr_epi8(-1, 2, -1, 7, -1, 6, -1, 5, -1, 10, -1, 9, -1, 8, -1, 13));
+        out[2] = _mm_shuffle_epi8(w8, _mm_setr_epi8(-1, 8, -1, 7, -1, 12, -1, 11, -1, 10, -1, 15, -1, 14, -1, 13));
+    }
+}
+
+// Sixteen-bit masks for the 24 samples of the eight pixels selected in `pixels`.
+inline void a_sample_masks(__m256i pixels, __m128i masks[3]) {
+    const __m256i g0 = _mm256_permutevar8x32_epi32(pixels, _mm256_setr_epi32(0, 0, 0, 1, 1, 1, 2, 2));
+    const __m256i g1 = _mm256_permutevar8x32_epi32(pixels, _mm256_setr_epi32(2, 3, 3, 3, 4, 4, 4, 5));
+    const __m256i g2 = _mm256_permutevar8x32_epi32(pixels, _mm256_setr_epi32(5, 5, 6, 6, 6, 7, 7, 7));
+    masks[0] = _mm_packs_epi32(_mm256_castsi256_si128(g0), _mm256_extracti128_si256(g0, 1));
+    masks[1] = _mm_packs_epi32(_mm256_castsi256_si128(g1), _mm256_extracti128_si256(g1, 1));
+    masks[2] = _mm_packs_epi32(_mm256_castsi256_si128(g2), _mm256_extracti128_si256(g2, 1));
+}
+
+// Background statistics of eight pixels, five floats each (three weighted sums,
+// the weight total and the packed response statistics), as one vector per field.
+struct ABackground8 {
+    __m256 sum[3];
+    __m256 total;
+    __m256i stat;
+};
+
+inline __m256 a_bg_pair(const float* bg, int k, int field) {
+    return _mm256_insertf128_ps(_mm256_castps128_ps256(_mm_loadu_ps(bg + 5 * k + field)),
+                                _mm_loadu_ps(bg + 5 * (k + 4) + field), 1);
+}
+
+inline ABackground8 a_bg_load(const float* bg) {
+    ABackground8 v;
+    // Fields 0..3 of pixels k and k + 4, then a 4x4 transpose in each lane.
+    const __m256 a0 = a_bg_pair(bg, 0, 0), a1 = a_bg_pair(bg, 1, 0);
+    const __m256 a2 = a_bg_pair(bg, 2, 0), a3 = a_bg_pair(bg, 3, 0);
+    const __m256 t0 = _mm256_unpacklo_ps(a0, a1), t1 = _mm256_unpackhi_ps(a0, a1);
+    const __m256 t2 = _mm256_unpacklo_ps(a2, a3), t3 = _mm256_unpackhi_ps(a2, a3);
+    v.sum[0] = _mm256_shuffle_ps(t0, t2, 0x44);
+    v.sum[1] = _mm256_shuffle_ps(t0, t2, 0xEE);
+    v.sum[2] = _mm256_shuffle_ps(t1, t3, 0x44);
+    v.total = _mm256_shuffle_ps(t1, t3, 0xEE);
+    // Field 4 is the last element of the fields 1..4 of each pixel.
+    const __m256 b0 = a_bg_pair(bg, 0, 1), b1 = a_bg_pair(bg, 1, 1);
+    const __m256 b2 = a_bg_pair(bg, 2, 1), b3 = a_bg_pair(bg, 3, 1);
+    v.stat = _mm256_castps_si256(
+        _mm256_shuffle_ps(_mm256_unpackhi_ps(b0, b1), _mm256_unpackhi_ps(b2, b3), 0xEE));
+    return v;
+}
+
+inline void a_bg_store(float* bg, const ABackground8& v) {
+    const __m256 t0 = _mm256_unpacklo_ps(v.sum[0], v.sum[1]), t1 = _mm256_unpackhi_ps(v.sum[0], v.sum[1]);
+    const __m256 t2 = _mm256_unpacklo_ps(v.sum[2], v.total), t3 = _mm256_unpackhi_ps(v.sum[2], v.total);
+    const __m256 rows[4] = {_mm256_shuffle_ps(t0, t2, 0x44), _mm256_shuffle_ps(t0, t2, 0xEE),
+                            _mm256_shuffle_ps(t1, t3, 0x44), _mm256_shuffle_ps(t1, t3, 0xEE)};
+    for (int k = 0; k < 4; ++k) {
+        _mm_storeu_ps(bg + 5 * k, _mm256_castps256_ps128(rows[k]));
+        _mm_storeu_ps(bg + 5 * (k + 4), _mm256_extractf128_ps(rows[k], 1));
+    }
+    alignas(32) uint32_t stat[8];
+    _mm256_store_si256(reinterpret_cast<__m256i*>(stat), v.stat);
+    for (int k = 0; k < 8; ++k) {
+        std::memcpy(bg + 5 * k + 4, &stat[k], sizeof(uint32_t));
+    }
+}
+
+inline __m256 select_ps(__m256 if_false, __m256 if_true, __m256i mask) {
+    return _mm256_blendv_ps(if_false, if_true, _mm256_castsi256_ps(mask));
+}
+
+inline __m256i select_epi32(__m256i if_false, __m256i if_true, __m256i mask) {
+    return _mm256_blendv_epi8(if_false, if_true, mask);
+}
+
+// Eight columns at a time of select_a_with_bg_row_impl. Each lane runs the
+// per-pixel sequence above with the same float operations in the same order;
+// the row state is that sequence reduced over the eight pixels (any collected
+// pixel makes it background, otherwise a live pixel below the response maximum
+// turns saturated into sharp).
+template <typename SrcT, bool Rev, bool First>
+int select_a_with_bg_lanes8(
+    int32_t* b_row, const int32_t* response, int64_t width,
+    const SrcT* irow, uint16_t* orow, float* bg_row, int state, int64_t* done
+) {
+    constexpr int32_t kMaxResp = 65535 * 16;
+    constexpr int32_t kBlendLim = 65536;
+    constexpr int kSat = 0;
+    constexpr int kSharp = 1;
+    constexpr int kBg = 2;
+    const __m256i v_max = _mm256_set1_epi32(kMaxResp);
+    const __m256i v_limit = _mm256_set1_epi32(kBlendLim);
+    const __m256i v_zero = _mm256_setzero_si256();
+    const __m256i v_ones = _mm256_set1_epi32(-1);
+    const __m256 f_one = _mm256_set1_ps(1.0f);
+    const __m256 f_zero = _mm256_setzero_ps();
+    constexpr int shift = sizeof(SrcT) == 1 ? 8 : 0;
+    int64_t x = 0;
+    for (; x + 8 <= width; x += 8) {
+        const __m256i prev = First ? v_zero : _mm256_loadu_si256(reinterpret_cast<const __m256i*>(b_row + x));
+        const __m256i sc = _mm256_min_epi32(
+            _mm256_loadu_si256(reinterpret_cast<const __m256i*>(response + x)), v_max);
+        const __m256i live = First ? v_ones : _mm256_xor_si256(_mm256_cmpeq_epi32(prev, v_max), v_ones);
+        const __m256i take = First ? v_ones : _mm256_cmpgt_epi32(sc, prev);
+        // A pixel at the response maximum is above the blend limit, so it never collects.
+        const __m256i collect = _mm256_and_si256(_mm256_cmpgt_epi32(v_limit, prev), _mm256_cmpgt_epi32(v_limit, sc));
+        if (_mm256_movemask_epi8(collect) != 0) {
+            state = kBg;
+        } else if (state == kSat) {
+            const __m256i below_max = _mm256_andnot_si256(_mm256_cmpeq_epi32(sc, v_max), live);
+            if (_mm256_movemask_epi8(below_max) != 0) {
+                state = kSharp;
+            }
+        }
+        if (_mm256_movemask_epi8(_mm256_or_si256(collect, take)) == 0) {
+            continue;
+        }
+        // irow points at the first sample of the row's channel order; a reversed
+        // row starts two samples before it in memory.
+        const SrcT* sp = irow + 3 * x - (Rev ? 2 : 0);
+        __m256i written = take;
+        if (_mm256_movemask_epi8(collect) != 0) {
+            float* bg = bg_row + 5 * x;
+            ABackground8 v = a_bg_load(bg);
+            __m256i c[3];
+            deinterleave_rgb8(sp, c[0], c[1], c[2]);
+            __m256 val[3];
+            for (int ch = 0; ch < 3; ++ch) {
+                val[ch] = _mm256_cvtepi32_ps(_mm256_slli_epi32(c[Rev ? 2 - ch : ch], shift));
+            }
+            const __m256i code = _mm256_srai_epi32(sc, 4);
+            const __m256i is_zero = _mm256_cmpeq_epi32(sc, v_zero);
+            if constexpr (First) {
+                const __m256 weight = select_ps(f_one, f_zero, is_zero);
+                v.stat = select_epi32(v.stat, code, collect);
+                v.total = select_ps(v.total, weight, collect);
+                for (int ch = 0; ch < 3; ++ch) {
+                    v.sum[ch] = select_ps(v.sum[ch], _mm256_mul_ps(val[ch], weight), collect);
+                }
+            } else {
+                const __m256 fprev = _mm256_cvtepi32_ps(prev);
+                const __m256 fsc = _mm256_cvtepi32_ps(sc);
+                const __m256 ratio = _mm256_div_ps(select_ps(fsc, fprev, take), select_ps(fprev, fsc, take));
+                __m256 power = _mm256_mul_ps(ratio, ratio);
+                power = _mm256_mul_ps(power, power);
+                const __m256 factor = select_ps(f_one, power, take);
+                const __m256 weight = select_ps(power, f_one, take);
+                const __m256 total = select_ps(_mm256_add_ps(v.total, weight),
+                                               _mm256_add_ps(_mm256_mul_ps(v.total, factor), f_one), take);
+                const __m256i minimum = _mm256_and_si256(v.stat, _mm256_set1_epi32(4095));
+                const __m256i second = _mm256_srli_epi32(v.stat, 12);
+                const __m256i second_new = select_epi32(
+                    _mm256_max_epu32(second, code), _mm256_srai_epi32(prev, 4), take);
+                const __m256i stat = _mm256_or_si256(
+                    _mm256_slli_epi32(second_new, 12), _mm256_min_epu32(minimum, code));
+                // A zero response clears the minimum and skips the sums and the copy.
+                const __m256i cleared = _mm256_and_si256(collect, is_zero);
+                const __m256i update = _mm256_andnot_si256(is_zero, collect);
+                v.stat = select_epi32(select_epi32(v.stat, stat, update), _mm256_slli_epi32(second, 12), cleared);
+                v.total = select_ps(v.total, total, update);
+                for (int ch = 0; ch < 3; ++ch) {
+                    const __m256 sum = _mm256_add_ps(_mm256_mul_ps(v.sum[ch], factor), _mm256_mul_ps(val[ch], weight));
+                    v.sum[ch] = select_ps(v.sum[ch], sum, update);
+                }
+                written = _mm256_andnot_si256(cleared, take);
+            }
+            a_bg_store(bg, v);
+        }
+        const int taken = _mm256_movemask_epi8(written);
+        if (taken != 0) {
+            __m128i samples[3];
+            a_output_samples<Rev>(sp, samples);
+            uint16_t* dp = orow + 3 * x;
+            if (taken != -1) {
+                __m128i masks[3];
+                a_sample_masks(written, masks);
+                for (int g = 0; g < 3; ++g) {
+                    const __m128i old = _mm_loadu_si128(reinterpret_cast<const __m128i*>(dp + 8 * g));
+                    samples[g] = _mm_blendv_epi8(old, samples[g], masks[g]);
+                }
+            }
+            for (int g = 0; g < 3; ++g) {
+                _mm_storeu_si128(reinterpret_cast<__m128i*>(dp + 8 * g), samples[g]);
+            }
+            _mm256_storeu_si256(reinterpret_cast<__m256i*>(b_row + x), select_epi32(prev, sc, written));
+        }
+    }
+    *done = x;
+    return state;
+}
+
+inline bool spans_overlap(const void* a, uint64_t a_bytes, const void* b, uint64_t b_bytes) {
+    const auto left = reinterpret_cast<uintptr_t>(a);
+    const auto right = reinterpret_cast<uintptr_t>(b);
+    return left <= right ? right - left < a_bytes : left - right < b_bytes;
+}
+
+// The leading columns of select_a_with_bg_row_impl, eight at a time, when the
+// rows are packed RGB (the source in memory or reversed channel order, 16-bit
+// output in memory order), the samples scale to 16 bits, the statistics are the
+// fifth field of each background record, and no two rows share bytes. Returns
+// the number of columns done, zero when the rows do not qualify.
+int64_t select_a_with_bg_columns8(
+    int32_t* b_row, const int32_t* response, int64_t width,
+    const void* irow, bool src_u8, uint16_t* orow,
+    int64_t is1, int64_t is2, int64_t os1, int64_t os2,
+    float* bg_row, const uint32_t* st_row, int64_t scale, bool first, int* state
+) {
+    const bool rev = is2 == -1;
+    if (width < 8 || is1 != 3 || (is2 != 1 && !rev) || os1 != 3 || os2 != 1
+            || scale != (src_u8 ? 256 : 1)
+            || static_cast<const void*>(st_row) != static_cast<const void*>(bg_row)) {
+        return 0;
+    }
+    const uint64_t n = static_cast<uint64_t>(width);
+    const uint64_t item = src_u8 ? 1 : 2;
+    const void* src = static_cast<const char*>(irow) - (rev ? 2 * item : 0);
+    const void* rows[5] = {b_row, orow, bg_row, response, src};
+    const uint64_t bytes[5] = {4 * n, 6 * n, 20 * n, 4 * n, 3 * item * n};
+    // The first three rows are written; the response and the source only read.
+    for (int i = 0; i < 3; ++i) {
+        for (int j = i + 1; j < 5; ++j) {
+            if (spans_overlap(rows[i], bytes[i], rows[j], bytes[j])) {
+                return 0;
+            }
+        }
+    }
+    int64_t done = 0;
+    const auto run = [&](auto impl, const auto* source) {
+        return impl(b_row, response, width, source, orow, bg_row, *state, &done);
+    };
+    if (src_u8) {
+        const auto* source = static_cast<const uint8_t*>(irow);
+        *state = rev ? (first ? run(select_a_with_bg_lanes8<uint8_t, true, true>, source)
+                              : run(select_a_with_bg_lanes8<uint8_t, true, false>, source))
+                     : (first ? run(select_a_with_bg_lanes8<uint8_t, false, true>, source)
+                              : run(select_a_with_bg_lanes8<uint8_t, false, false>, source));
+    } else {
+        const auto* source = static_cast<const uint16_t*>(irow);
+        *state = rev ? (first ? run(select_a_with_bg_lanes8<uint16_t, true, true>, source)
+                              : run(select_a_with_bg_lanes8<uint16_t, true, false>, source))
+                     : (first ? run(select_a_with_bg_lanes8<uint16_t, false, true>, source)
+                              : run(select_a_with_bg_lanes8<uint16_t, false, false>, source));
+    }
+    return done;
+}
+
 }  // namespace
 
 void depth_axis_iir_x_unguided_avx2(
@@ -4378,6 +5016,22 @@ int select_a_with_bg_packed_row_avx2(
     float* bg_row, uint32_t* st_row,
     int64_t scale, bool first, int state
 ) {
+    if (dst_u16) {
+        const int64_t done = select_a_with_bg_columns8(
+            b_row, response, width, irow, src_u8, static_cast<uint16_t*>(orow),
+            is1, is2, os1, os2, bg_row, st_row, scale, first, &state);
+        if (done == width) {
+            return state;
+        }
+        // The columns left over, all of them when the rows do not qualify.
+        b_row += done;
+        response += done;
+        width -= done;
+        bg_row += 5 * done;
+        st_row += 5 * done;
+        irow = static_cast<const char*>(irow) + done * is1 * (src_u8 ? 1 : 2);
+        orow = static_cast<char*>(orow) + done * os1 * 2;
+    }
     if (src_u8 && dst_u16) {
         return select_a_with_bg_row_impl<uint8_t, uint16_t>(
             b_row, response, width, static_cast<const uint8_t*>(irow), static_cast<uint16_t*>(orow),
@@ -4443,6 +5097,7 @@ void align_down_half_vert_row_avx2(const uint16_t*, const uint16_t*, const uint1
 void align_down_half_horiz_row_avx2(const uint32_t*, uint16_t*, int64_t, int64_t) {}
 void align_fast_downsize_u16_row_avx2(const uint16_t*, const uint16_t*, uint16_t*, int64_t, int64_t) {}
 void align_warp_translation_rgb_row_avx2(const void*, const void*, bool, void*, int64_t, const int32_t*, const int32_t*, const uint32_t*, const uint8_t*, uint32_t, bool, int64_t) {}
+void align_warp_translation_gray_row_avx2(const void*, const void*, bool, void*, int64_t, const int32_t*, const int32_t*, const uint32_t*, const uint8_t*, uint32_t) {}
 void align_refine_dense_row_avx2(const uint16_t*, const uint16_t*, const uint16_t*, const int32_t*, int64_t, uint32_t, int64_t*, int64_t*) {}
 void align_warp_alignment_row_avx2(const void*, int64_t, int64_t, bool, void*, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, bool, float, float, float, float, float, float, float) {}
 void align_score_chunk_packed_avx2(const uint16_t*, int64_t, const uint16_t*, int64_t, int64_t, int64_t, const float*, int64_t, const float*, int64_t, const float*, const float*, const float*, const float*, const float*, const float*, const float*, const float*, const int64_t*, int64_t, int64_t, int64_t*, int64_t*, int64_t*) {}
