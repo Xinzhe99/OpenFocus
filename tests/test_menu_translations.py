@@ -34,6 +34,7 @@ def _menu_window(qapp):
         "save_as_gif": staticmethod(stub),
         "save_stack_as_multipage_tiff": staticmethod(stub),
         "save_processed_input_stack": staticmethod(stub),
+        "export_html_animation": staticmethod(stub),
     })()
     window.output_manager = type("O", (), {
         "export_all_results": staticmethod(stub),
