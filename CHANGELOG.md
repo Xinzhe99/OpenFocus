@@ -41,6 +41,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   your phone or computer to sign in automatically on the desktop.
 
 ### Changed
+- Start renders and tiles sooner on macOS: OpenFocus remembers which volumes
+  are internal until a volume is mounted or unmounted, and no longer asks
+  the system before every scratch choice.
 - Run the full CI suite in parallel slices. Preserve pytest selection and
   collection errors, isolate temporary directories, and replay a crashing
   slice for native diagnostics.
@@ -300,6 +303,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Improve video and batch progress and prepare drag-out files off the UI thread.
 - Bundle trusted CA roots with the desktop app so sign-in and other HTTPS
   requests can verify server certificates on macOS.
+- Report a memory limit in the batch converter, mosaic and flat-field
+  previews, and the TensorRT backend without risking a crash while the error
+  is being handled.
 - Keep desktop sign-in responsive when the browser opens an idle connection,
   handle unsupported system proxy schemes, and recover stale macOS Keychain
   sessions after a confirmed write mismatch.
