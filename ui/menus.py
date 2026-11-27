@@ -296,6 +296,15 @@ def setup_menus(window: QMainWindow) -> None:
     batch_menu.addAction(compare_action)
     window.ui_objs['action_method_compare'] = compare_action
 
+    live_preview_action = QAction(trans.t('action_live_preview'), window)
+    live_preview_action.setProperty('trans_key', 'action_live_preview')
+    live_preview_action.setToolTip(trans.t('btn_live_preview_hint'))
+    live_preview_action.triggered.connect(
+        lambda: getattr(window, 'open_live_preview', lambda *_a, **_k: None)()
+    )
+    batch_menu.addAction(live_preview_action)
+    window.ui_objs['action_live_preview'] = live_preview_action
+
     mosaic_action = QAction(trans.t('mosaic_title'), window)
     mosaic_action.setProperty('trans_key', 'mosaic_title')
     batch_menu.addAction(mosaic_action)

@@ -734,6 +734,8 @@ class OpenFocus(QMainWindow):
         self.right_splitter = right_panel_components.splitter
         self.btn_reset = right_panel_components.btn_reset
         self.btn_render = right_panel_components.btn_render
+        self.btn_live_preview = right_panel_components.btn_live_preview
+        self._live_preview_dialog = None
         self.btn_compare_all = right_panel_components.btn_compare
         self.btn_compare_all.clicked.connect(self.render_manager.start_compare_all)
         self.chk_quick_preview = right_panel_components.chk_quick_preview
@@ -792,6 +794,7 @@ class OpenFocus(QMainWindow):
         self.output_list.currentRowChanged.connect(self.render_manager.inspect_previous_output)
         self.output_list.itemClicked.connect(self.render_manager.inspect_previous_output)
         bind_right_panel(self, right_panel_components)
+        self._refresh_live_preview_availability()
         if hasattr(self, "gallery_controller"):
             self.gallery_controller.attach_ui()
         # Selecting a method through the combo box is a project edit even
@@ -1002,6 +1005,16 @@ class OpenFocus(QMainWindow):
         else:
             self.lbl_status_loaded.setText(trans.t('status_loaded').format(0))
             self.lbl_status_resolution.setText(trans.t('status_res').format('-'))
+        self._refresh_live_preview_availability()
+
+    def _refresh_live_preview_availability(self) -> None:
+        has_stack = len(getattr(self, "raw_images", None) or []) >= 2
+        btn = getattr(self, "btn_live_preview", None)
+        if btn is not None:
+            btn.setEnabled(has_stack)
+        action = getattr(self, "ui_objs", {}).get("action_live_preview")
+        if action is not None:
+            action.setEnabled(has_stack)
 
     def _update_dynamic_status(self):
         """Update GPU and Memory status."""
@@ -2900,6 +2913,116 @@ class OpenFocus(QMainWindow):
         from dialogs.compare import CompareDialog
         CompareDialog(self).exec()
 
+    def _cached_live_preview_transforms(self):
+        """Return cached alignment transforms for the current stack when reusable."""
+        raw = getattr(self, "raw_images", None) or []
+        n = len(raw)
+        if n < 2:
+            return None
+        manager = getattr(self, "render_manager", None)
+        diagnostic = getattr(manager, "alignment_diagnostics", None) if manager is not None else None
+        if not diagnostic:
+            return None
+        try:
+            entries, _names, indices = diagnostic
+        except (TypeError, ValueError):
+            return None
+        if not entries or len(indices) != n or list(indices) != list(range(n)):
+            return None
+        key = getattr(self, "alignment_request_key", None)
+        if key is not None:
+            current_rev = getattr(self, "source_revision", 0)
+            if key[0] != current_rev:
+                return None
+        transforms = [None] * n
+        found_any = False
+        for entry in entries:
+            idx = entry.get("frame_index")
+            if not isinstance(idx, int) or not 0 <= idx < n:
+                continue
+            mat = entry.get("transform")
+            if mat is not None:
+                transforms[idx] = mat
+                found_any = True
+        return transforms if found_any else None
+
+    def open_live_preview(self):
+        """Open or raise the standalone interactive Live Color Preview window."""
+        raw = getattr(self, "raw_images", None) or []
+        if len(raw) < 2:
+            show_warning_box(self, trans.t("msg_no_images_title"),
+                             trans.t("live_preview_need_two_frames"))
+            return None
+        if any(image.ndim == 3 and image.shape[2] == 4 for image in raw):
+            show_warning_box(self, trans.t('msg_warning'),
+                             trans.t('transparent_desktop_unsupported').format(path=''))
+            return None
+
+        existing = getattr(self, "_live_preview_dialog", None)
+        current_rev = int(getattr(self, "source_revision", 0))
+        if existing is not None:
+            try:
+                if existing.isVisible() and existing.matches_stack(raw, current_rev):
+                    existing.raise_()
+                    existing.activateWindow()
+                    return existing
+                existing.close()
+            except RuntimeError:
+                pass
+            self._live_preview_dialog = None
+
+        from dialogs.live_preview import LivePreviewDialog
+
+        method = self.current_fusion_method()
+        if method not in ("openfocus_a", "openfocus_b", "openfocus_c"):
+            method = "openfocus_b"
+        method_params = {
+            m: self.fusion_parameters_for(m)
+            for m in ("openfocus_a", "openfocus_b", "openfocus_c")
+        }
+        alignment = self.current_alignment_method()
+        reg_params = self.registration_parameters_for(alignment)
+        cached_transforms = self._cached_live_preview_transforms()
+        aligned_frames = None
+        if (getattr(self, "is_images_aligned", False)
+                and len(getattr(self, "aligned_images", None) or ()) == len(raw)):
+            aligned_frames = list(self.aligned_images)
+
+        # Infer contiguous front/back substack trim if any frames are excluded.
+        n = len(raw)
+        excluded = set(getattr(self, "excluded_frames", set()) or set())
+        included = [i for i in range(n) if i not in excluded]
+        initial_substack = (0, n - 1)
+        if len(included) >= 2 and included == list(range(included[0], included[-1] + 1)):
+            initial_substack = (included[0], included[-1])
+
+        dialog = LivePreviewDialog(
+            self,
+            images=list(raw),
+            filenames=list(getattr(self, "image_filenames", None) or []),
+            initial_method=method,
+            method_params=method_params,
+            alignment_method=alignment,
+            registration_params=reg_params,
+            cached_transforms=cached_transforms,
+            aligned_frames=aligned_frames,
+            initial_substack=initial_substack,
+            source_revision=current_rev,
+            theme=getattr(self, "ui_theme", "light"),
+        )
+        self._live_preview_dialog = dialog
+
+        def _clear_ref(*_args):
+            if getattr(self, "_live_preview_dialog", None) is dialog:
+                self._live_preview_dialog = None
+
+        dialog.finished.connect(_clear_ref)
+        dialog.destroyed.connect(_clear_ref)
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        return dialog
+
 
     def apply_flat_field_to_stack(self, gain, remove_index=None, prepared=None, reference=None) -> bool:
         """Commit corrected source/base frames and optional removal together."""
@@ -4286,6 +4409,13 @@ class OpenFocus(QMainWindow):
         if gallery is not None:
             gallery.apply_theme(theme)
 
+        live_preview = getattr(self, "_live_preview_dialog", None)
+        if live_preview is not None:
+            try:
+                live_preview.apply_theme(theme)
+            except RuntimeError:
+                self._live_preview_dialog = None
+
         self._enable_dark_title_bar(dark=(theme != "light"))
         self._sync_appearance_actions()
 
@@ -4563,9 +4693,10 @@ class OpenFocus(QMainWindow):
         shutdown_running = cancel_sensor_inspections(self) or shutdown_running
         from dialogs.batch_converter import BatchConverterDialog
         from dialogs.compare import CompareDialog
+        from dialogs.live_preview import LivePreviewDialog
         from dialogs.scalebar import ScaleBarDialog
         from dialogs.watermark import WatermarkDialog
-        for dialog_type in (ScaleBarDialog, WatermarkDialog, CompareDialog):
+        for dialog_type in (ScaleBarDialog, WatermarkDialog, CompareDialog, LivePreviewDialog):
             for dialog in self.findChildren(dialog_type):
                 shutdown_running = dialog.shutdown_running() or shutdown_running
         for dialog in self.findChildren(BatchConverterDialog):
@@ -4998,6 +5129,16 @@ class OpenFocus(QMainWindow):
         self.refresh_registration_parameters()
         c.btn_reset.setText(trans.t('btn_reset'))
         c.btn_render_settings.setText(trans.t('render_settings_title'))
+        if getattr(c, 'btn_live_preview', None) is not None:
+            c.btn_live_preview.setText(trans.t('btn_live_preview'))
+            c.btn_live_preview.setToolTip(
+                f"{trans.t('btn_live_preview')}\n{trans.t('btn_live_preview_hint')}")
+        live_preview = getattr(self, '_live_preview_dialog', None)
+        if live_preview is not None:
+            try:
+                live_preview.retranslate()
+            except RuntimeError:
+                self._live_preview_dialog = None
         self.source_manager.decorate_source_items()
         # Keep the cancel/progress affordance while a render or comparison
         # runs — the retranslation must not reset "Cancel render"/"Cancel" to
