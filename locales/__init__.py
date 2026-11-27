@@ -743,6 +743,7 @@ _DEVELOPER_OPTIONS_TEXT = {
 }
 
 _GALLERY_PACKS_CACHE = None
+_RENDER_QUEUE_PACKS_CACHE = None
 
 
 def _gallery_pack(code: str):
@@ -754,6 +755,17 @@ def _gallery_pack(code: str):
         except Exception:
             _GALLERY_PACKS_CACHE = {}
     return _GALLERY_PACKS_CACHE.get(code)
+
+
+def _render_queue_pack(code: str):
+    global _RENDER_QUEUE_PACKS_CACHE
+    if _RENDER_QUEUE_PACKS_CACHE is None:
+        try:
+            from .render_queue_i18n import RENDER_QUEUE_TRANSLATIONS
+            _RENDER_QUEUE_PACKS_CACHE = RENDER_QUEUE_TRANSLATIONS
+        except Exception:
+            _RENDER_QUEUE_PACKS_CACHE = {}
+    return _RENDER_QUEUE_PACKS_CACHE.get(code)
 
 
 def _apply_pack_overlays(code: str, table: dict) -> dict:
@@ -791,6 +803,9 @@ def _apply_pack_overlays(code: str, table: dict) -> dict:
     dev_opts = _DEVELOPER_OPTIONS_TEXT.get(code)
     if dev_opts is not None:
         table.update(zip(_DEVELOPER_OPTIONS_KEYS, dev_opts))
+    render_queue = _render_queue_pack(code)
+    if render_queue:
+        table.update(render_queue)
     return table
 
 
