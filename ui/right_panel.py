@@ -412,6 +412,7 @@ class _ConfigurationContents(QWidget):
 class _WorkspaceParameterPanel(AlgorithmParameterPanel):
     def __init__(self, layout, control_id, *, hidden_parameters=()):
         super().__init__(layout.parentWidget(), hidden_parameters=hidden_parameters)
+        self._extra_widgets = []
         self.disclosure = QToolButton(self.parentWidget())
         self.disclosure.setProperty('controlId', control_id)
         self.disclosure.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
@@ -422,6 +423,11 @@ class _WorkspaceParameterPanel(AlgorithmParameterPanel):
         layout.addWidget(self.disclosure, alignment=Qt.AlignmentFlag.AlignLeft)
         layout.addWidget(self)
         self.disclosure.toggled.connect(self._show_parameters)
+
+    def add_collapsible_widget(self, widget, layout):
+        widget.hide()
+        self._extra_widgets.append(widget)
+        layout.addWidget(widget)
 
     def set_parameters(self, specs, values=None, *, inline=True):
         super().set_parameters(specs, values)
@@ -439,7 +445,10 @@ class _WorkspaceParameterPanel(AlgorithmParameterPanel):
     def _show_parameters(self, expanded):
         self.disclosure.setArrowType(
             Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
-        self.setVisible(expanded and not self.disclosure.isHidden())
+        visible = expanded and not self.disclosure.isHidden()
+        self.setVisible(visible)
+        for widget in self._extra_widgets:
+            widget.setVisible(visible)
 
 
 @dataclass
@@ -477,6 +486,9 @@ class RightPanelComponents:
     lbl_status_resolution: QLabel
     lbl_status_gpu: QLabel
     lbl_status_memory: QLabel
+    lbl_reg_align_area: QLabel = None
+    btn_reg_align_area: QPushButton = None
+    btn_reg_clear_align_area: QPushButton = None
 
     def schedule_fit_configuration(self) -> None:
         if sip.isdeleted(self.widget):
@@ -590,6 +602,29 @@ def create_right_panel() -> RightPanelComponents:
     registration_layout.addLayout(reg_help_layout)
     registration_parameter_panel = _WorkspaceParameterPanel(
         registration_layout, 'registration_parameters_toggle', hidden_parameters=('failure_policy',))
+
+    align_area_row = QWidget(registration_group)
+    align_area_layout = QHBoxLayout(align_area_row)
+    align_area_layout.setContentsMargins(0, 2, 0, 0)
+    align_area_layout.setSpacing(6)
+    lbl_reg_align_area = QLabel(trans.t('label_align_area'), align_area_row)
+    lbl_reg_align_area.setToolTip(trans.t('btn_align_area_hint'))
+    btn_reg_align_area = ElidingButton(trans.t('btn_align_area'), align_area_row)
+    btn_reg_align_area.setObjectName("secondaryButton")
+    btn_reg_align_area.setCheckable(True)
+    btn_reg_align_area.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+    btn_reg_align_area.setToolTip(trans.t('btn_align_area_hint'))
+    btn_reg_align_area.setProperty("controlId", "btn_reg_align_area")
+    btn_reg_clear_align_area = ElidingButton(trans.t('btn_clear_align_area'), align_area_row)
+    btn_reg_clear_align_area.setObjectName("secondaryButton")
+    btn_reg_clear_align_area.setEnabled(False)
+    btn_reg_clear_align_area.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
+    btn_reg_clear_align_area.setToolTip(trans.t('btn_clear_align_area_hint'))
+    btn_reg_clear_align_area.setProperty("controlId", "btn_reg_clear_align_area")
+    align_area_layout.addWidget(lbl_reg_align_area)
+    align_area_layout.addWidget(btn_reg_align_area, 1)
+    align_area_layout.addWidget(btn_reg_clear_align_area)
+    registration_parameter_panel.add_collapsible_widget(align_area_row, registration_layout)
 
     # 融合/对齐并排时面板宽 375px，两个下拉各只剩 ~114px —— 比
     # "Alignment only (no fusion)" 需要的 ~190px 窄得多，文字被截成
@@ -776,6 +811,9 @@ def create_right_panel() -> RightPanelComponents:
         lbl_status_resolution=lbl_status_resolution,
         lbl_status_gpu=lbl_status_gpu,
         lbl_status_memory=lbl_status_memory,
+        lbl_reg_align_area=lbl_reg_align_area,
+        btn_reg_align_area=btn_reg_align_area,
+        btn_reg_clear_align_area=btn_reg_clear_align_area,
     )
     config_widget.layoutChanged.connect(components.schedule_fit_configuration)
     return components
@@ -803,6 +841,10 @@ def bind_right_panel(window, components: RightPanelComponents) -> None:
         lambda values: window.set_fusion_parameters(window.current_fusion_method(), values))
     components.registration_parameter_panel.valuesChanged.connect(
         lambda values: window.set_registration_parameters(window.current_alignment_method(), values))
+    if components.btn_reg_align_area is not None and hasattr(window, "toggle_alignment_area_mode"):
+        components.btn_reg_align_area.toggled.connect(window.toggle_alignment_area_mode)
+    if components.btn_reg_clear_align_area is not None and hasattr(window, "clear_alignment_roi"):
+        components.btn_reg_clear_align_area.clicked.connect(window.clear_alignment_roi)
     components.combo_fusion.currentIndexChanged.connect(window._update_dynamic_status)
 
     # 基底校正开关（消除亮度漂移）：立即持久化，渲染时读取

@@ -131,26 +131,54 @@ def neural_needs_tiles(frames, threshold, *, height=None, width=None, **_kwargs)
 
 
 def registration_homography(registration, images, thread_count=4, should_cancel=None, **parameters):
-    return registration._process_homography(images, thread_count=thread_count, should_cancel=should_cancel, failure_policy=parameters['failure_policy'])
+    return registration._process_homography(
+        images, thread_count=thread_count, should_cancel=should_cancel,
+        failure_policy=parameters['failure_policy'],
+        max_shift_x_ratio=parameters.get('max_shift_x_ratio'),
+        max_shift_y_ratio=parameters.get('max_shift_y_ratio'),
+        max_rotation_deg=parameters.get('max_rotation_deg'),
+        max_scale_change=parameters.get('max_scale_change'),
+        auto_crop=parameters.get('auto_crop', True),
+        interpolation=parameters.get('interpolation', 'lanczos'),
+    )
 
 
 def registration_ecc(registration, images, thread_count=4, should_cancel=None, **parameters):
-    return registration._process_ecc(images, thread_count=thread_count, should_cancel=should_cancel,
-        failure_policy=parameters['failure_policy'], stage_budget=parameters.get('stage_budget'),
-        progress_callback=parameters.get('progress_callback'))
+    return registration._process_ecc(
+        images, thread_count=thread_count, should_cancel=should_cancel,
+        failure_policy=parameters['failure_policy'],
+        stage_budget=parameters.get('stage_budget'),
+        progress_callback=parameters.get('progress_callback'),
+        max_shift_x_ratio=parameters.get('max_shift_x_ratio'),
+        max_shift_y_ratio=parameters.get('max_shift_y_ratio'),
+        max_rotation_deg=parameters.get('max_rotation_deg'),
+        max_scale_change=parameters.get('max_scale_change'),
+        auto_crop=parameters.get('auto_crop', True),
+        interpolation=parameters.get('interpolation', 'lanczos'),
+    )
 
 
 def registration_openfocus(registration, images, thread_count=4, should_cancel=None, **parameters):
     from core.registration import _align_openfocus_impl, deferred_warp_threads
 
     with deferred_warp_threads(thread_count if thread_count and thread_count > 0 else None):
-        return _align_openfocus_impl(images, should_cancel=should_cancel,
+        return _align_openfocus_impl(
+            images, should_cancel=should_cancel,
             max_shift_ratio=parameters['max_shift_ratio'],
-            failure_policy=parameters['failure_policy'], reference_frame=parameters['reference_frame'],
-            rotation=parameters['rotation'], magnification=parameters['magnification'],
-            defer_warps=registration.defer_warps, output_path=parameters.get('output_path'),
+            max_shift_x_ratio=getattr(registration, 'max_shift_x_ratio', None),
+            max_shift_y_ratio=getattr(registration, 'max_shift_y_ratio', None),
+            failure_policy=parameters['failure_policy'],
+            reference_frame=parameters['reference_frame'],
+            rotation=parameters['rotation'],
+            magnification=parameters['magnification'],
+            alignment_roi=getattr(registration, 'alignment_roi', None),
+            auto_crop=getattr(registration, 'auto_crop', True),
+            interpolation=getattr(registration, 'openfocus_interpolation', None),
+            defer_warps=registration.defer_warps,
+            output_path=parameters.get('output_path'),
             plan_callback=lambda plan: setattr(registration, 'alignment_plan', plan),
-            dispatch_callback=registration._record_dispatch)
+            dispatch_callback=registration._record_dispatch,
+        )
 
 
 def depth_dct(images, progress_callback=None, should_cancel=None, **parameters):

@@ -410,7 +410,7 @@ class ROIAlignmentWorker(QThread):
     def __init__(self, raw_images, reg_downscale_width=None, thread_count: int = DEFAULT_THREAD_COUNT,
                  resource_preference="balanced", alignment="ecc",
                  registration_parameters=None, exposure_match=False, reverse_registration=False,
-                 use_gpu=True):
+                 use_gpu=True, alignment_roi=None):
         super().__init__()
         configure_native_worker_stack(self)
         self.raw_images = raw_images
@@ -422,6 +422,7 @@ class ROIAlignmentWorker(QThread):
         self.exposure_match = bool(exposure_match)
         self.reverse_registration = bool(reverse_registration)
         self.use_gpu = bool(use_gpu)
+        self.alignment_roi = tuple(int(v) for v in alignment_roi) if alignment_roi is not None else None
         try:
             self.thread_count = max(0, int(thread_count))
         except (TypeError, ValueError):
@@ -458,7 +459,8 @@ class ROIAlignmentWorker(QThread):
             method=self.alignment, parameters=self.registration_parameters,
             downscale_width=self.reg_downscale_width,
             brightness_reference='last' if self.exposure_match else 'first',
-            accelerate_ecc=self.use_gpu, defer_warps=True)
+            accelerate_ecc=self.use_gpu, defer_warps=True,
+            alignment_roi=self.alignment_roi)
 
         inputs = list(reversed(self.raw_images)) if self.reverse_registration else self.raw_images
         aligned_images = _registration_process(
@@ -473,6 +475,111 @@ class ROIAlignmentWorker(QThread):
         self.registration_details = RegistrationDetails(getattr(registration, 'dispatch', ()))
     
         self.finished_signal.emit(aligned_images, alignment_time)
+
+
+class AlignedPreviewWorker(QThread):
+    """Compute fast proxy-resolution alignment for live source-panel preview."""
+
+    finished_signal = pyqtSignal(object, object)  # cache_key, aligned proxy frames
+    error_signal = pyqtSignal(object, str)        # cache_key, error message
+
+    def __init__(self, frames, *, alignment="ecc", registration_parameters=None,
+                 alignment_roi=None, max_edge: int = 640,
+                 thread_count: int = DEFAULT_THREAD_COUNT, cache_key=None):
+        super().__init__()
+        configure_native_worker_stack(self)
+        self.frames = list(frames)
+        self.alignment = alignment
+        self.registration_parameters = (
+            desktop_registration_parameters(alignment, registration_parameters)
+            if alignment and alignment != "none" else {}
+        )
+        self.alignment_roi = (tuple(int(v) for v in alignment_roi)
+                              if alignment_roi is not None else None)
+        self.max_edge = max(128, int(max_edge))
+        self.cache_key = cache_key
+        try:
+            self.thread_count = max(1, min(4, int(thread_count) or 2))
+        except (TypeError, ValueError):
+            self.thread_count = 2
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+
+    def run(self):
+        try:
+            aligned = self._compute()
+            if self._cancelled:
+                return
+            self.finished_signal.emit(self.cache_key, aligned)
+        except RegistrationCancelled:
+            return
+        except Exception as exc:
+            if not self._cancelled:
+                self.error_signal.emit(self.cache_key, str(exc))
+
+    def _compute(self):
+        from core.source_frames import display_image, ensure_preview, _small
+
+        if self._cancelled:
+            raise RegistrationCancelled()
+        if not self.frames:
+            return []
+
+        src_h, src_w = self.frames[0].shape[:2]
+        proxies = []
+        for frame in self.frames:
+            if self._cancelled:
+                raise RegistrationCancelled()
+            preview = ensure_preview(frame, should_cancel=lambda: self._cancelled)
+            if preview is None:
+                preview = resolve_frame(frame, should_cancel=lambda: self._cancelled)
+            shown = display_image(preview)
+            proxies.append(np.ascontiguousarray(_small(shown, self.max_edge)))
+
+        if len(proxies) < 2 or not self.alignment or self.alignment == "none":
+            return proxies
+
+        ph, pw = proxies[0].shape[:2]
+        # Ensure uniform proxy dimensions across frames
+        proxies = [
+            (p if p.shape[:2] == (ph, pw)
+             else cv2.resize(p, (pw, ph), interpolation=cv2.INTER_AREA))
+            for p in proxies
+        ]
+
+        proxy_roi = None
+        if self.alignment_roi is not None and src_w > 0 and src_h > 0:
+            sx = pw / float(src_w)
+            sy = ph / float(src_h)
+            rx, ry, rw, rh = self.alignment_roi
+            prx = max(0, min(pw - 1, int(round(rx * sx))))
+            pry = max(0, min(ph - 1, int(round(ry * sy))))
+            prw = max(8, min(pw - prx, int(round(rw * sx))))
+            prh = max(8, min(ph - pry, int(round(rh * sy))))
+            if prw >= 8 and prh >= 8:
+                proxy_roi = (prx, pry, prw, prh)
+
+        params = dict(self.registration_parameters)
+        # Keep preview responsive and avoid abrupt aborts unless bounds reject a frame
+        registration = ImageRegistration(
+            method=self.alignment,
+            parameters=params,
+            downscale_width=min(512, pw),
+            accelerate_ecc=False,
+            defer_warps=False,
+            alignment_roi=proxy_roi,
+        )
+        aligned = registration.process(
+            proxies,
+            thread_count=self.thread_count,
+            should_cancel=lambda: self._cancelled,
+        )
+        if self._cancelled:
+            raise RegistrationCancelled()
+        return [np.ascontiguousarray(resolve_frame(img, should_cancel=lambda: self._cancelled))
+                for img in aligned]
 
 
 class RenderWorker(QThread):
@@ -497,7 +604,7 @@ class RenderWorker(QThread):
                  load_scale_factor=1.0, source_paths=None,
                  collect_alignment_report=False, prepared_cache=None,
                  retain_preparation=False, profile_performance=False,
-                 retain_aligned_pixels=False):
+                 retain_aligned_pixels=False, alignment_roi=None):
         super().__init__()
         configure_native_worker_stack(self)
         if algorithm is None:
@@ -510,6 +617,7 @@ class RenderWorker(QThread):
         self.algorithm = algorithm
         self.alignment = alignment_steps(alignment)
         self.registration_parameters = desktop_registration_parameters(alignment, registration_parameters)
+        self.alignment_roi = tuple(int(v) for v in alignment_roi) if alignment_roi is not None else None
         self.raw_images = raw_images
         self.aligned_images = [] if aligned_images is None else aligned_images
         self.is_images_aligned = bool(is_images_aligned)
@@ -979,6 +1087,8 @@ class RenderWorker(QThread):
             identity = dict(request.get('identity') or {})
             if self._reverse_registration:
                 identity['registration_order'] = 'reverse-v1'
+            if self.alignment_roi is not None:
+                identity['alignment_roi'] = list(self.alignment_roi)
             identity.update(alignment_steps=list(self.alignment),
                             registration_parameters=dict(self.registration_parameters),
                             registration_backend=('openfocus-wide4d-v3' if self.alignment == ('openfocus',)
@@ -998,6 +1108,8 @@ class RenderWorker(QThread):
             request['identity']['registration_backend'] = 'openfocus-wide4d-v3'
         if self._reverse_registration:
             request['identity']['registration_order'] = 'reverse-v1'
+        if self.alignment_roi is not None:
+            request['identity']['alignment_roi'] = list(self.alignment_roi)
         request['identity']['registration_parameters'] = dict(self.registration_parameters)
         import hashlib
         digest = hashlib.sha256()
@@ -1124,11 +1236,25 @@ class RenderWorker(QThread):
 
     def _run_registration(self, images, should_cancel=None):
         started = time.monotonic()
+        effective_roi = self.alignment_roi
+        if effective_roi is not None and images and self.raw_images:
+            orig_h, orig_w = self.raw_images[0].shape[:2]
+            cur_h, cur_w = images[0].shape[:2]
+            if (cur_h, cur_w) != (orig_h, orig_w) and orig_w > 0 and orig_h > 0:
+                sx, sy = cur_w / float(orig_w), cur_h / float(orig_h)
+                rx, ry, rw, rh = effective_roi
+                effective_roi = (
+                    max(0, min(cur_w - 1, int(round(rx * sx)))),
+                    max(0, min(cur_h - 1, int(round(ry * sy)))),
+                    max(8, min(cur_w, int(round(rw * sx)))),
+                    max(8, min(cur_h, int(round(rh * sy)))),
+                )
         registration = ImageRegistration(method=self.alignment,
             parameters=self.registration_parameters,
             downscale_width=self.reg_downscale_width,
             brightness_reference='last' if self.exposure_match else 'first',
-            accelerate_ecc=self.use_gpu, defer_warps=self._defer_warps)
+            accelerate_ecc=self.use_gpu, defer_warps=self._defer_warps,
+            alignment_roi=effective_roi)
         try:
             images = _registration_process(registration, images, self._reverse_registration,
                 thread_count=self.thread_count, resource_preference=self.resource_preference,

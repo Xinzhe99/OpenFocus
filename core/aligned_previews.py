@@ -100,7 +100,9 @@ def _registered_preview(frame, should_cancel, captured_only, edge):
         if out_shape == (h, w) and image.shape[:2] == frame.source.shape[:2]:
             # At native sampling density, use the same kernel and forward map
             # as the render (including its crop translation).
-            return cv2.warpPerspective(image, matrix, (w, h), flags=cv2.INTER_LANCZOS4), is_display
+            from core.registration import interpolation_flag
+            flag = interpolation_flag(getattr(operation, 'interpolation', 'lanczos'))
+            return cv2.warpPerspective(image, matrix, (w, h), flags=flag), is_display
         try:
             inverse = np.linalg.inv(matrix)
         except np.linalg.LinAlgError:

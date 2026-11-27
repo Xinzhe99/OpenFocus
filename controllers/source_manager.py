@@ -1697,6 +1697,9 @@ class SourceManager(QObject):
             window.last_alignment_options = None
         window.is_images_aligned = bool(key and tuple(window.included_indices()) == key[1])
         window.transform_manager.reset_roi_selection()
+        invalidate_aligned = getattr(window, "_invalidate_aligned_preview", None)
+        if callable(invalidate_aligned):
+            invalidate_aligned(refresh=True)
         self._refresh_source_count()
         self.decorate_source_items()
         # Inclusion changes the processing revision but leaves the source
