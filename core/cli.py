@@ -862,7 +862,7 @@ def _fuse_stack_admitted_body(images, args):
     profile = performance_profile.current()
     with profile.stage('prepare_input'):
         images, is_16bit = prepare_fusion_input(images, getattr(args, "_should_cancel", None))
-    t0 = time.time()
+    t0 = time.monotonic()
     fuse_kwargs = dict(input_source=images, img_resize=None, thread_count=args.threads,
                        should_cancel=should_cancel)
     model_weights = _method_weights(spec)
@@ -899,7 +899,12 @@ def _fuse_stack_admitted_body(images, args):
             depth_frames, _flipped = sort_frames_for_openfocus(
                 depth_frames, fusion_order)
         args._depth_frames = depth_frames
-    _say(f"Fusion ({args.method}, device={info['device']}) done in {time.time() - t0:.1f}s")
+    raw_fusion_elapsed = time.monotonic() - t0
+    deferred_align = min(float(getattr(fusion, 'deferred_alignment_seconds', 0.0) or 0.0), raw_fusion_elapsed)
+    fusion_elapsed = max(0.0, raw_fusion_elapsed - deferred_align)
+    if deferred_align > 0 and args.align != "none":
+        _say(f"Registration warp ({args.align}) done in {deferred_align:.1f}s")
+    _say(f"Fusion ({args.method}, device={info['device']}) done in {fusion_elapsed:.1f}s")
     return fused
 
 

@@ -1928,7 +1928,8 @@ class RenderManager:
 
                 import logging
                 logging.getLogger("openfocus").info(
-                    "render finished (preview=%s, method fusion, %.1fs)", preview, fusion_time)
+                    "render finished (preview=%s, method fusion, align %.1fs, fuse %.1fs)",
+                    preview, alignment_time, fusion_time)
             else:
                 if effective_registration:
                     result_info = {
@@ -2036,7 +2037,7 @@ class RenderManager:
             if preview:
                 info_lines.append(trans.t("info_preview_quality"))
             if effective_registration and reuse:
-                info_lines.append(trans.t("info_align_time").format(0.0))
+                info_lines.append(trans.t("info_align_time").format(alignment_time))
             elif effective_registration:
                 alignment_method = window.current_alignment_method()
                 align_method_str = trans.t(get_registration(alignment_method).label_key)
