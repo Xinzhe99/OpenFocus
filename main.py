@@ -439,6 +439,7 @@ def _restore_storage_directory(window):
 class OpenFocus(QMainWindow):
     storage_fallback_notice = pyqtSignal(str, str, str)
     account_session_loaded = pyqtSignal(object, object)
+    _developer_grant_revalidated = pyqtSignal(object)
 
     def __init__(self):
         super().__init__()
@@ -538,6 +539,16 @@ class OpenFocus(QMainWindow):
         self.excluded_frames = set()
         
         self.render_manager = RenderManager(self)
+        from core.render_queue import RenderQueueManager
+        self.render_queue = RenderQueueManager(
+            runner=self.render_manager.start_queued_render,
+            cancel_runner=self.render_manager.cancel_queued_render,
+            is_pipeline_busy=self.render_manager.is_pipeline_busy,
+            parent=self,
+        )
+        self.render_queue.queue_changed.connect(self._refresh_render_queue_badge)
+        self.render_queue.all_jobs_finished.connect(self._on_render_queue_all_finished)
+        self._render_queue_dialog = None
         self.output_manager = OutputManager(self)
         self.source_manager = SourceManager(self)
         self.label_manager = LabelManager(self)
@@ -551,10 +562,17 @@ class OpenFocus(QMainWindow):
         from PyQt6.QtCore import QTimer as _QTimer
         self.usage_analytics = UsageAnalytics(self)
         _QTimer.singleShot(0, self.usage_analytics.start)
+        self._developer_grant_revalidated.connect(
+            self._on_developer_grant_revalidated, Qt.ConnectionType.QueuedConnection
+        )
         self._gallery_start_timer = _QTimer(self)
         self._gallery_start_timer.setSingleShot(True)
         self._gallery_start_timer.timeout.connect(self.gallery_controller.start)
-        self._gallery_start_timer.start(1500)
+        from core.developer_options import is_community_enabled, load_developer_grant
+        if is_community_enabled():
+            self._gallery_start_timer.start(1500)
+        if load_developer_grant() is not None:
+            _QTimer.singleShot(250, self._start_developer_grant_revalidation)
 
         # 初始化图像加载器
         self.image_loader = ImageStackLoader()
@@ -736,6 +754,8 @@ class OpenFocus(QMainWindow):
         self.btn_render = right_panel_components.btn_render
         self.btn_live_preview = right_panel_components.btn_live_preview
         self._live_preview_dialog = None
+        self.btn_enqueue = right_panel_components.btn_enqueue
+        self.btn_render_queue = right_panel_components.btn_render_queue
         self.btn_compare_all = right_panel_components.btn_compare
         self.btn_compare_all.clicked.connect(self.render_manager.start_compare_all)
         self.chk_quick_preview = right_panel_components.chk_quick_preview
@@ -2667,14 +2687,62 @@ class OpenFocus(QMainWindow):
         """Disable the editor when there is nothing it could preview."""
         ui = getattr(self, "ui_objs", {})
         action = ui.get("action_watermark_add")
+        if action is not None:
+            has_target = bool(
+                getattr(self, "raw_images", ()) or
+                getattr(self, "registration_results", ()) or
+                getattr(self, "fusion_result", None) is not None or
+                getattr(self, "fusion_results", ()))
+            action.setEnabled(has_target)
+        self._sync_substack_actions()
+
+    def _sync_substack_actions(self) -> None:
+        """Enable Render Substacks when at least 4 active source frames are loaded."""
+        ui = getattr(self, "ui_objs", {})
+        action = ui.get("action_render_substacks")
         if action is None:
             return
-        has_target = bool(
-            getattr(self, "raw_images", ()) or
-            getattr(self, "registration_results", ()) or
-            getattr(self, "fusion_result", None) is not None or
-            getattr(self, "fusion_results", ()))
-        action.setEnabled(has_target)
+        try:
+            active_count = len(self.included_indices())
+        except Exception:
+            active_count = len(getattr(self, "raw_images", ()) or ())
+        action.setEnabled(active_count >= 4)
+
+    def show_render_substacks_dialog(self) -> None:
+        """Configure and run single-stack substack rendering."""
+        render = getattr(self, "render_manager", None)
+        if render is not None and (
+            render._render_worker_active()
+            or getattr(render, "_compare_mode", False)
+            or getattr(render, "_substack_mode", False)
+            or getattr(render, "_render_pending", False)
+        ):
+            show_warning_box(self, trans.t("substack_dialog_title"), trans.t("substack_busy"))
+            return
+        images, _filenames, included = self.effective_stack()
+        if len(images) < 4:
+            show_warning_box(self, trans.t("substack_dialog_title"), trans.t("substack_need_frames"))
+            return
+        if self.current_fusion_method() == "none":
+            show_warning_box(self, trans.t("substack_dialog_title"), trans.t("substack_need_fusion_method"))
+            return
+        from dialogs.render_substacks import RenderSubstacksDialog
+        dialog = RenderSubstacksDialog(
+            self,
+            frame_count=len(images),
+            included_indices=included,
+            fusion_method=self.current_fusion_method(),
+            alignment_method=self.current_alignment_method(),
+            theme=getattr(self, "ui_theme", "light"),
+        )
+        try:
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                self.render_manager.start_substack_render(
+                    dialog.substack_ranges(),
+                    auto_restack=dialog.auto_restack(),
+                )
+        finally:
+            dialog.deleteLater()
 
     def refresh_annotation_views(self) -> None:
         """Redraw both canvases after label or scale-bar state changes."""
@@ -2851,6 +2919,7 @@ class OpenFocus(QMainWindow):
                 or self.source_manager._review_worker is not None
                 or bool(getattr(render, '_render_pending', False))
                 or render._render_after_load is not None or render._compare_mode
+                or getattr(render, '_substack_mode', False)
                 or self.update_manager.is_busy()
                 or QApplication.activeModalWidget() is not None
                 or any(dialog.isVisible() for dialog in self.findChildren(QDialog)))
@@ -3994,6 +4063,59 @@ class OpenFocus(QMainWindow):
             return gallery.open_screensaver()
         return None
 
+    def apply_community_feature_state(self, *, start_remote: bool = True) -> bool:
+        """Apply live Community menu visibility and GalleryController lifecycle state."""
+        from core.developer_options import is_community_enabled
+        from ui.menus import apply_community_menu_visibility
+
+        enabled = is_community_enabled()
+        apply_community_menu_visibility(self, enabled)
+        start_timer = getattr(self, "_gallery_start_timer", None)
+        if not enabled and start_timer is not None and start_timer.isActive():
+            start_timer.stop()
+        gallery = getattr(self, "gallery_controller", None)
+        if gallery is not None:
+            gallery.set_community_enabled(enabled, start_remote=start_remote)
+        return enabled
+
+    def _start_developer_grant_revalidation(self) -> None:
+        """Background-revalidate any saved developer grant without blocking the UI thread."""
+        if getattr(self, "_shutting_down", False):
+            return
+        from core.developer_options import load_developer_grant, revalidate_saved_developer_grant
+
+        if load_developer_grant() is None:
+            return
+
+        import threading
+        client = getattr(self, "_account_client", None)
+        bearer = None
+        if client is not None and hasattr(client, "is_signed_in"):
+            try:
+                if client.is_signed_in() and hasattr(client, "token"):
+                    bearer = client.token()
+            except Exception:
+                bearer = None
+
+        def _worker() -> None:
+            try:
+                result = revalidate_saved_developer_grant(bearer_token=bearer)
+            except Exception:
+                result = None
+            if not getattr(self, "_shutting_down", False):
+                try:
+                    self._developer_grant_revalidated.emit(result)
+                except RuntimeError:
+                    pass
+
+        threading.Thread(target=_worker, daemon=True, name="openfocus-dev-revalidate").start()
+
+    def _on_developer_grant_revalidated(self, result: object) -> None:
+        if getattr(self, "_shutting_down", False) or result is None:
+            return
+        if getattr(result, "revoked", False):
+            self.apply_community_feature_state(start_remote=False)
+
     def show_feedback_dialog(self) -> None:
         """Report a bug or suggestion, with the session log attached."""
         from dialogs.feedback import FeedbackDialog
@@ -4384,6 +4506,9 @@ class OpenFocus(QMainWindow):
         from dialogs._community_layout import apply_community_theme
         for dialog in self.findChildren(QDialog, 'communityDialog'):
             apply_community_theme(dialog)
+        for dialog in self.findChildren(QDialog, 'renderSubstacksDialog'):
+            if hasattr(dialog, 'apply_theme'):
+                dialog.apply_theme(theme)
         # Inline "?" button styles are captured at creation; re-apply them for
         # the new theme or the dark chip stays dark on the light panel.
         from ui.styles import help_button_style
@@ -4416,6 +4541,10 @@ class OpenFocus(QMainWindow):
             except RuntimeError:
                 self._live_preview_dialog = None
 
+        queue_dialog = getattr(self, "_render_queue_dialog", None)
+        if queue_dialog is not None and not sip.isdeleted(queue_dialog):
+            queue_dialog.apply_theme(theme)
+
         self._enable_dark_title_bar(dark=(theme != "light"))
         self._sync_appearance_actions()
 
@@ -4447,7 +4576,188 @@ class OpenFocus(QMainWindow):
         from dialogs.about import ContactInfoDialog
         from dialogs._community_layout import show_community_dialog
         show_community_dialog(self, ContactInfoDialog)
-    
+
+    def enqueue_render_job(
+        self,
+        *,
+        method: str | None = None,
+        align_method: str | None = None,
+        method_params: dict | None = None,
+        align_params: dict | None = None,
+        frame_indices=None,
+        options: dict | None = None,
+        label: str | None = None,
+        interactive: bool = True,
+    ) -> str | None:
+        """Capture a render snapshot and enqueue it onto the background queue.
+
+        Usable from the right panel, Tools menu, Render Queue window, or
+        interactive preview tools without blocking workspace controls.
+        """
+        from copy import deepcopy
+        from core.render_queue import RenderQueueItem, format_queue_job_label
+
+        resolved_method = method if method is not None else self.current_fusion_method()
+        resolved_align = (
+            align_method if align_method is not None else self.current_alignment_method()
+        )
+        lock_reason = desktop_fusion_lock_reason(self, resolved_method)
+        if not lock_reason:
+            from core.experimental import alignment_is_locked
+            if alignment_is_locked(self, resolved_align):
+                lock_reason = trans.t('experimental_locked_hint')
+        if lock_reason:
+            if interactive:
+                show_warning_box(self, trans.t('msg_error'), lock_reason)
+                return None
+            raise ValueError(lock_reason)
+
+        if frame_indices is not None:
+            resolved_indices = tuple(int(i) for i in frame_indices)
+        else:
+            resolved_indices = tuple(self.included_indices())
+        raw_count = len(self.raw_images or ())
+        if (len(resolved_indices) < 2
+                or any(i < 0 or i >= raw_count for i in resolved_indices)):
+            if interactive:
+                show_warning_box(
+                    self,
+                    trans.t("msg_no_images_title"),
+                    trans.t("msg_render_need_images_text"),
+                )
+            return None
+
+        resolved_method_params = (
+            deepcopy(method_params)
+            if method_params is not None
+            else deepcopy(self.fusion_parameters_for(resolved_method))
+        )
+        resolved_align_params = (
+            deepcopy(align_params)
+            if align_params is not None
+            else deepcopy(self.registration_parameters_for(resolved_align))
+        )
+        preview_widget = getattr(self, "chk_quick_preview", None)
+        resolved_options = {
+            "exposure_match": bool(self.brightness_option_for("exposure_match", resolved_method)),
+            "base_correct": bool(self.brightness_option_for("base_correct", resolved_method)),
+            "reverse_order": bool(getattr(self, "stack_reverse_order", False)),
+            "sharpen_output": bool(getattr(self, "sharpen_output", False)),
+            "sharpen_strength": getattr(self, "sharpen_strength", DEFAULT_SHARPEN_STRENGTH),
+            "preview": bool(preview_widget.isChecked()) if preview_widget is not None else False,
+        }
+        if options:
+            resolved_options.update(deepcopy(options))
+
+        job_label = label or format_queue_job_label(
+            resolved_method,
+            resolved_method_params,
+            align_method=resolved_align,
+            frame_count=len(resolved_indices),
+            options=resolved_options,
+        )
+        item = RenderQueueItem(
+            label=job_label,
+            method=resolved_method,
+            align_method=resolved_align,
+            method_params=resolved_method_params,
+            align_params=resolved_align_params,
+            frame_indices=resolved_indices,
+            options=resolved_options,
+            frame_count=len(resolved_indices),
+            source_content_revision=getattr(self, "source_content_revision", 0),
+        )
+        job_id = self.render_queue.enqueue(item)
+        if hasattr(self, "statusBar") and self.statusBar() is not None:
+            self.statusBar().showMessage(
+                trans.t("render_queue_enqueued").format(label=job_label), 4000
+            )
+        return job_id
+
+    def show_render_queue_dialog(self):
+        """Open (or focus) the non-modal Background Render Queue window."""
+        from dialogs.render_queue import RenderQueueDialog
+
+        dialog = getattr(self, "_render_queue_dialog", None)
+        if dialog is None or sip.isdeleted(dialog):
+            dialog = RenderQueueDialog(
+                self.render_queue, self, theme=getattr(self, "ui_theme", None)
+            )
+            dialog.view_result_requested.connect(self._view_queue_result)
+            self._render_queue_dialog = dialog
+        else:
+            dialog.apply_theme(getattr(self, "ui_theme", None))
+            dialog.refresh()
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        return dialog
+
+    def _view_queue_result(self, job_id: str) -> bool:
+        """Select and display the output produced by a completed queue job."""
+        item = self.render_queue.get_job(job_id)
+        if item is None:
+            return False
+        output_list = getattr(self, "output_list", None)
+        output_manager = getattr(self, "output_manager", None)
+        if output_list is None or output_manager is None:
+            return False
+
+        target_row = None
+        if item.result_output_id and hasattr(output_manager, "record_for_row"):
+            for row in range(output_list.count()):
+                rec = output_manager.record_for_row(row)
+                if rec is not None and getattr(rec, "output_id", None) == item.result_output_id:
+                    target_row = row
+                    break
+        if target_row is None and item.result_name:
+            for row in range(output_list.count()):
+                row_item = output_list.item(row)
+                if row_item is not None and row_item.text() == item.result_name:
+                    target_row = row
+                    break
+        if (target_row is None and item.result_index is not None
+                and 0 <= item.result_index < output_list.count()):
+            target_row = item.result_index
+
+        if target_row is None:
+            if hasattr(self, "statusBar") and self.statusBar() is not None:
+                self.statusBar().showMessage(trans.t("render_queue_result_missing"), 4000)
+            return False
+
+        output_list.clearSelection()
+        output_list.setCurrentRow(target_row)
+        display_row = getattr(output_manager, "display_current_output_row", None)
+        if callable(display_row):
+            display_row(target_row)
+        self.raise_()
+        self.activateWindow()
+        return True
+
+    def _refresh_render_queue_badge(self) -> None:
+        button = getattr(self, "btn_render_queue", None)
+        if button is None or sip.isdeleted(button):
+            return
+        queue = getattr(self, "render_queue", None)
+        active_count = queue.active_and_pending_count() if queue is not None else 0
+        if active_count > 0:
+            button.setText(trans.t("btn_render_queue_count").format(count=active_count))
+        else:
+            button.setText(trans.t("btn_render_queue"))
+        button.setToolTip(
+            f"{trans.t('btn_render_queue')}\n{trans.t('btn_render_queue_hint')}"
+        )
+
+    def _on_render_queue_all_finished(self) -> None:
+        from core.render_queue import STATUS_COMPLETED
+        completed = sum(
+            1 for item in self.render_queue.items() if item.status == STATUS_COMPLETED
+        )
+        if completed and hasattr(self, "statusBar") and self.statusBar() is not None:
+            self.statusBar().showMessage(
+                trans.t("render_queue_all_finished").format(count=completed), 8000
+            )
+
     def show_batch_processing_dialog(self, preload_folder_paths: list[str] = None, scale_factor: float = 1.0):
         """显示批处理设置对话框
 
@@ -4580,6 +4890,9 @@ class OpenFocus(QMainWindow):
                                 or getattr(render_manager, '_retiring_context_workers', None)))
         if render_manager is not None and getattr(render_manager, 'worker', None):
             running.append(render_manager.worker.isRunning())
+        render_queue = getattr(self, 'render_queue', None)
+        if render_queue is not None:
+            running.append(bool(render_queue.is_running() or render_queue.pending_count() > 0))
         batch_manager = getattr(self, 'batch_manager', None)
         if batch_manager is not None and getattr(batch_manager, '_thread', None):
             running.append(batch_manager._thread.isRunning())
@@ -4675,6 +4988,13 @@ class OpenFocus(QMainWindow):
                 dialog.reject()
         self._cancel_depth_warmup()
         self.render_manager.cancel_storage_preflight()
+        render_queue = getattr(self, 'render_queue', None)
+        if render_queue is not None:
+            render_queue.pause()
+            render_queue.cancel_pending_jobs()
+        queue_dialog = getattr(self, '_render_queue_dialog', None)
+        if queue_dialog is not None and not sip.isdeleted(queue_dialog):
+            queue_dialog.close()
 
         # Keep dialog owners and their documents alive while native work stops.
         # A Python reference to a QThread cannot protect it from destruction
@@ -5139,6 +5459,14 @@ class OpenFocus(QMainWindow):
                 live_preview.retranslate()
             except RuntimeError:
                 self._live_preview_dialog = None
+        if getattr(c, 'btn_enqueue', None) is not None:
+            c.btn_enqueue.setText(trans.t('btn_enqueue'))
+            c.btn_enqueue.setToolTip(
+                f"{trans.t('btn_enqueue')}\n{trans.t('btn_enqueue_hint')}")
+        self._refresh_render_queue_badge()
+        queue_dialog = getattr(self, '_render_queue_dialog', None)
+        if queue_dialog is not None and not sip.isdeleted(queue_dialog):
+            queue_dialog.retranslate()
         self.source_manager.decorate_source_items()
         # Keep the cancel/progress affordance while a render or comparison
         # runs — the retranslation must not reset "Cancel render"/"Cancel" to
@@ -5242,6 +5570,9 @@ class OpenFocus(QMainWindow):
         gallery = getattr(self, "gallery_controller", None)
         if gallery is not None:
             gallery.retranslate()
+        from core.developer_options import is_community_enabled
+        from ui.menus import apply_community_menu_visibility
+        apply_community_menu_visibility(self, is_community_enabled())
 
 
 if __name__ == "__main__":

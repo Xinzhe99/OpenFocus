@@ -279,6 +279,79 @@ class StrokeCoverage:
         return out
 
 
+def _stroke_original_patch(target: np.ndarray, history: Optional["TileHistory"],
+                           x0: int, y0: int, x1: int, y1: int) -> np.ndarray:
+    """Read target pixels as they stood at the start of the active stroke."""
+    patch = target[y0:y1, x0:x1]
+    if history is None or not history._current:
+        return patch
+    original = None
+    for key in history._tile_keys(x0, y0, x1, y1):
+        tile = history._current.get(key)
+        if tile is None:
+            continue
+        if original is None:
+            original = patch.copy()
+        bx, by = key[0] * TILE, key[1] * TILE
+        ix0, iy0 = max(x0, bx), max(y0, by)
+        ix1 = min(x1, bx + tile.shape[1])
+        iy1 = min(y1, by + tile.shape[0])
+        if ix0 < ix1 and iy0 < iy1:
+            original[iy0 - y0:iy1 - y0, ix0 - x0:ix1 - x0] = tile[iy0 - by:iy1 - by, ix0 - bx:ix1 - bx]
+    return patch if original is None else original
+
+
+def _color_similarity_mask(ref_255: Tuple[float, ...], patch_float: np.ndarray,
+                           dtype_max: float, tolerance: int) -> np.ndarray:
+    """Smooth feather-attenuated perceptual color similarity mask in [0, 1]."""
+    scale = 255.0 / dtype_max
+    pixels = patch_float if scale == 1.0 else patch_float * np.float32(scale)
+    if pixels.ndim == 3 and pixels.shape[2] >= 3 and len(ref_255) >= 3:
+        db = pixels[..., 0] - np.float32(ref_255[0])
+        dg = pixels[..., 1] - np.float32(ref_255[1])
+        dr = pixels[..., 2] - np.float32(ref_255[2])
+        rm = np.float32(0.5) * (pixels[..., 2] + np.float32(ref_255[2]))
+        dist_sq = (
+            (np.float32(2.0) + rm * np.float32(1.0 / 256.0)) * (dr * dr)
+            + np.float32(4.0) * (dg * dg)
+            + (np.float32(2.0) + (np.float32(255.0) - rm) * np.float32(1.0 / 256.0)) * (db * db)
+        ) * np.float32(1.0 / 9.0)
+        dist = np.sqrt(np.maximum(dist_sq, np.float32(0.0)))
+    else:
+        ref_val = np.float32(ref_255[0] if ref_255 else 0.0)
+        gray = (pixels[..., 0] * np.float32(0.114) + pixels[..., 1] * np.float32(0.587)
+                + pixels[..., 2] * np.float32(0.299)) if pixels.ndim == 3 else pixels
+        dist = np.abs(gray - ref_val)
+    limit = float(np.clip(tolerance, 1, 100)) * 2.55
+    inner = limit * 0.65
+    outer = max(inner + 1.0, limit * 1.15)
+    t = np.clip((dist - np.float32(inner)) / np.float32(outer - inner), 0.0, 1.0)
+    return (1.0 - t * t * (3.0 - 2.0 * t)).astype(np.float32)
+
+
+def _reflect_coords(coords: np.ndarray, length: int) -> np.ndarray:
+    """Continuous mirrored coordinates in [0, length - 1] for seamless pattern tiling."""
+    if length <= 1:
+        return np.zeros_like(coords)
+    period = 2 * length - 2
+    rem = np.mod(coords, period)
+    return np.where(rem < length, rem, period - rem)
+
+
+def _extract_pattern_patch(target: np.ndarray, history: Optional["TileHistory"],
+                           spec: dict, tx0: int, ty0: int, tx1: int, ty1: int) -> np.ndarray:
+    """Tile a mirrored local patch around the clone origin cleanly without drift."""
+    px0, py0, tile_w, tile_h = spec["tile_rect"]
+    tile = _stroke_original_patch(target, history, px0, py0, px0 + tile_w, py0 + tile_h)
+    lx = int(round(spec["origin_x"])) - px0
+    ly = int(round(spec["origin_y"])) - py0
+    sx = int(round(spec["start_x"]))
+    sy = int(round(spec["start_y"]))
+    rx = _reflect_coords(np.arange(tx0, tx1, dtype=np.int32) - sx + lx, tile_w)
+    ry = _reflect_coords(np.arange(ty0, ty1, dtype=np.int32) - sy + ly, tile_h)
+    return tile[ry[:, None], rx[None, :]]
+
+
 def apply_dab(
     target: np.ndarray,
     source: np.ndarray,
@@ -292,12 +365,18 @@ def apply_dab(
     source_valid: Optional[np.ndarray] = None,
     offset: Tuple[int, int] = (0, 0),
     exposure: Optional[float] = None,
+    color_tolerance: int = 0,
+    tolerance_ref: Optional[Tuple[float, ...]] = None,
+    brightness_gain: float = 1.0,
+    source_from_history: bool = False,
+    pattern_spec: Optional[dict] = None,
 ) -> Optional[Tuple[int, int, int, int]]:
     """Blend one brush dab from `source` into `target` in place.
 
-    `offset` places the source's top-left in target coordinates (ROI paste).
-    `source_valid` is an optional boolean mask in source coordinates; pixels
-    outside it are never written.  Returns the dirty rect or None.
+    `offset` places the source's top-left in target coordinates (ROI paste or
+    local alignment/clone shift).  `source_valid` is an optional boolean mask
+    in source coordinates; pixels outside it are never written.  Returns the
+    dirty rect or None.
     """
     if exposure == 0:
         return None
@@ -314,27 +393,36 @@ def apply_dab(
     if tx0 >= tx1 or ty0 >= ty1:
         return None
 
-    sx0, sy0 = tx0 - ox, ty0 - oy
-    sx1, sy1 = tx1 - ox, ty1 - oy
-    nsx0, nsy0 = max(0, sx0), max(0, sy0)
-    nsx1, nsy1 = min(sw, sx1), min(sh, sy1)
-    if nsx0 >= nsx1 or nsy0 >= nsy1:
-        return None
-    if nsx0 != sx0:
-        tx0 += nsx0 - sx0
-    if nsy0 != sy0:
-        ty0 += nsy0 - sy0
-    tx1 = tx0 + (nsx1 - nsx0)
-    ty1 = ty0 + (nsy1 - nsy0)
-    if tx0 >= tx1 or ty0 >= ty1:
-        return None
+    nsx0 = nsy0 = nsx1 = nsy1 = 0
+    if pattern_spec is None:
+        sx0, sy0 = tx0 - ox, ty0 - oy
+        sx1, sy1 = tx1 - ox, ty1 - oy
+        nsx0, nsy0 = max(0, sx0), max(0, sy0)
+        nsx1, nsy1 = min(sw, sx1), min(sh, sy1)
+        if nsx0 >= nsx1 or nsy0 >= nsy1:
+            return None
+        if nsx0 != sx0:
+            tx0 += nsx0 - sx0
+        if nsy0 != sy0:
+            ty0 += nsy0 - sy0
+        tx1 = tx0 + (nsx1 - nsx0)
+        ty1 = ty0 + (nsy1 - nsy0)
+        if tx0 >= tx1 or ty0 >= ty1:
+            return None
 
     h = float(np.clip(hardness, 0.0, 1.0))
     mask = _cached_brush_mask(d, h)[ty0 - y0:ty1 - y0, tx0 - x0:tx1 - x0]
     alpha = mask * float(np.clip(opacity, 0.0, 1.0))
-    if source_valid is not None:
+    if source_valid is not None and pattern_spec is None:
         valid = source_valid[nsy0:nsy1, nsx0:nsx1]
         alpha = alpha * valid.astype(np.float32)
+        if not np.any(alpha):
+            return None
+
+    if color_tolerance > 0 and tolerance_ref is not None:
+        orig_tgt = _stroke_original_patch(target, history, tx0, ty0, tx1, ty1).astype(np.float32)
+        sim = _color_similarity_mask(tolerance_ref, orig_tgt, _dtype_max(target.dtype), color_tolerance)
+        alpha = alpha * sim
         if not np.any(alpha):
             return None
 
@@ -343,18 +431,19 @@ def apply_dab(
     blend = (coverage.apply(tx0, ty0, tx1, ty1, alpha)
              if coverage is not None else alpha)
 
-    if exposure is None:
-        src = _to_dtype(_as_bgr(source[nsy0:nsy1, nsx0:nsx1]), target.dtype)
+    if pattern_spec is not None:
+        raw_src = _extract_pattern_patch(target, history, pattern_spec, tx0, ty0, tx1, ty1)
+        src = _to_dtype(_as_bgr(raw_src), target.dtype)
+    elif exposure is None:
+        raw_src = (_stroke_original_patch(source, history, nsx0, nsy0, nsx1, nsy1)
+                   if source_from_history else source[nsy0:nsy1, nsx0:nsx1])
+        src = _to_dtype(_as_bgr(raw_src), target.dtype)
+        if brightness_gain != 1.0:
+            src = np.clip(src * np.float32(brightness_gain), 0.0, _dtype_max(target.dtype))
     else:
         # Use the pixels at the beginning of the stroke, so overlapping
         # dabs cannot compound the adjustment within one stroke.
-        original = target[ty0:ty1, tx0:tx1].copy()
-        for key in history._tile_keys(tx0, ty0, tx1, ty1):
-            tile = history._current[key]
-            bx, by = key[0] * TILE, key[1] * TILE
-            ix0, iy0 = max(tx0, bx), max(ty0, by)
-            ix1, iy1 = min(tx1, bx + tile.shape[1]), min(ty1, by + tile.shape[0])
-            original[iy0-ty0:iy1-ty0, ix0-tx0:ix1-tx0] = tile[iy0-by:iy1-by, ix0-bx:ix1-bx]
+        original = _stroke_original_patch(target, history, tx0, ty0, tx1, ty1)
         src = np.clip(original.astype(np.float32) * (2.0 ** exposure),
                       0, _dtype_max(target.dtype))
     tgt = target[ty0:ty1, tx0:tx1]
@@ -633,7 +722,9 @@ class TileHistory:
 class RetouchDocument:
     """One retouch session: base image, source frames, brush and history."""
 
-    TOOLS = ("source", "restore", "exposure")
+    TOOLS = ("source", "restore", "exposure", "clone")
+    CLONE_MODES = ("area", "pattern")
+    MAX_SOURCE_OFFSET = 200
 
     def __init__(self, base_image: np.ndarray, context: RenderContext,
                  *, max_strokes: int = DEFAULT_MAX_STROKES,
@@ -685,6 +776,17 @@ class RetouchDocument:
         self.hardness = 0.4
         self.opacity = 1.0
         self.exposure = 0.5
+        self.color_tolerance = 0
+        self.brush_brightness = 0
+        self.brush_auto_brightness = False
+        self.source_offset_x = 0
+        self.source_offset_y = 0
+        self.clone_mode = "area"
+        self.clone_origin: Optional[Tuple[float, float]] = None
+        self._source_index_map: Optional[np.ndarray] = None
+        self._source_index_map_origin: Tuple[int, int] = (0, 0)
+        self._source_index_map_scale: Tuple[float, float] = (1.0, 1.0)
+        self._source_index_map_valid: Optional[np.ndarray] = None
         self.history = TileHistory(self.working, self.base,
                                    max_strokes=max_strokes,
                                    max_bytes=max_bytes)
@@ -1043,6 +1145,326 @@ class RetouchDocument:
             self.opacity = float(np.clip(opacity, 0.01, 1.0))
         return True
 
+    def set_color_tolerance(self, value: int) -> bool:
+        if self._stroke is not None:
+            return False
+        self.color_tolerance = max(0, min(100, int(value)))
+        return True
+
+    def set_brush_brightness(self, value: int) -> bool:
+        if self._stroke is not None:
+            return False
+        self.brush_brightness = max(-50, min(50, int(value)))
+        return True
+
+    def set_brush_auto_brightness(self, enabled: bool) -> bool:
+        if self._stroke is not None:
+            return False
+        self.brush_auto_brightness = bool(enabled)
+        return True
+
+    def set_source_offset(self, dx: int, dy: int) -> bool:
+        if self._stroke is not None:
+            return False
+        limit = self.MAX_SOURCE_OFFSET
+        self.source_offset_x = max(-limit, min(limit, int(dx)))
+        self.source_offset_y = max(-limit, min(limit, int(dy)))
+        return True
+
+    def reset_source_offset(self) -> bool:
+        return self.set_source_offset(0, 0)
+
+    def set_clone_mode(self, mode: str) -> bool:
+        if self._stroke is not None or mode not in self.CLONE_MODES:
+            return False
+        self.clone_mode = mode
+        return True
+
+    def set_clone_origin(self, x: float, y: float) -> bool:
+        if self._stroke is not None:
+            return False
+        if not (0 <= x < self.width and 0 <= y < self.height):
+            return False
+        self.clone_origin = (float(x), float(y))
+        return True
+
+    def clear_clone_origin(self) -> bool:
+        if self._stroke is not None:
+            return False
+        self.clone_origin = None
+        return True
+
+    def auto_align_patch(self, cx: float, cy: float, window_size: int = 128) -> Tuple[int, int, float]:
+        """Estimate local residual X/Y shift between active source and output around (cx, cy)."""
+        if self._stroke is not None or not self.frames:
+            return self.source_offset_x, self.source_offset_y, 0.0
+        frame = self.active_frame
+        source = self.source_pixels(self.frame_index)
+        sh, sw = source.shape[:2]
+        w = max(32, min(256, int(window_size), self.width, self.height, sw, sh))
+        half = w // 2
+        ix = int(round(cx))
+        iy = int(round(cy))
+        # Clamp extraction window inside both target and active frame domains.
+        tx0 = max(frame.offset_x, min(self.width - w, frame.offset_x + sw - w, ix - half))
+        ty0 = max(frame.offset_y, min(self.height - w, frame.offset_y + sh - w, iy - half))
+        tx0 = max(0, max(frame.offset_x, tx0))
+        ty0 = max(0, max(frame.offset_y, ty0))
+        sx0 = tx0 - frame.offset_x
+        sy0 = ty0 - frame.offset_y
+        pw = min(w, self.width - tx0, sw - sx0)
+        ph = min(w, self.height - ty0, sh - sy0)
+        if pw < 16 or ph < 16:
+            return self.source_offset_x, self.source_offset_y, 0.0
+
+        def _to_gray_f32(patch):
+            arr = _to_dtype(_as_bgr(patch), np.uint8) if patch.ndim == 3 else (
+                patch.astype(np.float32) * np.float32(255.0 / _dtype_max(patch.dtype)))
+            if arr.ndim == 3:
+                arr = cv2.cvtColor(arr, cv2.COLOR_BGR2GRAY)
+            arr = arr.astype(np.float32, copy=False)
+            return arr - float(np.mean(arr))
+
+        tgt_patch = _to_gray_f32(self.working[ty0:ty0 + ph, tx0:tx0 + pw])
+        src_patch = _to_gray_f32(source[sy0:sy0 + ph, sx0:sx0 + pw])
+        if float(np.std(tgt_patch)) < 1e-3 or float(np.std(src_patch)) < 1e-3:
+            self.set_source_offset(0, 0)
+            return 0, 0, 0.0
+        hann = cv2.createHanningWindow((pw, ph), cv2.CV_32F)
+        (shift_x, shift_y), response = cv2.phaseCorrelate(src_patch, tgt_patch, hann)
+        if not (np.isfinite(shift_x) and np.isfinite(shift_y) and np.isfinite(response)):
+            return self.source_offset_x, self.source_offset_y, 0.0
+        max_shift = min(64, max(8, min(pw, ph) // 2))
+        dx = int(np.clip(round(float(shift_x)), -max_shift, max_shift))
+        dy = int(np.clip(round(float(shift_y)), -max_shift, max_shift))
+        self.set_source_offset(dx, dy)
+        return dx, dy, float(response)
+
+    # ---------------------------------------------- depth / source index map
+    def _quantize_rendered_depth(self) -> Optional[Tuple[np.ndarray, Tuple[int, int], Optional[np.ndarray]]]:
+        depth = getattr(self.context, "rendered_depth", None)
+        n = len(self.frames)
+        if depth is None or n == 0:
+            return None
+        index01 = depth.index
+        dtype = np.uint8 if n <= 256 else np.uint16
+        if n == 1:
+            idx = np.zeros(index01.shape, dtype=dtype)
+        else:
+            vals = np.clip(np.asarray(index01, dtype=np.float32), 0.0, 1.0)
+            idx = np.floor(vals * (n - 1) + 0.5).astype(dtype)
+            if depth.reverse_order:
+                idx = np.asarray((n - 1) - idx, dtype=dtype)
+        origin = (self.frames[0].offset_x, self.frames[0].offset_y)
+        return idx, origin, depth.valid_mask
+
+    def source_index_map(self, max_side: int = 512, cancelled=None) -> Tuple[np.ndarray, Tuple[int, int], Optional[np.ndarray]]:
+        """Return a compact per-pixel contributing source frame index map.
+
+        Uses the render's retained `rendered_depth` directly when present;
+        otherwise computes a fast bounded-resolution fallback map against the
+        aligned source frames and caches it on the document.
+        """
+        if self._source_index_map is not None:
+            return self._source_index_map, self._source_index_map_origin, self._source_index_map_valid
+
+        rendered = self._quantize_rendered_depth()
+        if rendered is not None:
+            idx, origin, valid_mask = rendered
+            self._source_index_map = idx
+            self._source_index_map_origin = origin
+            self._source_index_map_scale = (1.0, 1.0)
+            self._source_index_map_valid = valid_mask
+            return idx, origin, valid_mask
+
+        n = len(self.frames)
+        dtype = np.uint8 if n <= 256 else np.uint16
+        if n <= 1:
+            idx = np.zeros((self.height, self.width), dtype=dtype)
+            self._source_index_map = idx
+            self._source_index_map_origin = (0, 0)
+            self._source_index_map_scale = (1.0, 1.0)
+            self._source_index_map_valid = None
+            return idx, (0, 0), None
+
+        base_img = self.stacked_image if (
+            self.stacked_image is not None and self.stacked_image.shape[:2] == (self.height, self.width)
+        ) else self.base
+        scale = min(1.0, float(max(64, int(max_side))) / float(max(self.height, self.width, 1)))
+        mh = max(1, int(round(self.height * scale)))
+        mw = max(1, int(round(self.width * scale)))
+
+        def _prep_small(arr, tw, th):
+            if arr.shape[1] != tw or arr.shape[0] != th:
+                arr = cv2.resize(arr, (tw, th), interpolation=cv2.INTER_AREA)
+            out = arr.astype(np.float32) * np.float32(255.0 / _dtype_max(arr.dtype))
+            if out.ndim == 2:
+                out = cv2.cvtColor(out, cv2.COLOR_GRAY2BGR)
+            elif out.shape[2] == 4:
+                out = out[..., :3]
+            return out
+
+        base_small = _prep_small(base_img, mw, mh)
+        best_score = np.full((mh, mw), np.inf, dtype=np.float32)
+        best_idx = np.zeros((mh, mw), dtype=dtype)
+        any_valid = np.zeros((mh, mw), dtype=bool)
+        nav_previews = getattr(self, "source_navigation_previews", None)
+
+        for i, frame in enumerate(self.frames):
+            if cancelled is not None and cancelled():
+                raise ValueError("Source index map cancelled")
+            pixels = None
+            if isinstance(frame.image, np.ndarray):
+                pixels = frame.image
+            elif nav_previews is not None and i < len(nav_previews) and nav_previews[i] is not None:
+                pixels = nav_previews[i]
+            else:
+                pixels = self.source_pixels(i)
+            if pixels is None or pixels.size == 0:
+                continue
+            sx0 = max(0, int(round(frame.offset_x * scale)))
+            sy0 = max(0, int(round(frame.offset_y * scale)))
+            fw = max(1, int(round(frame.width * scale)))
+            fh = max(1, int(round(frame.height * scale)))
+            sx1 = min(mw, sx0 + fw)
+            sy1 = min(mh, sy0 + fh)
+            if sx0 >= sx1 or sy0 >= sy1:
+                continue
+            sub_w, sub_h = sx1 - sx0, sy1 - sy0
+            src_small = _prep_small(pixels, sub_w, sub_h)
+            diff = np.mean(np.abs(src_small - base_small[sy0:sy1, sx0:sx1]), axis=2)
+            diff = cv2.GaussianBlur(diff, (5, 5), 0)
+            gray = cv2.cvtColor(src_small, cv2.COLOR_BGR2GRAY)
+            sharp = cv2.GaussianBlur(np.abs(cv2.Laplacian(gray, cv2.CV_32F, ksize=3)), (5, 5), 0)
+            # Primary criterion: pixel agreement with fused result; tiny sharpness
+            # tie-breaker handles identical flat regions cleanly.
+            score = diff - np.float32(1e-4) * sharp
+            valid_local = np.ones((sub_h, sub_w), dtype=bool)
+            if frame.aligned:
+                mask = self.mask_for(i)
+                if mask is not None:
+                    valid_local = cv2.resize(
+                        mask.astype(np.uint8), (sub_w, sub_h),
+                        interpolation=cv2.INTER_NEAREST) > 0
+            region_best = best_score[sy0:sy1, sx0:sx1]
+            take = valid_local & (score < region_best)
+            region_best[take] = score[take]
+            best_idx[sy0:sy1, sx0:sx1][take] = i
+            any_valid[sy0:sy1, sx0:sx1] |= valid_local
+
+        valid_mask = None if np.all(any_valid) else any_valid
+        self._source_index_map = best_idx
+        self._source_index_map_origin = (0, 0)
+        self._source_index_map_scale = (mw / float(self.width), mh / float(self.height))
+        self._source_index_map_valid = valid_mask
+        return best_idx, (0, 0), valid_mask
+
+    def locate_contributing_frame(self, x: float, y: float) -> Optional[int]:
+        """Return the 0-based contributing source frame index at result pixel (x, y)."""
+        n = len(self.frames)
+        if n == 0 or not (0 <= x < self.width and 0 <= y < self.height):
+            return None
+        if n == 1:
+            return 0
+        ix = min(self.width - 1, max(0, int(round(x))))
+        iy = min(self.height - 1, max(0, int(round(y))))
+
+        depth = getattr(self.context, "rendered_depth", None)
+        if depth is not None:
+            ox, oy = self.frames[0].offset_x, self.frames[0].offset_y
+            lx, ly = ix - ox, iy - oy
+            dh, dw = depth.index.shape[:2]
+            if 0 <= lx < dw and 0 <= ly < dh:
+                if depth.valid_mask is None or bool(depth.valid_mask[ly, lx]):
+                    val = float(depth.index[ly, lx])
+                    if np.isfinite(val):
+                        idx = int(np.floor(np.clip(val, 0.0, 1.0) * (n - 1) + 0.5))
+                        if depth.reverse_order:
+                            idx = (n - 1) - idx
+                        return max(0, min(n - 1, idx))
+
+        if self._source_index_map is not None:
+            ox, oy = self._source_index_map_origin
+            sx, sy = self._source_index_map_scale
+            mh, mw = self._source_index_map.shape[:2]
+            mx = int(np.floor((ix - ox) * sx))
+            my = int(np.floor((iy - oy) * sy))
+            if 0 <= mx < mw and 0 <= my < mh:
+                if self._source_index_map_valid is None or bool(self._source_index_map_valid[my, mx]):
+                    return max(0, min(n - 1, int(self._source_index_map[my, mx])))
+
+        # Fast single-point local patch fallback (11x11 window around cursor).
+        base_img = self.stacked_image if (
+            self.stacked_image is not None and self.stacked_image.shape[:2] == (self.height, self.width)
+        ) else self.base
+        r = 5
+        tx0, ty0 = max(0, ix - r), max(0, iy - r)
+        tx1, ty1 = min(self.width, ix + r + 1), min(self.height, iy + r + 1)
+        base_patch = base_img[ty0:ty1, tx0:tx1].astype(np.float32) * np.float32(255.0 / _dtype_max(base_img.dtype))
+        if base_patch.ndim == 2:
+            base_patch = cv2.cvtColor(base_patch, cv2.COLOR_GRAY2BGR)
+        elif base_patch.shape[2] == 4:
+            base_patch = base_patch[..., :3]
+
+        nav_previews = getattr(self, "source_navigation_previews", None)
+        best_index = None
+        best_cost = float("inf")
+        for i, frame in enumerate(self.frames):
+            if not frame.contains(ix, iy):
+                continue
+            if isinstance(frame.image, np.ndarray):
+                sx0, sy0 = tx0 - frame.offset_x, ty0 - frame.offset_y
+                sx1, sy1 = tx1 - frame.offset_x, ty1 - frame.offset_y
+                nsx0, nsy0 = max(0, sx0), max(0, sy0)
+                nsx1, nsy1 = min(frame.width, sx1), min(frame.height, sy1)
+                if nsx0 >= nsx1 or nsy0 >= nsy1:
+                    continue
+                bx0, by0 = nsx0 - sx0, nsy0 - sy0
+                bx1, by1 = bx0 + (nsx1 - nsx0), by0 + (nsy1 - nsy0)
+                patch = frame.image[nsy0:nsy1, nsx0:nsx1]
+                src_patch = patch.astype(np.float32) * np.float32(255.0 / _dtype_max(patch.dtype))
+                if src_patch.ndim == 2:
+                    src_patch = cv2.cvtColor(src_patch, cv2.COLOR_GRAY2BGR)
+                elif src_patch.shape[2] == 4:
+                    src_patch = src_patch[..., :3]
+                if frame.aligned:
+                    mask = self.mask_for(i)
+                    if mask is not None and not bool(mask[int(iy - frame.offset_y), int(ix - frame.offset_x)]):
+                        continue
+                diff = float(np.mean(np.abs(src_patch - base_patch[by0:by1, bx0:bx1])))
+                gray = cv2.cvtColor(src_patch, cv2.COLOR_BGR2GRAY)
+                sharp = float(np.mean(np.abs(cv2.Laplacian(gray, cv2.CV_32F, ksize=3))))
+                cost = diff - 1e-4 * sharp
+            elif nav_previews is not None and i < len(nav_previews) and nav_previews[i] is not None:
+                nav = nav_previews[i]
+                nh, nw = nav.shape[:2]
+                nx = min(nw - 1, max(0, int(round((ix - frame.offset_x) * nw / max(1, frame.width)))))
+                ny = min(nh - 1, max(0, int(round((iy - frame.offset_y) * nh / max(1, frame.height)))))
+                px_nav = nav[ny, nx].astype(np.float32)
+                if px_nav.ndim == 0:
+                    px_nav = np.array([px_nav, px_nav, px_nav], dtype=np.float32)
+                b_center = base_patch[iy - ty0, ix - tx0]
+                cost = float(np.mean(np.abs(px_nav[:3] - b_center)))
+            else:
+                pixels = self.source_pixels(i)
+                sx0, sy0 = max(0, tx0 - frame.offset_x), max(0, ty0 - frame.offset_y)
+                sx1, sy1 = min(frame.width, tx1 - frame.offset_x), min(frame.height, ty1 - frame.offset_y)
+                if sx0 >= sx1 or sy0 >= sy1:
+                    continue
+                bx0, by0 = sx0 - (tx0 - frame.offset_x), sy0 - (ty0 - frame.offset_y)
+                bx1, by1 = bx0 + (sx1 - sx0), by0 + (sy1 - sy0)
+                patch = pixels[sy0:sy1, sx0:sx1]
+                src_patch = patch.astype(np.float32) * np.float32(255.0 / _dtype_max(patch.dtype))
+                if src_patch.ndim == 2:
+                    src_patch = cv2.cvtColor(src_patch, cv2.COLOR_GRAY2BGR)
+                elif src_patch.shape[2] == 4:
+                    src_patch = src_patch[..., :3]
+                cost = float(np.mean(np.abs(src_patch - base_patch[by0:by1, bx0:bx1])))
+            if cost < best_cost:
+                best_cost = cost
+                best_index = i
+        return best_index
+
     # ------------------------------------------------------ source masks
     def mask_for(self, index: int) -> Optional[np.ndarray]:
         frame = self.frames[index]
@@ -1066,14 +1488,90 @@ class RetouchDocument:
             return False
         if self.tool in ("restore", "exposure"):
             return True
+        if self.tool == "clone":
+            return self.clone_origin is not None
         frame = self.active_frame
-        if not frame.contains(x, y):
+        sx = x - self.source_offset_x
+        sy = y - self.source_offset_y
+        if not frame.contains(sx, sy):
             return False
-        lx, ly = frame.local_point(x, y)
+        lx, ly = frame.local_point(sx, sy)
         mask = self.mask_for(self.frame_index)
         if mask is None:
             return True
         return bool(mask[int(ly), int(lx)])
+
+    def _sample_color_255(self, x: float, y: float) -> Tuple[float, ...]:
+        ix = min(self.width - 1, max(0, int(round(x))))
+        iy = min(self.height - 1, max(0, int(round(y))))
+        px = self.working[iy, ix]
+        scale = 255.0 / _dtype_max(self.working.dtype)
+        if np.ndim(px) == 0:
+            return (round(float(px) * scale, 4),)
+        return tuple(round(float(v) * scale, 4) for v in px[:3])
+
+    def _estimate_auto_brightness_gain(self, frame_index: int, x: float, y: float,
+                                       offset: Tuple[int, int], diameter: int) -> float:
+        source = self.source_pixels(frame_index)
+        valid = self.mask_for(frame_index)
+        sh, sw = source.shape[:2]
+        r = max(4, min(64, int(diameter) // 2))
+        ix, iy = int(round(x)), int(round(y))
+        tx0, ty0 = max(0, ix - r), max(0, iy - r)
+        tx1, ty1 = min(self.width, ix + r + 1), min(self.height, iy + r + 1)
+        ox, oy = int(offset[0]), int(offset[1])
+        sx0, sy0 = tx0 - ox, ty0 - oy
+        sx1, sy1 = tx1 - ox, ty1 - oy
+        nsx0, nsy0 = max(0, sx0), max(0, sy0)
+        nsx1, nsy1 = min(sw, sx1), min(sh, sy1)
+        if nsx0 >= nsx1 or nsy0 >= nsy1:
+            return 1.0
+        tx0 += nsx0 - sx0
+        ty0 += nsy0 - sy0
+        tx1 = tx0 + (nsx1 - nsx0)
+        ty1 = ty0 + (nsy1 - nsy0)
+        if tx0 >= tx1 or ty0 >= ty1:
+            return 1.0
+        tgt = self.working[ty0:ty1, tx0:tx1].astype(np.float32)
+        src = _to_dtype(_as_bgr(source[nsy0:nsy1, nsx0:nsx1]), self.working.dtype)
+        if tgt.ndim == 2 and src.ndim == 3:
+            src = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY)
+        if tgt.ndim == 3 and tgt.shape[2] >= 3:
+            tgt_luma = tgt[..., 0] * 0.114 + tgt[..., 1] * 0.587 + tgt[..., 2] * 0.299
+            src_luma = src[..., 0] * 0.114 + src[..., 1] * 0.587 + src[..., 2] * 0.299
+        else:
+            tgt_luma = tgt
+            src_luma = src
+        if valid is not None:
+            v = valid[nsy0:nsy1, nsx0:nsx1]
+            if not np.any(v):
+                return 1.0
+            tgt_vals = tgt_luma[v]
+            src_vals = src_luma[v]
+        else:
+            tgt_vals = tgt_luma.ravel()
+            src_vals = src_luma.ravel()
+        floor = 1e-3 * _dtype_max(self.working.dtype)
+        src_med = float(np.median(src_vals))
+        tgt_med = float(np.median(tgt_vals))
+        if src_med <= floor or tgt_med <= floor:
+            return 1.0
+        return round(float(np.clip(tgt_med / src_med, 0.5, 2.0)), 4)
+
+    def _clone_pattern_spec(self, origin: Tuple[float, float], start: Tuple[float, float],
+                            diameter: int) -> dict:
+        tile_w = min(self.width, max(16, int(diameter)))
+        tile_h = min(self.height, max(16, int(diameter)))
+        ax, ay = float(origin[0]), float(origin[1])
+        px0 = max(0, min(self.width - tile_w, int(round(ax)) - tile_w // 2))
+        py0 = max(0, min(self.height - tile_h, int(round(ay)) - tile_h // 2))
+        return {
+            "tile_rect": (px0, py0, tile_w, tile_h),
+            "origin_x": ax,
+            "origin_y": ay,
+            "start_x": float(start[0]),
+            "start_y": float(start[1]),
+        }
 
     # ----------------------------------------------------------- strokes
     @property
@@ -1100,7 +1598,7 @@ class RetouchDocument:
             return False
         if not self.source_valid_at(x, y):
             return False
-        self._stroke = {
+        stroke = {
             "frame": self.frame_index,
             "tool": self.tool,
             "diameter": self.diameter,
@@ -1110,6 +1608,25 @@ class RetouchDocument:
             "last": (float(x), float(y)),
             "points": [(float(x), float(y))],
         }
+        if self.tool == "source":
+            if self.color_tolerance > 0:
+                stroke["color_tolerance"] = int(self.color_tolerance)
+                stroke["tolerance_ref"] = list(self._sample_color_255(x, y))
+            if self.brush_brightness != 0:
+                stroke["brightness"] = int(self.brush_brightness)
+            if self.source_offset_x != 0 or self.source_offset_y != 0:
+                stroke["source_offset"] = [int(self.source_offset_x), int(self.source_offset_y)]
+            if self.brush_auto_brightness:
+                frame = self.frames[self.frame_index]
+                eff_offset = (frame.offset_x + self.source_offset_x,
+                              frame.offset_y + self.source_offset_y)
+                stroke["auto_brightness_gain"] = self._estimate_auto_brightness_gain(
+                    self.frame_index, x, y, eff_offset, self.diameter)
+        elif self.tool == "clone":
+            assert self.clone_origin is not None
+            stroke["clone_mode"] = self.clone_mode
+            stroke["clone_origin"] = [float(self.clone_origin[0]), float(self.clone_origin[1])]
+        self._stroke = stroke
         try:
             self._coverage = StrokeCoverage(self.height, self.width)
             self.history.begin()
@@ -1231,11 +1748,36 @@ class RetouchDocument:
     def _dab(self, x: float, y: float):
         assert self._stroke is not None
         locked = self._stroke
+        color_tolerance = 0
+        tolerance_ref = None
+        brightness_gain = 1.0
+        source_from_history = False
+        pattern_spec = None
         if locked["tool"] == "source":
             frame = self.frames[locked["frame"]]
             source = self.source_pixels(locked["frame"])
-            offset = (frame.offset_x, frame.offset_y)
+            sox, soy = locked.get("source_offset", (0, 0))
+            offset = (frame.offset_x + int(sox), frame.offset_y + int(soy))
             valid = self.mask_for(locked["frame"])
+            color_tolerance = int(locked.get("color_tolerance", 0))
+            if color_tolerance > 0 and "tolerance_ref" in locked:
+                tolerance_ref = tuple(locked["tolerance_ref"])
+            manual_gain = 1.0 + float(locked.get("brightness", 0)) / 100.0
+            auto_gain = float(locked.get("auto_brightness_gain", 1.0))
+            brightness_gain = manual_gain * auto_gain
+        elif locked["tool"] == "clone":
+            source = self.working
+            valid = None
+            origin = locked["clone_origin"]
+            start = locked["points"][0]
+            if locked.get("clone_mode") == "pattern":
+                offset = (0, 0)
+                pattern_spec = self._clone_pattern_spec(origin, start, locked["diameter"])
+            else:
+                dx = int(round(origin[0] - start[0]))
+                dy = int(round(origin[1] - start[1]))
+                offset = (-dx, -dy)
+                source_from_history = True
         else:
             source = self.base
             offset = (0, 0)
@@ -1250,6 +1792,11 @@ class RetouchDocument:
             source_valid=valid,
             offset=offset,
             exposure=locked["exposure"] if locked["tool"] == "exposure" else None,
+            color_tolerance=color_tolerance,
+            tolerance_ref=tolerance_ref,
+            brightness_gain=brightness_gain,
+            source_from_history=source_from_history,
+            pattern_spec=pattern_spec,
         )
 
     # -------------------------------------------------------- history ops

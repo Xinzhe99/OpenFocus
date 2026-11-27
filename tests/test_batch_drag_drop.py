@@ -774,7 +774,7 @@ def test_split_preview_tracks_current_reference_paths(qapp, tmp_path):
         paths = [str(tmp_path / name) for name in ('a.png', 'b.png', 'c.png', 'mask.png')]
         dialog.single_folder_images_with_times = [(path, None, float(i), os.path.basename(path))
                                                   for i, path in enumerate(paths)]
-        dialog.split_method_combo.setCurrentIndex(0)
+        dialog.split_method_combo.setCurrentIndex(dialog.split_method_combo.findData('count'))
         dialog.param_spinbox.setValue(2)
         dialog.sensor_cleanup.path.setText(paths[3])
         assert [[entry[0] for entry in stack] for stack in dialog.single_folder_stacks] == [paths[:2], paths[2:3]]

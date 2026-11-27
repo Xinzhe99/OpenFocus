@@ -499,6 +499,7 @@ def test_compare_dialog_cancels_display_workers_and_guards_finalize(qapp):
         _display_workers={"openfocus_a": FakeDisplayWorker(), "gff": FakeDisplayWorker()},
         _results={"openfocus_a": {"key": 1}},
         _full_results={"openfocus_a": {"key": 1}},
+        _reused_full={"openfocus_a": {"key": 1}},
         _errors={"openfocus_a": (1, "err")},
         _stale_methods=set(),
     )
@@ -508,6 +509,7 @@ def test_compare_dialog_cancels_display_workers_and_guards_finalize(qapp):
     assert len(cancelled) == 2
     assert dummy._results == {}
     assert dummy._full_results == {}
+    assert dummy._reused_full == {}
     assert dummy._errors == {}
     assert dummy._stale_methods == {"openfocus_a"}
 
