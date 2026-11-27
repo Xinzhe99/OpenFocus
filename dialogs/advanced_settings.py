@@ -4,8 +4,8 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from utils.file_dialogs import FileDialog
 from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QFrame,
-    QHBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea, QTabWidget, QToolButton,
-    QVBoxLayout, QWidget,
+    QGridLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea,
+    QTabWidget, QToolButton, QVBoxLayout, QWidget,
 )
 
 from constants import (
@@ -78,6 +78,7 @@ class AdvancedSettingsDialog(QDialog):
 
     _gallery_cache_usage_ready = pyqtSignal(int, int)
     _gallery_cache_cleared = pyqtSignal(int, int, int)
+    _dev_key_verify_finished = pyqtSignal(int, object)
 
     def __init__(self, window, parent=None):
         super().__init__(parent or window)
@@ -86,11 +87,19 @@ class AdvancedSettingsDialog(QDialog):
         self._gallery_cache_scanned = False
         self._gallery_cache_scan_seq = 0
         self._gallery_tab_index: int | None = None
+        self._gallery_scroll_page: QScrollArea | None = None
+        self._developer_scroll_page: QScrollArea | None = None
+        self._dev_verify_seq = 0
+        self._dev_verifying = False
+        self._dev_key_verifier = None
         self._gallery_cache_usage_ready.connect(
             self._on_gallery_cache_usage_ready, Qt.ConnectionType.QueuedConnection
         )
         self._gallery_cache_cleared.connect(
             self._on_gallery_cache_cleared, Qt.ConnectionType.QueuedConnection
+        )
+        self._dev_key_verify_finished.connect(
+            self._on_dev_key_verify_finished, Qt.ConnectionType.QueuedConnection
         )
         self.setWindowTitle(trans.t("advanced_settings_title"))
         self.resize(min(700, self.screen().availableGeometry().width()), 400)
@@ -99,11 +108,8 @@ class AdvancedSettingsDialog(QDialog):
         self.tabs = QTabWidget()
         self.tabs.setProperty('controlId', 'advanced_settings_tabs')
         root.addWidget(self.tabs, 1)
-        for key, build in (("advanced_tab_general", self._build_general),
-                           ("group_fusion", self._build_fusion),
-                           ("advanced_tab_registration", self._build_registration),
-                           ("advanced_tab_other", self._build_startup),
-                           ("gallery_settings_tab", self._build_gallery)):
+
+        def _make_scroll_page(build_fn):
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)
             scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -111,12 +117,29 @@ class AdvancedSettingsDialog(QDialog):
             layout = QVBoxLayout(page)
             layout.setContentsMargins(14, 10, 14, 10)
             layout.setSpacing(10)
-            build(layout)
+            build_fn(layout)
             layout.addStretch()
             scroll.setWidget(page)
-            tab_idx = self.tabs.addTab(scroll, trans.t(key))
-            if key == "gallery_settings_tab":
-                self._gallery_tab_index = tab_idx
+            return scroll
+
+        for key, build in (("advanced_tab_general", self._build_general),
+                           ("group_fusion", self._build_fusion),
+                           ("advanced_tab_registration", self._build_registration),
+                           ("advanced_tab_other", self._build_startup)):
+            self.tabs.addTab(_make_scroll_page(build), trans.t(key))
+
+        from core.developer_options import is_community_enabled
+        self._gallery_scroll_page = _make_scroll_page(self._build_gallery)
+        if is_community_enabled():
+            self._gallery_tab_index = self.tabs.addTab(
+                self._gallery_scroll_page, trans.t("gallery_settings_tab")
+            )
+        else:
+            self._gallery_scroll_page.setParent(self)
+            self._gallery_scroll_page.hide()
+
+        self._developer_scroll_page = _make_scroll_page(self._build_developer_options)
+        self.tabs.addTab(self._developer_scroll_page, trans.t("developer_options_tab"))
         self._initial_fields = self._field_values()
 
         self.status = QLabel()
@@ -218,11 +241,53 @@ class AdvancedSettingsDialog(QDialog):
         self.output_prefix.setMaxLength(40)
         self.output_prefix.setToolTip(trans.t("output_prefix_hint"))
         output.addRow(trans.t("output_prefix_label"), self.output_prefix)
+
+        from core.filename_template import DEFAULT_FILENAME_TEMPLATE, TEMPLATE_TOKENS
+        template_row = QWidget()
+        template_row_lay = QHBoxLayout(template_row)
+        template_row_lay.setContentsMargins(0, 0, 0, 0)
+        template_row_lay.setSpacing(6)
+        self.output_template = QLineEdit(getattr(w, "output_filename_template", "") or "")
+        self.output_template.setProperty("controlId", "edit_output_template")
+        self.output_template.setMaxLength(160)
+        self.output_template.setPlaceholderText(DEFAULT_FILENAME_TEMPLATE)
+        self.output_template.setToolTip(trans.t("output_template_hint"))
+        template_row_lay.addWidget(self.output_template, 1)
+        self.btn_reset_template = QPushButton(trans.t("output_template_clear"))
+        self.btn_reset_template.clicked.connect(self.output_template.clear)
+        template_row_lay.addWidget(self.btn_reset_template)
+        output.addRow(trans.t("output_template_label"), template_row)
+
+        chips_host = QWidget()
+        chips_grid = QGridLayout(chips_host)
+        chips_grid.setContentsMargins(0, 0, 0, 0)
+        chips_grid.setHorizontalSpacing(4)
+        chips_grid.setVerticalSpacing(4)
+        self.template_token_buttons: dict[str, QPushButton] = {}
+        cols = 4
+        for idx, token in enumerate(TEMPLATE_TOKENS):
+            chip = QPushButton(token)
+            chip.setProperty("controlId", f"token_chip_{token.strip('[]').lower()}")
+            chip.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+            chip.setToolTip(token)
+            chip.setStyleSheet("padding: 2px 6px; font-size: 9pt;")
+            chip.clicked.connect(lambda _checked=False, tok=token: self._insert_template_token(tok))
+            chips_grid.addWidget(chip, idx // cols, idx % cols)
+            self.template_token_buttons[token] = chip
+        output.addRow(trans.t("output_template_tokens_label"), chips_host)
+
         self.output_prefix_preview = QLabel()
         self.output_prefix_preview.setWordWrap(True)
         output.addRow(trans.t("output_prefix_preview"), self.output_prefix_preview)
         self.output_prefix.textChanged.connect(self._update_output_prefix_preview)
+        self.output_template.textChanged.connect(self._update_output_prefix_preview)
         self._update_output_prefix_preview()
+
+        self.chk_render_complete_sound = QCheckBox(trans.t("render_complete_sound_label"))
+        self.chk_render_complete_sound.setProperty("controlId", "chk_render_complete_sound")
+        self.chk_render_complete_sound.setChecked(bool(getattr(w, "render_complete_sound", False)))
+        self.chk_render_complete_sound.setToolTip(trans.t("render_complete_sound_hint"))
+        output.addRow(self.chk_render_complete_sound)
 
         from core.raw_develop import load_raw_develop_settings
         raw_cfg = load_raw_develop_settings()
@@ -529,6 +594,321 @@ class AdvancedSettingsDialog(QDialog):
         storage.addRow("", usage_row)
         self._update_gallery_cache_usage_label()
 
+    def _build_developer_options(self, page_lay):
+        _note(page_lay, trans.t("dev_options_intro"))
+
+        self.dev_status_card = QFrame()
+        self.dev_status_card.setObjectName("devStatusCard")
+        self.dev_status_card.setProperty("controlId", "dev_status_card")
+        card_lay = QVBoxLayout(self.dev_status_card)
+        card_lay.setContentsMargins(12, 10, 12, 10)
+        card_lay.setSpacing(6)
+
+        badge_row = QHBoxLayout()
+        badge_row.setContentsMargins(0, 0, 0, 0)
+        badge_row.setSpacing(8)
+        self.lbl_dev_status_badge = QLabel()
+        self.lbl_dev_status_badge.setObjectName("devStatusBadge")
+        self.lbl_dev_status_badge.setProperty("controlId", "lbl_developer_status_badge")
+        badge_row.addWidget(self.lbl_dev_status_badge, 0, Qt.AlignmentFlag.AlignLeft)
+        badge_row.addStretch(1)
+        card_lay.addLayout(badge_row)
+
+        self.lbl_dev_status_detail = QLabel()
+        self.lbl_dev_status_detail.setObjectName("devStatusDetail")
+        self.lbl_dev_status_detail.setProperty("controlId", "lbl_developer_status_detail")
+        self.lbl_dev_status_detail.setWordWrap(True)
+        card_lay.addWidget(self.lbl_dev_status_detail)
+        page_lay.addWidget(self.dev_status_card)
+
+        key_form = _section(page_lay, trans.t("dev_key_section"))
+        key_row = QWidget()
+        key_lay = QHBoxLayout(key_row)
+        key_lay.setContentsMargins(0, 0, 0, 0)
+        key_lay.setSpacing(6)
+        self.edit_dev_key = QLineEdit()
+        self.edit_dev_key.setObjectName("edit_developer_key")
+        self.edit_dev_key.setProperty("controlId", "edit_developer_key")
+        self.edit_dev_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self.edit_dev_key.setPlaceholderText(trans.t("dev_key_placeholder"))
+        self.edit_dev_key.returnPressed.connect(self._start_dev_key_verify)
+        key_lay.addWidget(self.edit_dev_key, 1)
+
+        self.btn_dev_key_toggle = QPushButton(trans.t("dev_key_show"))
+        self.btn_dev_key_toggle.setObjectName("btn_developer_key_toggle")
+        self.btn_dev_key_toggle.setProperty("controlId", "btn_developer_key_toggle")
+        self.btn_dev_key_toggle.setCheckable(True)
+        self.btn_dev_key_toggle.toggled.connect(self._toggle_dev_key_visibility)
+        key_lay.addWidget(self.btn_dev_key_toggle)
+        key_form.addRow(trans.t("dev_key_label"), key_row)
+
+        actions_row = QWidget()
+        actions_lay = QHBoxLayout(actions_row)
+        actions_lay.setContentsMargins(0, 0, 0, 0)
+        actions_lay.setSpacing(8)
+        self.btn_dev_verify = QPushButton(trans.t("dev_key_verify_btn"))
+        self.btn_dev_verify.setObjectName("primaryButton")
+        self.btn_dev_verify.setProperty("controlId", "btn_developer_verify")
+        self.btn_dev_verify.clicked.connect(self._start_dev_key_verify)
+        actions_lay.addWidget(self.btn_dev_verify)
+
+        self.btn_dev_lock = QPushButton(trans.t("dev_key_lock_btn"))
+        self.btn_dev_lock.setObjectName("btn_developer_lock")
+        self.btn_dev_lock.setProperty("controlId", "btn_developer_lock")
+        self.btn_dev_lock.clicked.connect(self._lock_and_clear_dev_key)
+        actions_lay.addWidget(self.btn_dev_lock)
+        actions_lay.addStretch(1)
+        key_form.addRow("", actions_row)
+
+        self.lbl_dev_feedback = QLabel()
+        self.lbl_dev_feedback.setObjectName("lbl_developer_feedback")
+        self.lbl_dev_feedback.setProperty("controlId", "lbl_developer_feedback")
+        self.lbl_dev_feedback.setWordWrap(True)
+        self.lbl_dev_feedback.setTextFormat(Qt.TextFormat.PlainText)
+        self.lbl_dev_feedback.hide()
+        page_lay.addWidget(self.lbl_dev_feedback)
+
+        features = _section(page_lay, trans.t("dev_features_section"))
+        self.chk_dev_community = QCheckBox(trans.t("dev_feature_community"))
+        self.chk_dev_community.setObjectName("chk_developer_community")
+        self.chk_dev_community.setProperty("controlId", "chk_developer_community")
+        self.chk_dev_community.toggled.connect(self._on_dev_community_toggled)
+        features.addRow(self.chk_dev_community)
+        self.lbl_dev_community_hint = _note(page_lay, trans.t("dev_feature_community_hint"))
+
+        self._refresh_developer_ui(sync_checkbox=True)
+
+    def _current_theme_palette(self) -> dict[str, str]:
+        from ui import styles
+        from utils.design_tokens import palette
+        theme = getattr(self.window_main, "ui_theme", None) or styles.CURRENT_THEME or "light"
+        return palette(str(theme))
+
+    def _toggle_dev_key_visibility(self, visible: bool) -> None:
+        self.edit_dev_key.setEchoMode(
+            QLineEdit.EchoMode.Normal if visible else QLineEdit.EchoMode.Password
+        )
+        self.btn_dev_key_toggle.setText(trans.t("dev_key_hide") if visible else trans.t("dev_key_show"))
+
+    def _set_dev_feedback(self, text: str, *, tone: str = "muted") -> None:
+        if not text:
+            self.lbl_dev_feedback.clear()
+            self.lbl_dev_feedback.hide()
+            return
+        p = self._current_theme_palette()
+        color_map = {
+            "success": p["success"],
+            "danger": p["danger"],
+            "muted": p["textMuted"],
+        }
+        color = color_map.get(tone, p["textMuted"])
+        self.lbl_dev_feedback.setStyleSheet(f"color: {color};")
+        self.lbl_dev_feedback.setText(text)
+        self.lbl_dev_feedback.show()
+
+    def _is_gallery_tab_visible(self) -> bool:
+        return (
+            self._gallery_scroll_page is not None
+            and self.tabs.indexOf(self._gallery_scroll_page) >= 0
+        )
+
+    def _sync_gallery_tab_visibility(self, visible: bool) -> None:
+        if self._gallery_scroll_page is None:
+            return
+        current_widget = self.tabs.currentWidget()
+        existing_idx = self.tabs.indexOf(self._gallery_scroll_page)
+        if visible:
+            if existing_idx < 0:
+                dev_idx = (
+                    self.tabs.indexOf(self._developer_scroll_page)
+                    if self._developer_scroll_page is not None
+                    else self.tabs.count()
+                )
+                insert_idx = dev_idx if dev_idx >= 0 else self.tabs.count()
+                self._gallery_tab_index = self.tabs.insertTab(
+                    insert_idx, self._gallery_scroll_page, trans.t("gallery_settings_tab")
+                )
+                if current_widget is not None and self.tabs.indexOf(current_widget) >= 0:
+                    self.tabs.setCurrentWidget(current_widget)
+            else:
+                self._gallery_tab_index = existing_idx
+        else:
+            if existing_idx >= 0:
+                self.tabs.removeTab(existing_idx)
+                self._gallery_scroll_page.setParent(self)
+                self._gallery_scroll_page.hide()
+                if current_widget is not None and self.tabs.indexOf(current_widget) >= 0:
+                    self.tabs.setCurrentWidget(current_widget)
+            self._gallery_tab_index = None
+
+    def _refresh_developer_ui(self, *, sync_checkbox: bool = False) -> None:
+        from core.developer_options import (
+            FEATURE_COMMUNITY,
+            is_community_enabled,
+            load_developer_grant,
+        )
+
+        grant = load_developer_grant()
+        unlocked = grant is not None and grant.is_active()
+        has_community = grant is not None and grant.has_feature(FEATURE_COMMUNITY)
+        p = self._current_theme_palette()
+
+        self.dev_status_card.setStyleSheet(
+            f"QFrame#devStatusCard {{ background-color: {p['surfaceSunken']}; "
+            f"border: 1px solid {p['border']}; border-radius: 8px; }}"
+        )
+        if unlocked:
+            self.lbl_dev_status_badge.setText(trans.t("dev_status_unlocked"))
+            self.lbl_dev_status_badge.setStyleSheet(
+                f"QLabel#devStatusBadge {{ background-color: {p['successSoft']}; "
+                f"color: {p['success']}; border: 1px solid {p['success']}; "
+                f"border-radius: 6px; padding: 2px 10px; font-weight: 600; }}"
+            )
+            prefix = grant.key_prefix or "—"
+            label = grant.label or "Developer"
+            features_str = ", ".join(grant.features)
+            if grant.expires_at:
+                detail = trans.t("dev_status_unlocked_expires").format(
+                    prefix=prefix,
+                    label=label,
+                    features=features_str,
+                    expires=grant.expires_at,
+                )
+            else:
+                detail = trans.t("dev_status_unlocked_detail").format(
+                    prefix=prefix,
+                    label=label,
+                    features=features_str,
+                )
+            self.lbl_dev_status_detail.setText(detail)
+            self.lbl_dev_status_detail.setStyleSheet(f"color: {p['text']};")
+        else:
+            self.lbl_dev_status_badge.setText(trans.t("dev_status_locked"))
+            self.lbl_dev_status_badge.setStyleSheet(
+                f"QLabel#devStatusBadge {{ background-color: {p['surfaceHover']}; "
+                f"color: {p['textMuted']}; border: 1px solid {p['borderStrong']}; "
+                f"border-radius: 6px; padding: 2px 10px; font-weight: 600; }}"
+            )
+            self.lbl_dev_status_detail.setText(trans.t("dev_status_locked_detail"))
+            self.lbl_dev_status_detail.setStyleSheet(f"color: {p['textMuted']};")
+
+        self.btn_dev_verify.setEnabled(not self._dev_verifying)
+        self.edit_dev_key.setEnabled(not self._dev_verifying)
+        self.btn_dev_key_toggle.setEnabled(not self._dev_verifying)
+        self.btn_dev_lock.setEnabled(unlocked and not self._dev_verifying)
+        self.chk_dev_community.setEnabled(has_community and not self._dev_verifying)
+        self.chk_dev_community.setToolTip(
+            "" if has_community else trans.t("dev_feature_requires_unlock")
+        )
+        if sync_checkbox:
+            self.chk_dev_community.blockSignals(True)
+            self.chk_dev_community.setChecked(bool(has_community and is_community_enabled()))
+            self.chk_dev_community.blockSignals(False)
+        elif not has_community and self.chk_dev_community.isChecked():
+            self.chk_dev_community.blockSignals(True)
+            self.chk_dev_community.setChecked(False)
+            self.chk_dev_community.blockSignals(False)
+
+        self._sync_gallery_tab_visibility(has_community and self.chk_dev_community.isChecked())
+
+    def _on_dev_community_toggled(self, checked: bool) -> None:
+        from core.developer_options import FEATURE_COMMUNITY, has_developer_grant
+
+        allowed = bool(checked) and has_developer_grant(FEATURE_COMMUNITY)
+        self._sync_gallery_tab_visibility(allowed)
+        self._fit_page()
+
+    def _start_dev_key_verify(self) -> None:
+        if self._dev_verifying:
+            return
+        raw_key = self.edit_dev_key.text().strip()
+        if not raw_key:
+            self._set_dev_feedback(trans.t("dev_key_err_empty"), tone="danger")
+            self.edit_dev_key.setFocus()
+            self._fit_page()
+            return
+
+        self._dev_verify_seq += 1
+        seq = self._dev_verify_seq
+        self._dev_verifying = True
+        self._set_dev_feedback(trans.t("dev_key_verifying"), tone="muted")
+        self._refresh_developer_ui(sync_checkbox=False)
+        self._fit_page()
+
+        bearer = None
+        client = getattr(self.window_main, "_account_client", None)
+        if client is not None and hasattr(client, "is_signed_in"):
+            try:
+                if client.is_signed_in() and hasattr(client, "token"):
+                    bearer = client.token()
+            except Exception:
+                bearer = None
+
+        verifier = self._dev_key_verifier
+
+        def _worker() -> None:
+            from core import developer_options as _dev_opts
+            fn = verifier or _dev_opts.verify_developer_key_remote
+            try:
+                result = fn(raw_key, bearer_token=bearer)
+            except TypeError:
+                result = fn(raw_key)
+            except Exception:
+                result = _dev_opts.DeveloperKeyVerificationResult(
+                    ok=False,
+                    valid=False,
+                    status="unreachable",
+                    error_code="network_error",
+                    network_error=True,
+                )
+            try:
+                self._dev_key_verify_finished.emit(seq, (raw_key, result))
+            except RuntimeError:
+                pass
+
+        threading.Thread(target=_worker, daemon=True, name="openfocus-dev-verify").start()
+
+    def _on_dev_key_verify_finished(self, seq: int, payload: object) -> None:
+        if seq != self._dev_verify_seq:
+            return
+        self._dev_verifying = False
+        raw_key, result = payload
+        if getattr(result, "valid", False) and getattr(result, "grant", None) is not None:
+            from core.developer_options import save_developer_grant
+            save_developer_grant(result.grant, key=raw_key)
+            self.edit_dev_key.clear()
+            self._set_dev_feedback(trans.t("dev_key_verified_ok"), tone="success")
+        else:
+            status_name = str(getattr(result, "status", "") or "").lower()
+            err_code = str(getattr(result, "error_code", "") or "").lower()
+            if status_name == "expired" or "expired" in err_code:
+                msg = trans.t("dev_key_err_expired")
+            elif status_name == "rate_limited" or err_code == "rate_limited":
+                msg = trans.t("dev_key_err_rate_limited")
+            elif status_name == "unreachable" or getattr(result, "network_error", False):
+                msg = trans.t("dev_key_err_network")
+            else:
+                msg = trans.t("dev_key_err_invalid")
+            self._set_dev_feedback(msg, tone="danger")
+        self._refresh_developer_ui(sync_checkbox=False)
+        self._fit_page()
+
+    def _lock_and_clear_dev_key(self) -> None:
+        if self._dev_verifying:
+            return
+        from core.developer_options import clear_developer_grant
+
+        clear_developer_grant()
+        self.edit_dev_key.clear()
+        self._set_dev_feedback(trans.t("dev_key_locked_msg"), tone="muted")
+        self._refresh_developer_ui(sync_checkbox=True)
+        if hasattr(self, "_initial_fields") and isinstance(self._initial_fields, dict):
+            self._initial_fields["dev_community_enabled"] = False
+        apply_community = getattr(self.window_main, "apply_community_feature_state", None)
+        if callable(apply_community):
+            apply_community(start_remote=False)
+        self._fit_page()
+
     def _browse_gallery_download_dir(self):
         start_dir = self.gallery_download_dir.text().strip() or self.gallery_download_dir.placeholderText()
         path = FileDialog.getExistingDirectory(self, trans.t("gallery_settings_download_dir"), start_dir)
@@ -676,13 +1056,35 @@ class AdvancedSettingsDialog(QDialog):
         self.spin_overlap.setMaximum(
             min(TILE_OVERLAP_MAX, max(0, int(block)) // 2))
 
+    def _insert_template_token(self, token: str) -> None:
+        """Insert a template token at the cursor position with a clean separator."""
+        current = self.output_template.text()
+        pos = self.output_template.cursorPosition()
+        before = current[:pos]
+        after = current[pos:]
+        insert_text = token
+        if before and not before.endswith(("_", "-", " ", "/")):
+            insert_text = "_" + insert_text
+        if after and not after.startswith(("_", "-", " ", "/")):
+            insert_text = insert_text + "_"
+        updated = before + insert_text + after
+        self.output_template.setText(updated)
+        self.output_template.setCursorPosition(len(before + insert_text))
+        self.output_template.setFocus()
+
     def _update_output_prefix_preview(self):
         prefix = self.output_prefix.text()
         if not valid_output_prefix(prefix):
             self.output_prefix_preview.setText(trans.t("output_prefix_hint"))
             return
-        self.output_prefix_preview.setText(prefix_output_name(
-            prefix, "OpenFocus_20261015_120000_Method_Align.png"))
+        template = self.output_template.text().strip() if hasattr(self, "output_template") else ""
+        if template:
+            from core.filename_template import example_template_context, format_output_filename
+            rendered = format_output_filename(template, example_template_context())
+            self.output_prefix_preview.setText(prefix_output_name(prefix, f"{rendered}.png"))
+        else:
+            self.output_prefix_preview.setText(prefix_output_name(
+                prefix, "OpenFocus_20261015_120000_Method_Align.png"))
 
     def _show_error(self, message, field):
         for panel, disclosure in ((self.manual_tile_panel, self.manual_tile_disclosure),
@@ -710,6 +1112,8 @@ class AdvancedSettingsDialog(QDialog):
             'resource_preference': self.combo_resources.currentData(),
             'reg_downscale_width': int(self.spin_reg_width.value()),
             'output_name_prefix': self.output_prefix.text(),
+            'output_filename_template': self.output_template.text().strip(),
+            'render_complete_sound': self.chk_render_complete_sound.isChecked(),
             'restore_last_stack': self.chk_restore.isChecked(),
             'ask_load_scale': self.chk_ask_scale.isChecked(),
             'defect_mask_path': self.sensor_cleanup.path.text().strip(),
@@ -727,18 +1131,20 @@ class AdvancedSettingsDialog(QDialog):
             'gallery_download_dir': self.gallery_download_dir.text().strip(),
             'gallery_cache_dir': self.gallery_cache_dir.text().strip(),
             'gallery_cache_max_mb': int(self.spin_gallery_cache_limit.value()),
+            'dev_community_enabled': self.chk_dev_community.isChecked(),
             'raw_dng_converter_path': self.raw_dng_converter_path.text().strip(),
         }
 
     def _apply(self):
         w = self.window_main
         spins = [editor for editor, _ in self._tile_fields.values() if editor.isEnabled()]
-        spins.extend([
-            self.spin_reg_width,
-            self.spin_danmaku_font_size,
-            self.spin_danmaku_opacity,
-            self.spin_gallery_cache_limit,
-        ])
+        spins.append(self.spin_reg_width)
+        if self._is_gallery_tab_visible():
+            spins.extend([
+                self.spin_danmaku_font_size,
+                self.spin_danmaku_opacity,
+                self.spin_gallery_cache_limit,
+            ])
         if self.chk_experimental_features.isChecked():
             spins.extend(editor for editor in self.openfocus_registration_panel.editors.values()
                          if isinstance(editor, StepperSpinBox))
@@ -785,6 +1191,7 @@ class AdvancedSettingsDialog(QDialog):
         auto_download = draft.pop('auto_download', None)
         include_beta = draft.pop('include_beta', None)
         share_usage = draft.pop('share_usage', None)
+        dev_community_enabled = draft.pop('dev_community_enabled', None)
         danmaku_keys = (
             'danmaku_enabled', 'danmaku_position', 'danmaku_font_size',
             'danmaku_opacity_pct', 'danmaku_density', 'danmaku_translation_mode',
@@ -902,6 +1309,12 @@ class AdvancedSettingsDialog(QDialog):
         analytics = getattr(w, "usage_analytics", None)
         if analytics is not None and share_usage is not None:
             analytics.set_enabled(share_usage)
+        if dev_community_enabled is not None:
+            from core.developer_options import FEATURE_COMMUNITY, set_developer_feature_enabled
+            set_developer_feature_enabled(FEATURE_COMMUNITY, bool(dev_community_enabled))
+            apply_community = getattr(w, "apply_community_feature_state", None)
+            if callable(apply_community):
+                apply_community()
         gallery = getattr(w, "gallery_controller", None)
         if danmaku_changed:
             from controllers.gallery_controller import persist_danmaku_settings
@@ -943,7 +1356,8 @@ class AdvancedSettingsDialog(QDialog):
             key for key in draft if previous[key] != draft[key]),
             usage_enabled=self.chk_usage.isChecked())
         processing = set(draft) - {'experimental_features', 'auto_error_reports', 'restore_last_stack',
-                                   'ask_load_scale', 'output_name_prefix', 'storage_directory'}
+                                   'ask_load_scale', 'output_name_prefix', 'output_filename_template',
+                                   'render_complete_sound', 'storage_directory'}
         if any(previous[key] != draft[key] for key in processing):
             mark_dirty = getattr(w, "_mark_project_dirty", None)
             if mark_dirty is not None:

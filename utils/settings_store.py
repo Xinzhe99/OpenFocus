@@ -91,6 +91,8 @@ _PERSISTED_FIELDS = {
     "use_gpu": ("rendering/use_gpu", True, "bool"),
     "align_cache_enabled": ("rendering/align_cache_enabled", True, "bool"),
     "output_name_prefix": ("export/name_prefix", "", "str"),
+    "output_filename_template": ("export/filename_template", "", "str"),
+    "render_complete_sound": ("ui/render_complete_sound", False, "bool"),
     "restore_last_stack": ("ui/restore_last_stack", False, "bool"),
     "experimental_features": ("ui/experimental_features", False, "bool"),
     "auto_error_reports": (REPORTS_AUTO_SEND_KEY, True, "bool"),

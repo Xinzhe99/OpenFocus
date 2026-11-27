@@ -438,24 +438,28 @@ def load_linear_raw(path, scale_factor=1.0, *, before_decode=None, develop_setti
             before_decode(width, height)
         # RawPy's sensor properties implicitly unpack, so admit that allocation
         # before inspecting the mosaic or choosing a postprocess route.
-        require_memory(width * height * 16)
+        require_memory(width * height * 8)
         raw.unpack()
         # Bayer half-size decoding combines each sensor block before demosaic.
         # Other mosaics and LinearRaw DNGs keep the full-resolution path.
         pattern = raw.raw_pattern if raw.raw_type == rawpy.RawType.Flat else None
         half_size = (scale_factor <= 0.5 and pattern is not None
                      and np.shape(pattern) == (2, 2))
+        output_width, output_height = sizes.width, sizes.height
+        if aspect < 1:
+            output_height = round(output_height / aspect)
+        elif aspect > 1:
+            output_width = round(output_width * aspect)
+        if sizes.flip in (4, 5, 6, 7):
+            output_width, output_height = output_height, output_width
+        target_size = (max(1, int(output_width * scale_factor)),
+                       max(1, int(output_height * scale_factor)))
         if half_size:
-            output_width, output_height = sizes.width, sizes.height
-            if aspect < 1:
-                output_height = round(output_height / aspect)
-            elif aspect > 1:
-                output_width = round(output_width * aspect)
-            if sizes.flip in (4, 5, 6, 7):
-                output_width, output_height = output_height, output_width
-            target_size = (max(1, int(output_width * scale_factor)),
-                           max(1, int(output_height * scale_factor)))
-        require_memory(width * height * 24 if half_size else raw_decode_bytes(width, height))
+            half_output = ((output_width + 1) // 2) * ((output_height + 1) // 2) * 6
+            require_memory(width * height * 4 + half_output)
+        else:
+            full_output = max(1, int(output_width)) * max(1, int(output_height)) * 6
+            require_memory(raw_decode_bytes(width, height, full_output, os.path.getsize(path)))
         if raw.num_colors != 3:
             raise ValueError("Only three-color RAW files are supported")
         if dng_metadata is not None:
@@ -490,20 +494,38 @@ def load_linear_raw(path, scale_factor=1.0, *, before_decode=None, develop_setti
         rgb = raw.postprocess(**post_kwargs)
     if rgb.dtype != np.uint16 or rgb.ndim != 3 or rgb.shape[2] != 3:
         raise ValueError("LibRaw returned an unsupported image")
-    require_memory(rgb.nbytes * 2 + 65536 * 10)
+    band_bytes = 4 << 20
+    band_rows = max(1, band_bytes // max(1, rgb.shape[1] * 6))
+    resize_width, resize_height = (target_size if half_size else
+                                   (max(1, int(rgb.shape[1] * scale_factor)),
+                                    max(1, int(rgb.shape[0] * scale_factor))))
+    resize_bytes = (resize_width * resize_height * 6
+                    if scale_factor != 1 and (rgb.shape[1], rgb.shape[0]) != (resize_width, resize_height)
+                    else 0)
+    post_scratch = (min(rgb.shape[0], band_rows) * rgb.shape[1] * 6
+                    + 65536 * 10 + resize_bytes)
+    if not (rgb.flags.c_contiguous and rgb.flags.writeable):
+        post_scratch = max(post_scratch, rgb.nbytes + resize_bytes + 65536 * 10)
+    require_memory(post_scratch)
     # LibRaw has subtracted the channel black levels, but no_auto_scale leaves
-    # the remaining sensor range unscaled. A LUT avoids a full float image.
+    # the remaining sensor range unscaled. Apply the LUT in bounded row bands
+    # in place to avoid allocating a second full-size 16-bit frame.
     if white != 65535:
         lut = np.minimum(np.rint(np.arange(65536, dtype=np.float64) *
                                  (65535.0 / white)), 65535).astype(np.uint16)
-        rgb = lut[rgb]
-    if scale_factor != 1:
-        width, height = (target_size if half_size else
-                         (max(1, int(rgb.shape[1] * scale_factor)),
-                          max(1, int(rgb.shape[0] * scale_factor))))
-        rgb = cv2.resize(rgb, (width, height), interpolation=cv2.INTER_AREA)
-    # Three uint16 channels, checked above: OpenCV's swap returns the pixels of
-    # a reversed NumPy copy several times faster.
+        if rgb.flags.writeable:
+            for start in range(0, rgb.shape[0], band_rows):
+                stop = min(rgb.shape[0], start + band_rows)
+                rgb[start:stop] = lut[rgb[start:stop]]
+        else:
+            rgb = lut[rgb]
+    if scale_factor != 1 and (rgb.shape[1], rgb.shape[0]) != (resize_width, resize_height):
+        rgb = cv2.resize(rgb, (resize_width, resize_height), interpolation=cv2.INTER_AREA)
+    # Swap RGB to BGR in place on the owned buffer using bounded 4 MiB bands.
+    if rgb.flags.c_contiguous and rgb.flags.writeable:
+        from core.image_loader import _exchange_red_blue
+        _exchange_red_blue(rgb)
+        return rgb, metadata
     return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR), metadata
 
 

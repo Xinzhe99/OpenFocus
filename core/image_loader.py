@@ -104,9 +104,24 @@ def source_dimensions(path, page=None):
 
 def admit_image_decode(path, *, user_limit=None):
     """Reserve encoded and decoded working space before reading image pixels."""
-    from core.resource_policy import require_memory
+    from core.resource_policy import raw_decode_bytes, raw_sensor_shape, require_memory
 
-    encoded_bytes = os.path.getsize(path) * 2
+    file_size = os.path.getsize(path)
+    if is_raw_source(path):
+        if not RAWPY_AVAILABLE:
+            raise ValueError('Camera RAW support is unavailable (rawpy/LibRaw).')
+        require_memory(file_size, user_limit=user_limit)
+        with rawpy.RawPy() as raw:
+            raw.open_file(os.fspath(path))
+            sizes = raw.sizes
+            sensor_height, sensor_width = raw_sensor_shape(sizes)
+            output_bytes = max(1, int(sizes.width)) * max(1, int(sizes.height)) * 6
+        require_memory(
+            raw_decode_bytes(sensor_width, sensor_height, output_bytes, file_size),
+            user_limit=user_limit,
+        )
+        return
+    encoded_bytes = file_size * 2
     require_memory(encoded_bytes, user_limit=user_limit)
     width, height = source_dimensions(path)
     require_memory(width * height * 32 + encoded_bytes, user_limit=user_limit)
@@ -301,6 +316,8 @@ def _stored_tiff_layout(page):
 
 def _exchange_red_blue(image):
     """Turn stored RGB samples into BGR in place, one band of rows at a time."""
+    if image.size == 0:
+        return
     rows = max(1, _TIFF_SWAP_BAND_BYTES // (image.shape[1] * 3 * image.dtype.itemsize))
     band = np.empty((min(rows, image.shape[0]),) + image.shape[1:], image.dtype)
     for start in range(0, image.shape[0], rows):
@@ -554,6 +571,13 @@ def _read_raw(path: str, scale_factor: float = 1.0, *, settings=None) -> Optiona
             target = max(1, int(width * scale_factor)), max(1, int(height * scale_factor))
             if (rgb.shape[1], rgb.shape[0]) != target:
                 rgb = cv2.resize(rgb, target, interpolation=cv2.INTER_AREA)
+        # Swap channels in place on the owned buffer to avoid a second full-size
+        # 16-bit allocation after LibRaw closes.
+        if (rgb.ndim == 3 and rgb.shape[2] == 3
+                and rgb.dtype in (np.uint8, np.uint16)
+                and rgb.flags.c_contiguous and rgb.flags.writeable):
+            _exchange_red_blue(rgb)
+            return rgb
         return rgb_to_bgr(rgb)
     except ResourceLimitError:
         raise
@@ -1996,6 +2020,26 @@ class ImageStackLoader:
         if current_stack:
             stacks.append(current_stack)
 
+        return stacks
+
+    def split_adaptive(
+        self,
+        images_with_times: list,
+        *,
+        descriptors=None,
+        thread_count: int = 0,
+        progress_callback=None,
+    ) -> list:
+        """Group consecutive frames into focus stacks using adaptive visual similarity."""
+        from core.adaptive_split import split_entries_adaptive
+
+        stacks, _descriptors, _similarities = split_entries_adaptive(
+            images_with_times,
+            descriptors=descriptors,
+            thread_count=thread_count,
+            should_cancel=self.should_cancel,
+            progress_callback=progress_callback,
+        )
         return stacks
 
     def get_stack_info(
