@@ -697,8 +697,9 @@ def _draw_watermark_on_qimage(
     image: QImage,
     attribution: str,
     enabled: bool = True,
+    position: str = "top_left",
 ) -> QImage:
-    """Thread-safe bottom-right ``© <attribution>`` watermark renderer on QImage."""
+    """Thread-safe ``© <attribution>`` watermark renderer on QImage (top-left by default)."""
     if image.isNull():
         return image
     clean_text = (attribution or "").strip()
@@ -726,8 +727,19 @@ def _draw_watermark_on_qimage(
 
     box_w = min(result.width() - margin * 2, text_rect.width() + pad_x * 2)
     box_h = text_rect.height() + pad_y * 2
-    x = max(margin, result.width() - box_w - margin)
-    y = max(margin, result.height() - box_h - margin)
+    pos = (position or "top_left").strip().lower()
+    if pos == "bottom_right":
+        x = max(margin, result.width() - box_w - margin)
+        y = max(margin, result.height() - box_h - margin)
+    elif pos == "bottom_left":
+        x = min(margin, max(0, result.width() - box_w))
+        y = max(margin, result.height() - box_h - margin)
+    elif pos == "top_right":
+        x = max(margin, result.width() - box_w - margin)
+        y = min(margin, max(0, result.height() - box_h))
+    else:  # default: top_left (clear of bottom-left author card and bottom-right HUD bar)
+        x = min(margin, max(0, result.width() - box_w))
+        y = min(margin, max(0, result.height() - box_h))
     box_rect = QRectF(float(x), float(y), float(box_w), float(box_h))
 
     pill = QPainterPath()
@@ -750,8 +762,9 @@ def render_watermark_preview(
     source: Any,
     attribution: str,
     enabled: bool = True,
+    position: str = "top_left",
 ) -> QPixmap:
-    """Render a crisp bottom-right ``© <attribution>`` watermark onto a QPixmap.
+    """Render a crisp top-left ``© <attribution>`` watermark onto a QPixmap.
 
     Supports ``QPixmap``, ``QImage``, 8-bit & 16-bit numpy arrays, bytes, or
     image paths. Returns a clean unmodified image if ``enabled`` is ``False``
@@ -765,7 +778,7 @@ def render_watermark_preview(
         img = _image_from_any(source)
         if img.isNull():
             return QPixmap()
-    rendered = _draw_watermark_on_qimage(img, attribution, enabled=enabled)
+    rendered = _draw_watermark_on_qimage(img, attribution, enabled=enabled, position=position)
     return QPixmap.fromImage(rendered)
 
 
@@ -773,7 +786,7 @@ def _encode_webp_pair(
     source: Any,
     *,
     attribution: str = "",
-    watermark_enabled: bool = True,
+    watermark_enabled: bool = False,
     media_helper: Any = None,
 ) -> tuple[bytes, bytes, dict[str, Any]]:
     """Prepare ``(thumb_webp, full_webp, meta)`` off the GUI thread."""
@@ -2694,7 +2707,7 @@ class GalleryHubDialog(QDialog):
             t_gallery("gallery_publish_watermark_enable")
         )
         _set_cid(self.watermark_enabled_check, "gallery_publish_watermark_check")
-        self.watermark_enabled_check.setChecked(True)
+        self.watermark_enabled_check.setChecked(False)
         self.watermark_enabled_check.toggled.connect(self._update_watermark_preview)
         right_col.addWidget(self.watermark_enabled_check)
 
@@ -2706,11 +2719,13 @@ class GalleryHubDialog(QDialog):
         )
         if self._current_nickname():
             self.watermark_text_edit.setText(self._current_nickname())
+        self.watermark_text_edit.setEnabled(False)
         self.watermark_text_edit.textChanged.connect(self._schedule_watermark_preview)
         wm_row.addWidget(self.watermark_text_edit, 1)
 
         self.use_nickname_btn = QPushButton(t_gallery("gallery_publish_use_nickname"))
         _set_cid(self.use_nickname_btn, "gallery_publish_use_nickname_btn")
+        self.use_nickname_btn.setEnabled(False)
         self.use_nickname_btn.clicked.connect(self._fill_watermark_with_nickname)
         wm_row.addWidget(self.use_nickname_btn)
         right_col.addLayout(wm_row)

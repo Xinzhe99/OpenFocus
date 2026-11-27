@@ -1,6 +1,6 @@
 """Client-side media preparation for OpenFocus Gallery.
 
-Handles EXIF summary extraction, crisp bottom-right attribution watermark
+Handles EXIF summary extraction, optional crisp top-left attribution watermark
 rendering, 2K WebP + bounded 512px WebP thumbnail preparation, and atomic
 WebP-to-JPEG conversion. Purely local; never touches the network.
 """
@@ -96,7 +96,7 @@ class PreparedGalleryUpload:
     sha256: str
     thumb_sha256: str
     exif: dict
-    watermark_enabled: bool = True
+    watermark_enabled: bool = False
     attribution: str = ""
     main_quality: int = DEFAULT_MAIN_QUALITY
     thumb_quality: int = DEFAULT_THUMB_QUALITY
@@ -370,8 +370,14 @@ def render_watermark(
     image_bgr_or_rgb: np.ndarray,
     attribution: str,
     enabled: bool = True,
+    position: str = "top_left",
 ) -> np.ndarray:
-    """Render a crisp bottom-right ``© <attribution>`` watermark on an image.
+    """Render a crisp ``© <attribution>`` watermark on an image.
+
+    Places the attribution badge at ``top_left`` by default so it never
+    overlaps the bottom-left author HUD or bottom-right action bar in
+    Community Showcase. Also supports ``top_right``, ``bottom_left``, and
+    ``bottom_right``.
 
     Uses a subtle translucent dark backing pill and soft drop-shadow behind
     crisp white text so the attribution stays legible on both bright and dark
@@ -423,7 +429,7 @@ def render_watermark(
     if badge_w <= 0 or badge_h <= 0:
         return arr.copy()
 
-    # Render only the bottom-right overlay patch for speed.
+    # Render only the corner overlay patch for speed.
     overlay = Image.new("RGBA", (badge_w, badge_h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
     radius = max(3, min(badge_h // 2, round(font_px * 0.35)))
@@ -440,8 +446,19 @@ def render_watermark(
     alpha = ov[:, :, 3:4] / 255.0  # (bh, bw, 1)
     rgb_val = ov[:, :, 0:1]        # Monochrome: R == G == B
 
-    x1 = max(0, w - margin - badge_w)
-    y1 = max(0, h - margin - badge_h)
+    pos = (position or "top_left").strip().lower()
+    if pos == "bottom_right":
+        x1 = max(0, w - margin - badge_w)
+        y1 = max(0, h - margin - badge_h)
+    elif pos == "bottom_left":
+        x1 = min(margin, max(0, w - badge_w))
+        y1 = max(0, h - margin - badge_h)
+    elif pos == "top_right":
+        x1 = max(0, w - margin - badge_w)
+        y1 = min(margin, max(0, h - badge_h))
+    else:  # default: top_left (clear of bottom-left author card and bottom-right HUD bar)
+        x1 = min(margin, max(0, w - badge_w))
+        y1 = min(margin, max(0, h - badge_h))
     x2 = min(w, x1 + badge_w)
     y2 = min(h, y1 + badge_h)
     pw = x2 - x1
@@ -562,7 +579,8 @@ def prepare_gallery_upload(
     source: Union[str, os.PathLike, np.ndarray, Image.Image],
     *,
     attribution: str = "",
-    watermark_enabled: bool = True,
+    watermark_enabled: bool = False,
+    watermark_position: str = "top_left",
     max_long_edge: int = DEFAULT_MAX_LONG_EDGE,
     thumb_long_edge: int = DEFAULT_THUMB_LONG_EDGE,
     quality: int = DEFAULT_MAIN_QUALITY,
@@ -575,7 +593,7 @@ def prepare_gallery_upload(
 
     1. Extracts EXIF summary (when ``source`` is a file path or PIL image).
     2. Resizes main image to at most ``max_long_edge`` px (no upscaling).
-    3. Applies optional bottom-right ``© <attribution>`` watermark.
+    3. Applies optional top-left ``© <attribution>`` watermark (off by default).
     4. Encodes main WebP and bounded ``thumb_long_edge`` WebP thumbnail
        guaranteed to stay ``<= max_thumb_bytes`` (256 KiB default).
     5. Computes SHA-256 digests and output dimensions.
@@ -602,7 +620,9 @@ def prepare_gallery_upload(
 
     main_rgb = _resize_long_edge(rgb, max_long_edge)
     if watermark_enabled and _format_watermark_label(attribution):
-        main_rgb = render_watermark(main_rgb, attribution, enabled=True)
+        main_rgb = render_watermark(
+            main_rgb, attribution, enabled=True, position=watermark_position
+        )
 
     main_q = max(1, min(100, int(quality)))
     main_webp = _encode_webp(main_rgb, quality=main_q, method=4)
