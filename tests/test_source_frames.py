@@ -1480,7 +1480,7 @@ def test_raw_frame_budget_includes_masked_sensor_margins(tmp_path):
     frame = sources.SourceFrame(str(path), 0, (1000, 1500, 3), np.dtype(np.uint16),
                                 None, sources._fingerprint(str(path)),
                                 native_shape=(4000, 6000, 3), raw_sensor_shape=(4100, 6200))
-    assert sources.frame_resolution_bytes(frame) == 4100 * 6200 * 64 + frame.nbytes + 10
+    assert sources.frame_resolution_bytes(frame) == 4100 * 6200 * 16 + frame.nbytes + 5
 
 
 def test_fast_os_check_and_jpeg_single_pass_metadata(tmp_path):

@@ -682,17 +682,32 @@ def test_webp_to_jpg_download_honor_card_upload_prompt_and_advanced_settings(int
     honor_dlg.close_btn.click()
     _wait_until(lambda: acked == ["hc_7d_01"])
 
-    # 6c. Post-fusion UploadPromptDialog respects headless guard and probability.
+    # 6c. Post-fusion UploadPromptDialog prompts after EVERY completed full fusion
+    # (no probability/cooldown suppression), routes to free Publish flow, and uses
+    # consistent "Upload to Community" / "上传到社区" wording.
     fused = np.full((32, 32, 3), 200, dtype=np.uint8)
-    apply_config_snapshot(gc.state_store, {"gallery_enabled": True, "upload_prompt_probability": 1.0,
+    apply_config_snapshot(gc.state_store, {"gallery_enabled": True, "upload_prompt_probability": 0.2,
                                            "gallery_terms_version": "2026-11-26"})
     # Skipped in offscreen/headless by default, and skipped in batch mode.
     assert gc.on_fusion_completed(fused, interactive=True) is None
     gc.allow_headless_upload_prompt = True
     assert gc.on_fusion_completed(fused, interactive=True, is_batch=True) is None
-    prompt = gc.on_fusion_completed(fused, interactive=True, is_batch=False)
-    assert prompt is not None and prompt.isVisible()
-    prompt.reject()
+
+    # Consecutive full fusions each trigger the prompt (even with old server probability 0.2).
+    prompt1 = gc.on_fusion_completed(fused, interactive=True, is_batch=False)
+    assert prompt1 is not None and prompt1.isVisible()
+    assert prompt1.upload_btn.text() == t_gallery("gallery_upload_prompt_upload")
+    prompt1.dismiss_btn.click()
+    qapp.processEvents()
+
+    prompt2 = gc.on_fusion_completed(fused, interactive=True, is_batch=False)
+    assert prompt2 is not None and prompt2.isVisible()
+    prompt2.upload_btn.click()
+    _wait_until(lambda: gc.hub_dialog is not None and gc.hub_dialog.isVisible())
+    assert gc.hub_dialog.tabs.currentIndex() == 2
+    assert len(gc.hub_dialog.publish_queue) == 1
+    assert gc.hub_dialog.publish_queue[0].openfocus_badge is True
+    gc.hub_dialog.reject()
     qapp.processEvents()
 
     # 6d. Advanced Settings Danmaku & Gallery Storage/Cache live propagation + Clear Cache.

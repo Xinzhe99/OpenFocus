@@ -180,6 +180,12 @@ void align_warp_translation_rgb_row_avx2(
     const int32_t* ix, const int32_t* jx, const uint32_t* fx, const uint8_t* inv_x,
     uint32_t fy, bool bgr_rev, int64_t src_w);
 
+// The same for one-channel rows: out[x] blends row0/row1 at ix[x] and jx[x].
+void align_warp_translation_gray_row_avx2(
+    const void* row0, const void* row1, bool is_u8, void* out_row, int64_t rw,
+    const int32_t* ix, const int32_t* jx, const uint32_t* fx, const uint8_t* inv_x,
+    uint32_t fy);
+
 // Adds the sum and the sum of squares of a_row[k] - bilinear(b)[k] for `count`
 // columns (a multiple of eight, at most 262144) whose sources are consecutive:
 // column k blends b_row[k] and b_row[k + 1] with weights[k] = gx | fx << 16.

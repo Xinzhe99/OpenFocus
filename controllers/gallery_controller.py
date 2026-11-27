@@ -831,11 +831,15 @@ class GalleryController(QObject):
 
         if not self.state_store.config.gallery_terms_version:
             return None
-        prob = float(self.state_store.config.upload_prompt_probability)
-        if prob <= 0.0:
-            return None
-        if prob < 1.0 and self._rng() >= prob:
-            return None
+
+        # Offer the lightweight Community share prompt after every completed full fusion
+        # (no cooldown throttling or permanent opt-out; simple per-run dismiss).
+        if is_qobject_alive(self._upload_prompt_dialog):
+            try:
+                self._upload_prompt_dialog.reject()
+            except Exception:
+                pass
+            self._upload_prompt_dialog = None
 
         from dialogs.gallery_hub import UploadPromptDialog
 
@@ -1027,11 +1031,13 @@ class GalleryController(QObject):
         self.danmaku_translation_mode_changed.connect(dlg.set_danmaku_translation_mode)
         dlg.download_work_requested.connect(self._download_selected_work)
         dlg.account_center_requested.connect(self.open_account_center)
+        dlg.downloads_folder_requested.connect(self.open_downloads_folder)
 
         def _on_hub_finished(_code: int) -> None:
             safe_disconnect(self.danmaku_translation_mode_changed, dlg.set_danmaku_translation_mode)
             safe_disconnect(dlg.download_work_requested, self._download_selected_work)
             safe_disconnect(dlg.account_center_requested, self.open_account_center)
+            safe_disconnect(dlg.downloads_folder_requested, self.open_downloads_folder)
             self._clear_dialog_ref("_hub_dialog", dlg)
             if not getattr(dlg, "is_publishing", False):
                 queue = getattr(dlg, "_publish_queue", None)

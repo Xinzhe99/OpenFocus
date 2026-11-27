@@ -481,7 +481,8 @@ class GpuC:
         from dataclasses import replace
         from core import resource_policy
         from core.source_frames import (
-            frame_has_mapped_pixels, frame_resolution_bytes, without_source_cache_growth,
+            SourceFrame, frame_has_mapped_pixels, frame_resolution_bytes,
+            without_source_cache_growth,
         )
         from fusion_methods._openfocus_gpu import (
             GpuError, _PreviewPlaneReader, _free_vram, _iter_prefetched, _prepare_gpu_upload,
@@ -501,11 +502,11 @@ class GpuC:
             if frame_has_mapped_pixels(frame):
                 resolution = max(resolution, frame.nbytes)
             if img_resize is None and frame.dtype in (np.uint8, np.uint16):
-                packed = isinstance(frame, np.ndarray) and (
+                packed = ((isinstance(frame, np.ndarray) and (
                     frame.flags.c_contiguous
                     or (frame.ndim == 3 and frame.shape[2] == 3
                         and frame[..., ::-1].flags.c_contiguous)
-                )
+                )) or (type(frame) is SourceFrame and frame._rgb_tiff_offset is None))
                 working = frame.nbytes * (1 if packed else 2)
             else:
                 # Legacy conversion can hold int32 codes and OpenCV's float32
