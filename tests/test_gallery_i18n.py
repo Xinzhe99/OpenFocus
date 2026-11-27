@@ -214,3 +214,32 @@ def test_lazy_gallery_translations_defers_inactive_packs():
     assert built == ["zh"]
     assert lazy["zh"] == {"k": "val-zh"}
     assert built == ["zh"]
+
+
+def test_community_naming_across_all_12_locales():
+    import re
+    from locales import _GALLERY_EXTRA_KEYS, _GALLERY_EXTRA_TEXT
+
+    forbidden = re.compile(
+        r"gallery|galerie|galer[ií]a|galleria|galerij|галере|画廊|ギャラリー|갤러리",
+        re.I,
+    )
+    for lang in GALLERY_LANGUAGES:
+        table = GALLERY_TRANSLATIONS[lang]
+        for key, value in table.items():
+            assert not forbidden.search(value), f"Legacy gallery term in {lang}.{key}: {value!r}"
+        extra = dict(zip(_GALLERY_EXTRA_KEYS, _GALLERY_EXTRA_TEXT[lang]))
+        for key, value in extra.items():
+            assert not forbidden.search(value), f"Legacy gallery term in extra {lang}.{key}: {value!r}"
+
+    assert GALLERY_TRANSLATIONS["zh"]["menu_gallery"] == "社区"
+    assert GALLERY_TRANSLATIONS["en"]["menu_gallery"] == "Community"
+    assert GALLERY_TRANSLATIONS["fr"]["menu_gallery"] == "Communauté"
+    assert GALLERY_TRANSLATIONS["pt"]["menu_gallery"] == "Comunidade"
+    assert GALLERY_TRANSLATIONS["pt"]["menu_gallery_hub"] == "Comunidade OpenFocus"
+    assert GALLERY_TRANSLATIONS["zh"]["menu_gallery_hub"] == "OpenFocus 社区"
+    assert GALLERY_TRANSLATIONS["en"]["menu_gallery_hub"] == "OpenFocus Community"
+    for lang in GALLERY_LANGUAGES:
+        if lang != "pl":
+            for key, value in GALLERY_TRANSLATIONS[lang].items():
+                assert "Społeczność" not in value, f"Polish leak in {lang}.{key}: {value!r}"

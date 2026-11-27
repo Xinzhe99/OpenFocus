@@ -72,6 +72,83 @@ def create_transient_frame(shape, dtype):
     return create_frame(shape, dtype) if image is None else image
 
 
+# macOS answers questions about a volume through diskutil, which takes from
+# 50 ms to over a second per call. Scratch selection asks the same questions
+# for every render and tile, so answers are kept while the set of mounted
+# volumes stays the same.
+_volume_facts_lock = threading.Lock()
+_volume_facts = {}
+
+
+def _mount_table_signature():
+    """Every mounted file system: where it is mounted, its device and its identity.
+
+    Mounting, unmounting or remounting any volume, at any path, changes it.
+    """
+    import ctypes
+
+    class StatFs(ctypes.Structure):  # struct statfs with 64-bit inodes
+        _fields_ = [('f_bsize', ctypes.c_uint32), ('f_iosize', ctypes.c_int32),
+                    ('f_blocks', ctypes.c_uint64), ('f_bfree', ctypes.c_uint64),
+                    ('f_bavail', ctypes.c_uint64), ('f_files', ctypes.c_uint64),
+                    ('f_ffree', ctypes.c_uint64), ('f_fsid', ctypes.c_int32 * 2),
+                    ('f_owner', ctypes.c_uint32), ('f_type', ctypes.c_uint32),
+                    ('f_flags', ctypes.c_uint32), ('f_fssubtype', ctypes.c_uint32),
+                    ('f_fstypename', ctypes.c_char * 16), ('f_mntonname', ctypes.c_char * 1024),
+                    ('f_mntfromname', ctypes.c_char * 1024), ('f_flags_ext', ctypes.c_uint32),
+                    ('f_reserved', ctypes.c_uint32 * 7)]
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    try:
+        getfsstat = libc['getfsstat$INODE64']  # Intel names the 64-bit-inode variant
+    except AttributeError:
+        getfsstat = libc.getfsstat
+    getfsstat.argtypes = (ctypes.c_void_p, ctypes.c_int, ctypes.c_int)
+    getfsstat.restype = ctypes.c_int
+    for _attempt in range(3):
+        count = getfsstat(None, 0, 2)  # MNT_NOWAIT
+        if count < 0:
+            raise OSError(ctypes.get_errno(), 'getfsstat failed')
+        entries = (StatFs * (count + 4))()
+        filled = getfsstat(entries, ctypes.sizeof(entries), 2)
+        if filled < 0:
+            raise OSError(ctypes.get_errno(), 'getfsstat failed')
+        if filled < len(entries):  # otherwise a volume was mounted meanwhile; read again
+            return tuple(sorted((entry.f_mntonname, entry.f_mntfromname, tuple(entry.f_fsid))
+                                for entry in entries[:filled]))
+    raise OSError(errno.EAGAIN, 'the mount table kept changing')
+
+
+def _forget_volume_facts():
+    with _volume_facts_lock:
+        _volume_facts.clear()
+
+
+def _mounted_volume_fact(key, query):
+    """Answer from the last complete query made with these volumes mounted.
+
+    ``query`` returns ``(value, complete)`` or raises. Only a complete answer
+    is kept, so a failed or timed-out diskutil call is asked again next time.
+    """
+    try:
+        signature = _mount_table_signature()
+    except (OSError, AttributeError, TypeError, ValueError):
+        # No getfsstat in this C library: nothing tells when volumes change.
+        return query()[0]
+    with _volume_facts_lock:
+        if _volume_facts.get('signature') != signature:
+            _volume_facts.clear()
+            _volume_facts['signature'] = signature
+        if key in _volume_facts:
+            return _volume_facts[key]
+    value, complete = query()  # outside the lock: diskutil can take seconds
+    if complete:
+        with _volume_facts_lock:
+            if _volume_facts.get('signature') == signature:
+                _volume_facts[key] = value
+    return value
+
+
 def _local_mounts():
     """Discover fixed local volumes conservatively; never infer network media."""
     if sys.platform == 'win32':
@@ -114,20 +191,25 @@ def _local_mounts():
         return mounts
     if sys.platform == 'darwin':
         import plistlib
-        mounts = []
-        try:
+
+        def query():
+            mounts, complete = [], True
             listing = plistlib.loads(subprocess.check_output(['/usr/sbin/diskutil', 'list', '-plist'], timeout=10))
             for disk in listing.get('AllDisks', []):
                 try:
                     info = plistlib.loads(subprocess.check_output(
                         ['/usr/sbin/diskutil', 'info', '-plist', disk], timeout=3))
                 except (OSError, subprocess.SubprocessError, ValueError):
+                    complete = False
                     continue
                 if info.get('Internal') is True and not info.get('RemovableMedia', True) and info.get('MountPoint'):
                     mounts.append(info['MountPoint'])
+            return mounts, complete
+
+        try:
+            return list(_mounted_volume_fact('local mounts', query))
         except (OSError, subprocess.SubprocessError, ValueError):
-            pass
-        return mounts
+            return []
     return []
 
 
@@ -160,14 +242,25 @@ def _default_is_local(path):
             return False
     if sys.platform == 'darwin':
         import plistlib
-        try:
+
+        def query():
             # diskutil accepts a device or mount point, not an arbitrary
             # temporary subdirectory (including APFS Data firmlink paths).
             usage = subprocess.check_output(['/bin/df', '-P', path], timeout=3, text=True)
             device = usage.splitlines()[-1].split()[0]
             info = plistlib.loads(subprocess.check_output(
                 ['/usr/sbin/diskutil', 'info', '-plist', device], timeout=10))
-            return info.get('Internal') is True and info.get('RemovableMedia') is False
+            return info.get('Internal') is True and info.get('RemovableMedia') is False, True
+
+        try:
+            # A symbolic link can be pointed at another volume without any
+            # mount change, so the answer belongs to the folder it reaches.
+            try:
+                resolved = os.path.realpath(path)
+                key = ('local', resolved, os.stat(resolved).st_dev)
+            except OSError:
+                return query()[0]  # nothing to key an answer by: ask each time
+            return _mounted_volume_fact(key, query)
         except (OSError, subprocess.SubprocessError, ValueError, IndexError):
             return False
     return False

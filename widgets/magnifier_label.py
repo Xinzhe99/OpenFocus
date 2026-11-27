@@ -57,6 +57,9 @@ class MagnifierLabel(QLabel):
     roiChanged = pyqtSignal(QRectF)  # Emits normalized ROI (0-1) or base coords? Let's use base coords (pixels)
     roiDeleted = pyqtSignal()
     roiModeExitRequested = pyqtSignal()  # 请求退出ROI模式（点击X按钮或右键）
+    alignRoiChanged = pyqtSignal(QRectF)
+    alignRoiCleared = pyqtSignal()
+    alignRoiModeExitRequested = pyqtSignal()
     sourceRegionRequested = pyqtSignal(object, object)  # generation key, bounded region request
     sourceRegionsReleased = pyqtSignal(object)
     viewStateChanged = pyqtSignal()
@@ -127,6 +130,44 @@ class MagnifierLabel(QLabel):
         self._roi_handle_size = 8
         self._hovering_handle = None  # None or handle ID string
 
+        # Alignment Detection Area State (visually & functionally distinct from Output ROI)
+        self._align_roi_mode = False
+        self._align_roi_rect: Optional[QRectF] = None  # In source image coordinates
+        self._align_roi_state = "none"
+        self._align_roi_start_pos = QPointF()
+        self._align_roi_original_rect = QRectF()
+        self._align_hovering_handle = None
+
+    @property
+    def align_roi_mode(self) -> bool:
+        return self._align_roi_mode
+
+    @align_roi_mode.setter
+    def align_roi_mode(self, enabled: bool):
+        self._reset_interaction()
+        self._align_roi_mode = bool(enabled)
+        self._update_cursor()
+        self.update()
+
+    def get_align_roi_rect(self) -> Optional[QRectF]:
+        """Return the current Alignment Detection Area in source image coordinates."""
+        return self._align_roi_rect
+
+    def set_align_roi_rect(self, rect: Optional[QRectF]) -> None:
+        if rect is not None and not self._source_size.isEmpty():
+            rect = self._clamp_roi_rect(rect)
+        self._align_roi_rect = rect
+        self.update()
+
+    def clear_align_roi(self) -> None:
+        had_rect = self._align_roi_rect is not None
+        self._align_roi_rect = None
+        self._align_roi_state = "none"
+        self._align_hovering_handle = None
+        if had_rect:
+            self.alignRoiCleared.emit()
+        self.update()
+
     @property
     def roi_mode(self):
         return self._roi_mode
@@ -149,8 +190,10 @@ class MagnifierLabel(QLabel):
         self._pan_button = Qt.MouseButton.NoButton
         self._last_mouse_pos = QPointF()
         self._roi_state = "none"
-        if self._hovering_handle is not None:
+        self._align_roi_state = "none"
+        if self._hovering_handle is not None or self._align_hovering_handle is not None:
             self._hovering_handle = None
+            self._align_hovering_handle = None
             self.update()
         self._last_cursor_state = None
         self.unsetCursor()
@@ -630,6 +673,15 @@ class MagnifierLabel(QLabel):
                 self.update()
                 event.accept()
                 return
+        if self._align_roi_mode and event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            if self._align_roi_rect is not None:
+                self.clear_align_roi()
+                event.accept()
+                return
+        if self._align_roi_mode and event.key() == Qt.Key.Key_Escape:
+            self.alignRoiModeExitRequested.emit()
+            event.accept()
+            return
         super().keyPressEvent(event)
 
     def mousePressEvent(self, event):
@@ -651,6 +703,41 @@ class MagnifierLabel(QLabel):
             self._last_mouse_pos = event.position()
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
             self.update()
+            event.accept()
+            return
+
+        if self._align_roi_mode and event.button() == Qt.MouseButton.LeftButton:
+            if self._base_pixmap is None:
+                return
+            pos = event.position()
+            base_pos = self._map_to_base(pos)
+            if self._align_roi_rect is not None:
+                screen_roi = self._roi_in_widget(self._align_roi_rect)
+                handles = self._get_handle_rects(screen_roi)
+                if "del" in handles and handles["del"].contains(pos):
+                    self.clear_align_roi()
+                    self.alignRoiModeExitRequested.emit()
+                    event.accept()
+                    return
+                for name, rect in handles.items():
+                    if name == "del":
+                        continue
+                    if rect.contains(pos):
+                        self._align_roi_state = f"resizing_{name}"
+                        self._align_roi_start_pos = base_pos
+                        self._align_roi_original_rect = QRectF(self._align_roi_rect)
+                        event.accept()
+                        return
+                if screen_roi.contains(pos):
+                    self._align_roi_state = "moving"
+                    self._align_roi_start_pos = base_pos
+                    self._align_roi_original_rect = QRectF(self._align_roi_rect)
+                    self.setCursor(Qt.CursorShape.SizeAllCursor)
+                    event.accept()
+                    return
+            self._align_roi_state = "creating"
+            self._align_roi_start_pos = self._clamp_point_to_source(base_pos)
+            self._align_roi_rect = None
             event.accept()
             return
 
@@ -708,6 +795,17 @@ class MagnifierLabel(QLabel):
                 return
 
         if event.button() == Qt.MouseButton.RightButton:
+            if self._align_roi_mode:
+                pos = event.position()
+                is_inside = (self._align_roi_rect is not None
+                             and self._roi_in_widget(self._align_roi_rect).contains(pos))
+                if not is_inside:
+                    self._suppress_mouse_context_menu = True
+                    self._reset_interaction()
+                    self.alignRoiModeExitRequested.emit()
+                    self.update()
+                    event.accept()
+                    return
             # 在ROI模式下，右键点击非ROI区域退出ROI模式
             if self._roi_mode:
                 pos = event.position()
@@ -770,6 +868,40 @@ class MagnifierLabel(QLabel):
                     self.update()
             event.accept()
             return
+        if self._align_roi_mode:
+            pos = event.position()
+            if self._align_roi_state != "none":
+                self._update_align_roi_drag(pos)
+                self.update()
+                return
+            if self._align_roi_rect is not None:
+                screen_roi = self._roi_in_widget(self._align_roi_rect)
+                handles = self._get_handle_rects(screen_roi)
+                cursor = Qt.CursorShape.CrossCursor
+                if handles["del"].contains(pos):
+                    self.setCursor(Qt.CursorShape.PointingHandCursor)
+                    if self._align_hovering_handle != "del":
+                        self._align_hovering_handle = "del"
+                        self.update()
+                    return
+                for name, rect in handles.items():
+                    if name == "del":
+                        continue
+                    if rect.contains(pos):
+                        cursor = (Qt.CursorShape.SizeFDiagCursor if name in ("tl", "br")
+                                  else Qt.CursorShape.SizeBDiagCursor)
+                        break
+                else:
+                    if screen_roi.contains(pos):
+                        cursor = Qt.CursorShape.SizeAllCursor
+                self.setCursor(cursor)
+                if self._align_hovering_handle is not None:
+                    self._align_hovering_handle = None
+                    self.update()
+            else:
+                self.setCursor(Qt.CursorShape.CrossCursor)
+            return
+
         if self._roi_mode:
             pos = event.position()
             if self._roi_state != "none":
@@ -825,6 +957,24 @@ class MagnifierLabel(QLabel):
         self._clamp_pan_offset()
         return self._pan_offset != previous
 
+    def _update_align_roi_drag(self, pos: QPointF) -> None:
+        base_pos = self._map_to_base(pos)
+        if self._align_roi_state == "creating":
+            point = self._clamp_point_to_source(base_pos)
+            self._align_roi_rect = QRectF(self._align_roi_start_pos, point).normalized()
+            return
+        delta = base_pos - self._align_roi_start_pos
+        rect = self._align_roi_original_rect
+        if self._align_roi_state == "moving":
+            self._align_roi_rect = self._clamp_roi_rect(rect.translated(delta), preserve_size=True)
+            return
+        corner = self._align_roi_state.split("_")[1]
+        left = rect.left() + (delta.x() if "l" in corner else 0)
+        top = rect.top() + (delta.y() if "t" in corner else 0)
+        right = rect.right() + (delta.x() if "r" in corner else 0)
+        bottom = rect.bottom() + (delta.y() if "b" in corner else 0)
+        self._align_roi_rect = self._clamp_roi_rect(QRectF(QPointF(left, top), QPointF(right, bottom)))
+
     def _update_roi_drag(self, pos: QPointF) -> None:
         base_pos = self._map_to_base(pos)
         if self._roi_state == "creating":
@@ -865,6 +1015,18 @@ class MagnifierLabel(QLabel):
             ):
                 self.customContextMenuRequested.emit(event.position().toPoint())
             return
+        if self._align_roi_mode:
+            if event.button() == Qt.MouseButton.LeftButton and self._align_roi_state != "none":
+                self._update_align_roi_drag(event.position())
+                if self._align_roi_rect is None or self._align_roi_rect.width() < 8 or self._align_roi_rect.height() < 8:
+                    self._align_roi_rect = None
+                    self.alignRoiCleared.emit()
+                else:
+                    self.alignRoiChanged.emit(self._align_roi_rect)
+                self._align_roi_state = "none"
+                self.update()
+            return
+
         if self._roi_mode:
             if event.button() == Qt.MouseButton.LeftButton and self._roi_state != "none":
                 self._update_roi_drag(event.position())
@@ -1103,6 +1265,78 @@ class MagnifierLabel(QLabel):
                 painter.fillRect(res_bg, QColor(0, 0, 0, 180))
                 painter.drawText(res_bg, Qt.AlignmentFlag.AlignCenter, res_str)
 
+        if (self._align_roi_mode or self._align_roi_rect is not None) and self._base_pixmap is not None and not self._base_pixmap.isNull():
+            amber = QColor(245, 158, 11)
+            if self._align_roi_rect is None:
+                if self._align_roi_mode:
+                    painter.fillRect(self.rect(), QColor(0, 0, 0, 100))
+                    painter.setPen(QColor(255, 255, 255))
+                    font = QFont()
+                    font.setPointSize(11)
+                    font.setBold(True)
+                    painter.setFont(font)
+                    painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, trans.t("drag_align_area_hint"))
+            else:
+                screen_roi = self._roi_in_widget(self._align_roi_rect)
+                if self._align_roi_mode:
+                    full_region = QRegion(self.rect())
+                    dim_region = full_region.subtracted(QRegion(screen_roi.toRect()))
+                    painter.save()
+                    painter.setClipRegion(dim_region)
+                    painter.fillRect(self.rect(), QColor(0, 0, 0, 80))
+                    painter.restore()
+                # Subtle translucent amber tint inside detection box
+                painter.fillRect(screen_roi, QColor(245, 158, 11, 24))
+                # Distinct dashed amber border
+                pen = QPen(amber, 2, Qt.PenStyle.DashLine)
+                pen.setDashPattern([6, 4])
+                painter.setPen(pen)
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawRect(screen_roi)
+
+                if self._align_roi_mode:
+                    handles = self._get_handle_rects(screen_roi)
+                    painter.setBrush(Qt.GlobalColor.white)
+                    painter.setPen(QPen(amber, 1.5))
+                    for name, rect in handles.items():
+                        if name == "del":
+                            continue
+                        painter.drawRect(rect)
+                    del_rect = handles["del"]
+                    if not del_rect.isEmpty():
+                        is_hover = (self._align_hovering_handle == "del")
+                        painter.setBrush(QColor(232, 17, 35) if is_hover else QColor(200, 50, 50))
+                        painter.setPen(Qt.PenStyle.NoPen)
+                        painter.drawRect(del_rect)
+                        painter.setPen(QPen(Qt.GlobalColor.white, 2))
+                        painter.drawLine(int(del_rect.left() + 4), int(del_rect.top() + 4),
+                                         int(del_rect.right() - 4), int(del_rect.bottom() - 4))
+                        painter.drawLine(int(del_rect.left() + 4), int(del_rect.bottom() - 4),
+                                         int(del_rect.right() - 4), int(del_rect.top() + 4))
+
+                # Distinct top-left badge so users never confuse with Output ROI
+                badge_font = QFont()
+                badge_font.setPointSize(9)
+                badge_font.setBold(True)
+                painter.setFont(badge_font)
+                fm = painter.fontMetrics()
+                badge_text = (
+                    f"{trans.t('align_area_badge')} · "
+                    f"{int(self._align_roi_rect.width())}×{int(self._align_roi_rect.height())}"
+                )
+                bw = fm.horizontalAdvance(badge_text) + 14
+                bh = fm.height() + 6
+                bx = max(2.0, min(screen_roi.left(), self.width() - bw - 2.0))
+                by = screen_roi.top() - bh - 3
+                if by < 2.0:
+                    by = screen_roi.top() + 3
+                badge_rect = QRectF(bx, by, bw, bh)
+                painter.setBrush(QColor(24, 24, 28, 215))
+                painter.setPen(QPen(amber, 1.5))
+                painter.drawRoundedRect(badge_rect, 4, 4)
+                painter.setPen(QColor(253, 224, 71))
+                painter.drawText(badge_rect, Qt.AlignmentFlag.AlignCenter, badge_text)
+
         self._draw_zoom_indicator(painter)
 
     def _draw_zoom_indicator(self, painter: QPainter) -> None:
@@ -1280,7 +1514,7 @@ class MagnifierLabel(QLabel):
             new_cursor = Qt.CursorShape.ClosedHandCursor
         elif self._space_pressed:
             new_cursor = Qt.CursorShape.OpenHandCursor
-        elif self._roi_mode:
+        elif self._roi_mode or self._align_roi_mode:
             new_cursor = Qt.CursorShape.CrossCursor
         elif self._magnifier_active:
             new_cursor = Qt.CursorShape.CrossCursor

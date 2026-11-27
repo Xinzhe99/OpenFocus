@@ -15,6 +15,7 @@ from locales import trans
 from widgets.stepper import StepperSpinBox
 from utils.dust_map import (DEFAULT_SIGMA, compute_flat_field, apply_flat_field,
                             load_flat_field_reference)
+from utils.memory import InsufficientMemoryError
 from utils.ui_utils import size_dialog_to_content
 from utils.platform_utils import configure_native_worker_stack
 
@@ -49,7 +50,7 @@ def _to_pixmap(small):
     qimg = QImage(small.data, w, h, 3 * w, QImage.Format.Format_BGR888)
     pixmap = QPixmap.fromImage(qimg.copy())
     if pixmap.isNull():
-        raise MemoryError('Unable to create preview pixmap')
+        raise InsufficientMemoryError('Unable to create preview pixmap')
     return pixmap
 
 

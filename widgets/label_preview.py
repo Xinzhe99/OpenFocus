@@ -536,8 +536,17 @@ class LabelPreview(QLabel):
             from utils.image_utils import composite_transparent_for_display
             canvas = composite_transparent_for_display(canvas)
         config = self._adder.config
+        exif_meta = None
+        if self._labels is not None and hasattr(self._labels, "_exif_meta_for"):
+            try:
+                exif_meta = self._labels._exif_meta_for(
+                    self._target, self._index,
+                    getattr(self._labels, "_snapshot_output_id", None),
+                )
+            except Exception:
+                exif_meta = None
         text = build_label_text(config.format, config.text,
-                                self._preview_value())
+                                self._preview_value(), exif_meta=exif_meta)
         # Draw first: the status must describe *this* attempt, not the
         # previous one (out-of-range and draw failures are per-frame).
         try:
@@ -545,6 +554,7 @@ class LabelPreview(QLabel):
             if self._frame is not None:
                 self._adder.config = preview_label_config(original, self._source_shape, canvas.shape)
             try:
+                self._adder.exif_meta = exif_meta
                 drawn = self._adder.add_label_to_image(canvas, self._index)
             finally:
                 self._adder.config = original
