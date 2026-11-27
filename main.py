@@ -2674,14 +2674,62 @@ class OpenFocus(QMainWindow):
         """Disable the editor when there is nothing it could preview."""
         ui = getattr(self, "ui_objs", {})
         action = ui.get("action_watermark_add")
+        if action is not None:
+            has_target = bool(
+                getattr(self, "raw_images", ()) or
+                getattr(self, "registration_results", ()) or
+                getattr(self, "fusion_result", None) is not None or
+                getattr(self, "fusion_results", ()))
+            action.setEnabled(has_target)
+        self._sync_substack_actions()
+
+    def _sync_substack_actions(self) -> None:
+        """Enable Render Substacks when at least 4 active source frames are loaded."""
+        ui = getattr(self, "ui_objs", {})
+        action = ui.get("action_render_substacks")
         if action is None:
             return
-        has_target = bool(
-            getattr(self, "raw_images", ()) or
-            getattr(self, "registration_results", ()) or
-            getattr(self, "fusion_result", None) is not None or
-            getattr(self, "fusion_results", ()))
-        action.setEnabled(has_target)
+        try:
+            active_count = len(self.included_indices())
+        except Exception:
+            active_count = len(getattr(self, "raw_images", ()) or ())
+        action.setEnabled(active_count >= 4)
+
+    def show_render_substacks_dialog(self) -> None:
+        """Configure and run single-stack substack rendering."""
+        render = getattr(self, "render_manager", None)
+        if render is not None and (
+            render._render_worker_active()
+            or getattr(render, "_compare_mode", False)
+            or getattr(render, "_substack_mode", False)
+            or getattr(render, "_render_pending", False)
+        ):
+            show_warning_box(self, trans.t("substack_dialog_title"), trans.t("substack_busy"))
+            return
+        images, _filenames, included = self.effective_stack()
+        if len(images) < 4:
+            show_warning_box(self, trans.t("substack_dialog_title"), trans.t("substack_need_frames"))
+            return
+        if self.current_fusion_method() == "none":
+            show_warning_box(self, trans.t("substack_dialog_title"), trans.t("substack_need_fusion_method"))
+            return
+        from dialogs.render_substacks import RenderSubstacksDialog
+        dialog = RenderSubstacksDialog(
+            self,
+            frame_count=len(images),
+            included_indices=included,
+            fusion_method=self.current_fusion_method(),
+            alignment_method=self.current_alignment_method(),
+            theme=getattr(self, "ui_theme", "light"),
+        )
+        try:
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                self.render_manager.start_substack_render(
+                    dialog.substack_ranges(),
+                    auto_restack=dialog.auto_restack(),
+                )
+        finally:
+            dialog.deleteLater()
 
     def refresh_annotation_views(self) -> None:
         """Redraw both canvases after label or scale-bar state changes."""
@@ -2858,6 +2906,7 @@ class OpenFocus(QMainWindow):
                 or self.source_manager._review_worker is not None
                 or bool(getattr(render, '_render_pending', False))
                 or render._render_after_load is not None or render._compare_mode
+                or getattr(render, '_substack_mode', False)
                 or self.update_manager.is_busy()
                 or QApplication.activeModalWidget() is not None
                 or any(dialog.isVisible() for dialog in self.findChildren(QDialog)))
@@ -4334,6 +4383,9 @@ class OpenFocus(QMainWindow):
         from dialogs._community_layout import apply_community_theme
         for dialog in self.findChildren(QDialog, 'communityDialog'):
             apply_community_theme(dialog)
+        for dialog in self.findChildren(QDialog, 'renderSubstacksDialog'):
+            if hasattr(dialog, 'apply_theme'):
+                dialog.apply_theme(theme)
         # Inline "?" button styles are captured at creation; re-apply them for
         # the new theme or the dark chip stays dark on the light panel.
         from ui.styles import help_button_style

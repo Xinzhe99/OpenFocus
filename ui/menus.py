@@ -338,6 +338,16 @@ def setup_menus(window: QMainWindow) -> None:
     batch_menu.addAction(compare_action)
     window.ui_objs['action_method_compare'] = compare_action
 
+    render_substacks_action = QAction(trans.t('action_render_substacks'), window)
+    render_substacks_action.setProperty('trans_key', 'action_render_substacks')
+    render_substacks_action.setToolTip(trans.t('action_render_substacks_hint'))
+    render_substacks_action.setEnabled(False)
+    render_substacks_action.triggered.connect(
+        lambda: getattr(window, 'show_render_substacks_dialog', lambda *_a, **_k: None)()
+    )
+    batch_menu.addAction(render_substacks_action)
+    window.ui_objs['action_render_substacks'] = render_substacks_action
+
     mosaic_action = QAction(trans.t('mosaic_title'), window)
     mosaic_action.setProperty('trans_key', 'mosaic_title')
     batch_menu.addAction(mosaic_action)
