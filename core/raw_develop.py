@@ -8,7 +8,7 @@ cannot open a newly released camera RAW format natively.
 """
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import asdict, dataclass
 import logging
 import math
@@ -551,37 +551,37 @@ def open_raw_with_dng_fallback(
         raise ImportError("Camera RAW support is unavailable (rawpy/LibRaw).")
 
     source_path = os.fspath(path)
-    temp_dir: Optional[tempfile.TemporaryDirectory] = None
-    try:
+    with ExitStack() as stack:
+        raw = stack.enter_context(rawpy_mod.RawPy())
+        opened_path = source_path
         try:
-            with rawpy_mod.RawPy() as raw:
-                raw.open_file(source_path)
-                yield raw, source_path
-                return
+            raw.open_file(source_path)
         except Exception as first_exc:
             converter = _resolve_converter_for_fallback(settings)
             if not converter or not os.path.isfile(source_path):
                 raise
+            # Release the failed handle before invoking the external converter.
+            stack.close()
             logger.info(
                 "Native LibRaw open failed for %s (%s); attempting external DNG fallback.",
                 source_path,
                 first_exc,
             )
-            temp_dir = tempfile.TemporaryDirectory(prefix="openfocus-dng-")
+            temp_dir = stack.enter_context(
+                tempfile.TemporaryDirectory(prefix="openfocus-dng-")
+            )
             try:
                 converted = convert_raw_via_external_dng(
-                    source_path, converter, output_dir=temp_dir.name
+                    source_path, converter, output_dir=temp_dir
                 )
             except Exception as fallback_exc:
                 raise RuntimeError(
                     f"LibRaw failed ({first_exc}) and external DNG fallback failed ({fallback_exc})"
                 ) from fallback_exc
-        with rawpy_mod.RawPy() as raw:
+            raw = stack.enter_context(rawpy_mod.RawPy())
             raw.open_file(converted)
-            yield raw, converted
-    finally:
-        if temp_dir is not None:
-            temp_dir.cleanup()
+            opened_path = converted
+        yield raw, opened_path
 
 
 def render_raw_develop_preview(

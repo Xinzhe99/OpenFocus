@@ -477,8 +477,13 @@ def load_linear_raw(path, scale_factor=1.0, *, before_decode=None, develop_setti
         white = float(raw.white_level) - float(black.min())
         if not math.isfinite(white) or not 0 < white <= 65535:
             raise ValueError("Invalid RAW white level")
+        effective_settings = (
+            develop_settings
+            if isinstance(develop_settings, RawDevelopSettings)
+            else (None if fallback_cfg.is_default() else fallback_cfg)
+        )
         post_kwargs = build_linear_rawpy_postprocess_kwargs(
-            develop_settings if isinstance(develop_settings, RawDevelopSettings) else None,
+            effective_settings,
             half_size=half_size,
             rawpy_module=rawpy,
         )

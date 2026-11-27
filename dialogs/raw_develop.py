@@ -898,8 +898,9 @@ QLabel#rawStatusBadge[state="idle"] {{
         if self._window is not None:
             self._window.raw_develop_settings = saved
             try:
-                from core.source_frames import SOURCE_CACHE
+                from core.source_frames import PREVIEW_CACHE, SOURCE_CACHE
                 SOURCE_CACHE.clear()
+                PREVIEW_CACHE.clear()
             except Exception:
                 pass
         self.settingsApplied.emit(saved)

@@ -314,6 +314,52 @@ def test_convert_raw_via_external_dng_and_fallback(tmp_path, monkeypatch):
     assert opened_files[0] == str(source)
 
 
+def test_open_raw_with_dng_fallback_propagates_body_exception_without_converter(
+    tmp_path, monkeypatch
+):
+    """Exceptions raised inside the caller's `with` body must propagate directly
+    without triggering the external DNG converter fallback."""
+    exe = tmp_path / ("dng.exe" if os.name == "nt" else "dng")
+    exe.write_bytes(b"stub")
+    if os.name != "nt":
+        os.chmod(exe, 0o755)
+    source = tmp_path / "valid.raf"
+    source.write_bytes(b"raw-bytes")
+
+    converter_called = []
+
+    def fail_if_called(*_args, **_kwargs):
+        converter_called.append(True)
+        raise AssertionError("External DNG converter must not run after open_file succeeded")
+
+    monkeypatch.setattr(rd, "convert_raw_via_external_dng", fail_if_called)
+
+    exited = []
+
+    class _StubRawPy:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            exited.append(True)
+
+        def open_file(self, _path):
+            return None
+
+    class _BodyError(RuntimeError):
+        pass
+
+    fake_rawpy = SimpleNamespace(RawPy=_StubRawPy)
+    cfg = RawDevelopSettings(external_dng_converter_path=str(exe))
+    with pytest.raises(_BodyError, match="budget exceeded"):
+        with open_raw_with_dng_fallback(str(source), cfg, rawpy_module=fake_rawpy) as (_raw, opened):
+            assert opened == str(source)
+            raise _BodyError("budget exceeded")
+
+    assert converter_called == []
+    assert exited == [True]
+
+
 def test_detect_external_dng_converter_uses_candidates(tmp_path, monkeypatch):
     exe = tmp_path / ("Adobe DNG Converter.exe" if os.name == "nt" else "dng_converter")
     exe.write_bytes(b"stub")
@@ -330,7 +376,9 @@ def test_detect_external_dng_converter_uses_candidates(tmp_path, monkeypatch):
 
 def test_read_raw_wires_explicit_develop_settings(tmp_path, monkeypatch):
     import core.image_loader as il
+    from core import resource_policy
 
+    monkeypatch.setattr(resource_policy, "require_memory", lambda required, **_kw: max(1, int(required)))
     captured = {}
 
     class _FakeRaw:
@@ -382,9 +430,11 @@ def test_read_raw_wires_explicit_develop_settings(tmp_path, monkeypatch):
     assert "user_wb" in captured
 
 
-def test_develop_linear_backward_compatible_and_exposure_aware():
+def test_develop_linear_backward_compatible_and_exposure_aware(monkeypatch):
+    from utils import linear_dng
     from utils.linear_dng import LinearDNGMetadata, develop_linear
 
+    monkeypatch.setattr(linear_dng, "require_memory", lambda required, **_kw: max(1, int(required)))
     meta = LinearDNGMetadata(
         color_matrix=((0.8, -0.1, -0.1), (-0.4, 1.2, 0.2), (-0.1, 0.2, 0.6)),
         as_shot_neutral=(0.6, 1.0, 0.7),
