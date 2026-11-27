@@ -1063,11 +1063,11 @@ class MultiFocusFusion:
                     max(h, height), max(w, width), kwargs, count)
                 decode = max(frame_resolution_bytes(frame) for frame in input_source)
                 budget = memory_budget_bytes()
-                if method_b and not self.use_gpu:
-                    # Both CPU passes stream without retaining decoded sources.
+                if not self.use_gpu and self.algorithm in ('openfocus_a', 'openfocus_b'):
+                    # CPU A and B stream without retaining decoded sources.
                     cache_growth = 0
-                    if img_resize is None and all(frame.dtype in (np.uint8, np.uint16)
-                                                  for frame in input_source):
+                    if (method_b and img_resize is None
+                            and all(frame.dtype in (np.uint8, np.uint16) for frame in input_source)):
                         worker = min(worker, policy.frame_ram_budget(policy.probe_memory()))
                 else:
                     cache_growth = source_cache_growth_bytes(input_source)
@@ -1204,7 +1204,9 @@ class MultiFocusFusion:
                         ram_budget_override=memory_budget_bytes(),
                     )
                 except policy.ResourceLimitError:
-                    if not openfocus_native_family or memory_budget_bytes() <= 0:
+                    # Resizing keeps both the source and resized planes in RAM.
+                    if (img_resize is not None or not openfocus_native_family
+                            or not policy.probe_memory().ram_known):
                         raise
                     import gc
                     from core.source_frames import SOURCE_CACHE

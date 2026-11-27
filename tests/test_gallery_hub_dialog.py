@@ -11,9 +11,10 @@ from typing import Any
 
 import numpy as np
 import pytest
-from PyQt6.QtCore import QTimer
+from PyQt6.QtCore import QTimer, Qt
 from PyQt6.QtGui import QColor, QImage, QPixmap
-from PyQt6.QtWidgets import QApplication, QPushButton
+from PyQt6.QtTest import QTest
+from PyQt6.QtWidgets import QApplication, QLabel, QPushButton
 
 from dialogs.gallery_hub import (
     MAX_BATCH_UPLOAD,
@@ -26,7 +27,7 @@ from dialogs.gallery_hub import (
     render_watermark_preview,
 )
 from locales import trans
-from locales.gallery_i18n import AI_TAG_KEYS, LEADERBOARD_PERIOD_KEYS
+from locales.gallery_i18n import AI_TAG_KEYS, LEADERBOARD_PERIOD_KEYS, t_gallery
 
 
 @pytest.fixture(autouse=True)
@@ -355,6 +356,7 @@ def test_watermark_preview_default_on_nickname_fill_toggle_off_and_16bit(qapp, t
     dlg = GalleryHubDialog(state_store=store, initial_tab=2)
     img_path = _write_test_png(tmp_path / "sample.png", color=(230, 230, 230))
     dlg.add_publish_files([img_path])
+    assert dlg.wait_for_idle()
 
     assert dlg.watermark_enabled_check.isChecked() is True
     dlg.watermark_text_edit.clear()
@@ -475,6 +477,7 @@ def test_terms_consent_and_safe_confirm_retry_zero_double_charge(qapp, tmp_path)
     store.config["gallery_terms_version"] = ""
     client = ThreeStageClient()
     dlg = GalleryHubDialog(client=client, state_store=store, initial_tab=2)
+    dlg.show()
     dlg.add_publish_files([_write_test_png(tmp_path / "safe.png")])
 
     # Attempt 1: terms accepted -> inspect -> 2 R2 PUTs -> confirm times out
@@ -489,6 +492,11 @@ def test_terms_consent_and_safe_confirm_retry_zero_double_charge(qapp, tmp_path)
     first_idem = items[0].idempotency_key
     assert first_idem
     assert "no double charge" in items[0].status_message.lower()
+    store.profile['points_balance'] = 0
+    dlg._on_store_profile_changed(store.profile)
+    assert not dlg.insufficient_points_label.isVisible()
+    assert dlg.cost_hint_label.text() == t_gallery(
+        'gallery_publish_cost_hint', cost=store.config['upload_cost_points'])
 
     # Attempt 2 (Retry Confirm): MUST NOT re-run inspect or PUT; reuses exact upload_id + Idempotency-Key!
     items = dlg.publish_all(wait=True)
@@ -830,6 +838,19 @@ def test_pr264_model_interop_honor_card_nested_replies_and_report_kwarg(qapp, mo
     detail.close()
 
 
+@pytest.mark.parametrize('badged', [False, True])
+def test_work_detail_distinguishes_studio_badge_from_author_name(qapp, badged):
+    detail = WorkDetailDialog({'id': 'w-studio', 'title': 'Photo', 'openfocus_badge': badged,
+                               'author': {'user_id': 'u-studio', 'nickname': 'OpenFocus Studio'}})
+    assert detail.author_btn.text() == 'OpenFocus Studio'
+    badge = detail.findChild(QLabel, 'badgeOpenFocus')
+    if badged:
+        assert badge.text() == '◆' and badge.accessibleName() == 'OpenFocus Studio'
+    else:
+        assert badge is None
+    detail.close()
+
+
 @pytest.mark.parametrize("lang", ["de", "ru", "fr", "pl", "zh", "ja"])
 def test_large_translated_layouts_render_cleanly_across_locales(qapp, lang):
     prev_lang = trans.current_lang
@@ -844,3 +865,302 @@ def test_large_translated_layouts_render_cleanly_across_locales(qapp, lang):
         dlg.close()
     finally:
         trans.set_language(prev_lang)
+
+
+def test_work_detail_dialog_passes_lang_and_renders_translated_comment_with_tooltip(qapp):
+    from dialogs.gallery_hub import WorkDetailDialog
+    from PyQt6.QtWidgets import QListWidget
+
+    requested = []
+    posted = []
+
+    class _Client:
+        def get_comments(self, work_id, *, cursor=None, limit=None, lang=None, danmaku=None):
+            requested.append((work_id, lang))
+            return {
+                "items": [
+                    {
+                        "id": "c1",
+                        "author_nickname": "Kenji",
+                        "content": "素晴らしいピント合成！ <b>&</b>",
+                        "src_lang": "ja",
+                        "translated_content": "Awesome focus stack!",
+                        "translated_lang": "en",
+                    }
+                ]
+            }
+
+        def post_comment(self, work_id, content, parent_id=None, *, is_danmaku=None, client_lang=None):
+            posted.append((work_id, content, parent_id, is_danmaku, client_lang))
+            return {"comment": {"id": "c2", "author_nickname": "Me", "content": content}}
+
+    prev_lang = trans.current_lang
+    try:
+        trans.set_language("en")
+        dlg = WorkDetailDialog(
+            work={"id": "w_tl", "title": "Beetle", "author_nickname": "Kenji", "likes_count": 3},
+            client=_Client(),
+        )
+        dlg.show()
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            qapp.processEvents()
+            if dlg.findChild(QListWidget).count() > 0:
+                break
+            time.sleep(0.01)
+
+        lw = dlg.findChild(QListWidget)
+        assert requested and requested[0] == ("w_tl", "en")
+        assert lw.count() == 1
+        item = lw.item(0)
+        assert "Awesome focus stack!" in item.text()
+        assert "\U0001f310" not in item.text()
+        assert item.toolTip().startswith("<qt>")
+        assert "素晴らしいピント合成！ &lt;b&gt;&amp;&lt;/b&gt;" in item.toolTip()
+
+        dlg.comment_input.setText("Great work!")
+        dlg._submit_comment()
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and not posted:
+            qapp.processEvents()
+            time.sleep(0.01)
+        assert posted and posted[0] == ("w_tl", "Great work!", None, False, "en")
+        dlg.close()
+    finally:
+        trans.set_language(prev_lang)
+
+
+def test_work_detail_discards_pending_comments_in_previous_locale(qapp):
+    english_request_started = Event()
+    release_english_request = Event()
+
+    initial_comment = {
+        "id": "c1",
+        "author_nickname": "Kenji",
+        "content": "素晴らしい！",
+        "src_lang": "ja",
+        "translated_content": "Great!",
+    }
+
+    class Client:
+        def get_comments(self, _work_id, *, lang=None):
+            if lang == "en":
+                english_request_started.set()
+                assert release_english_request.wait(8)
+                return {"items": [{**initial_comment, "translated_content": "Old response"}]}
+            assert lang == "fr"
+            return {"items": [{**initial_comment, "translated_content": "Superbe !"}]}
+
+    detail = WorkDetailDialog(
+        {"id": "w1", "comments": [initial_comment]},
+        client=Client(),
+        translation_mode="auto",
+    )
+    try:
+        assert english_request_started.wait(5)
+        assert detail.comments_list.item(0).text() == "Kenji: Great!"
+        trans.set_language("fr")
+        assert detail.comments_list.item(0).text() == "Kenji: 素晴らしい！"
+        assert not detail.comments_list.item(0).toolTip()
+
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            qapp.processEvents()
+            if detail.comments_list.item(0).text() == "Kenji: Superbe !":
+                break
+            time.sleep(0.01)
+        assert detail.comments_list.item(0).text() == "Kenji: Superbe !"
+
+        release_english_request.set()
+        assert detail.wait_for_idle()
+        assert detail.comments_list.count() == 1
+        assert detail.comments_list.item(0).text() == "Kenji: Superbe !"
+    finally:
+        release_english_request.set()
+        detail.close()
+
+
+def test_hub_updates_open_and_future_details_for_same_language_mode(qapp):
+    work = {
+        "id": "w1",
+        "comments": [
+            {
+                "id": "parent",
+                "author_nickname": "Camille",
+                "content": "Magnifique !",
+                "src_lang": "fr",
+                "replies": [
+                    {
+                        "id": "reply",
+                        "author_nickname": "Alex",
+                        "content": "Agreed!",
+                        "src_lang": "en-US",
+                    },
+                ],
+            },
+            {"id": "unknown", "author_nickname": "Sam", "content": "👍"},
+        ],
+    }
+
+    def rows(detail):
+        return [
+            detail.comments_list.item(index).text().strip()
+            for index in range(detail.comments_list.count())
+        ]
+
+    hub = GalleryHubDialog()
+    hub.set_danmaku_translation_mode("original")
+    hub.show()
+    detail = hub.open_work_detail(work)
+    try:
+        assert rows(detail) == ["Camille: Magnifique !", "↳ Alex: Agreed!", "Sam: 👍"]
+        hub.set_danmaku_translation_mode("same_language")
+        assert rows(detail) == ["↳ Alex: Agreed!", "Sam: 👍"]
+
+        trans.set_language("fr")
+        assert rows(detail) == ["Camille: Magnifique !", "Sam: 👍"]
+        future_detail = hub.open_work_detail(work)
+        try:
+            assert rows(future_detail) == rows(detail)
+        finally:
+            future_detail.close()
+    finally:
+        detail.close()
+        hub.close()
+
+
+def test_gallery_hub_displays_points_balance_and_dynamic_publish_cost(qapp, tmp_path):
+    class _Store:
+        def __init__(self):
+            self.profile = {"user_id": "u1", "nickname": "Tester", "points_balance": 100}
+            self.config = {"upload_cost_points": 100}
+
+        def refresh_account_silently(self):
+            return True
+
+    img1 = tmp_path / "shot1.png"
+    img2 = tmp_path / "shot2.png"
+    QImage(24, 24, QImage.Format.Format_RGB32).save(str(img1))
+    QImage(24, 24, QImage.Format.Format_RGB32).save(str(img2))
+
+    store = _Store()
+    dlg = GalleryHubDialog(state_store=store, initial_tab=2)
+    dlg.show()
+    qapp.processEvents()
+
+    assert "100" in dlg.hub_points_badge.text()
+    assert "100" in dlg.publish_balance_label.text()
+    assert dlg.insufficient_points_label.isVisible() is False
+
+    account_requests = []
+    dlg.account_center_requested.connect(lambda: account_requests.append(True))
+    dlg.hub_top_up_btn.setFocus()
+    dlg.publish_title_edit.setFocus()
+    QTest.keyClick(dlg.publish_title_edit, Qt.Key.Key_Return)
+    assert not account_requests
+    dlg.hub_top_up_btn.click()
+    assert account_requests == [True]
+
+    dlg.add_publish_files([str(img1)])
+    qapp.processEvents()
+    assert "100" in dlg.cost_hint_label.text()
+    assert dlg.insufficient_points_label.isVisible() is False
+
+    dlg.add_publish_files([str(img2)])
+    qapp.processEvents()
+    assert "200" in dlg.cost_hint_label.text()
+    assert dlg.insufficient_points_label.isVisible() is True
+    trans.set_language('de')
+    dlg.resize(760, 560)
+    qapp.processEvents()
+    assert dlg.hub_top_up_btn.isVisible()
+    assert dlg.hub_top_up_btn.text() == t_gallery('gallery_hub_top_up_btn')
+    assert dlg.insufficient_points_label.text() == t_gallery('gallery_publish_insufficient_points')
+
+    store.config['upload_cost_points'] = 0
+    dlg._on_store_config_changed(store.config)
+    assert dlg.cost_hint_label.text() == t_gallery('gallery_publish_batch_estimate', count=2, total=0)
+    assert not dlg.insufficient_points_label.isVisible()
+    dlg.close()
+
+
+def test_hub_unwrap_envelopes_return_pressed_send_disable_append_and_theme(qapp, tmp_path):
+    from threading import Event
+
+    release_post = Event()
+    entered_post = Event()
+
+    class EnvelopeClient(FakeGalleryClient):
+        def get_work(self, work_id: str):
+            return {
+                "work": {
+                    "id": work_id,
+                    "title": "Wrapped Work",
+                    "author_id": "u-wrap",
+                    "author_nickname": "WrapAuthor",
+                    "likes_count": 3,
+                }
+            }
+
+        def post_comment(self, work_id: str, content: str, **_kwargs):
+            entered_post.set()
+            release_post.wait(timeout=2.0)
+            return {
+                "comment": {
+                    "id": "c-wrapped-1",
+                    "work_id": work_id,
+                    "author_nickname": "Commenter",
+                    "content": content,
+                }
+            }
+
+    client = EnvelopeClient()
+    client.pages = {
+        None: {"items": [{"id": "w-p1", "title": "Page 1"}], "next_cursor": "c2"},
+        "c2": {"items": [{"id": "w-p2", "title": "Page 2"}], "next_cursor": None},
+    }
+    hub = GalleryHubDialog(client=client, state_store=FakeStateStore())
+    hub.refresh_square()
+    assert hub.wait_for_idle()
+    card_p1 = hub._square_grid.itemAt(0).widget()
+    assert card_p1 is not None
+
+    # load_more_square appends new card without rebuilding existing card_p1
+    hub.load_more_btn.click()
+    assert hub.wait_for_idle()
+    assert hub._square_grid.itemAt(0).widget() is card_p1
+    assert len(hub._square_works) == 2
+
+    # open_work_by_id unwraps {"work": ...}
+    hub.open_work_by_id("w-remote-42")
+    assert hub.wait_for_idle()
+    detail = hub.findChild(WorkDetailDialog)
+    assert detail is not None
+    assert detail.work_id == "w-remote-42"
+    assert detail.testAttribute(Qt.WidgetAttribute.WA_DeleteOnClose) is True
+
+    # returnPressed submits comment, disables send button while in-flight, and unwraps {"comment": ...}
+    detail.comment_input.setText("Sharp wing veins!")
+    detail.comment_input.returnPressed.emit()
+    deadline = time.monotonic() + 1.0
+    while not entered_post.is_set() and time.monotonic() < deadline:
+        qapp.processEvents()
+        time.sleep(0.005)
+    assert detail.send_comment_btn.isEnabled() is False
+    release_post.set()
+    assert detail.wait_for_idle()
+    assert detail.send_comment_btn.isEnabled() is True
+    assert any("Commenter: Sharp wing veins!" in detail.comments_list.item(i).text() for i in range(detail.comments_list.count()))
+
+    hub.apply_theme("light")
+    assert hub._theme == "light"
+    assert detail._theme == "light"
+
+    # UploadPromptDialog decodes ndarray preview off-thread
+    arr = np.full((80, 120, 3), 120, dtype=np.uint8)
+    prompt = UploadPromptDialog(preview_source=arr)
+    assert prompt.wait_for_idle()
+    assert prompt.preview_label is not None and not prompt.preview_label.pixmap().isNull()
+    prompt.close()
+    detail.close()
+    hub.close()

@@ -587,15 +587,6 @@ def setup_menus(window: QMainWindow) -> None:
     account_menu.addAction(message_box_action)
     window.ui_objs['action_message_box'] = message_box_action
 
-    my_downloads_action = QAction(trans.t('menu_my_downloads'), window)
-    my_downloads_action.setObjectName('action_my_downloads')
-    my_downloads_action.setProperty('trans_key', 'menu_my_downloads')
-    my_downloads_action.triggered.connect(
-        lambda: getattr(window, 'open_gallery_downloads', lambda *_a, **_k: None)()
-    )
-    account_menu.addAction(my_downloads_action)
-    window.ui_objs['action_my_downloads'] = my_downloads_action
-
     # --- Gallery Menu (top-level alongside Account/Help; NEVER red dot) ---
     gallery_menu = menubar.addMenu(trans.t('menu_gallery'))
     gallery_menu.setObjectName('menu_gallery')
@@ -612,6 +603,15 @@ def setup_menus(window: QMainWindow) -> None:
     gallery_menu.addAction(open_gallery_action)
     window.ui_objs['action_open_gallery'] = open_gallery_action
 
+    showcase_action = QAction(trans.t('menu_gallery_showcase'), window)
+    showcase_action.setObjectName('action_gallery_showcase')
+    showcase_action.setProperty('trans_key', 'menu_gallery_showcase')
+    showcase_action.triggered.connect(
+        lambda: getattr(window, 'open_gallery_showcase', lambda *_a, **_k: None)()
+    )
+    gallery_menu.addAction(showcase_action)
+    window.ui_objs['action_gallery_showcase'] = showcase_action
+
     screensaver_action = QAction(trans.t('menu_gallery_screensaver'), window)
     screensaver_action.setObjectName('action_gallery_screensaver')
     screensaver_action.setProperty('trans_key', 'menu_gallery_screensaver')
@@ -620,6 +620,16 @@ def setup_menus(window: QMainWindow) -> None:
     )
     gallery_menu.addAction(screensaver_action)
     window.ui_objs['action_gallery_screensaver'] = screensaver_action
+
+    gallery_menu.addSeparator()
+    my_downloads_action = QAction(trans.t('menu_my_downloads'), window)
+    my_downloads_action.setObjectName('action_my_downloads')
+    my_downloads_action.setProperty('trans_key', 'menu_my_downloads')
+    my_downloads_action.triggered.connect(
+        lambda: getattr(window, 'open_gallery_downloads', lambda *_a, **_k: None)()
+    )
+    gallery_menu.addAction(my_downloads_action)
+    window.ui_objs['action_my_downloads'] = my_downloads_action
 
     # --- Help Menu ---
     help_menu = menubar.addMenu(trans.t('menu_help'))

@@ -80,6 +80,7 @@ PACK = {
     "account_email_required": "Voer je e-mailadres in.",
     "account_terms_unavailable": "Accountregistratie is nog niet beschikbaar: de dienst kan de huidige voorwaarden niet aanbieden. Probeer het later opnieuw.",
     "account_network_error": "De accountdienst kon niet worden bereikt. Maak verbinding met internet en probeer het opnieuw.",
+    "account_tls_error": "Kan het servercertificaat niet verifiëren. Controleer de systeemtijd of proxy-instellingen en probeer het opnieuw.",
     "account_generic_error": "Aanmelden kon niet worden voltooid. Probeer het opnieuw.",
     "account_rate_limited": "Te veel verzoeken. Wacht voordat je het opnieuw probeert.",
     "account_expired": "De aanmeldlink is verlopen of al gebruikt. Vraag een nieuwe link aan.",

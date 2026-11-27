@@ -3,10 +3,14 @@ from http.client import HTTPException
 import os
 import socket
 import ssl
+import threading
 from typing import Optional
 import urllib.request
 
 _STDLIB_URLOPEN = urllib.request.urlopen
+_ORIG_CREATE_DEFAULT_CONTEXT = ssl.create_default_context
+_SSL_CONTEXT_LOCK = threading.Lock()
+_SSL_CONTEXT_CACHE: dict[tuple[str, str, str, str], ssl.SSLContext] = {}
 
 _SYSTEM_CA_FILES = (
     "/etc/ssl/cert.pem",
@@ -17,7 +21,11 @@ _SYSTEM_CA_FILES = (
 
 
 def ca_bundle_path() -> Optional[str]:
-    """Return an explicit CA PEM bundle path (certifi first, then OS fallbacks)."""
+    """Return an explicit CA PEM bundle path (env override, certifi, then OS fallbacks)."""
+    for env_var in ("REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"):
+        env_path = os.environ.get(env_var)
+        if env_path and os.path.isfile(env_path):
+            return env_path
     try:
         import certifi
         path = certifi.where()
@@ -40,19 +48,43 @@ def _has_explicit_env_ca() -> bool:
     )
 
 
+def clear_ssl_context_cache() -> None:
+    """Clear cached SSLContext instances (intended for tests)."""
+    with _SSL_CONTEXT_LOCK:
+        _SSL_CONTEXT_CACHE.clear()
+
+
 def create_ssl_context() -> ssl.SSLContext:
-    """Build a default TLS context backed by the bundled CA roots when needed."""
+    """Build (or reuse cached) default TLS context backed by bundled CA roots."""
+    use_cache = ssl.create_default_context is _ORIG_CREATE_DEFAULT_CONTEXT
+    env_key = (
+        os.environ.get("SSL_CERT_FILE") or "",
+        os.environ.get("SSL_CERT_DIR") or "",
+        os.environ.get("REQUESTS_CA_BUNDLE") or "",
+        os.environ.get("CURL_CA_BUNDLE") or "",
+    )
+    if use_cache:
+        with _SSL_CONTEXT_LOCK:
+            cached = _SSL_CONTEXT_CACHE.get(env_key)
+            if cached is not None:
+                return cached
+
     ctx = ssl.create_default_context()
     # OpenSSL loads hashed CA directories on demand during certificate verification.
-    if _has_explicit_env_ca():
-        return ctx
-    bundle = ca_bundle_path()
-    if bundle:
-        try:
-            ctx.load_verify_locations(cafile=bundle)
-        except (OSError, ssl.SSLError):
-            if ctx.cert_store_stats().get("x509_ca", 0) == 0:
-                raise
+    if not _has_explicit_env_ca():
+        bundle = ca_bundle_path()
+        if bundle:
+            try:
+                ctx.load_verify_locations(cafile=bundle)
+            except (OSError, ssl.SSLError):
+                if ctx.cert_store_stats().get("x509_ca", 0) == 0:
+                    raise
+
+    if use_cache:
+        with _SSL_CONTEXT_LOCK:
+            if len(_SSL_CONTEXT_CACHE) >= 16:
+                _SSL_CONTEXT_CACHE.clear()
+            _SSL_CONTEXT_CACHE[env_key] = ctx
     return ctx
 
 

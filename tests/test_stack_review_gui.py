@@ -1,11 +1,12 @@
 """Behavioral coverage for advisory source-frame review."""
 import threading
+from time import monotonic
 
 import numpy as np
 import pytest
 
 pytest.importorskip("PyQt6")
-from PyQt6.QtCore import QEventLoop, QPoint, QTimer, Qt
+from PyQt6.QtCore import QPoint, Qt
 from PyQt6.QtGui import QKeySequence, QPixmap
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QLineEdit, QMainWindow, QMenu, QPushButton
@@ -180,13 +181,13 @@ def _focus_list(qapp, panel):
 
 
 def _finish(qapp, manager):
-    worker = manager._review_worker
-    assert worker is not None
-    if worker.isRunning():
-        loop = QEventLoop()
-        worker.finished.connect(loop.quit)
-        QTimer.singleShot(5000, loop.quit)
-        loop.exec()
+    assert manager._review_worker is not None
+    # Poll the manager instead of waiting for the worker's finished signal.
+    # A thread can emit it between an isRunning() check and a new connection,
+    # and waiting out that missed signal lets the cancelled notice expire.
+    deadline = monotonic() + 5
+    while manager._review_worker is not None and monotonic() < deadline:
+        QTest.qWait(10)
     qapp.processEvents()
     assert manager._review_worker is None
 

@@ -83,6 +83,7 @@ EN = {
     "account_email_required": "Enter your email address.",
     "account_terms_unavailable": "Account registration is not ready: the service cannot provide the current terms. Please try again later.",
     "account_network_error": "Could not reach the account service. Connect to the internet and try again.",
+    "account_tls_error": "Could not verify the server certificate. Check your system clock or proxy settings and try again.",
     "account_generic_error": "Sign-in could not be completed. Please try again.",
     "account_rate_limited": "Too many requests. Please wait before trying again.",
     "account_expired": "The sign-in link expired or was already used. Request a new link.",

@@ -499,6 +499,7 @@ def test_compare_dialog_cancels_display_workers_and_guards_finalize(qapp):
         _display_workers={"openfocus_a": FakeDisplayWorker(), "gff": FakeDisplayWorker()},
         _results={"openfocus_a": {"key": 1}},
         _full_results={"openfocus_a": {"key": 1}},
+        _reused_full={"openfocus_a": {"key": 1}},
         _errors={"openfocus_a": (1, "err")},
         _stale_methods=set(),
     )
@@ -508,6 +509,7 @@ def test_compare_dialog_cancels_display_workers_and_guards_finalize(qapp):
     assert len(cancelled) == 2
     assert dummy._results == {}
     assert dummy._full_results == {}
+    assert dummy._reused_full == {}
     assert dummy._errors == {}
     assert dummy._stale_methods == {"openfocus_a"}
 
@@ -558,19 +560,16 @@ def test_retouch_dialog_reuses_notice_timer_and_guards_post_close_callbacks(qapp
         dialog.preview_mode = None
         assert not dialog._action_blocked()
 
-        # Shutdown stops _notice_timer and post-close callbacks safely no-op even after doc=None.
-        dialog._shutdown_sharpness()
-        assert not dialog._notice_timer.isActive()
-        dialog.doc = None
+        assert dialog.close()
+        assert not timer_before.isActive()
+        assert dialog.doc is None
         dialog._clear_notice()
         dialog._fit()
         dialog.canvas_resized()
         dialog._elide_title()
         dialog._update_status()
     finally:
-        dialog._allow_close = True
         dialog.close()
-        dialog.deleteLater()
         qapp.processEvents()
 
 
@@ -700,12 +699,10 @@ def test_gallery_controller_shutdown_and_shared_settings_helpers(qapp, tmp_path)
     assert resolve_gallery_download_dir(settings=ini, create=False) == dl_dir.resolve()
     assert resolve_gallery_cache_dir(settings=ini, create=False) == cache_dir.resolve()
 
-    # GalleryController.attach_ui() is idempotent and shutdown() disconnects signals safely.
+    # GalleryController.attach_ui() is idempotent and handles deleted standalone showcase safely.
     host = QWidget()
     host.view_stack = QStackedWidget(host)
-    host.gallery_showcase_page = GalleryShowcaseWidget(host)
     host.view_stack.addWidget(QWidget(host))
-    host.view_stack.addWidget(host.gallery_showcase_page)
     host.output_list = QListWidget(host)
     host.result_slider = QSlider(host)
     host.ui_objs = {}
@@ -716,9 +713,10 @@ def test_gallery_controller_shutdown_and_shared_settings_helpers(qapp, tmp_path)
     )
     gc.attach_ui()
     gc.attach_ui()  # second call must not double-connect window signals
+    gc.show_gallery_showcase(force=True)
 
     # Deleting showcase early must not crash lifecycle/theme/retranslate calls.
-    sip.delete(host.gallery_showcase_page)
+    sip.delete(gc.showcase)
     gc.apply_theme("dark")
     gc.retranslate()
     gc.set_fusion_busy(True)

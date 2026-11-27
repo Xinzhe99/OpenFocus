@@ -175,6 +175,45 @@ def test_exposure_gain_avx2_vs_scalar_bit_exact(w, dtype, channels):
     assert np.array_equal(out_avx.view(np.uint8), out_sca.view(np.uint8))
 
 
+@pytest.mark.parametrize("kind", ["random", "bright", "maximum"])
+@pytest.mark.parametrize("dtype", [np.uint8, np.uint16])
+def test_exposure_mean_avx2_vs_scalar_bit_exact(kind, dtype):
+    """Bright wide rows exceed the exactly summable range and fall back per row."""
+    mod = _require_avx2()
+    rng = np.random.default_rng(930)
+    top = 255 if dtype == np.uint8 else 65535
+    means_simd, means_scalar = [], []
+    for shape in ((17, 33, 3), (6, 5184, 3), (5, 2049, 3)):
+        if kind == "random":
+            image = rng.integers(0, top + 1, shape, dtype=dtype)
+        elif kind == "bright":
+            image = rng.integers(top - top // 8, top + 1, shape, dtype=dtype)
+        else:
+            image = np.full(shape, top, dtype=dtype)
+
+        def run():
+            values = []
+            for normalize in (False, True):
+                for threads in (1, 3):
+                    values.append(mod.of_exposure_mean(image, normalize, threads))
+                    values.append(mod.of_exposure_mean(image[:, :, ::-1], normalize, threads))
+                    values.append(mod.of_exposure_mean(np.ascontiguousarray(image[:, :, 0]), normalize, threads))
+                    values.append(mod.of_exposure_mean(image[:, ::2], normalize, threads))
+            return values
+
+        try:
+            mod.set_force_scalar(False)
+            means_simd += run()
+            mod.set_force_scalar(True)
+            means_scalar += run()
+        finally:
+            mod.set_force_scalar(False)
+    assert means_simd == means_scalar
+    if dtype == np.uint8:
+        expected = float(image.astype(np.float64).mean())
+        assert abs(means_simd[-4] - expected) <= 1e-9 * max(1.0, expected)
+
+
 @pytest.mark.parametrize("w", [7, 8, 17, 33, 129])
 def test_ab_packed_gray_down2_merge_select_avx2_vs_scalar(w):
     mod = _require_avx2()
@@ -212,6 +251,59 @@ def test_ab_packed_gray_down2_merge_select_avx2_vs_scalar(w):
         assert np.array_equal(arr_a, arr_s)
 
 
+def test_merge_first_frame_copy_matches_scaled_source():
+    """The first frame is copied as typed rows when both layouts are packed."""
+    from core import _native
+
+    mod = _native.load_native()
+    assert mod is not None
+    rng = np.random.default_rng(940)
+    depth = np.zeros((9, 21), dtype=np.uint16)
+    for dtype, scale in ((np.uint8, 256), (np.uint8, 1), (np.uint16, 1)):
+        rgb = rng.integers(0, np.iinfo(dtype).max + 1, (9, 21, 3), dtype=dtype)
+        for source in (rgb, rgb[:, :, ::-1], np.ascontiguousarray(rgb[:, :, 0]), rgb[::-1]):
+            for acc_dtype in (np.uint16, np.int32):
+                acc = np.full(source.shape, 7, dtype=acc_dtype)
+                mod.of_merge_rows(acc, source, depth, 0, 100, 2, 7, scale, True, False)
+                expected = np.full(source.shape, 7, dtype=acc_dtype)
+                expected[2:7] = source[2:7].astype(acc_dtype) * scale
+                np.testing.assert_array_equal(acc, expected)
+
+
+def test_merge_first_frame_copy_keeps_element_order_for_overlapping_views():
+    """An accumulator that shares memory with the frame is filled one element at a time."""
+    from core import _native
+
+    mod = _native.load_native()
+    assert mod is not None
+    rng = np.random.default_rng(941)
+    h, w = 5, 9
+    depth = np.zeros((h, w), dtype=np.uint16)
+    base = rng.integers(0, 65536, (h + 1, w * 3 + 3), dtype=np.uint16)
+
+    def views(buffer, shift_rows, shift_samples):
+        flat = buffer.reshape(-1)
+        row = buffer.shape[1]
+        source = np.lib.stride_tricks.as_strided(
+            flat, shape=(h, w, 3), strides=(row * 2, 6, 2))
+        target = np.lib.stride_tricks.as_strided(
+            flat[shift_rows * row + shift_samples:], shape=(h, w, 3), strides=(row * 2, 6, 2))
+        return source, target
+
+    for scale in (1, 3):
+        for shift_rows, shift_samples in ((0, 0), (0, 1), (0, 3), (1, 0), (1, 2)):
+            actual = base.copy()
+            source, target = views(actual, shift_rows, shift_samples)
+            mod.of_merge_rows(target, source, depth, 0, 100, 0, h, scale, True, False)
+            expected = base.copy()
+            source, target = views(expected, shift_rows, shift_samples)
+            for y in range(h):
+                for x in range(w):
+                    for ch in range(3):
+                        target[y, x, ch] = (int(source[y, x, ch]) * scale) & 0xFFFF
+            np.testing.assert_array_equal(actual, expected)
+
+
 def test_ab_gray_and_downsample_preserve_wide_codes():
     mod = _require_avx2()
     rgb = np.full((2, 17, 3), 40000, dtype=np.uint16)
@@ -224,6 +316,74 @@ def test_ab_gray_and_downsample_preserve_wide_codes():
     down = np.empty((1, 9), dtype=np.int32)
     mod.of_down2_rows(source, down, 0, 1, 1)
     np.testing.assert_array_equal(down, [[1 << 30] * 8 + [-(1 << 30)]])
+
+
+@pytest.mark.parametrize("w", [7, 8, 9, 23, 64, 131])
+@pytest.mark.parametrize("dtype", [np.uint8, np.uint16])
+def test_gray_rows_rgb_sum_avx2_vs_scalar_bit_exact(w, dtype):
+    """Packed RGB rows are deinterleaved with shuffles, eight pixels at a time."""
+    mod = _require_avx2()
+    rng = np.random.default_rng(920 + w)
+    h = 9
+    hi = 256 if dtype == np.uint8 else 65536
+    rgb = rng.integers(0, hi, (h, w, 3), dtype=dtype)
+    rgb[0] = hi - 1
+    scale = 256 if dtype == np.uint8 else 1
+
+    def run():
+        results = []
+        for depth_color in (False, True):
+            for out_dtype in (np.uint16, np.int32):
+                out = np.empty((h, w), dtype=out_dtype)
+                mod.of_gray_rows(rgb, out, 0, h, scale, depth_color)
+                results.append(out)
+        return results
+
+    try:
+        mod.set_force_scalar(False)
+        simd = run()
+        mod.set_force_scalar(True)
+        scalar = run()
+    finally:
+        mod.set_force_scalar(False)
+    for a, b in zip(simd, scalar):
+        np.testing.assert_array_equal(a, b)
+    total = rgb.astype(np.int64).sum(axis=2)
+    np.testing.assert_array_equal(simd[1], (total // 3) * scale)
+    np.testing.assert_array_equal(simd[3], (total * scale * 85) >> 8)
+
+
+def test_activity_normalised_difference_matches_integer_division():
+    """The vector path divides in float and corrects; the result is a floor quotient."""
+    mod = _require_avx2()
+    rng = np.random.default_rng(911)
+    special = np.array([0, 1, 2, 9, 10, 11, 254, 255, 256, 655, 656, 1310, 32767, 32768,
+                        65279, 65280, 65534, 65535], dtype=np.uint16)
+    values = np.concatenate([special, rng.integers(0, 65536, 238, dtype=np.uint16)])
+    gray = np.ascontiguousarray(np.broadcast_to(values[:, None], (values.size, values.size)))
+    fine = np.ascontiguousarray(np.broadcast_to(values[None, :], (values.size, values.size)))
+
+    def run():
+        out = np.empty_like(gray)
+        mod.of_activity_rows(gray, fine, out, 0, gray.shape[0])
+        detail = np.empty((gray.shape[0] // 2, gray.shape[1] // 2), dtype=np.uint16)
+        mod.of_detail_rows(gray + fine // 3, detail, 0)
+        return out, detail
+
+    try:
+        mod.set_force_scalar(False)
+        simd = run()
+        mod.set_force_scalar(True)
+        scalar = run()
+    finally:
+        mod.set_force_scalar(False)
+    for a, b in zip(simd, scalar):
+        np.testing.assert_array_equal(a, b)
+    v = gray.astype(np.int64)
+    mean = fine.astype(np.int64)
+    divisor = 10 + (np.maximum(v, mean) * 100) // 65535
+    expected = np.minimum(65535, (110 * np.abs(v - mean)) // divisor)
+    np.testing.assert_array_equal(simd[0], expected.astype(np.uint16))
 
 
 @pytest.mark.parametrize('channels', [1, 3])
@@ -658,6 +818,145 @@ def test_rgb_tile_accumulation_preserves_shifted_input_view() -> None:
     np.testing.assert_array_equal(acc, np.ones_like(acc))
 
 
+def test_overlapping_kernel_buffers_match_scalar() -> None:
+    mod = _require_avx2()
+    rng = np.random.default_rng(1)
+    h, w = 12, 40
+    ch, cw = 6, 20
+    plane = rng.integers(0, 65536, (17, 34), dtype=np.uint16)
+    rgb = rng.integers(0, 65536, (5, 28), dtype=np.uint16)
+    raw = rng.integers(0, 65536, (h, w, 3), dtype=np.uint16)
+    fine = rng.uniform(0.0, 65535.0, (h, w, 3)).astype(np.float32)
+    coarse = rng.uniform(0.0, 65535.0, (ch, cw, 3)).astype(np.float32)
+    levels = rng.uniform(0.0, 65535.0, (ch, w + 1, 3)).astype(np.float32)
+    target = rng.random((h, w, 3), dtype=np.float32)
+    codes = rng.integers(0, 65535, (h, w + 1), dtype=np.uint16)
+
+    def iir_separate():
+        out = np.empty_like(plane)
+        mod.of_depth_axis_iir(plane, None, out, 3072, 512, 0, 0, 3, 1, 1)
+        return [out]
+
+    def iir_in_place():
+        b = plane.copy()
+        mod.of_depth_axis_iir(b, None, b, 3072, 512, 0, 0, 3, 0, 1)
+        return [b]
+
+    def iir_vertical():
+        b = plane.copy()
+        mod.of_depth_axis_iir(b[:16, :33], None, b[:16, 1:], 3072, 512, 0, 0, 3, 0, 1)
+        return [b]
+
+    def iir_horizontal():
+        b = plane.copy()
+        mod.of_depth_axis_iir(b[:16, :33], None, b[1:, :33], 3072, 512, 0, 0, 3, 1, 1)
+        return [b]
+
+    def iir_guided_shifted():
+        b = plane.copy()
+        src = np.ascontiguousarray(plane[:16, :33][::-1])
+        mod.of_depth_axis_iir(src, b[:16, :33], b[:16, 1:], 0, 0, 1024, 256, 3, 0, 1)
+        return [b]
+
+    def iir_guided_inplace():
+        b = plane.copy()
+        guide = np.ascontiguousarray(plane[::-1])
+        mod.of_depth_axis_iir(b, guide, b, 0, 0, 1024, 256, 3, 1, 1)
+        return [b]
+
+    def gray():
+        b = rgb.copy()
+        image = np.lib.stride_tricks.as_strided(b, shape=(5, 8, 3), strides=(b.strides[0], 6, 2))
+        mod.of_gray_rows(image, b[:, 8:16], 0, 5, 1, False)
+        return [b]
+
+    def down():
+        sb = np.zeros((h, cw + 1, 3), np.float32)
+        mod.of_pyr_down_f32(fine, sb[:ch, 1:], sb[:, :cw], 0, ch)
+        return [sb]
+
+    def down_from_raw():
+        buffer = bytearray(raw.tobytes())
+        src = np.frombuffer(buffer, np.uint16).reshape(h, w, 3)
+        scratch = np.frombuffer(buffer, np.float32).reshape(h, cw, 3)
+        out = np.zeros((ch, cw, 3), np.float32)
+        mod.of_pyr_down_from_raw(src, out, scratch, 1.0 / 65535.0, 0, ch)
+        return [np.frombuffer(bytes(buffer), np.uint8), out]
+
+    def reconstruct():
+        b = levels.copy()
+        rec = target.copy()
+        mod.of_pyr_reconstruct_f32(b[:, 1:1 + cw], rec, b[:, :w], 0, h)
+        return [b, rec]
+
+    def detail_weight():
+        b = levels.copy()
+        det = target.copy()
+        weights = np.zeros((h, w), np.uint16)
+        mod.of_pyr_detail_weight_f32(b[:, 1:1 + cw], det, weights, b[:, :w], 0, h)
+        return [b, det, weights]
+
+    def level0_weights():
+        b = levels.copy()
+        weights = np.zeros((h, w), np.uint16)
+        mod.of_pyr_level0_weights_from_raw(b[:, 1:1 + cw], raw, weights, b[:, :w], 1.0 / 65535.0, 0, h)
+        return [b, weights]
+
+    def level0_merge_first():
+        c = codes.copy()
+        acc = np.zeros((h, w, 3), np.float32)
+        winner = np.full((h, w), 7, np.uint16)
+        scratch = np.zeros((ch, w, 3), np.float32)
+        mod.of_pyr_level0_merge_from_raw(coarse, raw, c[:, :w], acc, c[:, 1:], winner, scratch, 1.0, True, 3, 0, h)
+        return [c, acc, winner]
+
+    def level0_merge_next():
+        c = codes.copy()
+        acc = np.zeros((h, w, 3), np.float32)
+        winner = np.full((h, w), 7, np.uint16)
+        scratch = np.zeros((ch, w, 3), np.float32)
+        mod.of_pyr_level0_merge_from_raw(coarse, raw, c[:, :w], acc, c[:, 1:], winner, scratch, 1.0, False, 3, 0, h)
+        return [c, acc, winner]
+
+    def level0_merge_winner_overlap():
+        c = codes.copy()
+        acc = np.zeros((h, w, 3), np.float32)
+        best = np.zeros((h, w), np.uint16)
+        scratch = np.zeros((ch, w, 3), np.float32)
+        mod.of_pyr_level0_merge_from_raw(coarse, raw, c[:, :w], acc, best, c[:, 1:], scratch, 1.0, False, 3, 0, h)
+        return [c, acc, best]
+
+    def pyr_merge_overlap():
+        c = codes.copy()
+        det = target.copy()
+        acc = np.zeros((h, w, 3), np.float32)
+        winner = np.full((h, w), 5, np.uint16)
+        mod.of_pyr_merge_f32(det, c[:, :w], acc, c[:, 1:], winner, False, 4, 0, h)
+        return [c, acc, winner]
+
+    for name, run in (
+        ("of_depth_axis_iir separate", iir_separate),
+        ("of_depth_axis_iir in_place", iir_in_place),
+        ("of_depth_axis_iir vertical shifted", iir_vertical),
+        ("of_depth_axis_iir horizontal shifted", iir_horizontal),
+        ("of_depth_axis_iir guided shifted", iir_guided_shifted),
+        ("of_depth_axis_iir guided in_place", iir_guided_inplace),
+        ("of_gray_rows inside rgb", gray),
+        ("of_pyr_down_f32 inside scratch", down),
+        ("of_pyr_down_from_raw scratch over src", down_from_raw),
+        ("of_pyr_reconstruct_f32 coarse shifted", reconstruct),
+        ("of_pyr_detail_weight_f32 coarse shifted", detail_weight),
+        ("of_pyr_level0_weights_from_raw coarse shifted", level0_weights),
+        ("of_pyr_level0_merge_from_raw first", level0_merge_first),
+        ("of_pyr_level0_merge_from_raw next", level0_merge_next),
+        ("of_pyr_level0_merge_from_raw winner overlap", level0_merge_winner_overlap),
+        ("of_pyr_merge_f32 overlap", pyr_merge_overlap),
+    ):
+        simd, scalar = _scalar_and_simd(mod, run)
+        for idx, (arr_a, arr_s) in enumerate(zip(simd, scalar)):
+            assert np.array_equal(arr_a.view(np.uint8), arr_s.view(np.uint8)), f"{name} mismatch at {idx}"
+
+
 def test_ecc_solver_avx2_parity() -> None:
     import cv2
     from core._ecc_native import find_transform_ecc_homography
@@ -738,3 +1037,284 @@ def test_ecc_preserves_scalar_variance_cutoff_decision() -> None:
     assert scalar_ok and simd_ok
     assert simd_cc == pytest.approx(scalar_cc, abs=1e-8)
     np.testing.assert_allclose(simd_warp, scalar_warp, rtol=0, atol=1e-7)
+
+
+def _scalar_and_simd(mod, run):
+    try:
+        mod.set_force_scalar(False)
+        simd = run()
+        mod.set_force_scalar(True)
+        scalar = run()
+    finally:
+        mod.set_force_scalar(False)
+    return simd, scalar
+
+
+def _assert_same_bytes(simd, scalar):
+    for a, b in zip(simd, scalar):
+        assert np.array_equal(np.ascontiguousarray(a).view(np.uint8), np.ascontiguousarray(b).view(np.uint8))
+
+
+@pytest.mark.parametrize("dtype", [np.uint8, np.uint16])
+def test_alignment_rgb_warps_avx2_vs_scalar_bit_exact(dtype):
+    """Edge columns, rotations and reversed channels around the paired-sample path."""
+    import math
+
+    from core import _alignment_kernels as ak
+
+    mod = _require_avx2()
+    rng = np.random.default_rng(960)
+    h, w = 37, 53
+    image = rng.integers(0, np.iinfo(dtype).max + 1, (h, w, 3), dtype=dtype)
+    gray = np.ascontiguousarray(image[:, :, 1])
+
+    def similarity(shift_x, shift_y, degrees, scale):
+        cx, cy = w * 0.5, h * 0.5
+        cos = scale * math.cos(math.radians(degrees))
+        sin = scale * math.sin(math.radians(degrees))
+        return (cx + shift_x, cy + shift_y, cx, cy, sin, sin, cos, cos)
+
+    def run():
+        results = []
+        for spec in ((0.0, 0.0, 0.0, 1.0), (3.3, -2.7, 0.03, 1.002), (-9.5, 4.25, -1.9, 0.97),
+                     (0.5, 0.5, 2.0, 1.03), (60.0, 0.0, 0.0, 1.0), (1.0, -1.0, 45.0, 1.3)):
+            transform = similarity(*spec)
+            for kernel, source in ((ak.warp_alignment_int_rows, image),
+                                   (ak.warp_alignment_int_rows_bgr_rev, image),
+                                   (ak.warp_alignment_int_rows, gray)):
+                out = np.full(source.shape, 7, dtype=dtype)
+                kernel(source, out, *transform, 0, h)
+                results.append(out)
+            region = np.full((h - 5, w - 7, 3), 7, dtype=dtype)
+            ak.warp_alignment_region_int_rows(image, region, h, w, 0, 3, 2, *transform, 0, h - 5)
+            results.append(region)
+        for dx, dy in ((0.0, 0.0), (0.5, 0.5), (-3.25, 7.75), (-0.999, 0.001), (w + 3.0, 0.0)):
+            for kernel, source in ((ak.warp_int_rows, image), (ak.warp_int_rows_bgr_rev, image),
+                                   (ak.warp_int_rows, gray)):
+                out = np.full(source.shape, 7, dtype=dtype)
+                kernel(source, out, dx, dy, 0, h)
+                results.append(out)
+        return results
+
+    simd, scalar = _scalar_and_simd(mod, run)
+    for a, b in zip(simd, scalar):
+        np.testing.assert_array_equal(a, b)
+
+
+def _check_alignment_region_rgb_short_rows():
+    import ctypes
+    import mmap
+    import os
+
+    mod = _require_avx2()
+    page_size = mmap.PAGESIZE
+    shape = (2, 2, 3)
+    with mmap.mmap(-1, 2 * page_size, access=mmap.ACCESS_WRITE) as storage:
+        guard = ctypes.c_void_p(ctypes.addressof(ctypes.c_char.from_buffer(storage)) + page_size)
+        if os.name == "nt":
+            protect = ctypes.WinDLL("kernel32", use_last_error=True).VirtualProtect
+            old_protection = ctypes.c_ulong()
+            if not protect(guard, ctypes.c_size_t(page_size), 0x01, ctypes.byref(old_protection)):  # PAGE_NOACCESS
+                raise ctypes.WinError(ctypes.get_last_error())
+        else:
+            protect = ctypes.CDLL(None, use_errno=True).mprotect
+            if protect(guard, ctypes.c_size_t(page_size), 0) != 0:  # PROT_NONE
+                error = ctypes.get_errno()
+                raise OSError(error, os.strerror(error))
+
+        for dtype in (np.uint16, np.uint8):
+            # Both taps fit in the final row, whose end abuts the guard page.
+            pixels = (np.arange(12, dtype=dtype) * 16).reshape(shape)
+            image = np.ndarray(shape, dtype=dtype, buffer=storage, offset=page_size - pixels.nbytes)
+            image[:] = pixels
+            expected = 30 + 3 * np.arange(8)[None, :, None] + 16 * np.arange(3)[None, None, :]
+
+            def run():
+                results = []
+                for bgr_rev in (False, True):
+                    output = np.empty((1, 8, 3), dtype=dtype)
+                    mod.of_align_warp_alignment_region_int_rows(
+                        image, output, 2, 8, 0, 0, 0,
+                        0.125, 0.25, 0.0, 0.0, 0.0, 0.0, 0.0625, 0.0625, 0, 1, bgr_rev,
+                    )
+                    results.append(output)
+                return results
+
+            simd, scalar = _scalar_and_simd(mod, run)
+            np.testing.assert_array_equal(scalar[0], expected)
+            np.testing.assert_array_equal(scalar[1], expected[..., ::-1])
+            _assert_same_bytes(simd, scalar)
+
+
+def test_alignment_region_rgb_does_not_overread_short_rows():
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    _require_avx2()
+    test_file = Path(__file__).resolve()
+    # Isolate a fault so pytest can report it without ending the suite.
+    code = (
+        "import runpy, sys\n"
+        "runpy.run_path(sys.argv[1])['_check_alignment_region_rgb_short_rows']()"
+    )
+    result = subprocess.run(
+        [sys.executable, "-X", "faulthandler", "-c", code, str(test_file)],
+        cwd=test_file.parents[1], capture_output=True, text=True, timeout=60, check=False,
+    )
+    assert result.returncode == 0, f"Guarded RGB warp exited with {result.returncode}\n{result.stderr}"
+
+
+@pytest.mark.parametrize("grid", [(3, 2), (8, 5), (12, 9), (17, 3)])
+def test_alignment_score_flat_grid_avx2_vs_scalar_bit_exact(grid):
+    """Sample grids are scored as one padded list, including rejected samples."""
+    from core import _alignment_kernels as ak
+
+    mod = _require_avx2()
+    rng = np.random.default_rng(970 + grid[0])
+    h, w = 97, 131
+    reference = rng.integers(0, 65536, (h, w), dtype=np.uint16)
+    moved = np.roll(reference, (1, -2), (0, 1))
+    xs = np.linspace(0, w - 1, grid[0]).round().astype(np.float32)
+    ys = np.linspace(0, h - 1, grid[1]).round().astype(np.float32)
+    samples = np.ascontiguousarray(reference[ys.astype(np.int64)[:, None], xs.astype(np.int64)[None, :]])
+    count = 19
+    p08 = rng.normal(0, 0.02, count).astype(np.float32)
+    p0c = rng.normal(0, 0.02, count).astype(np.float32)
+    p18 = (1 + rng.normal(0, 0.02, count)).astype(np.float32)
+    p1c = (1 + rng.normal(0, 0.02, count)).astype(np.float32)
+    tx = (w / 2 + rng.normal(0, 6, count)).astype(np.float32)
+    ty = (h / 2 + rng.normal(0, 6, count)).astype(np.float32)
+    tx[0] = -5000.0
+    cx = np.full(count, w / 2, dtype=np.float32)
+    cy = np.full(count, h / 2, dtype=np.float32)
+    order = np.arange(count, dtype=np.int64)
+
+    def run():
+        ssum = np.zeros(count, dtype=np.int64)
+        ssq = np.zeros(count, dtype=np.int64)
+        cnt = np.zeros(count, dtype=np.int64)
+        ak.score_chunk_u16_slice(samples, moved, xs, ys, p08, p0c, p18, p1c, tx, ty, cx, cy,
+                                 order, 0, count, ssum, ssq, cnt)
+        return ssum, ssq, cnt
+
+    simd, scalar = _scalar_and_simd(mod, run)
+    for a, b in zip(simd, scalar):
+        np.testing.assert_array_equal(a, b)
+    assert simd[2][0] == 0
+    assert simd[2].max() > 0
+
+
+@pytest.mark.parametrize("crop", [9, 33, 64, 200])
+def test_alignment_refine_level_avx2_vs_scalar_bit_exact(crop):
+    """Residual sums are exact integers, so the vector kernel must not move the minimum."""
+    from core import _alignment_kernels as ak
+
+    mod = _require_avx2()
+    rng = np.random.default_rng(980 + crop)
+    h, w = 97, 131
+    reference = rng.integers(0, 65536, (h, w), dtype=np.uint16)
+    moved = np.roll(reference, (1, -2), (0, 1))
+
+    def run():
+        results = []
+        for c_dx, c_dy, half, step in ((0.0, 0.0, 3.0, 1.0), (2.0, -1.0, 2.0, 0.5),
+                                       (30.0, -25.0, 2.0, 0.5), (0.3, 0.7, 1.0, 0.125)):
+            for a, b in ((reference, moved), (moved, reference), (reference, np.zeros_like(moved))):
+                results.append(ak.refine_level(a, b, c_dx, c_dy, half, step, crop))
+        return results
+
+    simd, scalar = _scalar_and_simd(mod, run)
+    assert simd == scalar
+    # The exact shift lies inside the first search window in both directions.
+    assert simd[0] == (2.0, -1.0, True)
+    assert simd[1] == (-2.0, 1.0, True)
+
+
+@pytest.mark.parametrize("dtype", [np.uint8, np.uint16])
+def test_alignment_rgb_warps_keep_overlapping_output_exact(dtype):
+    """An output that shares memory with its source only has the scalar order."""
+    import math
+
+    from core import _alignment_kernels as ak
+
+    mod = _require_avx2()
+    rng = np.random.default_rng(961)
+    h, w = 21, 37
+    backing = rng.integers(0, np.iinfo(dtype).max + 1, (h + 1, w + 1, 3), dtype=dtype)
+
+    def similarity(shift_x, shift_y, degrees, scale):
+        cx, cy = w * 0.5, h * 0.5
+        cos = scale * math.cos(math.radians(degrees))
+        sin = scale * math.sin(math.radians(degrees))
+        return (cx + shift_x, cy + shift_y, cx, cy, sin, sin, cos, cos)
+
+    def run():
+        results = []
+        for dx, dy in ((0.0, 0.0), (0.5, 0.5), (-3.25, 2.75)):
+            for kernel in (ak.warp_int_rows, ak.warp_int_rows_bgr_rev):
+                same = backing.copy()
+                kernel(same[:h, :w], same[:h, :w], dx, dy, 0, h)
+                right = backing.copy()
+                kernel(right[:h, :w], right[:h, 1:], dx, dy, 0, h)
+                below = backing.copy()
+                kernel(below[:h, :w], below[1:, :w], dx, dy, 0, h)
+                results += [same, right, below]
+        for spec in ((0.0, 0.0, 0.0, 1.0), (1.5, -0.75, 1.5, 1.01)):
+            transform = similarity(*spec)
+            for kernel in (ak.warp_alignment_int_rows, ak.warp_alignment_int_rows_bgr_rev):
+                same = backing.copy()
+                kernel(same[:h, :w], same[:h, :w], *transform, 0, h)
+                right = backing.copy()
+                kernel(right[:h, :w], right[:h, 1:], *transform, 0, h)
+                results += [same, right]
+            # a region written over the pixels it samples
+            region = backing.copy()
+            ak.warp_alignment_region_int_rows(
+                region[:h, :w], region[2:h - 3, 3:w - 4], h, w, 0, 3, 2, *transform, 0, h - 5)
+            results.append(region)
+        return results
+
+    _assert_same_bytes(*_scalar_and_simd(mod, run))
+
+
+def test_alignment_score_keeps_sums_stored_over_inputs_exact():
+    """A sum stored over the grid or its coordinates changes what later candidates read."""
+    mod = _require_avx2()
+    rng = np.random.default_rng(971)
+    h, w = 97, 131
+    nx, ny, count = 12, 9, 40
+    reference = rng.integers(0, 65536, (h, w), dtype=np.uint16)
+    moved = np.roll(reference, (1, -2), (0, 1))
+    xs0 = np.linspace(0, w - 1, nx).round().astype(np.float32)
+    ys0 = np.linspace(0, h - 1, ny).round().astype(np.float32)
+    samples0 = np.ascontiguousarray(reference[ys0.astype(np.int64)[:, None], xs0.astype(np.int64)[None, :]])
+    p08 = rng.normal(0, 0.02, count).astype(np.float32)
+    p0c = rng.normal(0, 0.02, count).astype(np.float32)
+    p18 = (1 + rng.normal(0, 0.02, count)).astype(np.float32)
+    p1c = (1 + rng.normal(0, 0.02, count)).astype(np.float32)
+    tx = (w / 2 + rng.normal(0, 6, count)).astype(np.float32)
+    ty = (h / 2 + rng.normal(0, 6, count)).astype(np.float32)
+    cx = np.full(count, w / 2, dtype=np.float32)
+    cy = np.full(count, h / 2, dtype=np.float32)
+    order = np.arange(count, dtype=np.int64)
+
+    def run():
+        results = []
+        for place in ("xs", "samples"):
+            ssum = np.zeros(count, dtype=np.int64)
+            ssq = np.zeros(count, dtype=np.int64)
+            cnt = np.zeros(count, dtype=np.int64)
+            xs, samples = xs0, samples0
+            if place == "xs":
+                xs = ssum.view(np.float32)[:nx]
+                xs[...] = xs0
+            else:
+                samples = cnt.view(np.uint16)[: nx * ny].reshape(ny, nx)
+                samples[...] = samples0
+            mod.of_align_score_chunk_u16_slice(samples, moved, xs, ys0, p08, p0c, p18, p1c, tx, ty, cx, cy,
+                                               order, 0, count, ssum, ssq, cnt)
+            results += [ssum, ssq, cnt]
+        return results
+
+    _assert_same_bytes(*_scalar_and_simd(mod, run))

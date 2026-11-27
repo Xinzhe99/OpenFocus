@@ -70,6 +70,18 @@ def test_tile_history_undo_redo_is_exact_at_16bit():
     assert history.redo() and (tgt == painted).all()
 
 
+def _release_call_before_error(raised):
+    """Let a failed call's frames go before its MemoryError does.
+
+    Python 3.10 clears a MemoryError before hiding it from the garbage
+    collector. Clearing releases the traceback, the failed call's frames and
+    their stored tiles, whose finalizers run Python code. A collection that
+    starts there frees the exception a second time and the interpreter
+    crashes. Python 3.11 and later hide the exception first.
+    """
+    raised.value.__traceback__ = None
+
+
 def _document(frames=None, result=None, **kwargs):
     frames = frames or [np.full((64, 64, 3), v, np.uint8)
                         for v in (60, 220)]
@@ -1722,8 +1734,9 @@ def test_undo_metadata_failure_preserves_pixels_and_history(monkeypatch):
         raise MemoryError('injected metadata allocation failure')
 
     monkeypatch.setattr(RetouchDocument, '_trim_redo', fail)
-    with pytest.raises(MemoryError):
+    with pytest.raises(MemoryError) as raised:
         doc.undo()
+    _release_call_before_error(raised)
     np.testing.assert_array_equal(doc.working, pixels)
     assert doc.history._undo is undo and not doc.can_redo
     assert doc._cursor == cursor and doc._operations is operations
@@ -1745,8 +1758,9 @@ def test_stroke_copy_failure_aborts_and_allows_retry(monkeypatch):
 
     monkeypatch.setattr(doc.history, '_tile_copy', fail_second)
     assert doc.begin_stroke(30, 30)
-    with pytest.raises(MemoryError):
+    with pytest.raises(MemoryError) as raised:
         doc.stroke_to(200, 30)
+    _release_call_before_error(raised)
     np.testing.assert_array_equal(doc.working, image)
     assert not doc.stroke_active and not doc.can_undo
     monkeypatch.setattr(doc.history, '_tile_copy', original)

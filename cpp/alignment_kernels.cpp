@@ -191,6 +191,25 @@ void warp_translation_row_packed(
     const int32_t* ix, const int32_t* jx, const uint32_t* fx, const uint8_t* inv_x,
     uint32_t gy, uint32_t fy
 ) {
+    if (channels == 3 && simd::use_avx2() && image.shape[1] >= 3
+            && image.shape[1] <= std::numeric_limits<int32_t>::max()) {
+        const int64_t item = image.itemsize;
+        const auto* sb = static_cast<const uint8_t*>(image.data);
+        const uint8_t* r0 = sb + iy_b * image.stride[0] * item;
+        const uint8_t* r1 = sb + jy_b * image.stride[0] * item;
+        uint8_t* dst = static_cast<uint8_t*>(out.data) + oy * out.stride[0] * item;
+        // The vector kernel reads a whole pixel before it stores one and
+        // stores past it; an output row that shares bytes with a source row
+        // keeps the per-channel order of the loops below.
+        const uint64_t src_bytes = static_cast<uint64_t>(image.shape[1] * 3 * item);
+        const uint64_t dst_bytes = static_cast<uint64_t>(rw * 3 * item);
+        if (!byte_ranges_overlap(dst, dst_bytes, r0, src_bytes)
+                && !byte_ranges_overlap(dst, dst_bytes, r1, src_bytes)) {
+            simd::align_warp_translation_rgb_row_avx2(
+                r0, r1, item == 1, dst, rw, ix, jx, fx, inv_x, fy, bgr_rev, image.shape[1]);
+            return;
+        }
+    }
     if (image.itemsize == 1) {
         const auto* sb = static_cast<const uint8_t*>(image.data);
         const auto* r0 = sb + iy_b * image.stride[0];
@@ -463,10 +482,13 @@ void of_align_warp_alignment_int_rows_cpp(
     const int64_t h = image.shape[0];
     const int64_t w = image.shape[1];
     const int64_t channels = (image.ndim == 2) ? 1 : image.shape[2];
+    // The vector kernel reads and stores in a different order than the
+    // per-channel loop, so an output that overlaps the image stays scalar.
     const bool use_simd = simd::use_avx2()
         && is_warp_packed(image, out, channels)
         && w >= 8 && w <= 16777216
-        && h <= std::numeric_limits<int32_t>::max();
+        && h <= std::numeric_limits<int32_t>::max()
+        && !packed_rows_overlap(image, 0, h, w * channels, out, y_start, y_stop, w * channels);
     for (int64_t y = y_start; y < y_stop; ++y) {
         float v_dy = 0.0f, u_dy = 0.0f;
         map_uv_row(static_cast<float>(y), cy, p1c, p0c, v_dy, u_dy);
@@ -475,8 +497,8 @@ void of_align_warp_alignment_int_rows_cpp(
                 ? static_cast<void*>(static_cast<uint8_t*>(out.data) + y * out.stride[0])
                 : static_cast<void*>(static_cast<uint16_t*>(out.data) + y * out.stride[0]);
             simd::align_warp_alignment_row_avx2(
-                image.data, image.stride[0], image.stride[1], image.itemsize == 1,
-                out_row, out.stride[1], h, w, 0, 0, w, channels, bgr_rev,
+                image.data, image.stride[0], w, image.itemsize == 1,
+                out_row, h, w, 0, 0, w, channels, bgr_rev,
                 cx, p08, p18, tx, ty, v_dy, u_dy);
             continue;
         }
@@ -601,10 +623,15 @@ std::tuple<float, float, bool> of_align_refine_level_cpp(
     std::vector<float> dys(static_cast<size_t>(total_cand));
 
     const int threads = (total_cand >= 4 && n * n >= 4096) ? 4 : 1;
+    // Residuals are integers below 2^16, so while n * n * 65535^2 stays under
+    // 2^53 the double sums below are exact and integer sums give the same value.
+    const bool exact_integer_sums = a_sx == 1 && b_sx == 1 && n >= 8
+        && n * n <= (int64_t{1} << 21) && simd::use_avx2();
     parallel_bands(total_cand, 1, threads, [&](int64_t s0, int64_t s1) {
         std::vector<int32_t> ix_arr(static_cast<size_t>(n)), jx_arr(static_cast<size_t>(n));
         std::vector<uint32_t> fx_arr(static_cast<size_t>(n));
         std::vector<uint8_t> inv_x_arr(static_cast<size_t>(n));
+        std::vector<int32_t> weights(exact_integer_sums ? static_cast<size_t>(n) : size_t{0});
         for (int64_t idx = s0; idx < s1; ++idx) {
             const int32_t oy = static_cast<int32_t>(idx / count);
             const int32_t ox = static_cast<int32_t>(idx % count);
@@ -620,7 +647,66 @@ std::tuple<float, float, bool> of_align_refine_level_cpp(
                 inv_x_arr[static_cast<size_t>(xx)] = inv ? 1 : 0;
             }
             double ssum = 0.0, ssq = 0.0;
-            for (int64_t yy = cy; yy < cy + n; ++yy) {
+            if (exact_integer_sums) {
+                // The longest run of valid columns that sample consecutive
+                // sources goes through the vector kernel, eight at a time.
+                int64_t run_lo = 0;
+                while (run_lo < n && inv_x_arr[static_cast<size_t>(run_lo)]) {
+                    ++run_lo;
+                }
+                int64_t run_hi = run_lo;
+                while (run_hi < n && !inv_x_arr[static_cast<size_t>(run_hi)]
+                       && jx_arr[static_cast<size_t>(run_hi)] == ix_arr[static_cast<size_t>(run_hi)] + 1
+                       && ix_arr[static_cast<size_t>(run_hi)]
+                           == ix_arr[static_cast<size_t>(run_lo)] + static_cast<int32_t>(run_hi - run_lo)) {
+                    weights[static_cast<size_t>(run_hi)] = static_cast<int32_t>(
+                        (256u - fx_arr[static_cast<size_t>(run_hi)]) | (fx_arr[static_cast<size_t>(run_hi)] << 16u));
+                    ++run_hi;
+                }
+                run_hi = run_lo + ((run_hi - run_lo) & ~int64_t{7});
+                int64_t isum = 0, isq = 0;
+                for (int64_t yy = cy; yy < cy + n; ++yy) {
+                    const float ycoord = (static_cast<float>(yy) + static_cast<float>(pad)) - dy;
+                    int32_t iy = 0, jy = 0;
+                    uint32_t fy = 0;
+                    bool inv_y = false;
+                    axis_pad_sample(ycoord, h, pad, iy, jy, fy, inv_y);
+                    const uint32_t gy = 256u - fy;
+                    const uint16_t* ar = ab + yy * a.stride[0] + cx;
+                    const uint16_t* br0 = bb + iy * b.stride[0];
+                    const uint16_t* br1 = bb + jy * b.stride[0];
+                    const auto plain_columns = [&](int64_t first, int64_t last) {
+                        for (int64_t xx_i = first; xx_i < last; ++xx_i) {
+                            uint32_t sample = 0;
+                            if (!inv_y && !inv_x_arr[static_cast<size_t>(xx_i)]) {
+                                const uint32_t fx = fx_arr[static_cast<size_t>(xx_i)];
+                                const uint32_t gx = 256u - fx;
+                                const int32_t ix = ix_arr[static_cast<size_t>(xx_i)];
+                                const int32_t jx = jx_arr[static_cast<size_t>(xx_i)];
+                                const uint32_t top = static_cast<uint32_t>(br0[ix]) * gx + static_cast<uint32_t>(br0[jx]) * fx;
+                                const uint32_t bot = static_cast<uint32_t>(br1[ix]) * gx + static_cast<uint32_t>(br1[jx]) * fx;
+                                sample = (top * gy + bot * fy) >> 16u;
+                            }
+                            const int64_t diff = static_cast<int64_t>(ar[xx_i]) - static_cast<int64_t>(sample);
+                            isum += diff;
+                            isq += diff * diff;
+                        }
+                    };
+                    if (inv_y || run_hi <= run_lo) {
+                        plain_columns(0, n);
+                        continue;
+                    }
+                    plain_columns(0, run_lo);
+                    const int32_t first_source = ix_arr[static_cast<size_t>(run_lo)];
+                    simd::align_refine_dense_row_avx2(
+                        ar + run_lo, br0 + first_source, br1 + first_source,
+                        weights.data() + run_lo, run_hi - run_lo, fy, &isum, &isq);
+                    plain_columns(run_hi, n);
+                }
+                ssum = static_cast<double>(isum);
+                ssq = static_cast<double>(isq);
+            }
+            for (int64_t yy = cy; !exact_integer_sums && yy < cy + n; ++yy) {
                 const float ycoord = (static_cast<float>(yy) + static_cast<float>(pad)) - dy;
                 int32_t iy = 0, jy = 0;
                 uint32_t fy = 0;
@@ -934,7 +1020,9 @@ void of_align_warp_alignment_region_int_rows_cpp(
         && rw >= 8
         && src_h <= std::numeric_limits<int32_t>::max()
         && src_w <= std::numeric_limits<int32_t>::max()
-        && x_off >= -16777216 && x_off <= 16777216 - rw;
+        && x_off >= -16777216 && x_off <= 16777216 - rw
+        && !packed_rows_overlap(image, 0, image.shape[0], std::max(image.shape[1], src_w) * channels,
+                                out, oy_start, oy_stop, rw * channels);
     for (int64_t oy = oy_start; oy < oy_stop; ++oy) {
         float v_dy = 0.0f, u_dy = 0.0f;
         map_uv_row(static_cast<float>(y_off + oy), cy, p1c, p0c, v_dy, u_dy);
@@ -943,8 +1031,8 @@ void of_align_warp_alignment_region_int_rows_cpp(
                 ? static_cast<void*>(static_cast<uint8_t*>(out.data) + oy * out.stride[0])
                 : static_cast<void*>(static_cast<uint16_t*>(out.data) + oy * out.stride[0]);
             simd::align_warp_alignment_row_avx2(
-                image.data, image.stride[0], image.stride[1], image.itemsize == 1,
-                out_row, out.stride[1], src_h, src_w, src_y0, x_off, rw, channels, bgr_rev,
+                image.data, image.stride[0], image.shape[1], image.itemsize == 1,
+                out_row, src_h, src_w, src_y0, x_off, rw, channels, bgr_rev,
                 cx, p08, p18, tx, ty, v_dy, u_dy);
             continue;
         }

@@ -15,8 +15,9 @@ All dataclasses are pure Python and cleanly importable by UI widgets/dialogs.
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import copy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import os
 from pathlib import Path
 import re
@@ -27,6 +28,7 @@ from typing import Any, Callable, Mapping, Optional, Sequence
 
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
+from locales.gallery_i18n import normalize_lang_code
 from utils.frame_pixels import is_qobject_alive
 from utils.gallery_client import (
     AI_TAG_KEYS,
@@ -420,6 +422,10 @@ class GalleryComment:
     created_at: str = ""
     is_author_reply: bool = False
     replies: tuple["GalleryComment", ...] = ()
+    src_lang: str = ""
+    translated_content: str = ""
+    translated_lang: str = ""
+    can_delete: bool = False
 
     @property
     def id(self) -> str:
@@ -460,6 +466,10 @@ class GalleryComment:
             viewer_vote=raw_vote,
             created_at=_as_str(data.get("created_at")),
             is_author_reply=_as_bool(data.get("is_author_reply"), False),
+            src_lang=normalize_lang_code(data.get("src_lang")),
+            translated_content=_as_str(data.get("translated_content")),
+            translated_lang=normalize_lang_code(data.get("translated_lang")),
+            can_delete=_as_bool(data.get("can_delete", data.get("is_mine")), False),
             replies=tuple(replies),
         )
 
@@ -648,7 +658,7 @@ def build_builtin_fallback_works(assets_dir: Optional[Path] = None) -> list[Gall
             "author_nickname": "OpenFocus",
             "rel_path": os.path.join("Examples", "a00.jpg"),
             "ai_tags": ("botanical", "microscopy"),
-            "exif": {"camera": "OpenFocus Sample Stack", "lens": "Macro 90mm f/2.8"},
+            "exif": {"lens": "Macro 90mm f/2.8"},
         },
         {
             "work_id": "builtin_openfocus_demo_02",
@@ -657,7 +667,7 @@ def build_builtin_fallback_works(assets_dir: Optional[Path] = None) -> list[Gall
             "author_nickname": "OpenFocus",
             "rel_path": os.path.join("demo_stack", "demo_01.jpg"),
             "ai_tags": ("product_still_life", "abstract_texture"),
-            "exif": {"camera": "OpenFocus Demo", "lens": "Macro 60mm f/4"},
+            "exif": {"lens": "Macro 60mm f/4"},
         },
         {
             "work_id": "builtin_openfocus_brand_03",
@@ -666,7 +676,7 @@ def build_builtin_fallback_works(assets_dir: Optional[Path] = None) -> list[Gall
             "author_nickname": "OpenFocus",
             "rel_path": "comparison_ai_vs_gff.png",
             "ai_tags": ("microscopy",),
-            "exif": {"camera": "OpenFocus Studio"},
+            "exif": {"lens": "Macro Focus Stack"},
         },
     )
 
@@ -696,7 +706,7 @@ def build_builtin_fallback_works(assets_dir: Optional[Path] = None) -> list[Gall
                 author_id="openfocus_official",
                 author_nickname="OpenFocus",
                 title="OpenFocus Focus Stacking Showcase",
-                exif={"camera": "OpenFocus"},
+                exif={"lens": "Macro Focus Stack"},
                 ai_tags=("other",),
                 openfocus_badge=True,
                 allow_download=False,
@@ -729,7 +739,7 @@ class GalleryStateStore(QObject):
 
     # Internal thread-marshaling signals
     _config_loaded = pyqtSignal(object)
-    _profile_loaded = pyqtSignal(int, object)
+    _profile_loaded = pyqtSignal(int, object, int)
     _feed_loaded = pyqtSignal(int, object)
     _notifications_loaded = pyqtSignal(int, object)
     _operation_failed = pyqtSignal(object, str, str)
@@ -760,12 +770,18 @@ class GalleryStateStore(QObject):
             cooldown_sec=self._config.danmaku_cooldown_sec,
         )
         self._network_checker = network_checker or self._client.is_unmetered_network
-        self._background_runner = background_runner or self._spawn_daemon_thread
+        self._executor: Optional[ThreadPoolExecutor] = (
+            ThreadPoolExecutor(max_workers=2, thread_name_prefix="openfocus-gallery-sync")
+            if background_runner is None
+            else None
+        )
+        self._background_runner = background_runner or self._submit_pool_task
 
         self._fusion_busy: bool = False
         self._deferred_poll: bool = False
         self._closed: bool = False
         self._account_generation = 0
+        self._profile_refresh_revision = 0
         self._inflight_lock = threading.Lock()
         self._inflight_ops: set[tuple[str, Optional[int]]] = set()
 
@@ -926,6 +942,11 @@ class GalleryStateStore(QObject):
     def shutdown(self) -> None:
         self._closed = True
         self.stop_polling()
+        if self._executor is not None:
+            try:
+                self._executor.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
 
     def _safe_emit(self, signal_name: str, *args: Any) -> None:
         if self._closed:
@@ -948,6 +969,14 @@ class GalleryStateStore(QObject):
             self.feed_changed.emit(self.effective_showcase_works())
 
     # ---- Background worker orchestration ----
+
+    def _submit_pool_task(self, task: Callable[[], None]) -> None:
+        if self._closed or self._executor is None:
+            return
+        try:
+            self._executor.submit(task)
+        except RuntimeError:
+            pass
 
     @staticmethod
     def _spawn_daemon_thread(task: Callable[[], None]) -> None:
@@ -1019,19 +1048,29 @@ class GalleryStateStore(QObject):
             return False
 
         generation = self._account_generation
+        revision = self._profile_refresh_revision
 
         def _work() -> None:
             try:
                 raw = self._client.get_me(bypass_backoff=bypass_backoff)
                 profile = AccountProfile.from_dict(raw)
-                self._safe_emit("_profile_loaded", generation, profile)
+                self._safe_emit("_profile_loaded", generation, profile, revision)
             except GalleryClientError as exc:
                 self._safe_emit("_operation_failed", generation, "account", exc.code)
             except Exception:
                 _logger.debug("Unexpected gallery account refresh error", exc_info=True)
                 self._safe_emit("_operation_failed", generation, "account", "internal_error")
 
-        return self._submit("account", _work, generation=generation)
+        return self._submit(f"account:{revision}", _work, generation=generation)
+
+    def refresh_account_after_points_change(self) -> None:
+        """Refresh the shared profile after a publish or voucher changes points."""
+        # An earlier request may have read the balance before the change.
+        self._profile_refresh_revision += 1
+        if self._fusion_busy:
+            self._deferred_poll = True
+        else:
+            self.refresh_account_silently()
 
     def refresh_feed(
         self,
@@ -1124,8 +1163,10 @@ class GalleryStateStore(QObject):
             if not cfg.gallery_enabled:
                 self.feed_changed.emit([])
 
-    def _apply_profile(self, generation: int, profile: AccountProfile) -> None:
+    def _apply_profile(self, generation: int, profile: AccountProfile, revision: int | None = None) -> None:
         if self._closed or generation != self._account_generation:
+            return
+        if revision is not None and revision != self._profile_refresh_revision:
             return
         self._profile = profile
         self.profile_changed.emit(profile)
@@ -1146,7 +1187,44 @@ class GalleryStateStore(QObject):
             return
         self._notifications = list(notifications)
         unread = sum(1 for item in self._notifications if not item.is_read)
+        if self._profile is not None:
+            self._profile = replace(self._profile, unread_notifications_count=unread)
         self.notifications_changed.emit(list(self._notifications), unread)
+
+    def mark_notifications_read_local(
+        self,
+        ids: Optional[Sequence[str]] = None,
+        all: bool = False,
+    ) -> int:
+        """Synchronize local notification read state and unread count without hitting the network."""
+        if self._closed:
+            return self.unread_notifications_count
+        mark_all = bool(all)
+        id_set = {str(nid) for nid in ids if nid} if ids is not None else set()
+        if not mark_all and not id_set:
+            return self.unread_notifications_count
+
+        updated: list[GalleryNotification] = []
+        for item in self._notifications:
+            if not item.is_read and (mark_all or item.notification_id in id_set):
+                updated.append(replace(item, is_read=True))
+            else:
+                updated.append(item)
+        self._notifications = updated
+
+        if mark_all:
+            unread = 0
+        elif self._notifications:
+            unread = sum(1 for item in self._notifications if not item.is_read)
+        elif self._profile is not None:
+            unread = max(0, self._profile.unread_notifications_count - len(id_set))
+        else:
+            unread = 0
+
+        if self._profile is not None:
+            self._profile = replace(self._profile, unread_notifications_count=unread)
+        self.notifications_changed.emit(list(self._notifications), unread)
+        return unread
 
     def _handle_operation_failed(self, generation: Optional[int], operation: str, error_code: str) -> None:
         if self._closed or generation is not None and generation != self._account_generation:

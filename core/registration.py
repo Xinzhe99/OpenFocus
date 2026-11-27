@@ -25,6 +25,7 @@ import concurrent.futures
 from collections import OrderedDict, deque
 from contextlib import contextmanager, nullcontext
 from dataclasses import asdict, dataclass
+import gc
 import hashlib
 import json
 import math
@@ -840,16 +841,24 @@ class PerspectiveWarp:
     def _call_mapped_jpeg(self, source_frame, image, *, should_cancel=None):
         """Warp packed BGR pixels into an owned mapping with bounded CPU workspace."""
         from core.frame_storage import create_frame, frame_region
-        from core.resource_policy import require_memory
+        from core.resource_policy import ResourceLimitError, require_memory
 
         cancel_fn = _merge_cancel_callbacks(self.should_cancel, should_cancel)
         integer_crop = self._is_integer_crop(image.shape, image.dtype)
-        require_memory(128 * 1024 + (0 if integer_crop else _perspective_cpu_tile_bytes(self.dsize)))
+        required = 128 * 1024 + (0 if integer_crop else _perspective_cpu_tile_bytes(self.dsize))
+        try:
+            require_memory(required)
+        except ResourceLimitError:
+            from core.source_frames import SOURCE_CACHE
+
+            SOURCE_CACHE.clear()
+            gc.collect()
+            require_memory(required)
         with frame_region(image) as pixels:
             self.source.validate_pixels(pixels, cancel_fn, source=source_frame)
             output = create_frame(_perspective_output_shape(image.shape, self.dsize), image.dtype)
             # Close the written view before the root mapping enters the staged stack.
-            with frame_region(output, write=True) as destination:
+            with frame_region(output, write=True, writeback=True) as destination:
                 _check_cancel(cancel_fn)
                 warped = self._apply_to_image(pixels, should_cancel=cancel_fn, destination=destination)
                 if warped is not destination:

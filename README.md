@@ -379,6 +379,15 @@ python -m pip install -r requirements-dev.txt
 python -m pytest -q --timeout=90 --timeout-method=thread
 ```
 
+CI runs the full suite as consecutive slices, one pytest process per CPU core,
+which takes a fraction of the single-process time:
+
+```bash
+python tools/parallel_tests.py --timeout=180 --timeout-method=thread
+```
+
+Add `--jobs N` to use fewer processes than cores.
+
 On a headless host, set `QT_QPA_PLATFORM=offscreen`. CI uses these same dependency
 files on Windows, macOS and Linux. A change to processing, cancellation or GUI
 state also needs a real CLI/desktop smoke run; tests alone do not exercise the
