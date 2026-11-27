@@ -76,6 +76,25 @@ QPushButton#panelToggle:checked {{
     color: {t['accentSoftText']};
     border-color: {t['accentSoftText']};
 }}
+QPushButton#panelToggle:disabled {{
+    color: {t['textFaint']};
+}}
+QPushButton#alignAreaToggle {{
+    background-color: transparent;
+    color: {t['textMuted']};
+    border: 1px solid transparent;
+    border-radius: {RADIUS['sm']}px;
+    padding: 2px {SPACE['sm']}px;
+}}
+QPushButton#alignAreaToggle:hover {{ background-color: {t['surfaceHover']}; }}
+QPushButton#alignAreaToggle:checked {{
+    background-color: {t['warningSoft']};
+    color: {t['warning']};
+    border-color: {t['warning']};
+}}
+QPushButton#alignAreaToggle:disabled {{
+    color: {t['textFaint']};
+}}
 """
 
 
@@ -94,6 +113,9 @@ class SourcePanel:
     info_label: QLabel
     roi_btn: QPushButton
     sharpness_curve: "SharpnessCurveWidget"
+    show_aligned_btn: QPushButton
+    align_area_btn: QPushButton
+    clear_align_area_btn: QPushButton
 
 
 @dataclass
@@ -268,10 +290,44 @@ def create_source_panel() -> SourcePanel:
     layout.setSpacing(0)
 
     container.setObjectName("panelRoot")
-    title = QLabel(' ' + trans.t('panel_source_stack'))
-    title.setObjectName("panelTitle")
-    title.setFixedHeight(26)
+    title_bar = QWidget()
+    title_bar.setObjectName("panelTitleBar")
+    title_bar.setMinimumHeight(26)
+    title_layout = QHBoxLayout(title_bar)
+    title_layout.setContentsMargins(SPACE['md'], 0, 6, 0)
+    title_layout.setSpacing(6)
+
+    title = QLabel(trans.t('panel_source_stack'))
+    title.setObjectName("panelTitleText")
     title.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+
+    align_area_btn = QPushButton(trans.t('btn_align_area'))
+    align_area_btn.setObjectName("alignAreaToggle")
+    align_area_btn.setCheckable(True)
+    align_area_btn.setEnabled(False)
+    align_area_btn.setToolTip(trans.t('btn_align_area_hint'))
+    align_area_btn.setProperty("controlId", "btn_align_area")
+
+    clear_align_area_btn = QPushButton("×")
+    clear_align_area_btn.setObjectName("panelToggle")
+    clear_align_area_btn.setFixedWidth(26)
+    clear_align_area_btn.setStyleSheet("padding: 2px 4px;")
+    clear_align_area_btn.setVisible(False)
+    clear_align_area_btn.setToolTip(trans.t('btn_clear_align_area_hint'))
+    clear_align_area_btn.setProperty("controlId", "btn_clear_align_area")
+
+    show_aligned_btn = QPushButton(trans.t('btn_show_aligned'))
+    show_aligned_btn.setObjectName("panelToggle")
+    show_aligned_btn.setCheckable(True)
+    show_aligned_btn.setEnabled(False)
+    show_aligned_btn.setToolTip(trans.t('btn_show_aligned_hint'))
+    show_aligned_btn.setProperty("controlId", "btn_show_aligned")
+
+    title_layout.addWidget(title)
+    title_layout.addStretch()
+    title_layout.addWidget(align_area_btn)
+    title_layout.addWidget(clear_align_area_btn)
+    title_layout.addWidget(show_aligned_btn)
 
     image_label = MagnifierLabel("Drag images here to add source files\nor use the image menu")
     image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -322,7 +378,7 @@ def create_source_panel() -> SourcePanel:
     sharpness_curve = SharpnessCurveWidget()
     sharpness_curve.setVisible(False)
 
-    layout.addWidget(title)
+    layout.addWidget(title_bar)
     layout.addWidget(image_label, 1)
     layout.addWidget(sharpness_curve)
     layout.addWidget(control_bar)
@@ -336,6 +392,9 @@ def create_source_panel() -> SourcePanel:
         info_label=info_label,
         roi_btn=roi_btn,
         sharpness_curve=sharpness_curve,
+        show_aligned_btn=show_aligned_btn,
+        align_area_btn=align_area_btn,
+        clear_align_area_btn=clear_align_area_btn,
     )
 
 

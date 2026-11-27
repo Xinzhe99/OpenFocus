@@ -297,7 +297,8 @@ class SourceRegionWorker(QThread):
     failed = pyqtSignal(object, str)
 
     def __init__(self, frame, key, *, labels=None, index=0, scale_cfg=None,
-                 watermark_cfg=None, metadata=None, target='input', develop=True):
+                 watermark_cfg=None, metadata=None, target='input', develop=True,
+                 icc_profile=b""):
         super().__init__()
         configure_native_worker_stack(self)
         self.frame = frame
@@ -308,6 +309,7 @@ class SourceRegionWorker(QThread):
         self.scale_cfg = scale_cfg
         self.watermark_cfg = watermark_cfg
         self.metadata = (getattr(frame, 'linear_metadata', None) if metadata is None else metadata) if develop else None
+        self.icc_profile = icc_profile or b""
         self._scale_mean = None
         self.cancelled = False
         self._condition = threading.Condition()
@@ -472,6 +474,9 @@ class SourceRegionWorker(QThread):
                             image, rect, size, self.metadata, preserve_alpha=keep_alpha,
                             should_cancel=cancelled)
                         tile = self._decorate(tile, sampled, image)
+                        if self.icc_profile and self.metadata is None and tile is not None:
+                            from core.color_management import convert_bgr_to_srgb_preview
+                            tile = convert_bgr_to_srgb_preview(tile, self.icc_profile, enabled=True)
                         if keep_alpha and tile is not None:
                             tile = _composite_region(tile, sampled)
                         validate_frame_source(source)

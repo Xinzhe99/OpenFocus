@@ -369,6 +369,12 @@ class TransformManager:
 
         # 清空ROI对齐缓存（含结果视图上的选区与按钮状态）
         self.reset_roi_selection()
+        clear_align_roi = getattr(window, "clear_alignment_roi", None)
+        if callable(clear_align_roi):
+            clear_align_roi(refresh=False)
+        invalidate_aligned = getattr(window, "_invalidate_aligned_preview", None)
+        if callable(invalidate_aligned):
+            invalidate_aligned(refresh=True)
 
         output = getattr(window, 'output_manager', None)
         cancel = getattr(output, 'cancel_registration_preview', None)

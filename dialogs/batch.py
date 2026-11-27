@@ -256,6 +256,7 @@ class BatchProcessingDialog(QDialog):
         self.split_method_combo.addItem(trans.t('batch_split_adaptive'), 'adaptive')
         self.split_method_combo.addItem(trans.t('batch_split_fixed'), 'count')
         self.split_method_combo.addItem(trans.t('batch_split_time'), 'time_threshold')
+        self.split_method_combo.addItem(trans.t('batch_split_exposure'), 'exposure')
         self.split_method_combo.setCurrentIndex(0)
         self.split_method_combo.currentIndexChanged.connect(self.on_split_method_changed)
         split_method_layout.addWidget(self.split_method_combo, 1)
@@ -1188,10 +1189,10 @@ class BatchProcessingDialog(QDialog):
     def _current_split_method(self) -> str:
         """Return the active single-folder split method id."""
         data = self.split_method_combo.currentData()
-        if data in ('adaptive', 'count', 'time_threshold'):
+        if data in ('adaptive', 'count', 'time_threshold', 'exposure'):
             return data
         index = self.split_method_combo.currentIndex()
-        return ('adaptive', 'count', 'time_threshold')[min(max(index, 0), 2)]
+        return ('adaptive', 'count', 'time_threshold', 'exposure')[min(max(index, 0), 3)]
 
     def _sync_split_method_controls(self) -> None:
         """Show only the controls relevant to the selected split method."""
@@ -1203,14 +1204,25 @@ class BatchProcessingDialog(QDialog):
             with QSignalBlocker(self.param_spinbox):
                 if method == 'count':
                     self.param_label.setText(trans.t('batch_images_per_stack'))
+                    self.param_spinbox.setDecimals(0)
+                    self.param_spinbox.setSingleStep(1)
                     self.param_spinbox.setRange(2, 1000)
                     self.param_spinbox.setValue(5)
                     self.param_unit_label.setText(trans.t('batch_unit_images'))
                 elif method == 'time_threshold':
                     self.param_label.setText(trans.t('batch_time_threshold'))
+                    self.param_spinbox.setDecimals(0)
+                    self.param_spinbox.setSingleStep(1)
                     self.param_spinbox.setRange(1, 3600)
                     self.param_spinbox.setValue(5)
                     self.param_unit_label.setText(trans.t('batch_unit_seconds'))
+                elif method == 'exposure':
+                    self.param_label.setText(trans.t('batch_ev_step'))
+                    self.param_spinbox.setDecimals(2)
+                    self.param_spinbox.setSingleStep(0.33)
+                    self.param_spinbox.setRange(0.10, 3.00)
+                    self.param_spinbox.setValue(0.33)
+                    self.param_unit_label.setText(trans.t('batch_unit_ev'))
             self._last_split_method = method
 
     def on_split_method_changed(self, _index=None):
@@ -1364,10 +1376,22 @@ class BatchProcessingDialog(QDialog):
             param_value = int(self.param_spinbox.value())
             stacks = loader.split_by_count(entries, param_value)
             self.preview_label.setText(trans.t('batch_preview_fmt_count').format(len(entries), len(stacks), param_value))
-        else:
+        elif split_method == 'time_threshold':
             param_value = float(self.param_spinbox.value())
             stacks = loader.split_by_time_threshold(entries, param_value)
             self.preview_label.setText(trans.t('batch_preview_fmt_time').format(len(entries), len(stacks), param_value))
+        else:
+            from core.exposure_split import read_exposure_infos, split_by_exposure
+            ev_step = float(self.param_spinbox.value())
+            paths = tuple(item[0] for item in entries)
+            cache = getattr(self, '_exposure_info_cache', None)
+            if cache is None or cache[0] != paths:
+                cache = (paths, read_exposure_infos(paths))
+                self._exposure_info_cache = cache
+            stacks = split_by_exposure(entries, ev_step=ev_step, exposure_map=cache[1])
+            self.preview_label.setText(
+                trans.t('batch_preview_fmt_exposure').format(len(entries), len(stacks), f"{ev_step:g}")
+            )
         self.single_folder_stacks = stacks
     
     def add_single_folder(self):
@@ -1424,7 +1448,9 @@ class BatchProcessingDialog(QDialog):
         param_value = self.param_spinbox.value()
         if split_method == 'count':
             return 'count', int(param_value)
-        return 'time_threshold', float(param_value)
+        if split_method == 'time_threshold':
+            return 'time_threshold', float(param_value)
+        return 'exposure', float(param_value)
     
 
     def browse_output_folder(self):
@@ -1733,6 +1759,8 @@ class BatchProcessingDialog(QDialog):
             'sensor_denoise': self.sensor_cleanup.denoise.isChecked(),
             'load_scale_factor': self.load_scale_factor,
             'runtime_settings': runtime,
+            'output_filename_template': str(getattr(self.parent_window, 'output_filename_template', '') or ''),
+            'output_name_prefix': str(getattr(self.parent_window, 'output_name_prefix', '') or ''),
             'frozen_stacks': [list(stack) for stack in self.single_folder_stacks],
         }
 

@@ -4,8 +4,8 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from utils.file_dialogs import FileDialog
 from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QFrame,
-    QHBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea, QTabWidget, QToolButton,
-    QVBoxLayout, QWidget,
+    QGridLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea,
+    QTabWidget, QToolButton, QVBoxLayout, QWidget,
 )
 
 from constants import (
@@ -241,11 +241,92 @@ class AdvancedSettingsDialog(QDialog):
         self.output_prefix.setMaxLength(40)
         self.output_prefix.setToolTip(trans.t("output_prefix_hint"))
         output.addRow(trans.t("output_prefix_label"), self.output_prefix)
+
+        from core.filename_template import DEFAULT_FILENAME_TEMPLATE, TEMPLATE_TOKENS
+        template_row = QWidget()
+        template_row_lay = QHBoxLayout(template_row)
+        template_row_lay.setContentsMargins(0, 0, 0, 0)
+        template_row_lay.setSpacing(6)
+        self.output_template = QLineEdit(getattr(w, "output_filename_template", "") or "")
+        self.output_template.setProperty("controlId", "edit_output_template")
+        self.output_template.setMaxLength(160)
+        self.output_template.setPlaceholderText(DEFAULT_FILENAME_TEMPLATE)
+        self.output_template.setToolTip(trans.t("output_template_hint"))
+        template_row_lay.addWidget(self.output_template, 1)
+        self.btn_reset_template = QPushButton(trans.t("output_template_clear"))
+        self.btn_reset_template.clicked.connect(self.output_template.clear)
+        template_row_lay.addWidget(self.btn_reset_template)
+        output.addRow(trans.t("output_template_label"), template_row)
+
+        chips_host = QWidget()
+        chips_grid = QGridLayout(chips_host)
+        chips_grid.setContentsMargins(0, 0, 0, 0)
+        chips_grid.setHorizontalSpacing(4)
+        chips_grid.setVerticalSpacing(4)
+        self.template_token_buttons: dict[str, QPushButton] = {}
+        cols = 4
+        for idx, token in enumerate(TEMPLATE_TOKENS):
+            chip = QPushButton(token)
+            chip.setProperty("controlId", f"token_chip_{token.strip('[]').lower()}")
+            chip.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+            chip.setToolTip(token)
+            chip.setStyleSheet("padding: 2px 6px; font-size: 9pt;")
+            chip.clicked.connect(lambda _checked=False, tok=token: self._insert_template_token(tok))
+            chips_grid.addWidget(chip, idx // cols, idx % cols)
+            self.template_token_buttons[token] = chip
+        output.addRow(trans.t("output_template_tokens_label"), chips_host)
+
         self.output_prefix_preview = QLabel()
         self.output_prefix_preview.setWordWrap(True)
         output.addRow(trans.t("output_prefix_preview"), self.output_prefix_preview)
         self.output_prefix.textChanged.connect(self._update_output_prefix_preview)
+        self.output_template.textChanged.connect(self._update_output_prefix_preview)
         self._update_output_prefix_preview()
+
+        self.chk_render_complete_sound = QCheckBox(trans.t("render_complete_sound_label"))
+        self.chk_render_complete_sound.setProperty("controlId", "chk_render_complete_sound")
+        self.chk_render_complete_sound.setChecked(bool(getattr(w, "render_complete_sound", False)))
+        self.chk_render_complete_sound.setToolTip(trans.t("render_complete_sound_hint"))
+        output.addRow(self.chk_render_complete_sound)
+
+        export_color = _section(page_lay, trans.t("advanced_export_color_section"))
+        self.chk_strip_exif_on_export = QCheckBox(trans.t("export_strip_exif"))
+        self.chk_strip_exif_on_export.setProperty("controlId", "chk_strip_exif_on_export")
+        self.chk_strip_exif_on_export.setChecked(bool(getattr(w, "strip_exif_on_export", False)))
+        self.chk_strip_exif_on_export.setToolTip(trans.t("export_strip_exif_hint"))
+        export_color.addRow(self.chk_strip_exif_on_export)
+
+        self.chk_ui_icc_preview = QCheckBox(trans.t("ui_icc_preview_setting"))
+        self.chk_ui_icc_preview.setProperty("controlId", "chk_ui_icc_preview")
+        self.chk_ui_icc_preview.setChecked(bool(getattr(w, "enable_ui_icc_preview", True)))
+        self.chk_ui_icc_preview.setToolTip(trans.t("ui_icc_preview_setting_hint"))
+        export_color.addRow(self.chk_ui_icc_preview)
+
+        from core.raw_develop import load_raw_develop_settings
+        raw_cfg = load_raw_develop_settings()
+        raw_section = _section(page_lay, trans.t("raw_develop_section"))
+        dng_row = QWidget()
+        dng_lay = QHBoxLayout(dng_row)
+        dng_lay.setContentsMargins(0, 0, 0, 0)
+        self.raw_dng_converter_path = QLineEdit(raw_cfg.external_dng_converter_path)
+        self.raw_dng_converter_path.setProperty("controlId", "edit_advanced_dng_path")
+        self.raw_dng_converter_path.setPlaceholderText(trans.t("raw_develop_dng_placeholder"))
+        dng_lay.addWidget(self.raw_dng_converter_path, 1)
+        btn_dng_browse = QPushButton(trans.t("raw_develop_dng_browse"))
+        btn_dng_browse.setProperty("controlId", "btn_advanced_dng_browse")
+        btn_dng_browse.clicked.connect(self._browse_dng_converter)
+        dng_lay.addWidget(btn_dng_browse)
+        btn_dng_detect = QPushButton(trans.t("raw_develop_dng_detect"))
+        btn_dng_detect.setProperty("controlId", "btn_advanced_dng_detect")
+        btn_dng_detect.clicked.connect(self._detect_dng_converter)
+        dng_lay.addWidget(btn_dng_detect)
+        raw_section.addRow(trans.t("raw_develop_dng_path"), dng_row)
+
+        self.btn_open_raw_develop = QPushButton(trans.t("raw_develop_open_button"))
+        self.btn_open_raw_develop.setProperty("controlId", "btn_advanced_open_raw_develop")
+        self.btn_open_raw_develop.clicked.connect(self._open_raw_develop_dialog)
+        raw_section.addRow("", self.btn_open_raw_develop)
+        _note(page_lay, trans.t("raw_develop_dng_hint"))
 
     def _build_fusion(self, page_lay):
         w = self.window_main
@@ -942,6 +1023,42 @@ class AdvancedSettingsDialog(QDialog):
         if path:
             self.storage_directory.setText(path)
 
+    def _browse_dng_converter(self):
+        import os
+        current = self.raw_dng_converter_path.text().strip()
+        start_dir = os.path.dirname(current) if current else ""
+        flt = "Executable (*.exe);;All Files (*)" if os.name == "nt" else "All Files (*)"
+        chosen, _ = FileDialog.getOpenFileName(
+            self, trans.t("raw_develop_dng_browse_title"), start_dir, flt)
+        if chosen:
+            self.raw_dng_converter_path.setText(chosen)
+
+    def _detect_dng_converter(self):
+        from core.raw_develop import detect_external_dng_converter
+        detected = detect_external_dng_converter()
+        if detected:
+            self.raw_dng_converter_path.setText(detected)
+            self.status.setText(trans.t("raw_develop_dng_detected").format(path=detected))
+            self.status.show()
+        else:
+            self.status.setText(trans.t("raw_develop_dng_not_found"))
+            self.status.show()
+
+    def _open_raw_develop_dialog(self):
+        from core.raw_develop import load_raw_develop_settings
+        from dialogs.raw_develop import RawDevelopDialog
+        current = load_raw_develop_settings()
+        current.external_dng_converter_path = self.raw_dng_converter_path.text().strip()
+        theme = getattr(self.window_main, "ui_theme", None)
+        dialog = RawDevelopDialog(
+            self.window_main,
+            initial_settings=current,
+            theme=theme,
+        )
+        if dialog.exec() == QDialog.DialogCode.Accepted and dialog.applied_settings is not None:
+            self.raw_dng_converter_path.setText(dialog.applied_settings.external_dng_converter_path)
+            self._initial_fields['raw_dng_converter_path'] = dialog.applied_settings.external_dng_converter_path
+
     def _sync_overlap_limit(self, block: float) -> None:
         """Keep the dialog's overlap cap in step with the chosen tile size.
 
@@ -952,13 +1069,35 @@ class AdvancedSettingsDialog(QDialog):
         self.spin_overlap.setMaximum(
             min(TILE_OVERLAP_MAX, max(0, int(block)) // 2))
 
+    def _insert_template_token(self, token: str) -> None:
+        """Insert a template token at the cursor position with a clean separator."""
+        current = self.output_template.text()
+        pos = self.output_template.cursorPosition()
+        before = current[:pos]
+        after = current[pos:]
+        insert_text = token
+        if before and not before.endswith(("_", "-", " ", "/")):
+            insert_text = "_" + insert_text
+        if after and not after.startswith(("_", "-", " ", "/")):
+            insert_text = insert_text + "_"
+        updated = before + insert_text + after
+        self.output_template.setText(updated)
+        self.output_template.setCursorPosition(len(before + insert_text))
+        self.output_template.setFocus()
+
     def _update_output_prefix_preview(self):
         prefix = self.output_prefix.text()
         if not valid_output_prefix(prefix):
             self.output_prefix_preview.setText(trans.t("output_prefix_hint"))
             return
-        self.output_prefix_preview.setText(prefix_output_name(
-            prefix, "OpenFocus_20261015_120000_Method_Align.png"))
+        template = self.output_template.text().strip() if hasattr(self, "output_template") else ""
+        if template:
+            from core.filename_template import example_template_context, format_output_filename
+            rendered = format_output_filename(template, example_template_context())
+            self.output_prefix_preview.setText(prefix_output_name(prefix, f"{rendered}.png"))
+        else:
+            self.output_prefix_preview.setText(prefix_output_name(
+                prefix, "OpenFocus_20261015_120000_Method_Align.png"))
 
     def _show_error(self, message, field):
         for panel, disclosure in ((self.manual_tile_panel, self.manual_tile_disclosure),
@@ -986,6 +1125,10 @@ class AdvancedSettingsDialog(QDialog):
             'resource_preference': self.combo_resources.currentData(),
             'reg_downscale_width': int(self.spin_reg_width.value()),
             'output_name_prefix': self.output_prefix.text(),
+            'strip_exif_on_export': self.chk_strip_exif_on_export.isChecked(),
+            'enable_ui_icc_preview': self.chk_ui_icc_preview.isChecked(),
+            'output_filename_template': self.output_template.text().strip(),
+            'render_complete_sound': self.chk_render_complete_sound.isChecked(),
             'restore_last_stack': self.chk_restore.isChecked(),
             'ask_load_scale': self.chk_ask_scale.isChecked(),
             'defect_mask_path': self.sensor_cleanup.path.text().strip(),
@@ -1004,6 +1147,7 @@ class AdvancedSettingsDialog(QDialog):
             'gallery_cache_dir': self.gallery_cache_dir.text().strip(),
             'gallery_cache_max_mb': int(self.spin_gallery_cache_limit.value()),
             'dev_community_enabled': self.chk_dev_community.isChecked(),
+            'raw_dng_converter_path': self.raw_dng_converter_path.text().strip(),
         }
 
     def _apply(self):
@@ -1032,6 +1176,13 @@ class AdvancedSettingsDialog(QDialog):
         if sensor_error:
             self._show_error(sensor_error, self.sensor_cleanup.path)
             return
+        raw_dng_text = self.raw_dng_converter_path.text().strip()
+        if raw_dng_text:
+            from core.raw_develop import validate_dng_converter_path
+            dng_ok, _dng_info = validate_dng_converter_path(raw_dng_text)
+            if not dng_ok:
+                self._show_error(trans.t("raw_develop_dng_invalid"), self.raw_dng_converter_path)
+                return
         draft = {key: value for key, value in self._field_values().items()
                  if value != self._initial_fields[key]}
         for key, (editor, initial) in self._tile_fields.items():
@@ -1066,6 +1217,7 @@ class AdvancedSettingsDialog(QDialog):
         gallery_download_dir = draft.pop('gallery_download_dir', None)
         gallery_cache_dir = draft.pop('gallery_cache_dir', None)
         gallery_cache_max_mb = draft.pop('gallery_cache_max_mb', None)
+        raw_dng_converter_path = draft.pop('raw_dng_converter_path', None)
         gallery_storage_changed = (
             gallery_download_dir is not None
             or gallery_cache_dir is not None
@@ -1117,6 +1269,10 @@ class AdvancedSettingsDialog(QDialog):
                 settings.setValue(REPORTS_CHOICE_KEY, 'chosen')
             for key, value in draft.items():
                 setattr(w, key, value)
+            if "enable_ui_icc_preview" in draft:
+                setter = getattr(w, "set_ui_icc_preview", None)
+                if callable(setter):
+                    setter(draft["enable_ui_icc_preview"])
             if "_registration_parameters_by_method" in draft:
                 refresh = getattr(w, "refresh_registration_parameters", None)
                 if callable(refresh):
@@ -1194,6 +1350,12 @@ class AdvancedSettingsDialog(QDialog):
                 gallery.apply_danmaku_settings(new_danmaku, persist=True)
             else:
                 persist_danmaku_settings(new_danmaku)
+        if raw_dng_converter_path is not None:
+            from core.raw_develop import load_raw_develop_settings, save_raw_develop_settings
+            updated_raw = load_raw_develop_settings()
+            updated_raw.external_dng_converter_path = raw_dng_converter_path
+            saved_raw = save_raw_develop_settings(updated_raw)
+            w.raw_develop_settings = saved_raw
         if gallery_storage_changed:
             if gallery is not None:
                 gallery.apply_storage_settings(
@@ -1213,7 +1375,8 @@ class AdvancedSettingsDialog(QDialog):
             key for key in draft if previous[key] != draft[key]),
             usage_enabled=self.chk_usage.isChecked())
         processing = set(draft) - {'experimental_features', 'auto_error_reports', 'restore_last_stack',
-                                   'ask_load_scale', 'output_name_prefix', 'storage_directory'}
+                                   'ask_load_scale', 'output_name_prefix', 'output_filename_template',
+                                   'render_complete_sound', 'storage_directory'}
         if any(previous[key] != draft[key] for key in processing):
             mark_dirty = getattr(w, "_mark_project_dirty", None)
             if mark_dirty is not None:

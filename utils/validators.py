@@ -169,30 +169,31 @@ def _bgr_tuple(colour) -> tuple:
     return tuple(max(0, min(255, c)) for c in values[:3])
 
 
+from core.exif_macros import expand_exif_macros
+
+
 def build_label_text(format_str: str, fallback_text: str,
-                     value: int) -> str:
+                     value: int, exif_meta=None) -> str:
     """Resolve what a label actually says.
 
     Rules, in order:
-      * "{value}" in the format string  -> substitute the frame's number
-        ("Fig {value}" on frame 3 gives "Fig 3").
-      * a non-empty format string        -> use it verbatim ("SAMPLE").
-      * an empty format string           -> fall back to the custom text.
+      * A non-empty format string expands supported EXIF/render macros
+        (``{value}``, ``{date}``, ``{camera}``, ``{lens}``, ``{aperture}``,
+        ``{shutter}``, ``{iso}``, ``{focal_length}``, ``{method}``, ``{frames}``).
+      * An empty format string falls back to ``fallback_text`` (also expanded).
 
     Returning "" means "draw nothing", which the caller treats as a no-op.
     """
     fmt = (format_str or "").strip()
-    if "{value}" in fmt:
-        # Integral values print without a decimal tail: the steppers return
-        # floats, and "Fig 1.0" is not what anyone typed.
-        try:
-            number = int(round(float(value)))
-        except (TypeError, ValueError):
-            number = value
-        return fmt.replace("{value}", str(number))
-    if fmt:
-        return fmt
-    return (fallback_text or "").strip()
+    if not fmt:
+        fmt = (fallback_text or "").strip()
+    if not fmt:
+        return ""
+    try:
+        number = int(round(float(value)))
+    except (TypeError, ValueError):
+        number = value
+    return expand_exif_macros(fmt, exif_meta, value=number).strip()
 
 
 class LabelAdder:
@@ -205,6 +206,7 @@ class LabelAdder:
 
     def __init__(self) -> None:
         self.config = LabelConfig()
+        self.exif_meta = None
         # Last draw failure, for the dialog to surface instead of guessing.
         self.last_error = ""
         self.last_substituted_font = ""
@@ -214,7 +216,8 @@ class LabelAdder:
         self.last_bounds = None
 
     def add_label_to_image(self, image: np.ndarray, index: int,
-                           *, validate_only: bool = False) -> np.ndarray:
+                           *, validate_only: bool = False,
+                           exif_meta=None) -> np.ndarray:
         self.last_error = ""
         self.last_substituted_font = ""
         self.last_out_of_range = False
@@ -234,7 +237,8 @@ class LabelAdder:
 
             current_value = (int(round(float(cfg.starting_value)))
                              + index * int(round(float(cfg.interval))))
-            label_text = build_label_text(cfg.format, cfg.text, current_value)
+            meta = self.exif_meta if exif_meta is None else exif_meta
+            label_text = build_label_text(cfg.format, cfg.text, current_value, exif_meta=meta)
             if not label_text:
                 return image
 

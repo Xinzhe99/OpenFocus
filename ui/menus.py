@@ -164,6 +164,22 @@ def setup_menus(window: QMainWindow) -> None:
     file_menu.addAction(export_all_action)
     window.ui_objs['menu_export_all'] = export_all_action
 
+    export_psd_action = QAction(trans.t('action_export_layered_psd'), window)
+    export_psd_action.setProperty('trans_key', 'action_export_layered_psd')
+    export_psd_action.triggered.connect(
+        lambda: getattr(window.export_manager, 'export_layered_psd_dialog', lambda: None)()
+    )
+    file_menu.addAction(export_psd_action)
+    window.ui_objs['action_export_layered_psd'] = export_psd_action
+
+    export_contrast_action = QAction(trans.t('action_export_contrast_map'), window)
+    export_contrast_action.setProperty('trans_key', 'action_export_contrast_map')
+    export_contrast_action.triggered.connect(
+        lambda: getattr(window.export_manager, 'export_contrast_map_dialog', lambda: None)()
+    )
+    file_menu.addAction(export_contrast_action)
+    window.ui_objs['action_export_contrast_map'] = export_contrast_action
+
     save_stack_menu = file_menu.addMenu(trans.t('menu_save_stack'))
     window.ui_objs['menu_save_stack'] = save_stack_menu
 
@@ -211,6 +227,13 @@ def setup_menus(window: QMainWindow) -> None:
     save_input_mtiff_action.setProperty("trans_key", 'action_save_multipage_tiff')
     input_stack_menu.addAction(save_input_mtiff_action)
     window.ui_objs['action_save_mtiff_input'] = save_input_mtiff_action
+
+    export_html_action = QAction(trans.t('action_export_html_animation'), window)
+    export_html_action.setProperty("trans_key", 'action_export_html_animation')
+    export_html_action.triggered.connect(
+        lambda: window.export_manager.export_html_animation())
+    file_menu.addAction(export_html_action)
+    window.ui_objs['action_export_html_animation'] = export_html_action
 
     file_menu.addSeparator()
 
@@ -323,6 +346,15 @@ def setup_menus(window: QMainWindow) -> None:
     batch_menu.addAction(batch_action)
     window.ui_objs['action_batch_process'] = batch_action
 
+    watch_folder_action = QAction(trans.t('action_watch_folder'), window)
+    watch_folder_action.setProperty('trans_key', 'action_watch_folder')
+    watch_folder_action.setToolTip(trans.t('action_watch_folder_hint'))
+    watch_folder_action.triggered.connect(
+        lambda: getattr(window, 'show_watch_folder_dialog', lambda: None)()
+    )
+    batch_menu.addAction(watch_folder_action)
+    window.ui_objs['action_watch_folder'] = watch_folder_action
+
     render_queue_action = QAction(trans.t('action_render_queue'), window)
     render_queue_action.setToolTip(trans.t('action_render_queue_hint'))
     render_queue_action.setProperty('trans_key', 'action_render_queue')
@@ -337,6 +369,15 @@ def setup_menus(window: QMainWindow) -> None:
     compare_action.triggered.connect(window.show_compare_dialog)
     batch_menu.addAction(compare_action)
     window.ui_objs['action_method_compare'] = compare_action
+
+    live_preview_action = QAction(trans.t('action_live_preview'), window)
+    live_preview_action.setProperty('trans_key', 'action_live_preview')
+    live_preview_action.setToolTip(trans.t('btn_live_preview_hint'))
+    live_preview_action.triggered.connect(
+        lambda: getattr(window, 'open_live_preview', lambda *_a, **_k: None)()
+    )
+    batch_menu.addAction(live_preview_action)
+    window.ui_objs['action_live_preview'] = live_preview_action
 
     render_substacks_action = QAction(trans.t('action_render_substacks'), window)
     render_substacks_action.setProperty('trans_key', 'action_render_substacks')
@@ -509,6 +550,15 @@ def setup_menus(window: QMainWindow) -> None:
     advanced_action.setProperty("trans_key", 'advanced_settings_title')
     window.ui_objs['action_advanced_settings'] = advanced_action
 
+    raw_develop_action = QAction(trans.t("raw_develop_title"), window)
+    raw_develop_action.setToolTip(trans.t("raw_develop_menu_hint"))
+    raw_develop_action.triggered.connect(
+        lambda: getattr(window, "show_raw_develop_dialog", lambda *_a, **_k: None)()
+    )
+    raw_develop_action.setProperty("trans_key", "raw_develop_title")
+    settings_menu.addAction(raw_develop_action)
+    window.ui_objs["action_raw_develop"] = raw_develop_action
+
     # GPU stays reachable here as a quick toggle; it is the one switch users
     # flip often enough to deserve a click instead of two.
     gpu_action = QAction(trans.t('action_gpu_accel'), window)
@@ -529,6 +579,17 @@ def setup_menus(window: QMainWindow) -> None:
     gpu_action.triggered.connect(window.set_use_gpu)
     settings_menu.addAction(gpu_action)
     window.ui_objs['action_gpu_accel'] = gpu_action
+
+    icc_preview_action = QAction(trans.t('action_ui_icc_preview'), window)
+    icc_preview_action.setCheckable(True)
+    icc_preview_action.setChecked(bool(getattr(window, 'enable_ui_icc_preview', True)))
+    icc_preview_action.setToolTip(trans.t('action_ui_icc_preview_hint'))
+    icc_preview_action.setProperty('trans_key', 'action_ui_icc_preview')
+    icc_preview_action.triggered.connect(
+        lambda checked: getattr(window, 'set_ui_icc_preview', lambda *_a: None)(checked)
+    )
+    settings_menu.addAction(icc_preview_action)
+    window.ui_objs['action_ui_icc_preview'] = icc_preview_action
     pack_action = QAction(trans.t('ai_pack_title'), window)
     pack_action.setProperty('trans_key', 'ai_pack_title')
     pack_action.triggered.connect(lambda: window.accelerator_banner.open_settings())
