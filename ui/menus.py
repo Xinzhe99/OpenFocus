@@ -290,6 +290,15 @@ def setup_menus(window: QMainWindow) -> None:
     batch_menu.addAction(batch_action)
     window.ui_objs['action_batch_process'] = batch_action
 
+    render_queue_action = QAction(trans.t('action_render_queue'), window)
+    render_queue_action.setToolTip(trans.t('action_render_queue_hint'))
+    render_queue_action.setProperty('trans_key', 'action_render_queue')
+    render_queue_action.triggered.connect(
+        lambda: getattr(window, 'show_render_queue_dialog', lambda: None)()
+    )
+    batch_menu.addAction(render_queue_action)
+    window.ui_objs['action_render_queue'] = render_queue_action
+
     compare_action = QAction(trans.t('action_method_compare'), window)
     compare_action.setToolTip(trans.t('action_method_compare_hint'))
     compare_action.triggered.connect(window.show_compare_dialog)
