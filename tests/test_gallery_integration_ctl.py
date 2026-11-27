@@ -154,6 +154,21 @@ def integrated_window(qapp, monkeypatch, tmp_path):
     monkeypatch.setattr(recovery, "_base_dir", lambda: str(tmp_path / "recovery"))
     monkeypatch.setenv("OPENFOCUS_CONTROL_FILE", str(tmp_path / "control.json"))
 
+    # Community is gated OFF by default; opt in via Developer Options for Community integration flows.
+    from core import developer_options as dev_opts
+    dev_opts.save_developer_grant(
+        dev_opts.DeveloperGrant(
+            key_prefix="ofdev_test...",
+            label="Integration Fixture",
+            features=[dev_opts.FEATURE_COMMUNITY],
+            verified_at="2026-11-27T00:00:00Z",
+            server_validated=True,
+        ),
+        settings=settings,
+    )
+    dev_opts.set_developer_feature_enabled(dev_opts.FEATURE_COMMUNITY, True, settings=settings)
+    monkeypatch.setattr(dev_opts, "revalidate_saved_developer_grant", lambda **_k: None)
+
     # Keep startup remote fetches offline-safe inside tests.
     monkeypatch.setattr(GalleryStateStore, "refresh_config", lambda self, **k: False)
     monkeypatch.setattr(GalleryStateStore, "refresh_feed", lambda self, **k: False)
@@ -667,17 +682,32 @@ def test_webp_to_jpg_download_honor_card_upload_prompt_and_advanced_settings(int
     honor_dlg.close_btn.click()
     _wait_until(lambda: acked == ["hc_7d_01"])
 
-    # 6c. Post-fusion UploadPromptDialog respects headless guard and probability.
+    # 6c. Post-fusion UploadPromptDialog prompts after EVERY completed full fusion
+    # (no probability/cooldown suppression), routes to free Publish flow, and uses
+    # consistent "Upload to Community" / "上传到社区" wording.
     fused = np.full((32, 32, 3), 200, dtype=np.uint8)
-    apply_config_snapshot(gc.state_store, {"gallery_enabled": True, "upload_prompt_probability": 1.0,
+    apply_config_snapshot(gc.state_store, {"gallery_enabled": True, "upload_prompt_probability": 0.2,
                                            "gallery_terms_version": "2026-11-26"})
     # Skipped in offscreen/headless by default, and skipped in batch mode.
     assert gc.on_fusion_completed(fused, interactive=True) is None
     gc.allow_headless_upload_prompt = True
     assert gc.on_fusion_completed(fused, interactive=True, is_batch=True) is None
-    prompt = gc.on_fusion_completed(fused, interactive=True, is_batch=False)
-    assert prompt is not None and prompt.isVisible()
-    prompt.reject()
+
+    # Consecutive full fusions each trigger the prompt (even with old server probability 0.2).
+    prompt1 = gc.on_fusion_completed(fused, interactive=True, is_batch=False)
+    assert prompt1 is not None and prompt1.isVisible()
+    assert prompt1.upload_btn.text() == t_gallery("gallery_upload_prompt_upload")
+    prompt1.dismiss_btn.click()
+    qapp.processEvents()
+
+    prompt2 = gc.on_fusion_completed(fused, interactive=True, is_batch=False)
+    assert prompt2 is not None and prompt2.isVisible()
+    prompt2.upload_btn.click()
+    _wait_until(lambda: gc.hub_dialog is not None and gc.hub_dialog.isVisible())
+    assert gc.hub_dialog.tabs.currentIndex() == 2
+    assert len(gc.hub_dialog.publish_queue) == 1
+    assert gc.hub_dialog.publish_queue[0].openfocus_badge is True
+    gc.hub_dialog.reject()
     qapp.processEvents()
 
     # 6d. Advanced Settings Danmaku & Gallery Storage/Cache live propagation + Clear Cache.

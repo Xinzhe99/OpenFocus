@@ -210,6 +210,21 @@ void warp_translation_row_packed(
             return;
         }
     }
+    if (channels == 1 && simd::use_avx2()) {
+        const int64_t item = image.itemsize;
+        const auto* sb = static_cast<const uint8_t*>(image.data);
+        const uint8_t* r0 = sb + iy_b * image.stride[0] * item;
+        const uint8_t* r1 = sb + jy_b * image.stride[0] * item;
+        uint8_t* dst = static_cast<uint8_t*>(out.data) + oy * out.stride[0] * item;
+        // As above: the vector kernel reads nine samples before it stores eight.
+        const uint64_t src_bytes = static_cast<uint64_t>(image.shape[1] * item);
+        const uint64_t dst_bytes = static_cast<uint64_t>(rw * item);
+        if (!byte_ranges_overlap(dst, dst_bytes, r0, src_bytes)
+                && !byte_ranges_overlap(dst, dst_bytes, r1, src_bytes)) {
+            simd::align_warp_translation_gray_row_avx2(r0, r1, item == 1, dst, rw, ix, jx, fx, inv_x, fy);
+            return;
+        }
+    }
     if (image.itemsize == 1) {
         const auto* sb = static_cast<const uint8_t*>(image.data);
         const auto* r0 = sb + iy_b * image.stride[0];

@@ -346,18 +346,73 @@ class ExportManager:
             method = self.window.current_fusion_method()
         return "None" if method == "none" else get_fusion(method).file_tag
 
-    def _align_tag(self) -> str:
+    def _align_tag(self, method: str | None = None) -> str:
         from core.algorithms import get_registration
 
-        method = self.window.current_alignment_method()
+        if method is None:
+            method = self.window.current_alignment_method()
         return "NoAlign" if method == "none" else get_registration(method).file_tag
 
-    def generate_default_filename(self, *, fusion_method: str | None = None) -> str:
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        name = (f"OpenFocus_{timestamp}_{self._fusion_tag(fusion_method)}_"
-                f"{self._align_tag()}")
-        from utils.export_paths import prefix_output_name
-        return prefix_output_name(getattr(self.window, "output_name_prefix", ""), name)
+    def generate_default_filename(
+        self,
+        *,
+        fusion_method: str | None = None,
+        alignment_method: str | None = None,
+        context: Optional[dict[str, Any]] = None,
+    ) -> str:
+        now = datetime.datetime.now()
+        timestamp = now.strftime("%Y%m%d_%H%M%S")
+        f_tag = self._fusion_tag(fusion_method)
+        a_tag = self._align_tag(alignment_method)
+        default_name = f"OpenFocus_{timestamp}_{f_tag}_{a_tag}"
+        prefix = getattr(self.window, "output_name_prefix", "")
+        template = (getattr(self.window, "output_filename_template", "") or "").strip()
+        if not template:
+            from utils.export_paths import prefix_output_name
+            return prefix_output_name(prefix, default_name)
+
+        from core.filename_template import apply_output_naming, build_template_context
+        w = self.window
+        method_id = fusion_method if fusion_method is not None else w.current_fusion_method()
+        params_getter = getattr(w, "fusion_parameters_for", None)
+        fusion_params = (
+            params_getter(method_id)
+            if callable(params_getter) and method_id and method_id != "none"
+            else {}
+        )
+        filenames = (
+            getattr(w, "image_filenames", None)
+            or getattr(w, "image_source_paths", None)
+            or ()
+        )
+        fusion_img = getattr(w, "fusion_result", None)
+        width = height = None
+        if fusion_img is not None and hasattr(fusion_img, "shape") and len(fusion_img.shape) >= 2:
+            height, width = int(fusion_img.shape[0]), int(fusion_img.shape[1])
+        else:
+            raw = getattr(w, "raw_images", None) or ()
+            if raw and hasattr(raw[0], "shape") and len(raw[0].shape) >= 2:
+                height, width = int(raw[0].shape[0]), int(raw[0].shape[1])
+
+        ctx = build_template_context(
+            filenames=filenames,
+            folder_path=str(getattr(w, "current_folder_path", "") or ""),
+            method=f_tag,
+            align=a_tag,
+            frame_count=len(getattr(w, "raw_images", None) or filenames),
+            width=width,
+            height=height,
+            fusion_params=fusion_params,
+            now=now,
+        )
+        if context:
+            ctx.update(context)
+        return apply_output_naming(
+            default_name,
+            template=template,
+            prefix=prefix,
+            context=ctx,
+        )
 
     def selected_output(self):
         """(image, default filename) of the output the user has selected in
