@@ -333,11 +333,12 @@ def test_batch_dialog_adaptive_default_order_async_preview_and_simplified_ui(qap
         dialog.show()
         qapp.processEvents()
 
-        # 1. Dropdown order & default: Adaptive (Auto) -> Fixed Count -> Time Threshold.
+        # 1. Dropdown order & default: Adaptive (Auto) -> Fixed Count -> Time Threshold -> Exposure.
         assert [dialog.split_method_combo.itemData(i) for i in range(dialog.split_method_combo.count())] == [
             "adaptive",
             "count",
             "time_threshold",
+            "exposure",
         ]
         assert dialog.split_method_combo.currentIndex() == 0
         assert dialog.split_method_combo.currentData() == "adaptive"

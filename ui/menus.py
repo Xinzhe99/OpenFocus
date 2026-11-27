@@ -323,6 +323,15 @@ def setup_menus(window: QMainWindow) -> None:
     batch_menu.addAction(batch_action)
     window.ui_objs['action_batch_process'] = batch_action
 
+    watch_folder_action = QAction(trans.t('action_watch_folder'), window)
+    watch_folder_action.setProperty('trans_key', 'action_watch_folder')
+    watch_folder_action.setToolTip(trans.t('action_watch_folder_hint'))
+    watch_folder_action.triggered.connect(
+        lambda: getattr(window, 'show_watch_folder_dialog', lambda: None)()
+    )
+    batch_menu.addAction(watch_folder_action)
+    window.ui_objs['action_watch_folder'] = watch_folder_action
+
     render_queue_action = QAction(trans.t('action_render_queue'), window)
     render_queue_action.setToolTip(trans.t('action_render_queue_hint'))
     render_queue_action.setProperty('trans_key', 'action_render_queue')

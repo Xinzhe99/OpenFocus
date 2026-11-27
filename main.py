@@ -4534,6 +4534,13 @@ class OpenFocus(QMainWindow):
         if gallery is not None:
             gallery.apply_theme(theme)
 
+        watch_dlg = getattr(self, "_watch_folder_dialog", None)
+        if watch_dlg is not None:
+            try:
+                watch_dlg.apply_theme(theme)
+            except RuntimeError:
+                self._watch_folder_dialog = None
+
         live_preview = getattr(self, "_live_preview_dialog", None)
         if live_preview is not None:
             try:
@@ -4576,6 +4583,26 @@ class OpenFocus(QMainWindow):
         from dialogs.about import ContactInfoDialog
         from dialogs._community_layout import show_community_dialog
         show_community_dialog(self, ContactInfoDialog)
+
+    def show_watch_folder_dialog(self) -> None:
+        """Open or raise the non-modal Watch Folder Monitor dialog."""
+        from dialogs.watch_folder import WatchFolderDialog
+
+        dialog = getattr(self, "_watch_folder_dialog", None)
+        if dialog is not None:
+            try:
+                dialog.apply_theme(getattr(self, "ui_theme", "light"))
+                dialog.show()
+                dialog.raise_()
+                dialog.activateWindow()
+                return
+            except RuntimeError:
+                self._watch_folder_dialog = None
+        dialog = WatchFolderDialog(self, theme=getattr(self, "ui_theme", "light"))
+        self._watch_folder_dialog = dialog
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
 
     def enqueue_render_job(
         self,
@@ -5015,8 +5042,9 @@ class OpenFocus(QMainWindow):
         from dialogs.compare import CompareDialog
         from dialogs.live_preview import LivePreviewDialog
         from dialogs.scalebar import ScaleBarDialog
+        from dialogs.watch_folder import WatchFolderDialog
         from dialogs.watermark import WatermarkDialog
-        for dialog_type in (ScaleBarDialog, WatermarkDialog, CompareDialog, LivePreviewDialog):
+        for dialog_type in (ScaleBarDialog, WatermarkDialog, CompareDialog, WatchFolderDialog, LivePreviewDialog):
             for dialog in self.findChildren(dialog_type):
                 shutdown_running = dialog.shutdown_running() or shutdown_running
         for dialog in self.findChildren(BatchConverterDialog):
@@ -5405,6 +5433,12 @@ class OpenFocus(QMainWindow):
         from ui.menus import update_development_actions
         update_development_actions(self)
         self._refresh_account_action()
+        watch_dlg = getattr(self, "_watch_folder_dialog", None)
+        if watch_dlg is not None:
+            try:
+                watch_dlg.retranslate_ui()
+            except RuntimeError:
+                self._watch_folder_dialog = None
         
         # Update Right Panel
         c = self.right_panel_components
