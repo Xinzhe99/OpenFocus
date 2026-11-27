@@ -494,6 +494,14 @@ class OpenFocus(QMainWindow):
         self.roi_aligned_raw_count = 0  # 记录对齐时原始图像的数量，用于判断是否可以复用
         self.roi_alignment_key = None
 
+        # Alignment Detection Area & Pre-Render Alignment Preview (#13 / #14)
+        self.alignment_roi = None  # Optional (x, y, w, h) in source image coordinates
+        self._show_aligned_active = False
+        self._aligned_preview_worker = None
+        self._aligned_preview_cache = None
+        self._aligned_preview_pixmaps = {}
+        self._aligned_preview_timer = None
+
         # Tile settings defaults
         self.tile_enabled = True
         self.tile_block_size = TILE_BLOCK_SIZE
@@ -691,9 +699,18 @@ class OpenFocus(QMainWindow):
         self.lbl_stack_info = source_panel.info_label
         self.stack_slider.valueChanged.connect(self.update_source_view)
 
-        # ROI Button
+        # ROI Button & Alignment Preview / Detection Area buttons
         self.btn_preview_roi = source_panel.roi_btn
         self.btn_preview_roi.toggled.connect(self.toggle_roi_mode)
+        self.btn_align_area = source_panel.align_area_btn
+        self.btn_clear_align_area = source_panel.clear_align_area_btn
+        self.btn_show_aligned = source_panel.show_aligned_btn
+        self.btn_align_area.toggled.connect(self.toggle_alignment_area_mode)
+        self.btn_clear_align_area.clicked.connect(self.clear_alignment_roi)
+        self.btn_show_aligned.toggled.connect(self.toggle_show_aligned)
+        self.lbl_source_img.alignRoiChanged.connect(self._on_alignment_roi_changed)
+        self.lbl_source_img.alignRoiCleared.connect(self.clear_alignment_roi)
+        self.lbl_source_img.alignRoiModeExitRequested.connect(self._on_alignment_area_mode_exit_requested)
         self.sharpness_curve = source_panel.sharpness_curve
         self.sharpness_curve.set_tooltip_base(trans.t('sharpness_curve_tooltip'))
         self.sharpness_curve.frame_clicked.connect(
@@ -782,6 +799,9 @@ class OpenFocus(QMainWindow):
         self.chk_reverse_order = right_panel_components.chk_reverse_order
         self.fusion_parameter_panel = right_panel_components.fusion_parameter_panel
         self.registration_parameter_panel = right_panel_components.registration_parameter_panel
+        self.lbl_reg_align_area = right_panel_components.lbl_reg_align_area
+        self.btn_reg_align_area = right_panel_components.btn_reg_align_area
+        self.btn_reg_clear_align_area = right_panel_components.btn_reg_clear_align_area
         self.source_images_label = right_panel_components.source_images_label
         self.file_list = right_panel_components.file_list
         self.output_label = right_panel_components.output_label
@@ -1027,6 +1047,9 @@ class OpenFocus(QMainWindow):
         else:
             self.lbl_status_loaded.setText(trans.t('status_loaded').format(0))
             self.lbl_status_resolution.setText(trans.t('status_res').format('-'))
+        sync_align = getattr(self, '_sync_alignment_preview_controls', None)
+        if callable(sync_align):
+            sync_align()
         self._refresh_live_preview_availability()
 
     def _refresh_live_preview_availability(self) -> None:
@@ -3426,8 +3449,13 @@ class OpenFocus(QMainWindow):
                 return
             
             try:
-                # 获取原始图片并根据需要叠加标签
-                original_pixmap = self.get_or_create_source_pixmap(index)
+                # 获取原始图片（或在启用“预览对齐效果”时获取对齐后的预览帧）并根据需要叠加标签
+                aligned_pixmap = (
+                    self._get_aligned_source_pixmap(index)
+                    if getattr(self, '_show_aligned_active', False)
+                    else None
+                )
+                original_pixmap = aligned_pixmap if aligned_pixmap is not None else self.get_or_create_source_pixmap(index)
                 from utils import scalebar, watermark
                 display_pixmap = self.label_manager.apply_labels_to_source_pixmap(
                     original_pixmap, index,
@@ -3438,8 +3466,16 @@ class OpenFocus(QMainWindow):
                     self.lbl_source_img.sourceRegionRequested.connect(self._request_source_region)
                     self.lbl_source_img.sourceRegionsReleased.connect(self._release_source_regions)
                     self._source_regions_connected = True
-                self.lbl_source_img.set_display_pixmap(
-                    display_pixmap, source_size=(frame.shape[1], frame.shape[0]), source_key=key)
+                if aligned_pixmap is not None:
+                    self.lbl_source_img.set_display_pixmap(
+                        display_pixmap,
+                        source_size=(frame.shape[1], frame.shape[0]),
+                        source_key=key,
+                        source_pixmap=display_pixmap,
+                    )
+                else:
+                    self.lbl_source_img.set_display_pixmap(
+                        display_pixmap, source_size=(frame.shape[1], frame.shape[0]), source_key=key)
                 
                 # Keep the wipe view's left side following the current frame
                 if self.wipe_active and self.chk_wipe_follow_left.isChecked():
@@ -3542,6 +3578,9 @@ class OpenFocus(QMainWindow):
             self.refresh_registration_parameters()
         if memory[method] != previous:
             self._mark_project_setting_changed()
+            invalidate = getattr(self, '_invalidate_aligned_preview', None)
+            if callable(invalidate):
+                invalidate(refresh=True)
         self.persist_settings()
 
     def _set_fusion_option_available(self, widget, available: bool,
@@ -3611,6 +3650,9 @@ class OpenFocus(QMainWindow):
         manager = getattr(self, 'render_manager', None)
         if manager is not None and getattr(self, 'btn_render', None) is not None:
             manager.refresh_action_labels()
+        invalidate = getattr(self, '_invalidate_aligned_preview', None)
+        if callable(invalidate):
+            invalidate(refresh=True)
     
     def update_result_view(self, index):
         """更新Output区域显示的图像（用于配准结果或ROI模式下的对齐图像）"""
@@ -4263,6 +4305,7 @@ class OpenFocus(QMainWindow):
                 exposure_match=self.brightness_option_for('exposure_match'),
                 use_gpu=self.use_gpu,
                 reverse_registration=alignment_key[-1] == 'reverse-registration-v1',
+                alignment_roi=getattr(self, 'alignment_roi', None),
             )
             self.roi_alignment_worker.finished_signal.connect(self._on_roi_alignment_finished)
             self.roi_alignment_worker.error_signal.connect(self._on_roi_alignment_error)
@@ -4458,6 +4501,305 @@ class OpenFocus(QMainWindow):
         if self.roi_mode_active:
             # 取消ROI按钮的选中状态，这会触发toggle_roi_mode(False)
             self.btn_preview_roi.setChecked(False)
+
+    # --- Alignment Detection Area (#14) & Pre-Render Alignment Preview (#13) ---
+
+    def _sync_alignment_preview_controls(self) -> None:
+        has_multi = len(getattr(self, 'raw_images', ()) or ()) >= 2
+        has_roi = getattr(self, 'alignment_roi', None) is not None
+        for btn_name in ('btn_align_area', 'btn_reg_align_area', 'btn_show_aligned'):
+            btn = getattr(self, btn_name, None)
+            if btn is not None:
+                btn.setEnabled(has_multi)
+        if not has_multi:
+            if getattr(self, '_show_aligned_active', False):
+                self._show_aligned_active = False
+                btn = getattr(self, 'btn_show_aligned', None)
+                if btn is not None:
+                    with QSignalBlocker(btn):
+                        btn.setChecked(False)
+                    btn.setText(trans.t('btn_show_aligned'))
+                self._cancel_aligned_preview_worker()
+            self._aligned_preview_cache = None
+            self._aligned_preview_pixmaps = {}
+            if getattr(self, 'alignment_roi', None) is not None or (
+                hasattr(self, 'lbl_source_img') and getattr(self.lbl_source_img, 'align_roi_mode', False)
+            ):
+                self.toggle_alignment_area_mode(False)
+                self.clear_alignment_roi(refresh=False)
+        clear_bar = getattr(self, 'btn_clear_align_area', None)
+        if clear_bar is not None:
+            clear_bar.setVisible(has_roi)
+        clear_panel = getattr(self, 'btn_reg_clear_align_area', None)
+        if clear_panel is not None:
+            clear_panel.setEnabled(has_roi)
+        self._update_source_title_text()
+
+    def _update_source_title_text(self) -> None:
+        lbl = getattr(self, 'lbl_source_title', None)
+        if lbl is None:
+            return
+        base = trans.t('panel_source_stack')
+        if getattr(self, '_show_aligned_active', False):
+            lbl.setText(f"{base} · {trans.t('source_aligned_badge')}")
+        else:
+            lbl.setText(base)
+
+    def toggle_alignment_area_mode(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        if enabled and len(getattr(self, 'raw_images', ()) or ()) < 2:
+            enabled = False
+        for btn_name in ('btn_align_area', 'btn_reg_align_area'):
+            btn = getattr(self, btn_name, None)
+            if btn is not None and btn.isChecked() != enabled:
+                with QSignalBlocker(btn):
+                    btn.setChecked(enabled)
+        if hasattr(self, 'lbl_source_img'):
+            self.lbl_source_img.align_roi_mode = enabled
+
+    def _on_alignment_area_mode_exit_requested(self) -> None:
+        self.toggle_alignment_area_mode(False)
+
+    def set_alignment_roi(self, roi) -> None:
+        from PyQt6.QtCore import QRectF
+        if roi is None:
+            self.clear_alignment_roi(refresh=True)
+            return
+        rx, ry, rw, rh = (int(round(v)) for v in roi)
+        if self.raw_images:
+            h, w = self.raw_images[0].shape[:2]
+            rx = max(0, min(rx, max(0, w - 1)))
+            ry = max(0, min(ry, max(0, h - 1)))
+            rw = max(0, min(rw, w - rx))
+            rh = max(0, min(rh, h - ry))
+        if rw < 8 or rh < 8:
+            self.clear_alignment_roi(refresh=True)
+            return
+        normalized = (rx, ry, rw, rh)
+        if normalized == getattr(self, 'alignment_roi', None):
+            return
+        self.alignment_roi = normalized
+        if hasattr(self, 'lbl_source_img'):
+            self.lbl_source_img.set_align_roi_rect(QRectF(rx, ry, rw, rh))
+        self._sync_alignment_preview_controls()
+        self._invalidate_aligned_preview(refresh=True)
+
+    def _on_alignment_roi_changed(self, rect) -> None:
+        self.set_alignment_roi((rect.x(), rect.y(), rect.width(), rect.height()))
+
+    def clear_alignment_roi(self, refresh: bool = True) -> None:
+        had_roi = getattr(self, 'alignment_roi', None) is not None
+        self.alignment_roi = None
+        if hasattr(self, 'lbl_source_img'):
+            with QSignalBlocker(self.lbl_source_img):
+                self.lbl_source_img.set_align_roi_rect(None)
+        self._sync_alignment_preview_controls()
+        if had_roi and refresh:
+            self._invalidate_aligned_preview(refresh=True)
+
+    def _aligned_preview_key(self):
+        _, _, included = self.effective_stack()
+        method = self.current_alignment_method()
+        params = self.registration_parameters_for(method)
+        return (
+            getattr(self, 'source_revision', 0),
+            tuple(included),
+            method,
+            tuple(sorted(params.items())),
+            getattr(self, 'alignment_roi', None),
+        )
+
+    def _cancel_aligned_preview_worker(self) -> None:
+        timer = getattr(self, '_aligned_preview_timer', None)
+        if timer is not None:
+            timer.stop()
+        worker = getattr(self, '_aligned_preview_worker', None)
+        if worker is not None:
+            worker.cancel()
+
+    def _on_cached_alignment_updated(self) -> None:
+        self._aligned_preview_pixmaps = {}
+        if getattr(self, '_show_aligned_active', False) and self.stack_images:
+            self._cancel_aligned_preview_worker()
+            btn = getattr(self, 'btn_show_aligned', None)
+            if btn is not None:
+                btn.setText(trans.t('btn_show_aligned'))
+            self.update_source_view(self.current_display_index)
+
+    def _invalidate_aligned_preview(self, *, refresh: bool = False) -> None:
+        self._cancel_aligned_preview_worker()
+        self._aligned_preview_cache = None
+        self._aligned_preview_pixmaps = {}
+        if not getattr(self, '_show_aligned_active', False):
+            return
+        if not refresh or len(getattr(self, 'raw_images', ()) or ()) < 2:
+            return
+        # Debounce rapid parameter/box drags before starting background proxy alignment.
+        timer = getattr(self, '_aligned_preview_timer', None)
+        if timer is None:
+            from PyQt6.QtCore import QTimer
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.setInterval(120)
+            timer.timeout.connect(self._ensure_aligned_preview)
+            self._aligned_preview_timer = timer
+        timer.start()
+
+    def toggle_show_aligned(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        if enabled and len(getattr(self, 'raw_images', ()) or ()) < 2:
+            btn = getattr(self, 'btn_show_aligned', None)
+            if btn is not None:
+                with QSignalBlocker(btn):
+                    btn.setChecked(False)
+            self._show_aligned_active = False
+            self._update_source_title_text()
+            return
+        self._show_aligned_active = enabled
+        self._update_source_title_text()
+        if not enabled:
+            self._cancel_aligned_preview_worker()
+            btn = getattr(self, 'btn_show_aligned', None)
+            if btn is not None:
+                btn.setText(trans.t('btn_show_aligned'))
+            if self.stack_images:
+                self.update_source_view(self.current_display_index)
+            return
+        self._ensure_aligned_preview()
+
+    def _has_matching_cached_alignment(self, included):
+        if not (getattr(self, 'is_images_aligned', False) and getattr(self, 'aligned_images', None)):
+            return False
+        if len(self.aligned_images) != len(included):
+            return False
+        manager = getattr(self, 'render_manager', None)
+        if manager is None:
+            return False
+        return getattr(self, 'alignment_request_key', None) == manager._alignment_key(included)
+
+    def _ensure_aligned_preview(self) -> None:
+        if not getattr(self, '_show_aligned_active', False):
+            return
+        images, _, included = self.effective_stack()
+        if len(images) < 2:
+            return
+        if self._has_matching_cached_alignment(included):
+            btn = getattr(self, 'btn_show_aligned', None)
+            if btn is not None:
+                btn.setText(trans.t('btn_show_aligned'))
+            self.update_source_view(self.current_display_index)
+            return
+        key = self._aligned_preview_key()
+        cache = getattr(self, '_aligned_preview_cache', None)
+        if cache is not None and cache[0] == key:
+            btn = getattr(self, 'btn_show_aligned', None)
+            if btn is not None:
+                btn.setText(trans.t('btn_show_aligned'))
+            self.update_source_view(self.current_display_index)
+            return
+        self._start_aligned_preview_worker(images, included, key)
+
+    def _start_aligned_preview_worker(self, images, included, key) -> None:
+        from core.workers import AlignedPreviewWorker
+
+        self._cancel_aligned_preview_worker()
+        method = self.current_alignment_method()
+        params = self.registration_parameters_for(method)
+        index_map = {orig_idx: pos for pos, orig_idx in enumerate(included)}
+        btn = getattr(self, 'btn_show_aligned', None)
+        if btn is not None:
+            btn.setText(trans.t('btn_show_aligned_computing'))
+
+        worker = AlignedPreviewWorker(
+            list(images),
+            alignment=method,
+            registration_parameters=params,
+            alignment_roi=getattr(self, 'alignment_roi', None),
+            max_edge=640,
+            thread_count=getattr(self, 'thread_count', 4),
+            cache_key=(key, index_map),
+        )
+        self._aligned_preview_worker = worker
+        worker.finished_signal.connect(self._on_aligned_preview_finished)
+        worker.error_signal.connect(self._on_aligned_preview_error)
+        worker.finished.connect(lambda w=worker: self._release_aligned_preview_worker(w))
+        worker.start()
+
+    def _on_aligned_preview_finished(self, payload_key, aligned_frames) -> None:
+        key, index_map = payload_key
+        if getattr(self, '_shutting_down', False) or not getattr(self, '_show_aligned_active', False):
+            return
+        if key != self._aligned_preview_key():
+            return
+        self._aligned_preview_cache = (key, aligned_frames, index_map)
+        self._aligned_preview_pixmaps = {}
+        btn = getattr(self, 'btn_show_aligned', None)
+        if btn is not None:
+            btn.setText(trans.t('btn_show_aligned'))
+        if self.stack_images:
+            self.update_source_view(self.current_display_index)
+
+    def _on_aligned_preview_error(self, payload_key, message: str) -> None:
+        key, _index_map = payload_key
+        if getattr(self, '_shutting_down', False):
+            return
+        if key != self._aligned_preview_key():
+            return
+        btn = getattr(self, 'btn_show_aligned', None)
+        if btn is not None:
+            btn.setText(trans.t('btn_show_aligned'))
+        if hasattr(self, '_show_status_message'):
+            self._show_status_message(
+                trans.t('show_aligned_failed').format(reason=message), 6000)
+
+    def _release_aligned_preview_worker(self, worker) -> None:
+        if getattr(self, '_aligned_preview_worker', None) is worker:
+            self._aligned_preview_worker = None
+        worker.deleteLater()
+
+    def _get_aligned_source_pixmap(self, index: int):
+        _, _, included = self.effective_stack()
+        if len(included) < 2:
+            return None
+        pixmaps = self.__dict__.setdefault('_aligned_preview_pixmaps', {})
+
+        if self._has_matching_cached_alignment(included) and index in included:
+            alignment_key = self.render_manager._alignment_key(included)
+            pkey = ('full', alignment_key, index)
+            cached_pix = pixmaps.get(pkey)
+            if cached_pix is not None:
+                return cached_pix
+            pos = included.index(index)
+            frame = self.aligned_images[pos]
+            from core.aligned_previews import can_preview, registered_preview
+            from core.source_frames import display_image, _small, PREVIEW_EDGE
+            preview_img = None
+            if can_preview(frame):
+                res = registered_preview(frame, captured_only=False)
+                if res is not None:
+                    img, is_display = res
+                    preview_img = img if is_display else display_image(img)
+            elif isinstance(frame, np.ndarray):
+                preview_img = display_image(_small(frame, PREVIEW_EDGE))
+            if preview_img is not None:
+                pix = cv2_to_pixmap(preview_img)
+                pixmaps[pkey] = pix
+                return pix
+
+        key = self._aligned_preview_key()
+        cache = getattr(self, '_aligned_preview_cache', None)
+        if cache is not None and cache[0] == key:
+            _ckey, frames, index_map = cache
+            pos = index_map.get(index)
+            if pos is not None and 0 <= pos < len(frames):
+                pkey = ('proxy', key, index)
+                cached_pix = pixmaps.get(pkey)
+                if cached_pix is not None:
+                    return cached_pix
+                pix = cv2_to_pixmap(frames[pos])
+                pixmaps[pkey] = pix
+                return pix
+        return None
 
     def _system_theme_changed(self, scheme):
         if self.theme_mode == 'system' and not getattr(self, '_shutting_down', False):
@@ -5180,6 +5522,9 @@ class OpenFocus(QMainWindow):
         if getattr(self, 'roi_alignment_worker', None) is not None:
             _shutdown_worker(self.roi_alignment_worker)
             self.roi_alignment_worker = None
+        if getattr(self, '_aligned_preview_worker', None) is not None:
+            _shutdown_worker(self._aligned_preview_worker)
+            self._aligned_preview_worker = None
 
         # Stop stack-load worker if running (closing mid-decode otherwise
         # destroys a running QThread at teardown and aborts the process)
@@ -5566,7 +5911,7 @@ class OpenFocus(QMainWindow):
         # kept the language the app was launched in ("Source Stack"/"Output"
         # stayed English after switching to Polish).
         if hasattr(self, 'lbl_source_title'):
-            self.lbl_source_title.setText(' ' + trans.t('panel_source_stack'))
+            self._update_source_title_text()
         if hasattr(self, 'lbl_result_title'):
             self.lbl_result_title.setText(trans.t('panel_output'))
         set_panel_label(c.chk_quick_preview, trans.t('chk_quick_preview'),
@@ -5575,10 +5920,32 @@ class OpenFocus(QMainWindow):
         if dialog is not None:
             dialog.retranslate()
         
-        # ROI Button
+        # ROI, Alignment Area & Show Aligned Buttons
         if hasattr(self, 'btn_preview_roi'):
             self.btn_preview_roi.setText(trans.t('btn_roi'))
             self.btn_preview_roi.setToolTip(trans.t('btn_roi_hint'))
+        if hasattr(self, 'btn_align_area'):
+            self.btn_align_area.setText(trans.t('btn_align_area'))
+            self.btn_align_area.setToolTip(trans.t('btn_align_area_hint'))
+        if hasattr(self, 'btn_clear_align_area'):
+            self.btn_clear_align_area.setToolTip(trans.t('btn_clear_align_area_hint'))
+        if hasattr(self, 'btn_show_aligned'):
+            worker = getattr(self, '_aligned_preview_worker', None)
+            computing = worker is not None and worker.isRunning()
+            self.btn_show_aligned.setText(
+                trans.t('btn_show_aligned_computing' if computing else 'btn_show_aligned'))
+            self.btn_show_aligned.setToolTip(trans.t('btn_show_aligned_hint'))
+        if getattr(c, 'lbl_reg_align_area', None) is not None:
+            c.lbl_reg_align_area.setText(trans.t('label_align_area'))
+            c.lbl_reg_align_area.setToolTip(trans.t('btn_align_area_hint'))
+        if getattr(c, 'btn_reg_align_area', None) is not None:
+            c.btn_reg_align_area.setText(trans.t('btn_align_area'))
+            c.btn_reg_align_area.setToolTip(trans.t('btn_align_area_hint'))
+        if getattr(c, 'btn_reg_clear_align_area', None) is not None:
+            c.btn_reg_clear_align_area.setText(trans.t('btn_clear_align_area'))
+            c.btn_reg_clear_align_area.setToolTip(trans.t('btn_clear_align_area_hint'))
+        if hasattr(self, 'lbl_source_img'):
+            self.lbl_source_img.update()
 
         # Lists labels
         count = self.file_list.count()
