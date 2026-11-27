@@ -1751,6 +1751,9 @@ class BatchWorker(QThread):
             return self.image_loader.split_by_count(entries, self.split_param or 5)
         elif self.split_method == "time_threshold":
             return self.image_loader.split_by_time_threshold(entries, self.split_param or 5.0)
+        elif self.split_method == "exposure":
+            from core.exposure_split import split_by_exposure
+            return split_by_exposure(entries, ev_step=float(self.split_param or (1.0 / 3.0)))
         return [entries]
 
     def _stack_scale_cfg(self, target='output') -> Optional[dict]:
@@ -1962,7 +1965,16 @@ class BatchWorker(QThread):
                 stack_wm = self._stack_watermark('output')
                 saved = []
                 if result is not None:
-                    output_path = os.path.join(output_dir, f'{stack_name}.{output_format}')
+                    stem = self._format_batch_output_stem(
+                        stack_name,
+                        filenames=export_names,
+                        folder_path=stack_name,
+                        result=result,
+                        frame_count=len(images),
+                        fusion_method=fusion_method,
+                        alignment=alignment,
+                    )
+                    output_path = os.path.join(output_dir, f'{stem}.{output_format}')
                     ok = self._save_image(output_path, result, output_format,
                                           scale_cfg=stack_cfg, watermark_cfg=stack_wm)
                     saved.append(ok)
@@ -2157,12 +2169,61 @@ class BatchWorker(QThread):
                 thread_count=self.thread_count), is_16bit)
         output_format = settings.get('format', 'png').lstrip('.').lower()
         name = os.path.basename(os.path.normpath(folder_path))
-        output = os.path.join(self._get_output_path_for_single_folder(folder_path), f'{name}.{output_format}')
+        stem = self._format_batch_output_stem(
+            name,
+            filenames=[fname for fname, _ in files],
+            folder_path=folder_path,
+            result=result,
+            frame_count=len(paths),
+            fusion_method=method,
+            alignment=alignment,
+        )
+        output = os.path.join(self._get_output_path_for_single_folder(folder_path), f'{stem}.{output_format}')
         if not self._save_image(output, result, output_format,
                                 scale_cfg=self._stack_scale_cfg(),
                                 watermark_cfg=self._stack_watermark('output')):
             raise OSError(f'No files were written for {name}')
         self.written_paths.append(self._task_artifacts[-1])
+
+    def _format_batch_output_stem(
+        self,
+        default_stem: str,
+        *,
+        filenames,
+        folder_path: str,
+        result,
+        frame_count: int,
+        fusion_method,
+        alignment,
+    ) -> str:
+        template = (self.processing_settings.get('output_filename_template') or '').strip()
+        prefix = self.processing_settings.get('output_name_prefix') or ''
+        if not template and not prefix:
+            return default_stem
+        from core.algorithms import get_registration
+        from core.filename_template import apply_output_naming, build_template_context
+        f_tag = 'None' if not fusion_method or fusion_method == 'none' else get_fusion(fusion_method).file_tag
+        align_id = alignment if isinstance(alignment, str) else (
+            alignment[0] if isinstance(alignment, (list, tuple)) and alignment else 'none'
+        )
+        try:
+            a_tag = 'NoAlign' if not align_id or align_id == 'none' else get_registration(align_id).file_tag
+        except Exception:
+            a_tag = str(align_id or 'NoAlign')
+        width = height = None
+        if result is not None and hasattr(result, 'shape') and len(result.shape) >= 2:
+            height, width = int(result.shape[0]), int(result.shape[1])
+        ctx = build_template_context(
+            filenames=filenames,
+            folder_path=folder_path,
+            method=f_tag,
+            align=a_tag,
+            frame_count=frame_count,
+            width=width,
+            height=height,
+            fusion_params=self.processing_settings.get('fusion_params'),
+        )
+        return apply_output_naming(default_stem, template=template, prefix=prefix, context=ctx)
 
     def _get_output_path_for_single_folder(self, source_folder_path):
         if self.output_type == 'subfolder':

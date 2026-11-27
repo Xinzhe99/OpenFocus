@@ -1916,6 +1916,9 @@ class RenderManager:
 
                 # Bring attention back: flash the taskbar icon
                 QApplication.alert(window)
+                if not preview and not compare:
+                    from utils.sound_notify import play_completion_sound
+                    play_completion_sound(bool(getattr(window, "render_complete_sound", False)))
 
                 # Crash auto-recovery: new outputs refresh the snapshot
                 from utils import recovery
@@ -2391,6 +2394,8 @@ class RenderManager:
         from PyQt6.QtWidgets import QWidget
         if isinstance(window, QWidget):
             QApplication.alert(window)
+        from utils.sound_notify import play_completion_sound
+        play_completion_sound(bool(getattr(window, "render_complete_sound", False)))
         if failures and getattr(self, "_render_interactive", True):
             details = "\n".join(f"{self.algo_display_name(method)}: {reason}"
                                  for method, reason in failures)

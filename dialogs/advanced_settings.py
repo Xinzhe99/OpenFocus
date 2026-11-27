@@ -4,8 +4,8 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from utils.file_dialogs import FileDialog
 from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QFrame,
-    QHBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea, QTabWidget, QToolButton,
-    QVBoxLayout, QWidget,
+    QGridLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea,
+    QTabWidget, QToolButton, QVBoxLayout, QWidget,
 )
 
 from constants import (
@@ -218,11 +218,53 @@ class AdvancedSettingsDialog(QDialog):
         self.output_prefix.setMaxLength(40)
         self.output_prefix.setToolTip(trans.t("output_prefix_hint"))
         output.addRow(trans.t("output_prefix_label"), self.output_prefix)
+
+        from core.filename_template import DEFAULT_FILENAME_TEMPLATE, TEMPLATE_TOKENS
+        template_row = QWidget()
+        template_row_lay = QHBoxLayout(template_row)
+        template_row_lay.setContentsMargins(0, 0, 0, 0)
+        template_row_lay.setSpacing(6)
+        self.output_template = QLineEdit(getattr(w, "output_filename_template", "") or "")
+        self.output_template.setProperty("controlId", "edit_output_template")
+        self.output_template.setMaxLength(160)
+        self.output_template.setPlaceholderText(DEFAULT_FILENAME_TEMPLATE)
+        self.output_template.setToolTip(trans.t("output_template_hint"))
+        template_row_lay.addWidget(self.output_template, 1)
+        self.btn_reset_template = QPushButton(trans.t("output_template_clear"))
+        self.btn_reset_template.clicked.connect(self.output_template.clear)
+        template_row_lay.addWidget(self.btn_reset_template)
+        output.addRow(trans.t("output_template_label"), template_row)
+
+        chips_host = QWidget()
+        chips_grid = QGridLayout(chips_host)
+        chips_grid.setContentsMargins(0, 0, 0, 0)
+        chips_grid.setHorizontalSpacing(4)
+        chips_grid.setVerticalSpacing(4)
+        self.template_token_buttons: dict[str, QPushButton] = {}
+        cols = 4
+        for idx, token in enumerate(TEMPLATE_TOKENS):
+            chip = QPushButton(token)
+            chip.setProperty("controlId", f"token_chip_{token.strip('[]').lower()}")
+            chip.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+            chip.setToolTip(token)
+            chip.setStyleSheet("padding: 2px 6px; font-size: 9pt;")
+            chip.clicked.connect(lambda _checked=False, tok=token: self._insert_template_token(tok))
+            chips_grid.addWidget(chip, idx // cols, idx % cols)
+            self.template_token_buttons[token] = chip
+        output.addRow(trans.t("output_template_tokens_label"), chips_host)
+
         self.output_prefix_preview = QLabel()
         self.output_prefix_preview.setWordWrap(True)
         output.addRow(trans.t("output_prefix_preview"), self.output_prefix_preview)
         self.output_prefix.textChanged.connect(self._update_output_prefix_preview)
+        self.output_template.textChanged.connect(self._update_output_prefix_preview)
         self._update_output_prefix_preview()
+
+        self.chk_render_complete_sound = QCheckBox(trans.t("render_complete_sound_label"))
+        self.chk_render_complete_sound.setProperty("controlId", "chk_render_complete_sound")
+        self.chk_render_complete_sound.setChecked(bool(getattr(w, "render_complete_sound", False)))
+        self.chk_render_complete_sound.setToolTip(trans.t("render_complete_sound_hint"))
+        output.addRow(self.chk_render_complete_sound)
 
     def _build_fusion(self, page_lay):
         w = self.window_main
@@ -614,13 +656,35 @@ class AdvancedSettingsDialog(QDialog):
         self.spin_overlap.setMaximum(
             min(TILE_OVERLAP_MAX, max(0, int(block)) // 2))
 
+    def _insert_template_token(self, token: str) -> None:
+        """Insert a template token at the cursor position with a clean separator."""
+        current = self.output_template.text()
+        pos = self.output_template.cursorPosition()
+        before = current[:pos]
+        after = current[pos:]
+        insert_text = token
+        if before and not before.endswith(("_", "-", " ", "/")):
+            insert_text = "_" + insert_text
+        if after and not after.startswith(("_", "-", " ", "/")):
+            insert_text = insert_text + "_"
+        updated = before + insert_text + after
+        self.output_template.setText(updated)
+        self.output_template.setCursorPosition(len(before + insert_text))
+        self.output_template.setFocus()
+
     def _update_output_prefix_preview(self):
         prefix = self.output_prefix.text()
         if not valid_output_prefix(prefix):
             self.output_prefix_preview.setText(trans.t("output_prefix_hint"))
             return
-        self.output_prefix_preview.setText(prefix_output_name(
-            prefix, "OpenFocus_20261015_120000_Method_Align.png"))
+        template = self.output_template.text().strip() if hasattr(self, "output_template") else ""
+        if template:
+            from core.filename_template import example_template_context, format_output_filename
+            rendered = format_output_filename(template, example_template_context())
+            self.output_prefix_preview.setText(prefix_output_name(prefix, f"{rendered}.png"))
+        else:
+            self.output_prefix_preview.setText(prefix_output_name(
+                prefix, "OpenFocus_20261015_120000_Method_Align.png"))
 
     def _show_error(self, message, field):
         for panel, disclosure in ((self.manual_tile_panel, self.manual_tile_disclosure),
@@ -648,6 +712,8 @@ class AdvancedSettingsDialog(QDialog):
             'resource_preference': self.combo_resources.currentData(),
             'reg_downscale_width': int(self.spin_reg_width.value()),
             'output_name_prefix': self.output_prefix.text(),
+            'output_filename_template': self.output_template.text().strip(),
+            'render_complete_sound': self.chk_render_complete_sound.isChecked(),
             'restore_last_stack': self.chk_restore.isChecked(),
             'ask_load_scale': self.chk_ask_scale.isChecked(),
             'defect_mask_path': self.sensor_cleanup.path.text().strip(),
@@ -866,7 +932,8 @@ class AdvancedSettingsDialog(QDialog):
             key for key in draft if previous[key] != draft[key]),
             usage_enabled=self.chk_usage.isChecked())
         processing = set(draft) - {'experimental_features', 'auto_error_reports', 'restore_last_stack',
-                                   'ask_load_scale', 'output_name_prefix', 'storage_directory'}
+                                   'ask_load_scale', 'output_name_prefix', 'output_filename_template',
+                                   'render_complete_sound', 'storage_directory'}
         if any(previous[key] != draft[key] for key in processing):
             mark_dirty = getattr(w, "_mark_project_dirty", None)
             if mark_dirty is not None:
