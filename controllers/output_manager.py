@@ -2247,17 +2247,24 @@ class OutputManager:
         baked = bool(record is not None and record.annotations_baked)
         metadata = (record.linear_dng_metadata if record is not None and record.kind == 'aligned'
                     else getattr(window, 'linear_dng_metadata', None))
+        reg_profile = b""
+        if metadata is None and record is not None and bool(getattr(window, "enable_ui_icc_preview", True)):
+            frame_iccs = getattr(record, "frame_icc_profiles", ()) or ()
+            reg_profile = (
+                frame_iccs[index] if 0 <= index < len(frame_iccs) else b""
+            ) or getattr(record, "icc_profile", b"") or b""
         worker = SourceRegionWorker(frame, key, target='registered', index=index,
             labels=None if baked else window.label_manager.snapshot(),
             scale_cfg=None if baked else scalebar.export_cfg(window, target='registered', record=record),
             watermark_cfg=watermark.export_cfg(window, target='registered', record=record),
-            metadata=metadata)
+            metadata=metadata,
+            icc_profile=reg_profile)
         self._registration_region_worker = worker
         _ACTIVE_REGISTRATION_REGION_WORKERS.add(worker)
 
         def ready(decoded_key, completed_request, pixels, rect):
             if not _window_unavailable(window) and decoded_key == self._registration_region_key:
-                window.lbl_result_img.set_source_region(cv2_to_pixmap(pixels), rect,
+                window.lbl_result_img.set_source_region(cv2_to_pixmap(pixels, apply_icc=False), rect,
                     source_key=decoded_key, request=completed_request)
 
         def failed(decoded_key, message):

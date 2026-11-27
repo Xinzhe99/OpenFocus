@@ -198,6 +198,7 @@ class LayeredTiffWorker(QThread):
 
 class LayeredPsdWorker(QThread):
     completed = pyqtSignal(bool, str)
+    progress_changed = pyqtSignal(int, int, str, str)
 
     def __init__(self, path, image, context, icc_profile):
         super().__init__()
@@ -211,6 +212,10 @@ class LayeredPsdWorker(QThread):
 
     def cancel(self):
         self._cancelled.set()
+
+    def _emit_progress(self, current: int, total: int, stage: str, detail: str = "") -> None:
+        if not self._cancelled.is_set():
+            self.progress_changed.emit(int(current), int(total), str(stage), str(detail))
 
     def run(self):
         try:
@@ -251,6 +256,7 @@ class LayeredPsdWorker(QThread):
                 context,
                 icc_profile=profile,
                 cancelled=cancelled,
+                progress=self._emit_progress,
                 protected_sources=sources_to_protect,
             )
         except Exception as exc:
@@ -545,10 +551,36 @@ class ExportManager:
         self.psd_worker = worker
         self._psd_record = original
         progress.canceled.connect(self._cancel_layered_psd)
+        worker.progress_changed.connect(self._layered_psd_progress)
         worker.completed.connect(self._layered_psd_completed)
         worker.finished.connect(self._layered_psd_finished)
         progress.show()
         worker.start()
+
+    def _layered_psd_progress(self, current: int, total: int, stage: str, detail: str) -> None:
+        dialog = self.psd_progress_dialog
+        if not is_qobject_alive(dialog) or (self.psd_worker is not None and self.psd_worker._cancelled.is_set()):
+            return
+        if total > 0:
+            if dialog.maximum() != total:
+                dialog.setRange(0, total)
+            dialog.setValue(max(0, min(total, current)))
+        if stage == "masks":
+            dialog.setLabelText(trans.t("layered_psd_progress_masks"))
+        elif stage == "layer":
+            # Total layer count excludes mask and composite steps when present.
+            n_layers = max(1, total - 2) if total >= 3 else max(1, total - 1)
+            layer_num = max(1, min(n_layers, current - (1 if total >= 3 else 0)))
+            base = trans.t("layered_psd_progress_layer").format(
+                current=layer_num, total=n_layers
+            )
+            if detail:
+                short_name = detail if len(detail) <= 32 else detail[:29] + "..."
+                dialog.setLabelText(f"{base} ({short_name})")
+            else:
+                dialog.setLabelText(base)
+        elif stage == "composite":
+            dialog.setLabelText(trans.t("layered_psd_progress_composite"))
 
     def _cancel_layered_psd(self):
         if self.psd_worker is not None:

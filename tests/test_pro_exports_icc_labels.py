@@ -29,6 +29,7 @@ from core.exif_macros import (
 )
 from core.psd_export import (
     PSD_SIGNATURE,
+    _packbits_encode_numpy,
     compute_source_contribution_masks,
     export_layered_psd,
     packbits_decode,
@@ -550,4 +551,173 @@ def test_watermark_dialog_exif_macro_chip_bar_inserts_tokens(qapp):
         dlg.deleteLater()
         host.close()
         host.deleteLater()
+        qapp.processEvents()
+
+
+# ---------------------------------------------------------------------------
+# 7. Round-2 Performance, Streaming, Cancellation & Theme UX Regressions
+# ---------------------------------------------------------------------------
+
+def test_packbits_rle_exhaustive_roundtrip_and_numpy_fallback():
+    rng = np.random.default_rng(2026)
+    edge_cases = [
+        b"",
+        b"\x00",
+        b"\x7f\x80",
+        b"\xaa" * 3,
+        b"\xaa" * 127,
+        b"\xaa" * 128,
+        b"\xaa" * 129,
+        b"\xaa" * 130,
+        b"\xaa" * 256,
+        b"\xaa" * 258,
+        b"\x01\x02" + b"\xbb" * 130,
+        b"\x01\x02" + b"\xbb" * 130 + b"\xcc" * 5,
+        b"\xdd" * 130 + b"\xee" * 130 + b"\x01\x02\x03",
+        bytes(i & 0xFF for i in range(128)),
+        bytes(i & 0xFF for i in range(129)),
+        bytes(i & 0xFF for i in range(513)),
+        rng.integers(0, 256, size=4096, dtype=np.uint8).tobytes(),
+        (rng.integers(0, 4, size=4096, dtype=np.uint8) * 64).tobytes(),
+    ]
+    for raw in edge_cases:
+        for encoder in (packbits_encode, _packbits_encode_numpy):
+            encoded = encoder(raw)
+            decoded = packbits_decode(encoded, expected_length=len(raw))
+            assert decoded == raw
+            # Also verify numpy 1D uint8 array input directly.
+            arr = np.frombuffer(raw, dtype=np.uint8)
+            encoded_arr = encoder(arr)
+            assert packbits_decode(encoded_arr, expected_length=len(raw)) == raw
+
+
+def test_packbits_and_contrast_performance_regression():
+    import time
+
+    rng = np.random.default_rng(99)
+    # 1 MB of 4096-byte scanlines should encode well under 150 ms (primary is ~3 ms, numpy ~15 ms).
+    rows = [rng.integers(0, 256, size=4096, dtype=np.uint8) for _ in range(256)]
+    t0 = time.perf_counter()
+    for row in rows:
+        _ = packbits_encode(row)
+    elapsed_ms = (time.perf_counter() - t0) * 1000.0
+    assert elapsed_ms < 200.0
+
+    # Large contrast map (>262,144 px exercises histogram percentile fast path).
+    big = rng.integers(0, 256, size=(600, 600, 3), dtype=np.uint8)
+    big[:, :300] = 128
+    cm = compute_contrast_map(big, bit_depth=16, method="hybrid")
+    assert cm.shape == (600, 600) and cm.dtype == np.uint16
+    assert float(cm[:, 320:].mean()) > float(cm[:, :280].mean()) + 10000.0
+
+
+def test_layered_psd_streaming_progress_and_cancellation(tmp_path):
+    h, w = 96, 128
+    frames = [
+        np.full((h, w, 3), (30 + i * 40, 80, 220 - i * 35), dtype=np.uint8)
+        for i in range(4)
+    ]
+    result = frames[0].copy()
+    xs = np.linspace(0.0, 1.0, w, dtype=np.float32)
+    depth = np.broadcast_to(xs[None, :], (h, w)).copy()
+
+    events = []
+    psd_path = tmp_path / "streamed_progress.psd"
+    export_layered_psd(
+        str(psd_path),
+        result,
+        source_frames=frames,
+        source_names=[f"layer_{i}.tif" for i in range(4)],
+        depth_index=depth,
+        icc_profile=srgb_icc_profile(),
+        feather_sigma=2.0,
+        progress=lambda c, t, stage, detail: events.append((c, t, stage, detail)),
+    )
+    stages = [e[2] for e in events]
+    assert stages[0] == "masks"
+    assert stages.count("layer") == 5  # 4 sources + Merged Result
+    assert stages[-1] == "composite"
+    assert all(e[1] == 7 for e in events)
+
+    # Verify streamed PSD layer structure & Pillow composite readback.
+    parsed = _parse_psd_header_and_layers(psd_path.read_bytes())
+    assert parsed["layer_count"] == 5
+    with Image.open(psd_path) as loaded:
+        loaded.load()
+        np.testing.assert_array_equal(np.asarray(loaded.convert("RGB")), result[..., ::-1])
+
+    # Cooperative cancellation mid-export must raise and leave zero temp/output files.
+    cancel_flag = {"stop": False}
+
+    def _progress_then_cancel(c, t, stage, detail):
+        if stage == "layer" and c >= 2:
+            cancel_flag["stop"] = True
+
+    cancel_path = tmp_path / "cancelled.psd"
+    with pytest.raises(ValueError, match="cancelled"):
+        export_layered_psd(
+            str(cancel_path),
+            result,
+            source_frames=frames,
+            depth_index=depth,
+            cancelled=lambda: cancel_flag["stop"],
+            progress=_progress_then_cancel,
+        )
+    assert not cancel_path.exists()
+    assert not list(tmp_path.glob(".layered-*.psd"))
+
+
+def test_icc_srgb_zero_copy_bypass_and_large_parallel_equivalence():
+    if not is_icc_management_available():
+        pytest.skip("LittleCMS2 not available")
+
+    clear_transform_cache()
+    srgb = srgb_icc_profile()
+    srgb_copy = bytes(srgb)
+    swapped = _make_channel_swapped_icc_profile()
+
+    img = np.random.default_rng(7).integers(0, 256, size=(600, 960, 3), dtype=np.uint8)
+    snapshot = img.copy()
+
+    # Built-in sRGB (both identical ref and copied bytes) returns input unchanged without copying.
+    assert convert_bgr_to_srgb_preview(img, srgb, enabled=True) is img
+    assert convert_bgr_to_srgb_preview(img, srgb_copy, enabled=True) is img
+
+    # Large image (>= 512x512) uses strip-parallel path and must match Pillow reference bit-for-bit.
+    out = convert_bgr_to_srgb_preview(img, swapped, enabled=True)
+    np.testing.assert_array_equal(img, snapshot)
+    tr = get_srgb_transform(swapped)
+    ref_rgb = np.asarray(ImageCms.applyTransform(Image.fromarray(img[..., ::-1], "RGB"), tr))
+    np.testing.assert_array_equal(out[..., ::-1], ref_rgb)
+
+
+@pytest.mark.parametrize("theme", ["light", "dark", "gray"])
+def test_exif_macro_chip_bar_themes_tooltips_and_preview(qapp, theme):
+    from PyQt6.QtWidgets import QLineEdit
+    from widgets.exif_macro_bar import ExifMacroChipBar, create_macro_preview_label
+
+    edit = QLineEdit()
+    bar = ExifMacroChipBar(edit, theme=theme)
+    preview = create_macro_preview_label()
+    try:
+        meta = extract_exif_metadata(_make_sample_exif(), method="OpenFocus B", frames=12)
+        bar.update_sample_meta(meta)
+
+        cam_btn = bar.buttons["{camera}"]
+        assert "OpenCam X100" in cam_btn.toolTip()
+        assert "\n" in cam_btn.toolTip()
+        assert cam_btn.property("hasSample") is True
+
+        # Missing metadata chip falls back cleanly in tooltip and clears hasSample.
+        bar.update_sample_meta({"camera": "OpenCam X100"})
+        assert bar.buttons["{camera}"].property("hasSample") is True
+        assert bar.buttons["{lens}"].property("hasSample") is False
+        assert "{lens}" in bar.buttons["{lens}"].toolTip()
+
+        assert preview.objectName() == "macroPreviewLabel"
+        assert "macroChipButton" in bar.styleSheet()
+    finally:
+        bar.deleteLater()
+        preview.deleteLater()
+        edit.deleteLater()
         qapp.processEvents()

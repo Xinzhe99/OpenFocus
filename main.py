@@ -3158,22 +3158,24 @@ class OpenFocus(QMainWindow):
         from core.source_previews import SourceRegionWorker
         from utils import scalebar, watermark
         frame = self.raw_images[index]
+        lin_meta = getattr(frame, 'linear_metadata', None) or self.linear_dng_metadata
+        worker_icc = b""
+        if lin_meta is None and bool(getattr(self, 'enable_ui_icc_preview', True)):
+            iccs = getattr(self, 'image_icc_profiles', ()) or ()
+            worker_icc = iccs[index] if 0 <= index < len(iccs) else b""
         worker = SourceRegionWorker(frame, key, labels=self.label_manager.snapshot(), index=index,
                                     scale_cfg=scalebar.export_cfg(self, target='source'),
                                     watermark_cfg=watermark.export_cfg(self, target='source'),
-                                    metadata=getattr(frame, 'linear_metadata', None) or self.linear_dng_metadata)
+                                    metadata=lin_meta,
+                                    icc_profile=worker_icc)
         workers[key] = worker
         def accept(decoded_key, region_request, image, rect):
             if (decoded_key != getattr(self, '_source_display_key', None)
                     or getattr(self, '_shutting_down', False) or image is None):
                 return
-            profile = b""
-            if self.linear_dng_metadata is None and getattr(frame, 'linear_metadata', None) is None:
-                iccs = getattr(self, 'image_icc_profiles', ()) or ()
-                profile = iccs[index] if 0 <= index < len(iccs) else b""
-            apply_icc = bool(getattr(self, 'enable_ui_icc_preview', True))
+            # ICC preview transform already ran off the UI thread inside SourceRegionWorker.
             self.lbl_source_img.set_source_region(
-                cv2_to_pixmap(image, icc_profile=profile, apply_icc=apply_icc),
+                cv2_to_pixmap(image, apply_icc=False),
                 rect, source_key=decoded_key, request=region_request)
         def failed(decoded_key, message):
             if (decoded_key == getattr(self, '_source_display_key', None)

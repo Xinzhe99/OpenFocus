@@ -95,14 +95,11 @@ class WatermarkDialog(QDialog):
         self.text_edit.setToolTip(trans.t("watermark_text_hint"))
         text_form.addRow(trans.t("watermark_text"), self.text_edit)
 
-        from widgets.exif_macro_bar import ExifMacroChipBar
+        from widgets.exif_macro_bar import ExifMacroChipBar, create_macro_preview_label
         self.macro_bar = ExifMacroChipBar(self.text_edit, parent=self)
         text_form.addRow(self.macro_bar)
 
-        self.macro_preview_label = QLabel("")
-        self.macro_preview_label.setObjectName("mutedLabel")
-        self.macro_preview_label.setWordWrap(True)
-        self.macro_preview_label.hide()
+        self.macro_preview_label = create_macro_preview_label(self)
         text_form.addRow(self.macro_preview_label)
 
         self.copyright_check = QCheckBox(trans.t("watermark_copyright"))
