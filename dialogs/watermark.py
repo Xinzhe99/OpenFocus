@@ -95,6 +95,16 @@ class WatermarkDialog(QDialog):
         self.text_edit.setToolTip(trans.t("watermark_text_hint"))
         text_form.addRow(trans.t("watermark_text"), self.text_edit)
 
+        from widgets.exif_macro_bar import ExifMacroChipBar
+        self.macro_bar = ExifMacroChipBar(self.text_edit, parent=self)
+        text_form.addRow(self.macro_bar)
+
+        self.macro_preview_label = QLabel("")
+        self.macro_preview_label.setObjectName("mutedLabel")
+        self.macro_preview_label.setWordWrap(True)
+        self.macro_preview_label.hide()
+        text_form.addRow(self.macro_preview_label)
+
         self.copyright_check = QCheckBox(trans.t("watermark_copyright"))
         self.copyright_check.setAccessibleName(trans.t("watermark_copyright"))
         self.copyright_check.setToolTip(trans.t("watermark_copyright_hint"))
@@ -724,10 +734,19 @@ class WatermarkDialog(QDialog):
     def _checked_targets(self):
         return tuple(target for target, check in self.target_checks.items() if check.isChecked())
 
+    def _preview_exif_meta(self) -> dict[str, str]:
+        code = self.preview_target_combo.currentData() or "output"
+        record = self._preview_record() if code == "output" else self._apply_record
+        frame_index = max(0, int(self.frame_index.value()) - 1) if code in ("source", "registered") else 0
+        return watermark.context_exif_meta(
+            self._window, target=code, record=record, frame_index=frame_index
+        )
+
     def _validated_draft(self):
         cfg = self._draft_config()
+        exif_meta = self._preview_exif_meta()
         for height, width in dict.fromkeys(self._scope_sizes()):
-            info = watermark.analyze(cfg, int(width), int(height))
+            info = watermark.analyze(cfg, int(width), int(height), exif_meta=exif_meta, value=1)
             if not info["ok"]:
                 raise watermark.WatermarkError(info["reason"])
         return cfg
@@ -740,10 +759,29 @@ class WatermarkDialog(QDialog):
         self._sync_preview_navigation()
         self.font_note.clear()
         self._error.clear()
+        exif_meta = self._preview_exif_meta()
+        if hasattr(self, "macro_bar"):
+            self.macro_bar.update_sample_meta(exif_meta)
+        raw_text = self.text_edit.text()
+        from core.exif_macros import has_exif_macros
+        if hasattr(self, "macro_preview_label"):
+            if has_exif_macros(raw_text):
+                frame_val = (
+                    int(self.frame_index.value())
+                    if self.preview_target_combo.currentData() in ("source", "registered")
+                    else 1
+                )
+                resolved = watermark.expand_exif_macros(raw_text, exif_meta, value=frame_val).strip()
+                self.macro_preview_label.setText(
+                    trans.t("exif_macro_preview_label").format(text=resolved or "—")
+                )
+                self.macro_preview_label.show()
+            else:
+                self.macro_preview_label.hide()
         targets = self._checked_targets()
         self._ok_button.setEnabled(not targets and bool(self._committed_targets))
         cfg = None
-        if targets and self.text_edit.text().strip():
+        if targets and raw_text.strip():
             try:
                 cfg = self._validated_draft()
             except watermark.WatermarkError as exc:
@@ -777,7 +815,12 @@ class WatermarkDialog(QDialog):
         if cfg is None:
             self._show_preview(key, image, metadata, display, None)
             return
-        info = watermark.analyze(cfg, canvas_w, canvas_h)
+        frame_val = (
+            int(self.frame_index.value())
+            if self.preview_target_combo.currentData() in ("source", "registered")
+            else 1
+        )
+        info = watermark.analyze(cfg, canvas_w, canvas_h, exif_meta=exif_meta, value=frame_val)
         if not info["ok"]:
             self._show_preview(key, image, metadata, display, None)
             self._error.setText(trans.t(info["message_key"]))
@@ -785,7 +828,7 @@ class WatermarkDialog(QDialog):
         preview_record = self._preview_record()
         if preview_record is not None and preview_record.watermark_baked:
             cfg = None
-        self._show_preview(key, image, metadata, display, cfg)
+        self._show_preview(key, image, metadata, display, cfg, exif_meta=exif_meta, value=frame_val)
         layout = info["layout"]
         self.preview_meta.setText(trans.t("watermark_preview_layout").format(
             font=layout.font_px, cells=len(layout.cells)))
@@ -793,9 +836,11 @@ class WatermarkDialog(QDialog):
             self.font_note.setText(trans.t("label_font_substituted").format(
                 name=f"{info['substituted']} → {info['actual_family']}"))
 
-    def _show_preview(self, key, image, metadata, display, cfg):
+    def _show_preview(self, key, image, metadata, display, cfg, *, exif_meta=None, value=1):
         height, width = image.shape[:2]
-        drawn = watermark.burn(display, cfg, canvas_size=(width, height))
+        drawn = watermark.burn(
+            display, cfg, canvas_size=(width, height), exif_meta=exif_meta, value=value
+        )
         pixmap = cv2_to_pixmap(drawn)
         source_key = (key, self._preview_revision, cfg)
         self._region_source = (source_key, image, metadata, cfg)

@@ -224,6 +224,19 @@ class AdvancedSettingsDialog(QDialog):
         self.output_prefix.textChanged.connect(self._update_output_prefix_preview)
         self._update_output_prefix_preview()
 
+        export_color = _section(page_lay, trans.t("advanced_export_color_section"))
+        self.chk_strip_exif_on_export = QCheckBox(trans.t("export_strip_exif"))
+        self.chk_strip_exif_on_export.setProperty("controlId", "chk_strip_exif_on_export")
+        self.chk_strip_exif_on_export.setChecked(bool(getattr(w, "strip_exif_on_export", False)))
+        self.chk_strip_exif_on_export.setToolTip(trans.t("export_strip_exif_hint"))
+        export_color.addRow(self.chk_strip_exif_on_export)
+
+        self.chk_ui_icc_preview = QCheckBox(trans.t("ui_icc_preview_setting"))
+        self.chk_ui_icc_preview.setProperty("controlId", "chk_ui_icc_preview")
+        self.chk_ui_icc_preview.setChecked(bool(getattr(w, "enable_ui_icc_preview", True)))
+        self.chk_ui_icc_preview.setToolTip(trans.t("ui_icc_preview_setting_hint"))
+        export_color.addRow(self.chk_ui_icc_preview)
+
     def _build_fusion(self, page_lay):
         w = self.window_main
         perf = _section(page_lay)
@@ -648,6 +661,8 @@ class AdvancedSettingsDialog(QDialog):
             'resource_preference': self.combo_resources.currentData(),
             'reg_downscale_width': int(self.spin_reg_width.value()),
             'output_name_prefix': self.output_prefix.text(),
+            'strip_exif_on_export': self.chk_strip_exif_on_export.isChecked(),
+            'enable_ui_icc_preview': self.chk_ui_icc_preview.isChecked(),
             'restore_last_stack': self.chk_restore.isChecked(),
             'ask_load_scale': self.chk_ask_scale.isChecked(),
             'defect_mask_path': self.sensor_cleanup.path.text().strip(),
@@ -776,6 +791,10 @@ class AdvancedSettingsDialog(QDialog):
                 settings.setValue(REPORTS_CHOICE_KEY, 'chosen')
             for key, value in draft.items():
                 setattr(w, key, value)
+            if "enable_ui_icc_preview" in draft:
+                setter = getattr(w, "set_ui_icc_preview", None)
+                if callable(setter):
+                    setter(draft["enable_ui_icc_preview"])
             if "_registration_parameters_by_method" in draft:
                 refresh = getattr(w, "refresh_registration_parameters", None)
                 if callable(refresh):

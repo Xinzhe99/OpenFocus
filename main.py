@@ -517,6 +517,8 @@ class OpenFocus(QMainWindow):
         self._alignment_choice_explicit = False
         self._applying_alignment_default = False
         self.profile_performance = False
+        self.strip_exif_on_export = False
+        self.enable_ui_icc_preview = True
         # 恢复持久化设置与最近文件（语言需在菜单构建前应用）
         load_window_settings(self)
         self.ui_theme = self._resolved_theme()
@@ -2878,6 +2880,7 @@ class OpenFocus(QMainWindow):
                 self.reset_to_default()
                 self.apply_theme(self.theme_mode)
                 self.set_use_gpu(self.use_gpu)
+                self.set_ui_icc_preview(self.enable_ui_icc_preview)
             self.persist_settings()
         except Exception as exc:
             show_message_box(self, trans.t('msg_error'), trans.t('msg_save_failed_text'),
@@ -3039,6 +3042,12 @@ class OpenFocus(QMainWindow):
                 if self.linear_dng_metadata is not None and not getattr(frame, 'preview_is_display', False):
                     from utils.linear_dng import develop_linear
                     image = develop_linear(image, self.linear_dng_metadata)
+                elif bool(getattr(self, 'enable_ui_icc_preview', True)):
+                    iccs = getattr(self, 'image_icc_profiles', ()) or ()
+                    profile = iccs[index] if 0 <= index < len(iccs) else b""
+                    if profile:
+                        from core.color_management import convert_bgr_to_srgb_preview
+                        image = convert_bgr_to_srgb_preview(image, profile, enabled=True)
                 made = self.image_loader.create_pixmaps([image], max_size=(1024, 1024))
                 self.stack_images[index] = made[0]
                 # 惰性生成但不设上限等于无界缓存：只保留当前帧±1，
@@ -3158,8 +3167,14 @@ class OpenFocus(QMainWindow):
             if (decoded_key != getattr(self, '_source_display_key', None)
                     or getattr(self, '_shutting_down', False) or image is None):
                 return
-            self.lbl_source_img.set_source_region(cv2_to_pixmap(image), rect,
-                                                   source_key=decoded_key, request=region_request)
+            profile = b""
+            if self.linear_dng_metadata is None and getattr(frame, 'linear_metadata', None) is None:
+                iccs = getattr(self, 'image_icc_profiles', ()) or ()
+                profile = iccs[index] if 0 <= index < len(iccs) else b""
+            apply_icc = bool(getattr(self, 'enable_ui_icc_preview', True))
+            self.lbl_source_img.set_source_region(
+                cv2_to_pixmap(image, icc_profile=profile, apply_icc=apply_icc),
+                rect, source_key=decoded_key, request=region_request)
         def failed(decoded_key, message):
             if (decoded_key == getattr(self, '_source_display_key', None)
                     and not getattr(self, '_shutting_down', False)):
@@ -4807,6 +4822,26 @@ class OpenFocus(QMainWindow):
         self.use_gpu = enabled
         self._update_dynamic_status()
         self._refresh_gpu_action()
+        self.persist_settings()
+
+    def set_ui_icc_preview(self, enabled: bool) -> None:
+        """Toggle UI-level ICC-to-sRGB preview without modifying source or exported pixels."""
+        self.enable_ui_icc_preview = bool(enabled)
+        action = getattr(self, "ui_objs", {}).get("action_ui_icc_preview")
+        if action is not None and action.isChecked() != self.enable_ui_icc_preview:
+            action.setChecked(self.enable_ui_icc_preview)
+        # Clear cached source pixmaps so the next paint reflects the new ICC preview setting.
+        if getattr(self, "stack_images", None):
+            self.stack_images = [None] * len(self.stack_images)
+        cache = getattr(self, "_wipe_pix_cache", None)
+        if cache is not None:
+            cache.clear()
+        self._wipe_source_cache = None
+        if hasattr(self, "refresh_annotation_views"):
+            try:
+                self.refresh_annotation_views()
+            except Exception:
+                pass
         self.persist_settings()
 
     def set_restore_last_stack(self, enabled: bool) -> None:
