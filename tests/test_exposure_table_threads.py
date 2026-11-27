@@ -89,7 +89,11 @@ def test_lent_exposure_table_bands_equal_serial_bands(lent_threads, table_thread
     assert len(table_threads) > 1
 
 
-def test_lent_exposure_table_stops_when_cancelled(lent_threads):
+@pytest.mark.parametrize('serial_job', [False, True])
+def test_lent_exposure_table_stops_when_cancelled(lent_threads, table_threads, serial_job):
+    from contextlib import nullcontext
+    from fusion_methods._openfocus_execution import serial_execution_scope
+
     image = np.zeros((2000, 700, 3), np.uint16)
     output = np.empty_like(image)
     checks = []
@@ -98,5 +102,9 @@ def test_lent_exposure_table_stops_when_cancelled(lent_threads):
         checks.append(None)
         return len(checks) > 1
 
-    with registration.deferred_warp_threads(3), pytest.raises(registration.RegistrationCancelled):
+    # A serial job's own check passes; only the frame's cancellation stops it.
+    scope = serial_execution_scope(lambda: False) if serial_job else nullcontext()
+    with (scope, registration.deferred_warp_threads(3),
+          pytest.raises(registration.RegistrationCancelled)):
         sources._match_through_table(image, 1.2, output, cancelled)
+    assert len(table_threads) > 1

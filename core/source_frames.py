@@ -1840,7 +1840,9 @@ def _match_through_table(image, gain, output, should_cancel):
     # the matcher as well. Each row maps independently, so bands are exact.
     workers = 1 if uses_rows() else _warp_thread_budget()
     if workers > 1:
-        check = cancellation_check(should_cancel or (lambda: False))
+        # The guard raises for the frame's own cancellation, so it also stops
+        # the bands under a job, whose check does not return the predicate.
+        check = cancellation_check(lambda: _check_resolution_cancel(should_cancel))
         _run_row_bands(image.shape[0], 128, check, table_rows, image, table, output,
                        parallel_pixels=image.shape[0] * image.shape[1], workers=workers)
         return
