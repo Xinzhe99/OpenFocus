@@ -21,6 +21,7 @@ from PyQt6.QtCore import (
     QSize,
     Qt,
     QThread,
+    QTimer,
     pyqtSignal,
 )
 from PyQt6.QtGui import (
@@ -94,20 +95,29 @@ def _qcolor_with_alpha(hex_or_css: str, alpha: int) -> QColor:
 
 
 class LivePreviewCanvas(QWidget):
-    """High-DPI interactive image canvas with zoom, pan, double-click fit, and zero flicker."""
+    """High-DPI interactive image canvas with cursor-anchored zoom, pan, split-curtain compare, and zero flicker."""
 
     zoomChanged = pyqtSignal(float, bool)  # (zoom_ratio, is_fit)
+    splitPositionChanged = pyqtSignal(float)  # normalized [0.02, 0.98]
+
+    _SPLIT_HIT_PX = 12.0
 
     def __init__(self, parent: Optional[QWidget] = None, *, theme: str = "light"):
         super().__init__(parent)
         self._theme = theme
         self._pixmap: Optional[QPixmap] = None
-        self._image_size: tuple[int, int] = (0, 0)
+        self._source_pixmap: Optional[QPixmap] = None
+        self._image_size: tuple[int, int] = (0, 0)  # Logical proxy size (w, h)
         self._zoom: float = 1.0
         self._is_fit: bool = True
         self._pan: QPointF = QPointF(0.0, 0.0)
         self._drag_origin: Optional[QPointF] = None
         self._drag_start_pan: QPointF = QPointF(0.0, 0.0)
+        self._split_compare: bool = False
+        self._split_pos: float = 0.5
+        self._dragging_split: bool = False
+        self._split_left_label: str = ""
+        self._split_right_label: str = ""
         self._overlay_badge: str = ""
         self._placeholder_text: str = ""
         self.setMinimumSize(360, 260)
@@ -131,11 +141,54 @@ class LivePreviewCanvas(QWidget):
             self._overlay_badge = text
             self.update()
 
-    def set_pixmap(self, pixmap: Optional[QPixmap], *, reset_view: bool = False) -> None:
+    def set_split_compare(self, enabled: bool) -> None:
+        flag = bool(enabled)
+        if flag != self._split_compare:
+            self._split_compare = flag
+            self._dragging_split = False
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
+            self.update()
+
+    def is_split_compare(self) -> bool:
+        return self._split_compare
+
+    def split_position(self) -> float:
+        return self._split_pos
+
+    def set_split_position(self, pos: float) -> None:
+        clamped = max(0.02, min(0.98, float(pos)))
+        if abs(clamped - self._split_pos) > 1e-6:
+            self._split_pos = clamped
+            self.splitPositionChanged.emit(self._split_pos)
+            self.update()
+
+    def set_source_pixmap(
+        self,
+        pixmap: Optional[QPixmap],
+        *,
+        left_label: str = "",
+        right_label: str = "",
+    ) -> None:
+        self._source_pixmap = pixmap
+        self._split_left_label = left_label or ""
+        self._split_right_label = right_label or ""
+        if self._split_compare:
+            self.update()
+
+    def set_pixmap(
+        self,
+        pixmap: Optional[QPixmap],
+        *,
+        reset_view: bool = False,
+        logical_size: Optional[tuple[int, int]] = None,
+    ) -> None:
         prev_size = self._image_size
         self._pixmap = pixmap
         if pixmap is not None and not pixmap.isNull():
-            self._image_size = (pixmap.width(), pixmap.height())
+            if logical_size is not None and logical_size[0] > 0 and logical_size[1] > 0:
+                self._image_size = (int(logical_size[0]), int(logical_size[1]))
+            else:
+                self._image_size = (pixmap.width(), pixmap.height())
             if reset_view or prev_size == (0, 0):
                 self._is_fit = True
                 self._pan = QPointF(0.0, 0.0)
@@ -199,20 +252,50 @@ class LivePreviewCanvas(QWidget):
         cy = self.height() * 0.5 + self._pan.y()
         return QRectF(cx - draw_w * 0.5, cy - draw_h * 0.5, draw_w, draw_h)
 
+    def image_point_at(self, widget_pos: QPointF) -> QPointF:
+        """Map a widget coordinate to logical image pixel coordinates (used for zoom-to-cursor)."""
+        rect = self._image_rect()
+        if rect.width() <= 0 or rect.height() <= 0:
+            return QPointF(0.0, 0.0)
+        ix = (widget_pos.x() - rect.left()) / self._zoom
+        iy = (widget_pos.y() - rect.top()) / self._zoom
+        return QPointF(ix, iy)
+
+    def _split_line_x(self, target: QRectF) -> float:
+        return target.left() + self._split_pos * target.width()
+
+    def _hits_split_divider(self, pos: QPointF) -> bool:
+        if not (self._split_compare and self.has_image() and self._source_pixmap is not None):
+            return False
+        target = self._image_rect()
+        if target.width() <= 0 or target.height() <= 0:
+            return False
+        sx = self._split_line_x(target)
+        return (
+            abs(pos.x() - sx) <= self._SPLIT_HIT_PX
+            and (target.top() - 8.0) <= pos.y() <= (target.bottom() + 8.0)
+        )
+
     def wheelEvent(self, event: QWheelEvent) -> None:  # noqa: N802
         if not self.has_image():
             event.ignore()
             return
         delta = event.angleDelta().y()
         if delta == 0:
-            event.ignore()
-            return
-        factor = 1.15 ** (delta / 120.0)
+            pixel_dy = event.pixelDelta().y()
+            if pixel_dy == 0:
+                event.ignore()
+                return
+            steps = pixel_dy / 48.0
+        else:
+            steps = delta / 120.0
+        factor = 1.15 ** steps
         old_zoom = self._zoom
         new_zoom = max(0.1, min(12.0, old_zoom * factor))
         if abs(new_zoom - old_zoom) < 1e-6:
             event.accept()
             return
+        # Smooth cursor-anchored zoom: keep the exact image pixel under `cursor` stationary.
         cursor = event.position()
         center = QPointF(self.width() * 0.5, self.height() * 0.5)
         img_offset = cursor - center - self._pan
@@ -226,6 +309,11 @@ class LivePreviewCanvas(QWidget):
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton and self.has_image():
+            if self._hits_split_divider(event.position()):
+                self._dragging_split = True
+                self.setCursor(Qt.CursorShape.SplitHCursor)
+                event.accept()
+                return
             self._drag_origin = event.position()
             self._drag_start_pan = QPointF(self._pan)
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
@@ -234,6 +322,13 @@ class LivePreviewCanvas(QWidget):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if self._dragging_split and self.has_image():
+            target = self._image_rect()
+            if target.width() > 1.0:
+                ratio = (event.position().x() - target.left()) / target.width()
+                self.set_split_position(ratio)
+            event.accept()
+            return
         if self._drag_origin is not None:
             delta = event.position() - self._drag_origin
             self._pan = self._drag_start_pan + delta
@@ -242,9 +337,21 @@ class LivePreviewCanvas(QWidget):
             self.update()
             event.accept()
             return
+        if self._hits_split_divider(event.position()):
+            self.setCursor(Qt.CursorShape.SplitHCursor)
+        elif self.has_image():
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton and self._dragging_split:
+            self._dragging_split = False
+            if self._hits_split_divider(event.position()):
+                self.setCursor(Qt.CursorShape.SplitHCursor)
+            else:
+                self.setCursor(Qt.CursorShape.OpenHandCursor)
+            event.accept()
+            return
         if event.button() == Qt.MouseButton.LeftButton and self._drag_origin is not None:
             self._drag_origin = None
             self.setCursor(Qt.CursorShape.OpenHandCursor)
@@ -254,6 +361,10 @@ class LivePreviewCanvas(QWidget):
 
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton and self.has_image():
+            if self._hits_split_divider(event.position()):
+                self.set_split_position(0.5)
+                event.accept()
+                return
             self.fit_to_window()
             event.accept()
             return
@@ -264,10 +375,38 @@ class LivePreviewCanvas(QWidget):
         if self._is_fit and self.has_image():
             self._recompute_fit_zoom()
 
+    def _draw_pill_label(self, painter: QPainter, text: str, x: float, y: float, bg: QColor, fg: QColor) -> None:
+        if not text:
+            return
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        font = painter.font()
+        font.setPointSize(FONT["caption"] + 1)
+        font.setWeight(QFont.Weight.DemiBold)
+        painter.setFont(font)
+        fm = painter.fontMetrics()
+        pill_w = fm.horizontalAdvance(text) + 18
+        pill_h = max(22, fm.height() + 6)
+        pill = QRectF(x, y, pill_w, pill_h)
+        path = QPainterPath()
+        path.addRoundedRect(pill, pill_h * 0.5, pill_h * 0.5)
+        painter.fillPath(path, bg)
+        painter.setPen(fg)
+        painter.drawText(pill, Qt.AlignmentFlag.AlignCenter, text)
+        painter.restore()
+
     def paintEvent(self, _event) -> None:  # noqa: N802
         painter = QPainter(self)
         t = palette(self._theme)
         painter.fillRect(self.rect(), QColor(t["canvas"]))
+
+        split_active = (
+            self._split_compare
+            and self.has_image()
+            and self._pixmap is not None
+            and self._source_pixmap is not None
+            and not self._source_pixmap.isNull()
+        )
 
         if self.has_image() and self._pixmap is not None:
             # Smooth interpolation when fitting/downscaling; crisp pixels at high zoom.
@@ -275,12 +414,89 @@ class LivePreviewCanvas(QWidget):
                 QPainter.RenderHint.SmoothPixmapTransform, self._zoom < 3.0
             )
             target = self._image_rect()
-            # Subtle hairline frame around the image so dark/light photos stay grounded.
             frame_rect = target.adjusted(-0.5, -0.5, 0.5, 0.5)
-            painter.drawPixmap(target, self._pixmap, QRectF(self._pixmap.rect()))
-            painter.setPen(QPen(_qcolor_with_alpha(t["borderStrong"], 110), 1.0))
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRect(frame_rect)
+
+            if split_active and self._source_pixmap is not None:
+                split_x = self._split_line_x(target)
+                # Left side: live fused color preview
+                painter.save()
+                painter.setClipRect(QRectF(target.left(), target.top(), max(0.0, split_x - target.left()), target.height()))
+                painter.drawPixmap(target, self._pixmap, QRectF(self._pixmap.rect()))
+                painter.restore()
+
+                # Right side: selected source slice aligned pixel-for-pixel
+                painter.save()
+                painter.setClipRect(QRectF(split_x, target.top(), max(0.0, target.right() - split_x), target.height()))
+                painter.drawPixmap(target, self._source_pixmap, QRectF(self._source_pixmap.rect()))
+                painter.restore()
+
+                # Hairline frame around image
+                painter.setPen(QPen(_qcolor_with_alpha(t["borderStrong"], 110), 1.0))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawRect(frame_rect)
+
+                # Vertical curtain divider + centered circular drag handle
+                painter.save()
+                painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+                top_y = max(0.0, target.top())
+                bot_y = min(float(self.height()), target.bottom())
+                painter.setPen(QPen(QColor(0, 0, 0, 120), 3.2))
+                painter.drawLine(QPointF(split_x, top_y), QPointF(split_x, bot_y))
+                painter.setPen(QPen(QColor(255, 255, 255, 240), 1.6))
+                painter.drawLine(QPointF(split_x, top_y), QPointF(split_x, bot_y))
+
+                cy = (top_y + bot_y) * 0.5
+                knob_r = 13.0
+                painter.setPen(QPen(QColor(t["accent"]), 1.8))
+                painter.setBrush(_qcolor_with_alpha(t["surface"], 238))
+                painter.drawEllipse(QPointF(split_x, cy), knob_r, knob_r)
+                # Crisp left/right chevron triangles inside knob
+                arrow_col = QColor(t["text"])
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(arrow_col)
+                left_tri = QPainterPath()
+                left_tri.moveTo(split_x - 7.5, cy)
+                left_tri.lineTo(split_x - 3.0, cy - 3.8)
+                left_tri.lineTo(split_x - 3.0, cy + 3.8)
+                left_tri.closeSubpath()
+                right_tri = QPainterPath()
+                right_tri.moveTo(split_x + 7.5, cy)
+                right_tri.lineTo(split_x + 3.0, cy - 3.8)
+                right_tri.lineTo(split_x + 3.0, cy + 3.8)
+                right_tri.closeSubpath()
+                painter.drawPath(left_tri)
+                painter.drawPath(right_tri)
+                painter.restore()
+
+                # Corner labels for left (Fused) & right (Source #i / n)
+                if self._split_left_label:
+                    self._draw_pill_label(
+                        painter,
+                        self._split_left_label,
+                        12.0,
+                        12.0,
+                        _qcolor_with_alpha(t["accent"], 225),
+                        QColor(t["textOnAccent"]),
+                    )
+                if self._split_right_label:
+                    font = painter.font()
+                    font.setPointSize(FONT["caption"] + 1)
+                    font.setWeight(QFont.Weight.DemiBold)
+                    painter.setFont(font)
+                    rw = painter.fontMetrics().horizontalAdvance(self._split_right_label) + 18
+                    self._draw_pill_label(
+                        painter,
+                        self._split_right_label,
+                        max(12.0, self.width() - rw - 12.0),
+                        12.0,
+                        _qcolor_with_alpha(t["surface"], 225),
+                        QColor(t["text"]),
+                    )
+            else:
+                painter.drawPixmap(target, self._pixmap, QRectF(self._pixmap.rect()))
+                painter.setPen(QPen(_qcolor_with_alpha(t["borderStrong"], 110), 1.0))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawRect(frame_rect)
         elif self._placeholder_text:
             painter.setPen(QColor(t["canvasText"]))
             painter.drawText(
@@ -289,23 +505,21 @@ class LivePreviewCanvas(QWidget):
                 self._placeholder_text,
             )
 
-        # Floating top-right pill badge when viewing/peeking a source slice.
-        if self._overlay_badge:
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        # Floating top-right pill badge when viewing/peeking a source slice (non-split mode).
+        if self._overlay_badge and not split_active:
             font = painter.font()
             font.setPointSize(FONT["caption"] + 1)
             font.setWeight(QFont.Weight.DemiBold)
             painter.setFont(font)
-            fm = painter.fontMetrics()
-            text_w = fm.horizontalAdvance(self._overlay_badge)
-            pill_w = text_w + 20
-            pill_h = max(24, fm.height() + 8)
-            pill = QRectF(self.width() - pill_w - 12, 12, pill_w, pill_h)
-            path = QPainterPath()
-            path.addRoundedRect(pill, pill_h * 0.5, pill_h * 0.5)
-            painter.fillPath(path, _qcolor_with_alpha(t["accent"], 230))
-            painter.setPen(QColor(t["textOnAccent"]))
-            painter.drawText(pill, Qt.AlignmentFlag.AlignCenter, self._overlay_badge)
+            pill_w = painter.fontMetrics().horizontalAdvance(self._overlay_badge) + 20
+            self._draw_pill_label(
+                painter,
+                self._overlay_badge,
+                self.width() - pill_w - 12.0,
+                12.0,
+                _qcolor_with_alpha(t["accent"], 230),
+                QColor(t["textOnAccent"]),
+            )
 
         # Subtle outer hairline border separating canvas from surrounding chrome.
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
@@ -509,6 +723,8 @@ class SubstackRangeSlider(QWidget):
     """Crisp dual-handle range slider aligned with DepthHistogramWidget."""
 
     rangeChanged = pyqtSignal(int, int)  # (start_idx, end_idx) inclusive 0-based
+    dragStarted = pyqtSignal()
+    dragFinished = pyqtSignal()
 
     _PAD_X = 10
     _HANDLE_R = 7
@@ -589,6 +805,7 @@ class SubstackRangeSlider(QWidget):
         if event.button() == Qt.MouseButton.LeftButton and self.isEnabled():
             x = event.position().x()
             self._active_handle = self._pick_handle(x)
+            self.dragStarted.emit()
             self._drag_to(x)
             event.accept()
             return
@@ -619,6 +836,7 @@ class SubstackRangeSlider(QWidget):
         if event.button() == Qt.MouseButton.LeftButton and self._active_handle is not None:
             self._active_handle = None
             self.update()
+            self.dragFinished.emit()
             event.accept()
             return
         super().mouseReleaseEvent(event)
@@ -772,8 +990,8 @@ class _LivePreviewWorker(QThread):
 
     prepareProgress = pyqtSignal(int, int, str)  # (done, total, stage)
     prepareReady = pyqtSignal(int, int, int)     # (gen, width, height)
-    frameReady = pyqtSignal(int, object, object, float, int, int, str)
-    # (request_id, bgr_image, depth_histogram, elapsed_ms, width, height, method)
+    frameReady = pyqtSignal(int, object, object, float, int, int, str, bool)
+    # (request_id, bgr_image, depth_histogram, elapsed_ms, width, height, method, is_draft)
     failed = pyqtSignal(str)
 
     def __init__(
@@ -789,7 +1007,7 @@ class _LivePreviewWorker(QThread):
         self._cancel_prepare = threading.Event()
         self._cancel_render = threading.Event()
         self._pending_prepare: Optional[tuple[int, str]] = None
-        self._pending_render: Optional[tuple[int, str, dict, Optional[tuple[int, int]]]] = None
+        self._pending_render: Optional[tuple[int, str, dict, Optional[tuple[int, int]], bool]] = None
         self._session_lock = threading.Lock()
         self._session: Any = None
         self._session_size_key: Optional[str] = None
@@ -809,6 +1027,8 @@ class _LivePreviewWorker(QThread):
         method: str,
         params: Mapping[str, Any],
         substack_range: Optional[tuple[int, int]] = None,
+        *,
+        draft: bool = False,
     ) -> None:
         """Latest-wins slot: overwrites any unstarted older slider/method request."""
         with self._cond:
@@ -817,6 +1037,7 @@ class _LivePreviewWorker(QThread):
                 str(method),
                 dict(params),
                 tuple(substack_range) if substack_range is not None else None,
+                bool(draft),
             )
             self._cond.notify_all()
 
@@ -945,6 +1166,7 @@ class _LivePreviewWorker(QThread):
         method: str,
         params: dict,
         substack_range: Optional[tuple[int, int]],
+        draft: bool = False,
     ) -> None:
         with self._session_lock:
             session = self._session
@@ -957,16 +1179,17 @@ class _LivePreviewWorker(QThread):
                 method=method,
                 params=params,
                 substack_range=substack_range,
+                draft=draft,
                 should_cancel=lambda: self._stop_flag or self._cancel_prepare.is_set(),
             )
             if self._stop_flag or self._cancel_prepare.is_set() or result is None:
                 return
             elapsed_ms = (time.perf_counter() - t0) * 1000.0
-            bgr, hist, res_ms = _unpack_render_result(result, elapsed_ms)
+            bgr, hist, res_ms, is_draft = _unpack_render_result(result, elapsed_ms, fallback_draft=draft)
             if bgr is None:
                 return
             h, w = bgr.shape[:2]
-            self.frameReady.emit(request_id, bgr, hist, res_ms, w, h, method)
+            self.frameReady.emit(request_id, bgr, hist, res_ms, w, h, method, is_draft)
         except Exception as exc:
             if not self._stop_flag and not self._cancel_prepare.is_set():
                 msg = str(exc)
@@ -1019,7 +1242,7 @@ def _session_get_source_frame(session, index: int, *, aligned: bool = True) -> O
     return None
 
 
-def _session_render(session, *, method: str, params: dict, substack_range, should_cancel):
+def _session_render(session, *, method: str, params: dict, substack_range, draft: bool = False, should_cancel=None):
     render_fn = getattr(session, "render", None)
     if not callable(render_fn):
         raise RuntimeError("LivePreviewSession has no render() method")
@@ -1031,6 +1254,7 @@ def _session_render(session, *, method: str, params: dict, substack_range, shoul
             smoothing=float(params.get("smoothing", 4.0)),
             feather=int(params.get("feather", 3)),
             substack_range=substack_range,
+            draft=bool(draft),
         )
         try:
             return render_fn(req, cancel_check=should_cancel)
@@ -1040,18 +1264,30 @@ def _session_render(session, *, method: str, params: dict, substack_range, shoul
             except TypeError:
                 return render_fn(req)
     except (ImportError, TypeError):
-        return render_fn(
-            method=method,
-            radius=int(params.get("radius", 8)),
-            smoothing=float(params.get("smoothing", 4.0)),
-            feather=int(params.get("feather", 3)),
-            substack_range=substack_range,
-        )
+        try:
+            return render_fn(
+                method=method,
+                radius=int(params.get("radius", 8)),
+                smoothing=float(params.get("smoothing", 4.0)),
+                feather=int(params.get("feather", 3)),
+                substack_range=substack_range,
+                draft=bool(draft),
+            )
+        except TypeError:
+            return render_fn(
+                method=method,
+                radius=int(params.get("radius", 8)),
+                smoothing=float(params.get("smoothing", 4.0)),
+                feather=int(params.get("feather", 3)),
+                substack_range=substack_range,
+            )
 
 
-def _unpack_render_result(result, fallback_ms: float) -> tuple[Optional[np.ndarray], Optional[np.ndarray], float]:
+def _unpack_render_result(
+    result, fallback_ms: float, *, fallback_draft: bool = False
+) -> tuple[Optional[np.ndarray], Optional[np.ndarray], float, bool]:
     if isinstance(result, np.ndarray):
-        return result, None, fallback_ms
+        return result, None, fallback_ms, bool(fallback_draft)
     image = getattr(result, "image_bgr", None)
     if image is None:
         image = getattr(result, "image", None)
@@ -1060,7 +1296,8 @@ def _unpack_render_result(result, fallback_ms: float) -> tuple[Optional[np.ndarr
     hist = getattr(result, "depth_histogram", None)
     elapsed = getattr(result, "elapsed_ms", None)
     ms = float(elapsed) if elapsed is not None else fallback_ms
-    return image, hist, ms
+    is_draft = bool(getattr(result, "is_draft", fallback_draft))
+    return image, hist, ms, is_draft
 
 
 class LivePreviewDialog(QDialog):
@@ -1127,16 +1364,26 @@ class LivePreviewDialog(QDialog):
         self._preview_size = "medium"
         self._view_mode = "fused"  # "fused" | "source"
         self._peeking_source = False
+        self._split_compare = False
         self._show_aligned_source = True
         self._browse_index = self._substack_range[0]
         self._fused_pixmap: Optional[QPixmap] = None
         self._last_elapsed_ms: float = 0.0
         self._last_resolution: tuple[int, int] = (0, 0)
+        self._proxy_logical_size: tuple[int, int] = (0, 0)
+        self._last_is_draft: bool = False
+        self._is_dragging: bool = False
         self._last_histogram: Optional[np.ndarray] = None
         self._prepare_gen: int = 0
         self._request_seq: int = 0
         self._session_ready: bool = False
         self._closing: bool = False
+
+        # Short settle timer triggers a crisp 100% full-proxy refine if the user pauses mid-drag.
+        self._refine_timer = QTimer(self)
+        self._refine_timer.setSingleShot(True)
+        self._refine_timer.setInterval(140)
+        self._refine_timer.timeout.connect(self._on_refine_timeout)
 
         self.setObjectName("livePreviewDialog")
         self.setWindowTitle(trans.t("live_preview_title"))
@@ -1283,11 +1530,21 @@ class LivePreviewDialog(QDialog):
         self.btn_zoom_100.clicked.connect(self.canvas.set_actual_size)
         bottom_left.addWidget(self.btn_zoom_100)
 
+        self.btn_split_compare = QPushButton(trans.t("live_preview_split_compare"))
+        self.btn_split_compare.setCheckable(True)
+        self.btn_split_compare.setChecked(False)
+        self.btn_split_compare.setObjectName("livePreviewModeBtn")
+        self.btn_split_compare.setProperty("controlId", "live_preview_split_compare")
+        self.btn_split_compare.setToolTip(trans.t("live_preview_split_compare_hint"))
+        self.btn_split_compare.toggled.connect(self._on_split_compare_toggled)
+        bottom_left.addWidget(self.btn_split_compare)
+
         bottom_left.addStretch(1)
 
         self.lbl_perf_badge = QLabel("")
         self.lbl_perf_badge.setObjectName("livePreviewBadge")
         self.lbl_perf_badge.setProperty("controlId", "live_preview_perf_badge")
+        self.lbl_perf_badge.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         bottom_left.addWidget(self.lbl_perf_badge)
 
         left_col.addLayout(bottom_left)
@@ -1335,6 +1592,8 @@ class LivePreviewDialog(QDialog):
         )
         self.row_radius.setProperty("controlId", "live_preview_radius")
         self.row_radius.valueChanged.connect(lambda v: self._on_param_changed("radius", v))
+        self.row_radius.slider.sliderPressed.connect(self._on_slider_drag_started)
+        self.row_radius.slider.sliderReleased.connect(self._on_slider_drag_finished)
         params_lay.addWidget(self.row_radius)
 
         self.row_smoothing = _ParamSliderRow(
@@ -1346,6 +1605,8 @@ class LivePreviewDialog(QDialog):
         )
         self.row_smoothing.setProperty("controlId", "live_preview_smoothing")
         self.row_smoothing.valueChanged.connect(lambda v: self._on_param_changed("smoothing", float(v)))
+        self.row_smoothing.slider.sliderPressed.connect(self._on_slider_drag_started)
+        self.row_smoothing.slider.sliderReleased.connect(self._on_slider_drag_finished)
         params_lay.addWidget(self.row_smoothing)
 
         self.row_feather = _ParamSliderRow(
@@ -1357,6 +1618,8 @@ class LivePreviewDialog(QDialog):
         )
         self.row_feather.setProperty("controlId", "live_preview_feather")
         self.row_feather.valueChanged.connect(lambda v: self._on_param_changed("feather", v))
+        self.row_feather.slider.sliderPressed.connect(self._on_slider_drag_started)
+        self.row_feather.slider.sliderReleased.connect(self._on_slider_drag_finished)
         params_lay.addWidget(self.row_feather)
 
         side_lay.addWidget(params_card)
@@ -1414,7 +1677,7 @@ class LivePreviewDialog(QDialog):
         opt_row.addStretch(1)
         stack_lay.addLayout(opt_row)
 
-        self.lbl_peek_hint = QLabel(trans.t("live_preview_peek_hint"), stack_card)
+        self.lbl_peek_hint = QLabel(trans.t("live_preview_shortcuts_hint"), stack_card)
         self.lbl_peek_hint.setObjectName("mutedLabel")
         self.lbl_peek_hint.setWordWrap(True)
         stack_lay.addWidget(self.lbl_peek_hint)
@@ -1434,6 +1697,8 @@ class LivePreviewDialog(QDialog):
         self.substack_slider.set_bounds(0, max(0, self._frame_count - 1), min_span=1 if self._frame_count >= 2 else 0)
         self.substack_slider.set_range(*self._substack_range, emit=False)
         self.substack_slider.rangeChanged.connect(self._on_substack_range_changed)
+        self.substack_slider.dragStarted.connect(self._on_slider_drag_started)
+        self.substack_slider.dragFinished.connect(self._on_slider_drag_finished)
         hist_lay.addWidget(self.substack_slider)
 
         substack_row = QHBoxLayout()
@@ -1560,6 +1825,8 @@ class LivePreviewDialog(QDialog):
         self.btn_zoom_fit.setText(trans.t("live_preview_zoom_fit"))
         self.btn_zoom_fit.setToolTip(trans.t("live_preview_fit_hint"))
         self.btn_zoom_100.setText(trans.t("live_preview_zoom_100"))
+        self.btn_split_compare.setText(trans.t("live_preview_split_compare"))
+        self.btn_split_compare.setToolTip(trans.t("live_preview_split_compare_hint"))
         self.canvas.setToolTip(trans.t("live_preview_fit_hint"))
         self.lbl_method_title.setText(trans.t("live_preview_section_method"))
         for mid, label_key, _short in LIVE_PREVIEW_METHODS:
@@ -1572,7 +1839,7 @@ class LivePreviewDialog(QDialog):
         self.btn_view_fused.setText(trans.t("live_preview_view_fused"))
         self.chk_show_aligned.setText(trans.t("live_preview_show_aligned"))
         self.chk_show_aligned.setToolTip(trans.t("live_preview_show_aligned_hint"))
-        self.lbl_peek_hint.setText(trans.t("live_preview_peek_hint"))
+        self.lbl_peek_hint.setText(trans.t("live_preview_shortcuts_hint"))
         self.lbl_hist_title.setText(trans.t("live_preview_section_histogram"))
         self.histogram_widget.set_empty_text(trans.t("live_preview_no_histogram"))
         self.lbl_substack_caption.setText(trans.t("live_preview_substack_label"))
@@ -1665,13 +1932,16 @@ class LivePreviewDialog(QDialog):
 
     def _update_perf_badge(self) -> None:
         short = _METHOD_SHORT_NAMES.get(self._method, self._method)
-        w, h = self._last_resolution
+        w, h = self._proxy_logical_size if self._proxy_logical_size[0] > 0 else self._last_resolution
         if w > 0 and h > 0:
+            draft_suffix = f" · {trans.t('live_preview_draft_tag')}" if self._last_is_draft else ""
             self.lbl_perf_badge.setText(
-                f"{short} · {self._last_elapsed_ms:.0f} ms · {w}×{h}"
+                f"{short} · {self._last_elapsed_ms:.0f} ms · {w}×{h}{draft_suffix}"
             )
         else:
             self.lbl_perf_badge.setText(short)
+        self.lbl_perf_badge.adjustSize()
+        self.lbl_perf_badge.updateGeometry()
 
     def _position_loading_overlay(self) -> None:
         if not self.loading_overlay.isVisible():
@@ -1705,7 +1975,7 @@ class LivePreviewDialog(QDialog):
         self._position_loading_overlay()
         self._worker.request_prepare(self._prepare_gen, size_key)
 
-    def _submit_render(self) -> None:
+    def _submit_render(self, *, draft: bool = False) -> None:
         if not self._session_ready or self._closing:
             return
         self._request_seq += 1
@@ -1715,7 +1985,24 @@ class LivePreviewDialog(QDialog):
             self._method,
             params,
             self._substack_range,
+            draft=bool(draft),
         )
+
+    def _on_slider_drag_started(self) -> None:
+        self._is_dragging = True
+        self._refine_timer.stop()
+
+    def _on_slider_drag_finished(self) -> None:
+        was_dragging = self._is_dragging
+        self._is_dragging = False
+        self._refine_timer.stop()
+        if was_dragging and self._session_ready and not self._closing:
+            # Immediately refine to crisp 100% proxy resolution on mouse release.
+            self._submit_render(draft=False)
+
+    def _on_refine_timeout(self) -> None:
+        if self._session_ready and not self._closing:
+            self._submit_render(draft=False)
 
     def _on_prepare_progress(self, done: int, total: int, stage: str) -> None:
         if self._closing:
@@ -1731,9 +2018,13 @@ class LivePreviewDialog(QDialog):
             return
         self._session_ready = True
         self._last_resolution = (width, height)
+        self._proxy_logical_size = (width, height)
+        self._last_is_draft = False
         self.loading_overlay.hide()
         self._update_perf_badge()
-        self._submit_render()
+        if self._split_compare:
+            self._refresh_split_source_pixmap()
+        self._submit_render(draft=False)
 
     def _on_frame_ready(
         self,
@@ -1744,6 +2035,7 @@ class LivePreviewDialog(QDialog):
         width: int,
         height: int,
         method: str,
+        is_draft: bool = False,
     ) -> None:
         if self._closing or request_id < self._request_seq:
             # Drop stale frames if a newer request already superseded this one.
@@ -1751,13 +2043,17 @@ class LivePreviewDialog(QDialog):
         self._fused_pixmap = cv2_to_pixmap(bgr_image)
         self._last_elapsed_ms = float(elapsed_ms)
         self._last_resolution = (int(width), int(height))
+        self._last_is_draft = bool(is_draft)
+        if not is_draft and width > 0 and height > 0:
+            self._proxy_logical_size = (int(width), int(height))
         if histogram is not None:
             self._last_histogram = np.asarray(histogram, dtype=np.float32)
             self.histogram_widget.set_histogram(self._last_histogram)
         self._update_perf_badge()
         if self._view_mode == "fused" and not self._peeking_source:
             self.canvas.set_overlay_badge("")
-            self.canvas.set_pixmap(self._fused_pixmap)
+            logical = self._proxy_logical_size if self._proxy_logical_size[0] > 0 else None
+            self.canvas.set_pixmap(self._fused_pixmap, logical_size=logical)
 
     def _on_worker_failed(self, message: str) -> None:
         if self._closing:
@@ -1780,16 +2076,21 @@ class LivePreviewDialog(QDialog):
         else:
             self.btn_zoom_fit.setText(f"{int(round(zoom * 100))}%")
 
-    def _on_method_radio_clicked(self, button: QRadioButton) -> None:
-        method_id = button.property("method_id")
-        if not method_id or method_id == self._method:
+    def _select_method(self, method_id: str) -> None:
+        if not method_id or method_id == self._method or method_id not in _METHOD_SHORT_NAMES:
             return
         self._method = str(method_id)
         self._sync_controls_to_state()
         self._view_mode = "fused"
+        self._refine_timer.stop()
         self._update_stack_browser_ui()
         self._update_perf_badge()
-        self._submit_render()
+        self._submit_render(draft=False)
+
+    def _on_method_radio_clicked(self, button: QRadioButton) -> None:
+        method_id = button.property("method_id")
+        if method_id:
+            self._select_method(str(method_id))
 
     def _on_param_changed(self, key: str, value: Any) -> None:
         params = self._method_params[self._method]
@@ -1800,7 +2101,12 @@ class LivePreviewDialog(QDialog):
         if self._view_mode != "fused":
             self._view_mode = "fused"
             self._update_stack_browser_ui()
-        self._submit_render()
+        if self._is_dragging:
+            self._submit_render(draft=True)
+            self._refine_timer.start()
+        else:
+            self._refine_timer.stop()
+            self._submit_render(draft=False)
 
     def _unaligned_source_frame(self, index: int) -> Optional[np.ndarray]:
         """Decode/downscale one unaligned proxy frame on demand without extra stack RAM."""
@@ -1810,25 +2116,63 @@ class LivePreviewDialog(QDialog):
         if self._unaligned_cache[0] == cache_key and self._unaligned_cache[1] is not None:
             return self._unaligned_cache[1]
         try:
-            from core.live_preview import PREVIEW_SIZES, _load_proxy_frame
+            from core.live_preview import PREVIEW_SIZES, _load_single_proxy
             target_edge = PREVIEW_SIZES.get(self._preview_size, 720)
-            frame, _shape = _load_proxy_frame(self._images[index], target_edge)
+            frame, _shape = _load_single_proxy(self._images[index], target_edge)
             self._unaligned_cache = (cache_key, frame)
             return frame
         except Exception:
             return None
+
+    def _get_source_pixmap(self, index: int) -> Optional[QPixmap]:
+        if not self._session_ready or self._frame_count == 0:
+            return None
+        idx = max(0, min(int(index), self._frame_count - 1))
+        frame = self._worker.get_source_frame(idx, aligned=self._show_aligned_source)
+        if frame is None and not self._show_aligned_source:
+            frame = self._unaligned_source_frame(idx)
+        return cv2_to_pixmap(frame) if frame is not None else None
+
+    def _refresh_split_source_pixmap(self) -> None:
+        if not self._session_ready or self._frame_count == 0:
+            return
+        idx = max(0, min(self._browse_index, self._frame_count - 1))
+        pix = self._get_source_pixmap(idx)
+        left_lbl = trans.t("live_preview_split_fused_label")
+        right_lbl = trans.t("live_preview_peek_badge").format(i=idx + 1, n=self._frame_count)
+        self.canvas.set_source_pixmap(pix, left_label=left_lbl, right_label=right_lbl)
+
+    def _on_split_compare_toggled(self, checked: bool) -> None:
+        self._split_compare = bool(checked)
+        if self._split_compare:
+            self._view_mode = "fused"
+            self._peeking_source = False
+            self.canvas.set_overlay_badge("")
+            if self._fused_pixmap is not None:
+                logical = self._proxy_logical_size if self._proxy_logical_size[0] > 0 else None
+                self.canvas.set_pixmap(self._fused_pixmap, logical_size=logical)
+            self._refresh_split_source_pixmap()
+            self.canvas.set_split_compare(True)
+        else:
+            self.canvas.set_split_compare(False)
+        self._update_stack_browser_ui()
 
     def _show_source_slice(self, index: int, *, temporary_peek: bool = False) -> None:
         if not self._session_ready or self._frame_count == 0:
             return
         idx = max(0, min(int(index), self._frame_count - 1))
         self._browse_index = idx
-        frame = self._worker.get_source_frame(idx, aligned=self._show_aligned_source)
-        if frame is None and not self._show_aligned_source:
-            frame = self._unaligned_source_frame(idx)
-        if frame is not None:
-            pix = cv2_to_pixmap(frame)
-            self.canvas.set_pixmap(pix)
+        if self._split_compare and not temporary_peek:
+            # In split-compare mode, scrubbing source slices updates the right half live!
+            self._refresh_split_source_pixmap()
+            self._update_stack_browser_ui()
+            return
+        pix = self._get_source_pixmap(idx)
+        if pix is not None:
+            if temporary_peek and self._split_compare:
+                self.canvas.set_split_compare(False)
+            logical = self._proxy_logical_size if self._proxy_logical_size[0] > 0 else None
+            self.canvas.set_pixmap(pix, logical_size=logical)
         badge = trans.t("live_preview_peek_badge").format(i=idx + 1, n=self._frame_count)
         self.canvas.set_overlay_badge(badge)
         if not temporary_peek:
@@ -1839,8 +2183,12 @@ class LivePreviewDialog(QDialog):
         self._view_mode = "fused"
         self._peeking_source = False
         self.canvas.set_overlay_badge("")
+        if self._split_compare:
+            self.canvas.set_split_compare(True)
+            self._refresh_split_source_pixmap()
         if self._fused_pixmap is not None:
-            self.canvas.set_pixmap(self._fused_pixmap)
+            logical = self._proxy_logical_size if self._proxy_logical_size[0] > 0 else None
+            self.canvas.set_pixmap(self._fused_pixmap, logical_size=logical)
         self._update_stack_browser_ui()
 
     def _on_stack_slider_changed(self, value: int) -> None:
@@ -1849,11 +2197,16 @@ class LivePreviewDialog(QDialog):
 
     def _step_source_slice(self, delta: int) -> None:
         target = max(0, min(self._frame_count - 1, self._browse_index + delta))
+        if target == self._browse_index and self._session_ready:
+            self._show_source_slice(target)
+            return
         self.stack_slider.setValue(target)
 
     def _on_show_aligned_toggled(self, checked: bool) -> None:
         self._show_aligned_source = bool(checked)
-        if self._view_mode == "source" or self._peeking_source:
+        if self._split_compare and not self._peeking_source:
+            self._refresh_split_source_pixmap()
+        elif self._view_mode == "source" or self._peeking_source:
             self._show_source_slice(self._browse_index, temporary_peek=self._peeking_source)
 
     def _on_histogram_slice_clicked(self, index: int) -> None:
@@ -1873,10 +2226,17 @@ class LivePreviewDialog(QDialog):
             self._browse_index = end_idx
         self._update_substack_ui()
         self._update_stack_browser_ui()
+        if self._split_compare:
+            self._refresh_split_source_pixmap()
         if self._view_mode != "fused":
             self._view_mode = "fused"
             self._update_stack_browser_ui()
-        self._submit_render()
+        if self._is_dragging:
+            self._submit_render(draft=True)
+            self._refine_timer.start()
+        else:
+            self._refine_timer.stop()
+            self._submit_render(draft=False)
 
     def _reset_substack_range(self) -> None:
         full = (0, max(0, self._frame_count - 1))
@@ -1884,29 +2244,61 @@ class LivePreviewDialog(QDialog):
             self._substack_range = full
             self._substack_modified = True
             self._update_substack_ui()
-            self._submit_render()
+            self._submit_render(draft=False)
 
     # ------------------------------------------------------------------
-    # Hold Space to Peek Source Slice
+    # Keyboard Shortcuts (A/B/C, ←/→, 0/1, Space peek, Esc close)
     # ------------------------------------------------------------------
 
     def eventFilter(self, obj, event) -> bool:  # noqa: N802
         if obj is self and event.type() in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease):
-            if event.key() == Qt.Key.Key_Space and not event.isAutoRepeat():
-                focus = self.focusWidget()
-                from PyQt6.QtWidgets import QAbstractSpinBox, QLineEdit
-                if not isinstance(focus, (QLineEdit, QAbstractSpinBox)):
-                    if event.type() == QEvent.Type.KeyPress:
-                        if not self._peeking_source and self._session_ready:
-                            self._peeking_source = True
-                            self._show_source_slice(self._browse_index, temporary_peek=True)
-                        return True
-                    else:
-                        if self._peeking_source:
-                            self._peeking_source = False
-                            if self._view_mode == "fused":
-                                self._switch_to_fused_view()
-                        return True
+            key = event.key()
+            mods = event.modifiers()
+            if key == Qt.Key.Key_Escape and event.type() == QEvent.Type.KeyPress:
+                self.close()
+                return True
+
+            focus = self.focusWidget()
+            from PyQt6.QtWidgets import QAbstractSpinBox, QLineEdit
+            if isinstance(focus, (QLineEdit, QAbstractSpinBox)):
+                return super().eventFilter(obj, event)
+
+            if key == Qt.Key.Key_Space and not event.isAutoRepeat():
+                if event.type() == QEvent.Type.KeyPress:
+                    if not self._peeking_source and self._session_ready:
+                        self._peeking_source = True
+                        self._show_source_slice(self._browse_index, temporary_peek=True)
+                    return True
+                if self._peeking_source:
+                    self._peeking_source = False
+                    if self._view_mode == "fused":
+                        self._switch_to_fused_view()
+                return True
+
+            if event.type() == QEvent.Type.KeyPress and not (
+                mods & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier | Qt.KeyboardModifier.MetaModifier)
+            ):
+                if key == Qt.Key.Key_A:
+                    self._select_method("openfocus_a")
+                    return True
+                if key == Qt.Key.Key_B:
+                    self._select_method("openfocus_b")
+                    return True
+                if key == Qt.Key.Key_C:
+                    self._select_method("openfocus_c")
+                    return True
+                if key == Qt.Key.Key_0:
+                    self.canvas.fit_to_window()
+                    return True
+                if key == Qt.Key.Key_1:
+                    self.canvas.set_actual_size()
+                    return True
+                if key == Qt.Key.Key_Left:
+                    self._step_source_slice(-1)
+                    return True
+                if key == Qt.Key.Key_Right:
+                    self._step_source_slice(1)
+                    return True
         return super().eventFilter(obj, event)
 
     # ------------------------------------------------------------------
@@ -2009,6 +2401,8 @@ class LivePreviewDialog(QDialog):
     def shutdown_running(self) -> bool:
         """Stop worker and release proxy memory; returns True if still winding down."""
         self._closing = True
+        if hasattr(self, "_refine_timer"):
+            self._refine_timer.stop()
         worker = getattr(self, "_worker", None)
         if worker is not None:
             stopped = worker.stop_and_close(timeout_ms=2500)

@@ -11,8 +11,8 @@ import pytest
 
 pytest.importorskip("PyQt6")
 
-from PyQt6.QtCore import QPointF, Qt
-from PyQt6.QtGui import QKeyEvent
+from PyQt6.QtCore import QPoint, QPointF, Qt
+from PyQt6.QtGui import QKeyEvent, QMouseEvent, QWheelEvent
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QMainWindow
 
@@ -76,13 +76,14 @@ class _MockLiveSession:
         return pool[max(0, min(int(index), len(pool) - 1))]
 
     def render(self, request=None, *, method=None, radius=8, smoothing=4.0, feather=3,
-               substack_range=None, should_cancel=None):
+               substack_range=None, draft=False, should_cancel=None):
         if request is not None:
             method = getattr(request, "method", method)
             radius = getattr(request, "radius", radius)
             smoothing = getattr(request, "smoothing", smoothing)
             feather = getattr(request, "feather", feather)
             substack_range = getattr(request, "substack_range", substack_range)
+            draft = bool(getattr(request, "draft", draft))
         if self.render_delay_s > 0:
             time.sleep(self.render_delay_s)
         with self._lock:
@@ -92,10 +93,14 @@ class _MockLiveSession:
                 "smoothing": float(smoothing),
                 "feather": int(feather),
                 "substack_range": substack_range,
+                "draft": bool(draft),
             })
         n = len(self.frames)
         start, end = substack_range if substack_range is not None else (0, n - 1)
         out = self.frames[min(start, n - 1)].copy()
+        if draft:
+            h, w = out.shape[:2]
+            out = cv2.resize(out, (max(1, w // 2), max(1, h // 2)), interpolation=cv2.INTER_AREA)
         # Encode radius/method slightly into corner pixel for verification.
         out[0, 0, 0] = int(radius) % 256
         out[0, 0, 1] = int(round(smoothing)) % 256
@@ -107,7 +112,8 @@ class _MockLiveSession:
         return SimpleNamespace(
             image=out,
             depth_histogram=hist,
-            elapsed_ms=12.5,
+            elapsed_ms=6.5 if draft else 12.5,
+            is_draft=bool(draft),
         )
 
     def close(self) -> None:
@@ -665,3 +671,245 @@ def _method_tag(method_id: str) -> str:
         "openfocus_b": "OpenFocus - B",
         "openfocus_c": "OpenFocus - C",
     }[method_id]
+
+
+def test_draft_during_slider_drag_and_full_refine_on_release(qapp):
+    from dialogs.live_preview import LivePreviewDialog
+
+    frames = _make_synthetic_stack(6, h=140, w=200)
+    session = _MockLiveSession(frames)
+    dlg = LivePreviewDialog(
+        None,
+        images=frames,
+        initial_method="openfocus_b",
+        session_factory=lambda _sz: session,
+        theme="light",
+    )
+    try:
+        dlg.show()
+        assert _wait_until(qapp, lambda: dlg._fused_pixmap is not None and not dlg._last_is_draft)
+
+        # Simulate active slider drag -> renders fast draft first.
+        dlg.row_radius.slider.sliderPressed.emit()
+        dlg.row_radius.slider.setValue(22)
+        assert _wait_until(
+            qapp,
+            lambda: any(c["radius"] == 22 and c["draft"] is True for c in session.render_calls),
+        )
+        # Release slider -> immediately refines to crisp full proxy.
+        dlg.row_radius.slider.sliderReleased.emit()
+        assert _wait_until(
+            qapp,
+            lambda: session.render_calls[-1]["radius"] == 22
+            and session.render_calls[-1]["draft"] is False
+            and not dlg._last_is_draft,
+        )
+        assert trans.t("live_preview_draft_tag") not in dlg.lbl_perf_badge.text()
+    finally:
+        dlg.close()
+        dlg.deleteLater()
+        qapp.processEvents()
+
+
+def test_zoom_to_cursor_preserves_image_anchor_and_shortcuts_0_1(qapp):
+    from dialogs.live_preview import LivePreviewDialog
+
+    frames = _make_synthetic_stack(4, h=200, w=320)
+    session = _MockLiveSession(frames)
+    dlg = LivePreviewDialog(
+        None,
+        images=frames,
+        initial_method="openfocus_b",
+        session_factory=lambda _sz: session,
+        theme="light",
+    )
+    try:
+        dlg.show()
+        assert _wait_until(qapp, lambda: dlg.canvas.has_image())
+        qapp.processEvents()
+
+        # Pick an off-center point inside the displayed image rect.
+        rect = dlg.canvas._image_rect()
+        cursor_pos = QPointF(rect.left() + rect.width() * 0.25, rect.top() + rect.height() * 0.30)
+        img_pt_before = dlg.canvas.image_point_at(cursor_pos)
+        zoom_before = dlg.canvas.zoom_factor()
+
+        wheel_ev = QWheelEvent(
+            cursor_pos,
+            cursor_pos,
+            QPoint(0, 0),
+            QPoint(0, 240),
+            Qt.MouseButton.NoButton,
+            Qt.KeyboardModifier.NoModifier,
+            Qt.ScrollPhase.NoScrollPhase,
+            False,
+        )
+        QApplication.sendEvent(dlg.canvas, wheel_ev)
+        qapp.processEvents()
+
+        assert dlg.canvas.zoom_factor() > zoom_before
+        assert not dlg.canvas.is_fit_mode()
+        img_pt_after = dlg.canvas.image_point_at(cursor_pos)
+        assert abs(img_pt_after.x() - img_pt_before.x()) < 0.5
+        assert abs(img_pt_after.y() - img_pt_before.y()) < 0.5
+
+        # Shortcut '1' -> 100% actual size; shortcut '0' -> Fit to window.
+        QApplication.sendEvent(
+            dlg, QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_1, Qt.KeyboardModifier.NoModifier)
+        )
+        qapp.processEvents()
+        assert dlg.canvas.zoom_factor() == pytest.approx(1.0, abs=1e-4)
+        assert not dlg.canvas.is_fit_mode()
+
+        QApplication.sendEvent(
+            dlg, QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_0, Qt.KeyboardModifier.NoModifier)
+        )
+        qapp.processEvents()
+        assert dlg.canvas.is_fit_mode()
+    finally:
+        dlg.close()
+        dlg.deleteLater()
+        qapp.processEvents()
+
+
+def test_split_curtain_compare_toggle_drag_and_slice_sync(qapp):
+    from dialogs.live_preview import LivePreviewDialog
+
+    frames = _make_synthetic_stack(6, h=160, w=240)
+    session = _MockLiveSession(frames)
+    dlg = LivePreviewDialog(
+        None,
+        images=frames,
+        initial_method="openfocus_b",
+        session_factory=lambda _sz: session,
+        theme="dark",
+    )
+    try:
+        dlg.show()
+        assert _wait_until(qapp, lambda: dlg._fused_pixmap is not None)
+        assert not dlg.canvas.is_split_compare()
+
+        # Enable Compare Split toggle.
+        dlg.btn_split_compare.click()
+        qapp.processEvents()
+        assert dlg.canvas.is_split_compare() is True
+        assert dlg.canvas._source_pixmap is not None
+        assert dlg.canvas.split_position() == pytest.approx(0.5, abs=1e-3)
+
+        # Drag the vertical curtain to ~75% of the image width.
+        rect = dlg.canvas._image_rect()
+        start_pt = QPointF(rect.left() + rect.width() * 0.5, rect.center().y())
+        end_pt = QPointF(rect.left() + rect.width() * 0.75, rect.center().y())
+        QApplication.sendEvent(
+            dlg.canvas,
+            QMouseEvent(
+                QMouseEvent.Type.MouseButtonPress,
+                start_pt,
+                start_pt,
+                Qt.MouseButton.LeftButton,
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+            ),
+        )
+        QApplication.sendEvent(
+            dlg.canvas,
+            QMouseEvent(
+                QMouseEvent.Type.MouseMove,
+                end_pt,
+                end_pt,
+                Qt.MouseButton.NoButton,
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+            ),
+        )
+        QApplication.sendEvent(
+            dlg.canvas,
+            QMouseEvent(
+                QMouseEvent.Type.MouseButtonRelease,
+                end_pt,
+                end_pt,
+                Qt.MouseButton.LeftButton,
+                Qt.MouseButton.NoButton,
+                Qt.KeyboardModifier.NoModifier,
+            ),
+        )
+        qapp.processEvents()
+        assert dlg.canvas.split_position() == pytest.approx(0.75, abs=0.03)
+
+        # Stepping source slice while split compare is active updates right side without leaving split mode.
+        dlg.stack_slider.setValue(3)
+        qapp.processEvents()
+        assert dlg.canvas.is_split_compare() is True
+        assert dlg._view_mode == "fused"
+        assert "4 / 6" in dlg.canvas._split_right_label
+
+        # Ensure painting succeeds cleanly in both Dark and Light themes.
+        img_dark = dlg.grab().toImage()
+        dlg.apply_theme("light")
+        qapp.processEvents()
+        img_light = dlg.grab().toImage()
+        assert not img_dark.isNull() and not img_light.isNull()
+    finally:
+        dlg.close()
+        dlg.deleteLater()
+        qapp.processEvents()
+
+
+def test_keyboard_shortcuts_abc_arrows_and_esc(qapp):
+    from dialogs.live_preview import LivePreviewDialog
+
+    frames = _make_synthetic_stack(5)
+    session = _MockLiveSession(frames)
+    dlg = LivePreviewDialog(
+        None,
+        images=frames,
+        initial_method="openfocus_b",
+        session_factory=lambda _sz: session,
+        theme="light",
+    )
+    try:
+        dlg.show()
+        assert _wait_until(qapp, lambda: dlg._fused_pixmap is not None)
+
+        # A / C / B switch methods instantaneously.
+        QApplication.sendEvent(
+            dlg, QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_A, Qt.KeyboardModifier.NoModifier)
+        )
+        qapp.processEvents()
+        assert dlg.current_method() == "openfocus_a"
+
+        QApplication.sendEvent(
+            dlg, QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_C, Qt.KeyboardModifier.NoModifier)
+        )
+        qapp.processEvents()
+        assert dlg.current_method() == "openfocus_c"
+
+        QApplication.sendEvent(
+            dlg, QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_B, Qt.KeyboardModifier.NoModifier)
+        )
+        qapp.processEvents()
+        assert dlg.current_method() == "openfocus_b"
+
+        # Right / Left arrow keys step source slices.
+        QApplication.sendEvent(
+            dlg, QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_Right, Qt.KeyboardModifier.NoModifier)
+        )
+        qapp.processEvents()
+        assert dlg._browse_index == 1
+
+        QApplication.sendEvent(
+            dlg, QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_Left, Qt.KeyboardModifier.NoModifier)
+        )
+        qapp.processEvents()
+        assert dlg._browse_index == 0
+
+        # Esc closes dialog cleanly and releases session memory.
+        QApplication.sendEvent(
+            dlg, QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier)
+        )
+        qapp.processEvents()
+        assert not dlg.isVisible()
+        assert session.closed is True
+    finally:
+        dlg.deleteLater()
+        qapp.processEvents()
