@@ -285,6 +285,56 @@ class TestFusionMethodsAndParameters:
         c1 = session.render(LivePreviewRequest(method="openfocus_c", smoothing=12.0))
         assert not np.array_equal(c0.image_bgr, c1.image_bgr)
 
+    @pytest.mark.parametrize("method", LIVE_PREVIEW_METHODS)
+    def test_draft_scale_and_full_refine_parity(self, method: str):
+        stack = _make_synthetic_focus_stack(n_frames=5, height=320, width=480)
+        with LivePreviewSession(stack, size="small", align_method="none") as session:
+            draft_res = session.render(
+                LivePreviewRequest(method=method, radius=10, smoothing=4.0, feather=3, draft=True)
+            )
+            full_res = session.render(
+                LivePreviewRequest(method=method, radius=10, smoothing=4.0, feather=3, draft=False)
+            )
+            assert draft_res.is_draft is True
+            assert full_res.is_draft is False
+            assert draft_res.image_bgr.dtype == np.uint8
+            assert draft_res.image_bgr.shape[0] < full_res.image_bgr.shape[0]
+            assert draft_res.image_bgr.shape[1] < full_res.image_bgr.shape[1]
+            assert full_res.image_bgr.shape == session.proxy_shape
+            assert draft_res.depth_histogram.shape == (session.frame_count,)
+            assert float(draft_res.depth_histogram.sum()) == pytest.approx(1.0, abs=1e-4)
+            # Upscaled draft should visually agree closely with the full-proxy render.
+            draft_up = cv2.resize(
+                draft_res.image_bgr,
+                (full_res.image_bgr.shape[1], full_res.image_bgr.shape[0]),
+                interpolation=cv2.INTER_LINEAR,
+            )
+            mae = float(np.mean(np.abs(draft_up.astype(np.float32) - full_res.image_bgr.astype(np.float32))))
+            assert mae < 35.0
+
+    def test_cache_memory_budget_evicts_inactive_methods(self):
+        stack = _make_synthetic_focus_stack(n_frames=12, height=480, width=720)
+        # Tight 24 MB cap forces LRU eviction of inactive method caches when switching A -> B -> C.
+        budget = 24 * 1024 * 1024
+        with LivePreviewSession(
+            stack,
+            size="medium",
+            align_method="none",
+            max_cache_bytes=budget,
+        ) as session:
+            session.render(LivePreviewRequest(method="openfocus_a", radius=8))
+            assert session._a_burt_levels is not None
+            session.render(LivePreviewRequest(method="openfocus_b", radius=8))
+            assert session._b_gray_half is not None
+            session.render(LivePreviewRequest(method="openfocus_c", smoothing=4.0))
+            assert session._c_weight_levels is not None
+            # Switching through all 3 methods under a tight budget evicts older caches.
+            assert session._a_burt_levels is None or session._b_gray_half is None
+            assert session.approx_memory_bytes <= budget + 4 * 1024 * 1024
+            # Switching back rebuilds seamlessly with accurate output.
+            res_a = session.render(LivePreviewRequest(method="openfocus_a", radius=8))
+            assert res_a.image_bgr.shape == session.proxy_shape
+
 
 class TestSubstackSelection:
     @pytest.mark.parametrize("method", LIVE_PREVIEW_METHODS)
