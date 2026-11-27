@@ -6,6 +6,7 @@ from importlib.util import find_spec
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from .en import EN
+from ._retouch_macro import RETOUCH_MACRO_TRANSLATIONS
 
 
 def __getattr__(name):
@@ -420,6 +421,9 @@ def _apply_pack_overlays(code: str, table: dict) -> dict:
     gallery_extra = _GALLERY_EXTRA_TEXT.get(code)
     if gallery_extra is not None:
         table.update(zip(_GALLERY_EXTRA_KEYS, gallery_extra))
+    retouch_macro = RETOUCH_MACRO_TRANSLATIONS.get(code)
+    if retouch_macro:
+        table.update(retouch_macro)
     return table
 
 

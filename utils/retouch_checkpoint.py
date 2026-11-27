@@ -304,6 +304,43 @@ def _replay_checkpoint(doc, path, cancelled=None):
                 replay.set_tool(tool)
                 replay.set_brush(diameter, hardness, opacity)
                 replay.exposure = exposure
+                replay.set_color_tolerance(
+                    _integer(op['color_tolerance'], 0, 100) if 'color_tolerance' in op else 0)
+                if 'tolerance_ref' in op:
+                    ref = op['tolerance_ref']
+                    if not isinstance(ref, list) or not 1 <= len(ref) <= 3:
+                        raise ValueError('Invalid color tolerance reference')
+                    for channel in ref:
+                        _number(channel, 0, 255)
+                replay.set_brush_brightness(
+                    _integer(op['brightness'], -50, 50) if 'brightness' in op else 0)
+                if 'auto_brightness_gain' in op:
+                    _number(op['auto_brightness_gain'], 0.5, 2.0)
+                    replay.set_brush_auto_brightness(True)
+                else:
+                    replay.set_brush_auto_brightness(False)
+                if 'source_offset' in op:
+                    so = op['source_offset']
+                    if not isinstance(so, list) or len(so) != 2:
+                        raise ValueError('Invalid source offset')
+                    replay.set_source_offset(
+                        _integer(so[0], -replay.MAX_SOURCE_OFFSET, replay.MAX_SOURCE_OFFSET),
+                        _integer(so[1], -replay.MAX_SOURCE_OFFSET, replay.MAX_SOURCE_OFFSET))
+                else:
+                    replay.reset_source_offset()
+                if tool == 'clone':
+                    clone_mode = op.get('clone_mode', 'area')
+                    if clone_mode not in replay.CLONE_MODES:
+                        raise ValueError('Invalid clone mode')
+                    origin = op['clone_origin']
+                    if not isinstance(origin, (list, tuple)) or len(origin) != 2:
+                        raise ValueError('Invalid clone origin')
+                    ox = _number(origin[0], 0, max(0, doc.width - 1e-6))
+                    oy = _number(origin[1], 0, max(0, doc.height - 1e-6))
+                    replay.set_clone_mode(clone_mode)
+                    replay.set_clone_origin(ox, oy)
+                else:
+                    replay.clear_clone_origin()
                 if not replay.begin_stroke(*points[0]):
                     raise ValueError('Stroke starts outside its source')
                 for point in points[1:]:
@@ -603,6 +640,32 @@ def _snapshot_operations(doc, operations):
             _number(operation['hardness'], 0, 1)
             _number(operation['opacity'], 0.01, 1)
             _number(operation['exposure'], -2, 2)
+            if 'color_tolerance' in operation:
+                _integer(operation['color_tolerance'], 0, 100)
+            if 'tolerance_ref' in operation:
+                ref = operation['tolerance_ref']
+                if not isinstance(ref, list) or not 1 <= len(ref) <= 3:
+                    raise ValueError('Invalid color tolerance reference')
+                for channel in ref:
+                    _number(channel, 0, 255)
+            if 'brightness' in operation:
+                _integer(operation['brightness'], -50, 50)
+            if 'auto_brightness_gain' in operation:
+                _number(operation['auto_brightness_gain'], 0.5, 2.0)
+            if 'source_offset' in operation:
+                so = operation['source_offset']
+                if not isinstance(so, list) or len(so) != 2:
+                    raise ValueError('Invalid source offset')
+                _integer(so[0], -doc.MAX_SOURCE_OFFSET, doc.MAX_SOURCE_OFFSET)
+                _integer(so[1], -doc.MAX_SOURCE_OFFSET, doc.MAX_SOURCE_OFFSET)
+            if operation['tool'] == 'clone':
+                if operation.get('clone_mode', 'area') not in doc.CLONE_MODES:
+                    raise ValueError('Invalid clone mode')
+                origin = operation['clone_origin']
+                if not isinstance(origin, list) or len(origin) != 2:
+                    raise ValueError('Invalid clone origin')
+                _number(origin[0], 0, max(0, doc.width - 1e-6))
+                _number(origin[1], 0, max(0, doc.height - 1e-6))
             points = operation['points']
             if not isinstance(points, list) or not points:
                 raise ValueError('Invalid stroke points')
