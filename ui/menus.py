@@ -550,6 +550,15 @@ def setup_menus(window: QMainWindow) -> None:
     advanced_action.setProperty("trans_key", 'advanced_settings_title')
     window.ui_objs['action_advanced_settings'] = advanced_action
 
+    raw_develop_action = QAction(trans.t("raw_develop_title"), window)
+    raw_develop_action.setToolTip(trans.t("raw_develop_menu_hint"))
+    raw_develop_action.triggered.connect(
+        lambda: getattr(window, "show_raw_develop_dialog", lambda *_a, **_k: None)()
+    )
+    raw_develop_action.setProperty("trans_key", "raw_develop_title")
+    settings_menu.addAction(raw_develop_action)
+    window.ui_objs["action_raw_develop"] = raw_develop_action
+
     # GPU stays reachable here as a quick toggle; it is the one switch users
     # flip often enough to deserve a click instead of two.
     gpu_action = QAction(trans.t('action_gpu_accel'), window)

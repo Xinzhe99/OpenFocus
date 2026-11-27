@@ -550,7 +550,12 @@ def restore_default_settings(window) -> None:
                  'retouch/auto_bg_mode', 'retouch/auto_bg_clean',
                  'retouch/auto_bg_soft_parts', 'compare/preview_size',
                  'depthmap/colormap', 'depthmap/gamma', 'depthmap/smooth',
-                 'depthmap/invert', 'depthmap/relief'))
+                 'depthmap/invert', 'depthmap/relief',
+                 'raw_develop/wb_mode', 'raw_develop/wb_temp_shift',
+                 'raw_develop/wb_tint_shift', 'raw_develop/highlight_mode',
+                 'raw_develop/demosaic', 'raw_develop/exposure_ev',
+                 'raw_develop/auto_bright', 'raw_develop/output_color',
+                 'raw_develop/external_dng_converter_path'))
     previous = {key: settings.value(key) for key in keys if settings.contains(key)}
     attributes = {attr: getattr(window, attr, default)
                   for attr, (_key, default, _kind) in _PERSISTED_FIELDS.items()}

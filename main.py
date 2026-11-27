@@ -2915,6 +2915,12 @@ class OpenFocus(QMainWindow):
         from dialogs.advanced_settings import AdvancedSettingsDialog
         AdvancedSettingsDialog(self).exec()
 
+    def show_raw_develop_dialog(self) -> None:
+        """Open the interactive RAW Develop parameters dialog."""
+        from dialogs.raw_develop import RawDevelopDialog
+        dialog = RawDevelopDialog(self, theme=getattr(self, "ui_theme", None))
+        dialog.exec()
+
     def _settings_reset_busy(self) -> bool:
         render = self.render_manager
         return (self._has_work_in_flight() or self.source_manager._reset_busy()

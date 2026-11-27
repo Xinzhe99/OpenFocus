@@ -87,8 +87,8 @@ def source_dimensions(path, page=None):
     if is_raw_source(path):
         if not RAWPY_AVAILABLE:
             raise ValueError('Camera RAW support is unavailable (rawpy/LibRaw).')
-        with rawpy.RawPy() as raw:
-            raw.open_file(os.fspath(path))
+        from core.raw_develop import load_raw_develop_settings, open_raw_with_dng_fallback
+        with open_raw_with_dng_fallback(path, load_raw_develop_settings(), rawpy_module=rawpy) as (raw, _opened):
             return raw.sizes.width, raw.sizes.height
     if extension in ('.tif', '.tiff'):
         import tifffile
@@ -515,22 +515,31 @@ def _raw_half_size(raw, scale_factor: float) -> bool:
     return raw.sizes.width % 2 == 0 and raw.sizes.height % 2 == 0
 
 
-def _read_raw(path: str, scale_factor: float = 1.0) -> Optional[np.ndarray]:
-    """Camera RAW -> 16-bit BGR (sRGB color space, camera white balance).
+def _read_raw(path: str, scale_factor: float = 1.0, *, settings=None) -> Optional[np.ndarray]:
+    """Camera RAW -> 16-bit BGR using active or explicit ``RawDevelopSettings``.
 
-    Auto-brightening is off on purpose: LibRaw's per-image auto exposure
-    would brighten each frame of a focus stack differently (the defocused
-    ones most), which reads as flicker and corrupts the focus measures.
+    By default, auto-brightening is off so LibRaw's per-image auto exposure
+    does not brighten defocused frames in a focus stack differently.
     Orientation is applied by LibRaw itself.
     """
     if not RAWPY_AVAILABLE:
         return None
+    from core.raw_develop import (
+        RawDevelopSettings,
+        build_rawpy_postprocess_kwargs,
+        load_raw_develop_settings,
+        open_raw_with_dng_fallback,
+    )
     from core.resource_policy import ResourceLimitError, raw_sensor_shape, raw_decode_bytes, require_memory
+    cfg = (
+        settings.normalized()
+        if isinstance(settings, RawDevelopSettings)
+        else load_raw_develop_settings()
+    )
     try:
         # Opening a pathname lets LibRaw read directly; rawpy.imread(file)
         # first copies the entire encoded RAW into a Python bytes object.
-        with rawpy.RawPy() as raw:
-            raw.open_file(os.fspath(path))
+        with open_raw_with_dng_fallback(path, cfg, rawpy_module=rawpy) as (raw, opened_path):
             sizes = raw.sizes
             sensor_height, sensor_width = raw_sensor_shape(sizes)
             width, height = sizes.width, sizes.height
@@ -543,12 +552,14 @@ def _read_raw(path: str, scale_factor: float = 1.0) -> Optional[np.ndarray]:
                 width, height = height, width
             output_scale = scale_factor if 0 < scale_factor < 1 else 1
             output = max(1, int(width * output_scale)) * max(1, int(height * output_scale)) * 6
-            require_memory(raw_decode_bytes(sensor_width, sensor_height, output, os.path.getsize(path)))
+            require_memory(raw_decode_bytes(sensor_width, sensor_height, output, os.path.getsize(opened_path)))
             raw.unpack()
             half_size = _raw_half_size(raw, scale_factor)
-            rgb = raw.postprocess(use_camera_wb=True, output_bps=16,
-                                  no_auto_bright=True, gamma=(2.4, 12.92),
-                                  half_size=half_size)
+            cam_wb = getattr(raw, "camera_whitebalance", None) if cfg.wb_mode == "custom" else None
+            post_kwargs = build_rawpy_postprocess_kwargs(
+                cfg, bps=16, half_size=half_size, camera_wb=cam_wb, rawpy_module=rawpy
+            )
+            rgb = raw.postprocess(**post_kwargs)
         # Resize while still RGB to avoid a second full-size channel-swapped
         # copy. INTER_AREA treats each channel independently, so the result
         # is identical to resizing BGR after conversion.
@@ -638,7 +649,7 @@ def _decode_png_fast(path: str, raw_bytes: bytes, *, allow_transparent_png: bool
 
 def decode_image(path: str, *, allow_transparent_png: bool = False,
                  preserve_grayscale: bool = False, scale_factor: float = 1.0,
-                 area_resizer=None) -> Optional[np.ndarray]:
+                 area_resizer=None, raw_develop_settings=None) -> Optional[np.ndarray]:
     """Decode an oriented still image, rejecting unsupported transparency.
 
     Only RAW and JPEG apply ``scale_factor``; ``is_scaled_jpeg`` tells a
@@ -649,7 +660,9 @@ def decode_image(path: str, *, allow_transparent_png: bool = False,
     """
     ext = os.path.splitext(path)[1].lower()
     if is_raw_source(path):
-        return _read_raw(path, scale_factor)
+        if raw_develop_settings is None:
+            return _read_raw(path, scale_factor)
+        return _read_raw(path, scale_factor, settings=raw_develop_settings)
     if ext in ('.tif', '.tiff'):
         return decode_tiff_page(path, preserve_grayscale=preserve_grayscale)
     jpeg_scale = scale_factor if is_scaled_jpeg(path, scale_factor) else 1.0

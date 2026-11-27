@@ -744,6 +744,7 @@ _DEVELOPER_OPTIONS_TEXT = {
 }
 
 _GALLERY_PACKS_CACHE = None
+_RAW_DEVELOP_PACKS_CACHE = None
 _PRO_EXPORTS_PACKS_CACHE = None
 _WATCH_TEMPLATES_PACKS_CACHE = None
 _LIVE_PREVIEW_PACKS_CACHE = None
@@ -761,6 +762,17 @@ def _gallery_pack(code: str):
         except Exception:
             _GALLERY_PACKS_CACHE = {}
     return _GALLERY_PACKS_CACHE.get(code)
+
+
+def _raw_develop_pack(code: str):
+    global _RAW_DEVELOP_PACKS_CACHE
+    if _RAW_DEVELOP_PACKS_CACHE is None:
+        try:
+            from .raw_develop_i18n import RAW_DEVELOP_TRANSLATIONS
+            _RAW_DEVELOP_PACKS_CACHE = RAW_DEVELOP_TRANSLATIONS
+        except Exception:
+            _RAW_DEVELOP_PACKS_CACHE = {}
+    return _RAW_DEVELOP_PACKS_CACHE.get(code)
 
 
 def _pro_exports_pack(code: str):
@@ -861,6 +873,9 @@ def _apply_pack_overlays(code: str, table: dict) -> dict:
     gallery_extra = _GALLERY_EXTRA_TEXT.get(code)
     if gallery_extra is not None:
         table.update(zip(_GALLERY_EXTRA_KEYS, gallery_extra))
+    raw_develop = _raw_develop_pack(code)
+    if raw_develop:
+        table.update(raw_develop)
     dev_opts = _DEVELOPER_OPTIONS_TEXT.get(code)
     if dev_opts is not None:
         table.update(zip(_DEVELOPER_OPTIONS_KEYS, dev_opts))
