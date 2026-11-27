@@ -151,11 +151,11 @@ LEADERBOARD_PERIOD_KEYS: tuple[str, ...] = ("7d", "1m", "6m", "1y", "3y", "5y")
 
 _EN: dict[str, str] = {
     # Menus & entry points
-    "menu_gallery": "Gallery",
-    "menu_gallery_hub": "OpenFocus Gallery",
+    "menu_gallery": "Community",
+    "menu_gallery_hub": "OpenFocus Community",
     "menu_account_center": "My Account",
     "menu_message_box": "Message Box",
-    "menu_upload_to_gallery": "Upload to Gallery",
+    "menu_upload_to_gallery": "Upload to Community",
     "menu_gallery_screensaver": "Fullscreen Showcase",
 
     # Common buttons
@@ -216,22 +216,22 @@ _EN: dict[str, str] = {
     "gallery_comments_author_badge": "Author",
     "gallery_comments_delete": "Delete",
     "gallery_comments_empty": "No comments yet.",
-    "gallery_empty_state": "OpenFocus Gallery",
+    "gallery_empty_state": "OpenFocus Community",
     "gallery_report_title": "Report reason",
     "gallery_screensaver_press_esc": "Press ESC to exit",
     "gallery_upvote": "Upvote",
     "gallery_downvote": "Downvote",
 
     # Advanced settings (Gallery storage & slideshow)
-    "gallery_settings_group": "Gallery & Showcase",
-    "gallery_settings_cache_dir": "Gallery cache folder",
-    "gallery_settings_download_dir": "Gallery download folder",
-    "gallery_settings_clear_cache": "Clear gallery cache",
+    "gallery_settings_group": "Community & Showcase",
+    "gallery_settings_cache_dir": "Community cache folder",
+    "gallery_settings_download_dir": "Community download folder",
+    "gallery_settings_clear_cache": "Clear community cache",
     "gallery_settings_cache_cleared": "Cleared {files} cached files ({size_mb:.1f} MB freed).",
     "gallery_settings_slide_interval": "Slideshow interval (seconds)",
 
     # Gallery Hub dialog & tabs
-    "gallery_hub_title": "OpenFocus Gallery",
+    "gallery_hub_title": "OpenFocus Community",
     "gallery_tab_square": "Square",
     "gallery_tab_leaderboard": "Leaderboard",
     "gallery_tab_publish": "Publish Work",
@@ -284,7 +284,7 @@ _EN: dict[str, str] = {
     "gallery_publish_selected_count": "{count} / {max_batch} images selected",
     "gallery_publish_title_label": "Title",
     "gallery_publish_title_placeholder": "Optional title for your work",
-    "gallery_publish_watermark_enable": "Add bottom-right copyright watermark",
+    "gallery_publish_watermark_enable": "Add top-left copyright watermark",
     "gallery_publish_watermark_label": "Attribution",
     "gallery_publish_watermark_placeholder": "Your name or studio",
     "gallery_publish_use_nickname": "Use my nickname",
@@ -301,18 +301,18 @@ _EN: dict[str, str] = {
     "gallery_publish_exif_iso": "ISO",
     "gallery_publish_allow_download": "Allow other users to download this work",
     "gallery_publish_openfocus_badge": "Display OpenFocus Exclusive Badge",
-    "gallery_publish_agreement_check": "I have read and agree to the OpenFocus Gallery User Agreement",
+    "gallery_publish_agreement_check": "I have read and agree to the OpenFocus Community User Agreement",
     "gallery_publish_agreement_view": "Read Agreement",
-    "gallery_publish_agreement_required": "Please agree to the Gallery User Agreement before publishing.",
+    "gallery_publish_agreement_required": "Please agree to the Community User Agreement before publishing.",
     "gallery_publish_cost_hint": "Publishing costs {cost} points per accepted work (0 points deducted if rejected or failed).",
     "gallery_hub_points_badge": "Points: {points}",
-    "gallery_showcase_window_title": "OpenFocus Gallery Showcase",
+    "gallery_showcase_window_title": "OpenFocus Community Showcase",
     "gallery_fusion_waiting_status": "Fusing in background…",
     "gallery_fusion_done_status": "Fusion complete!",
     "gallery_fusion_return_btn": "Close showcase for now",
     "gallery_fusion_view_result_btn": "View Fusion Result",
-    "gallery_auto_show_during_fusion": "Open Gallery window while fusing",
-    "menu_gallery_showcase": "Gallery Showcase Window",
+    "gallery_auto_show_during_fusion": "Open Community window while fusing",
+    "menu_gallery_showcase": "Community Showcase Window",
     "gallery_hub_points_signed_out": "Signed out",
     "gallery_hub_top_up_btn": "Top up / Account",
     "gallery_publish_cost_summary": "Balance: {balance} pts · {cost} pts / work",
@@ -337,7 +337,7 @@ _EN: dict[str, str] = {
     "gallery_my_works_stats": "{likes} likes · {comments} comments · {downloads} downloads",
     "gallery_my_works_delete": "Delete",
     "gallery_my_works_delete_confirm_title": "Delete Work",
-    "gallery_my_works_delete_confirm_body": "Permanently delete \"{title}\" from the Gallery? This action cannot be undone.",
+    "gallery_my_works_delete_confirm_body": "Permanently delete \"{title}\" from the Community? This action cannot be undone.",
     "gallery_my_works_deleted": "Work deleted.",
 
     # Author Showcase dialog
@@ -350,8 +350,8 @@ _EN: dict[str, str] = {
 
     # Upload Prompt dialog
     "gallery_upload_prompt_title": "Share Your Focus Stack",
-    "gallery_upload_prompt_body": "Your fused image looks sharp! Would you like to share it in the OpenFocus Gallery?",
-    "gallery_upload_prompt_upload": "Upload to Gallery",
+    "gallery_upload_prompt_body": "Your fused image looks sharp! Would you like to share it in the OpenFocus Community?",
+    "gallery_upload_prompt_upload": "Upload to Community",
     "gallery_upload_prompt_dismiss": "Not Now",
 
     # Honor Card dialog
@@ -362,15 +362,15 @@ _EN: dict[str, str] = {
     "gallery_honor_card_close": "Collect & Close",
 
     # Gallery User Agreement
-    "gallery_agreement_title": "OpenFocus Gallery User Agreement",
+    "gallery_agreement_title": "OpenFocus Community User Agreement",
     "gallery_agreement_body": (
-        "By publishing to OpenFocus Gallery, you confirm that:\n"
+        "By publishing to OpenFocus Community, you confirm that:\n"
         "1. You own the copyright or hold full permission to share every uploaded image.\n"
         "2. Uploads contain no explicit, violent, hateful, illegal, or spam content.\n"
-        "3. OpenFocus may display your work in the desktop showcase and community gallery, "
+        "3. OpenFocus may display your work in the desktop showcase and community space, "
         "and allow downloads only when you enable Allow Download.\n"
         "4. Works failing automated review or upload are never charged (0 points deducted).\n"
-        "5. You may remove your works from the Gallery at any time."
+        "5. You may remove your works from the Community at any time."
     ),
 
     # Account Center & Message Box
@@ -405,7 +405,7 @@ _EN: dict[str, str] = {
     "account_center_redeem_success": "Code redeemed: +{points} points added.",
     "account_center_redeem_empty": "Please enter a redeem code.",
     "account_center_interests_title": "Interests",
-    "account_center_interests_hint": "Choose topics to personalize your gallery feed.",
+    "account_center_interests_hint": "Choose topics to personalize your community feed.",
     "account_center_interests_save": "Save Interests",
     "account_center_interests_saved": "Interests saved.",
     "account_center_privacy_title": "Privacy Settings",
@@ -480,14 +480,14 @@ _EN: dict[str, str] = {
     "gallery_notif_comment_upvoted": "{actor} upvoted your comment on \"{work_title}\".",
     "gallery_notif_work_downloaded": "{actor} downloaded your work \"{work_title}\".",
     "gallery_notif_user_followed": "{actor} started following you.",
-    "gallery_notif_work_featured": "Your work \"{work_title}\" was featured in OpenFocus Gallery.",
+    "gallery_notif_work_featured": "Your work \"{work_title}\" was featured in OpenFocus Community.",
     "gallery_notif_leaderboard_ranked": "Your work \"{work_title}\" ranked #{rank} on the {period} leaderboard.",
     "gallery_notif_honor_card_awarded": "You earned a {period} Honor Card (#{rank}) and +{points} points!",
     "gallery_notif_points_granted": "You received +{points} bonus points.",
     "gallery_notif_points_recharged": "Your account was credited with +{points} points.",
     "gallery_notif_work_removed": "Your work \"{work_title}\" was removed ({reason}).",
     "gallery_notif_comment_removed": "Your comment was removed ({reason}).",
-    "gallery_notif_system_announcement": "OpenFocus Gallery notice: {detail}",
+    "gallery_notif_system_announcement": "OpenFocus Community notice: {detail}",
     "gallery_notif_comment_liked": "{actor} liked your comment on \"{work_title}\".",
     "gallery_notif_new_follower": "{actor} started following you.",
     "gallery_notif_work_rejected_nsfw": "Your upload \"{work_title}\" did not pass safety review ({reason}). 0 points deducted.",
@@ -501,8 +501,8 @@ _EN: dict[str, str] = {
     # Canonical API Error Codes (35)
     "gallery_err_unauthorized": "Please sign in to continue.",
     "gallery_err_account_disabled": "This account is currently disabled.",
-    "gallery_err_gallery_disabled": "OpenFocus Gallery is temporarily unavailable.",
-    "gallery_err_gallery_terms_required": "Please accept the Gallery User Agreement first.",
+    "gallery_err_gallery_disabled": "OpenFocus Community is temporarily unavailable.",
+    "gallery_err_gallery_terms_required": "Please accept the Community User Agreement first.",
     "gallery_err_privacy_restricted": "This user's content is private.",
     "gallery_err_forbidden": "You do not have permission to perform this action.",
     "gallery_err_not_found": "The requested item could not be found.",
@@ -538,12 +538,12 @@ _EN: dict[str, str] = {
 
 def _build_zh() -> dict[str, str]:
     return {
-        "menu_gallery": "画廊",
-        "menu_gallery_hub": "OpenFocus 画廊",
+        "menu_gallery": "社区",
+        "menu_gallery_hub": "OpenFocus 社区",
         "menu_account_center": "我的账户",
         "menu_message_box": "消息中心",
-        "menu_upload_to_gallery": "上传到画廊",
-        "menu_gallery_screensaver": "全屏画廊屏保",
+        "menu_upload_to_gallery": "上传到社区",
+        "menu_gallery_screensaver": "全屏社区屏保",
 
         "gallery_btn_close": "关闭",
         "gallery_btn_cancel": "取消",
@@ -562,7 +562,7 @@ def _build_zh() -> dict[str, str]:
         "gallery_btn_download": "下载",
         "gallery_btn_fullscreen": "全屏",
         "gallery_btn_report": "举报",
-        "gallery_screensaver_exit_hint": "按 ESC 键退出全屏画廊",
+        "gallery_screensaver_exit_hint": "按 ESC 键退出全屏社区",
         "gallery_danmaku_settings": "弹幕设置",
         "gallery_danmaku_enable": "显示悬浮弹幕",
         "gallery_danmaku_position": "显示区域",
@@ -601,20 +601,20 @@ def _build_zh() -> dict[str, str]:
         "gallery_comments_author_badge": "作者",
         "gallery_comments_delete": "删除",
         "gallery_comments_empty": "暂无评论。",
-        "gallery_empty_state": "OpenFocus 画廊",
+        "gallery_empty_state": "OpenFocus 社区",
         "gallery_report_title": "举报原因",
         "gallery_screensaver_press_esc": "按 ESC 退出",
         "gallery_upvote": "赞同",
         "gallery_downvote": "踩",
 
-        "gallery_settings_group": "画廊与展播",
-        "gallery_settings_cache_dir": "画廊缓存目录",
-        "gallery_settings_download_dir": "画廊下载目录",
-        "gallery_settings_clear_cache": "清理画廊缓存",
+        "gallery_settings_group": "社区与展播",
+        "gallery_settings_cache_dir": "社区缓存目录",
+        "gallery_settings_download_dir": "社区下载目录",
+        "gallery_settings_clear_cache": "清理社区缓存",
         "gallery_settings_cache_cleared": "已清理 {files} 个缓存文件（释放 {size_mb:.1f} MB）。",
         "gallery_settings_slide_interval": "轮播间隔（秒）",
 
-        "gallery_hub_title": "OpenFocus 画廊",
+        "gallery_hub_title": "OpenFocus 社区",
         "gallery_tab_square": "广场",
         "gallery_tab_leaderboard": "排行榜",
         "gallery_tab_publish": "发布作品",
@@ -664,7 +664,7 @@ def _build_zh() -> dict[str, str]:
         "gallery_publish_selected_count": "已选择 {count} / {max_batch} 张图片",
         "gallery_publish_title_label": "作品标题",
         "gallery_publish_title_placeholder": "为作品输入标题（可选）",
-        "gallery_publish_watermark_enable": "添加右下角版权水印",
+        "gallery_publish_watermark_enable": "添加左上角版权水印",
         "gallery_publish_watermark_label": "署名",
         "gallery_publish_watermark_placeholder": "输入姓名或工作室名称",
         "gallery_publish_use_nickname": "使用我的昵称",
@@ -681,18 +681,18 @@ def _build_zh() -> dict[str, str]:
         "gallery_publish_exif_iso": "ISO",
         "gallery_publish_allow_download": "允许其他用户下载此作品",
         "gallery_publish_openfocus_badge": "展示 OpenFocus 专属合成角标",
-        "gallery_publish_agreement_check": "我已阅读并同意《OpenFocus 画廊用户协议》",
+        "gallery_publish_agreement_check": "我已阅读并同意《OpenFocus 社区用户协议》",
         "gallery_publish_agreement_view": "查看协议",
-        "gallery_publish_agreement_required": "发布前请先同意《画廊用户协议》。",
+        "gallery_publish_agreement_required": "发布前请先同意《社区用户协议》。",
         "gallery_publish_cost_hint": "每张通过审核的作品消耗 {cost} 积分（审核未通过或上传失败不扣积分）。",
         "gallery_hub_points_badge": "当前积分：{points}",
-        "gallery_showcase_window_title": "OpenFocus 精选画廊",
+        "gallery_showcase_window_title": "OpenFocus 精选社区",
         "gallery_fusion_waiting_status": "正在后台融合处理…",
         "gallery_fusion_done_status": "融合已完成！",
-        "gallery_fusion_return_btn": "关闭本次画廊展示",
+        "gallery_fusion_return_btn": "关闭本次社区展示",
         "gallery_fusion_view_result_btn": "查看融合结果",
-        "gallery_auto_show_during_fusion": "开始融合时自动弹出画廊窗口",
-        "menu_gallery_showcase": "精选画廊展台",
+        "gallery_auto_show_during_fusion": "开始融合时自动弹出社区窗口",
+        "menu_gallery_showcase": "精选社区展播",
         "gallery_hub_points_signed_out": "未登录",
         "gallery_hub_top_up_btn": "充值 / 账户",
         "gallery_publish_cost_summary": "当前余额：{balance} 积分 · 单张消耗：{cost} 积分",
@@ -716,7 +716,7 @@ def _build_zh() -> dict[str, str]:
         "gallery_my_works_stats": "{likes} 赞 · {comments} 评论 · {downloads} 下载",
         "gallery_my_works_delete": "删除",
         "gallery_my_works_delete_confirm_title": "删除作品",
-        "gallery_my_works_delete_confirm_body": "确定要从画廊永久删除“{title}”吗？此操作无法撤销。",
+        "gallery_my_works_delete_confirm_body": "确定要从社区永久删除“{title}”吗？此操作无法撤销。",
         "gallery_my_works_deleted": "作品已删除。",
 
         "gallery_author_showcase_title": "{author} 的展馆",
@@ -727,8 +727,8 @@ def _build_zh() -> dict[str, str]:
         "gallery_author_works_empty": "该创作者暂未发布作品。",
 
         "gallery_upload_prompt_title": "分享你的景深合成佳作",
-        "gallery_upload_prompt_body": "合成效果非常出色！要一键发布到 OpenFocus 画廊与大家分享吗？",
-        "gallery_upload_prompt_upload": "上传到画廊",
+        "gallery_upload_prompt_body": "合成效果非常出色！要一键发布到 OpenFocus 社区与大家分享吗？",
+        "gallery_upload_prompt_upload": "上传到社区",
         "gallery_upload_prompt_dismiss": "暂不",
 
         "gallery_honor_card_title": "排行榜荣誉贺卡",
@@ -737,12 +737,12 @@ def _build_zh() -> dict[str, str]:
         "gallery_honor_card_reward_points": "已发放 +{points} 奖励积分",
         "gallery_honor_card_close": "收下并关闭",
 
-        "gallery_agreement_title": "OpenFocus 画廊用户协议",
+        "gallery_agreement_title": "OpenFocus 社区用户协议",
         "gallery_agreement_body": (
-            "发布作品至 OpenFocus 画廊即表示你确认：\n"
+            "发布作品至 OpenFocus 社区即表示你确认：\n"
             "1. 你对所上传的每张图像拥有合法版权或完整授权。\n"
             "2. 上传内容不含色情、暴力、仇恨、违法或垃圾广告信息。\n"
-            "3. OpenFocus 可在桌面展播与社区画廊展示你的作品，且仅在你开启“允许下载”时提供下载。\n"
+            "3. OpenFocus 可在桌面展播与社区广场展示你的作品，且仅在你开启“允许下载”时提供下载。\n"
             "4. 审核未通过或上传中断的作品绝不扣费（扣除 0 积分）。\n"
             "5. 你可随时在“我的展馆”中删除已发布的作品。"
         ),
@@ -778,7 +778,7 @@ def _build_zh() -> dict[str, str]:
         "account_center_redeem_success": "兑换成功：已到账 +{points} 积分。",
         "account_center_redeem_empty": "请输入兑换码。",
         "account_center_interests_title": "兴趣方向",
-        "account_center_interests_hint": "选择感兴趣的拍摄主题，用于个性化推荐画廊内容。",
+        "account_center_interests_hint": "选择感兴趣的拍摄主题，用于个性化推荐社区内容。",
         "account_center_interests_save": "保存兴趣",
         "account_center_interests_saved": "兴趣偏好已保存。",
         "account_center_privacy_title": "隐私设置",
@@ -848,14 +848,14 @@ def _build_zh() -> dict[str, str]:
         "gallery_notif_comment_upvoted": "{actor} 赞同了你在《{work_title}》下的评论。",
         "gallery_notif_work_downloaded": "{actor} 下载了你的作品《{work_title}》。",
         "gallery_notif_user_followed": "{actor} 关注了你。",
-        "gallery_notif_work_featured": "你的作品《{work_title}》入选 OpenFocus 画廊精选。",
+        "gallery_notif_work_featured": "你的作品《{work_title}》入选 OpenFocus 社区精选。",
         "gallery_notif_leaderboard_ranked": "你的作品《{work_title}》登上 {period} 排行榜第 {rank} 名。",
         "gallery_notif_honor_card_awarded": "恭喜获得 {period} 荣誉贺卡（第 {rank} 名）及 +{points} 积分！",
         "gallery_notif_points_granted": "你获得了 +{points} 奖励积分。",
         "gallery_notif_points_recharged": "你的账户已到账 +{points} 积分。",
         "gallery_notif_work_removed": "你的作品《{work_title}》已被下架（{reason}）。",
         "gallery_notif_comment_removed": "你的评论已被删除（{reason}）。",
-        "gallery_notif_system_announcement": "OpenFocus 画廊通知：{detail}",
+        "gallery_notif_system_announcement": "OpenFocus 社区通知：{detail}",
         "gallery_notif_comment_liked": "{actor} 赞了你在《{work_title}》下的评论。",
         "gallery_notif_new_follower": "{actor} 关注了你。",
         "gallery_notif_work_rejected_nsfw": "你的作品《{work_title}》未通过安全审核（{reason}），未扣除积分。",
@@ -868,8 +868,8 @@ def _build_zh() -> dict[str, str]:
 
         "gallery_err_unauthorized": "请先登录账户后再操作。",
         "gallery_err_account_disabled": "该账户当前已被禁用。",
-        "gallery_err_gallery_disabled": "OpenFocus 画廊服务暂时不可用。",
-        "gallery_err_gallery_terms_required": "请先阅读并同意《画廊用户协议》。",
+        "gallery_err_gallery_disabled": "OpenFocus 社区服务暂时不可用。",
+        "gallery_err_gallery_terms_required": "请先阅读并同意《社区用户协议》。",
         "gallery_err_privacy_restricted": "该用户已设置隐私限制。",
         "gallery_err_forbidden": "你没有权限执行此操作。",
         "gallery_err_not_found": "未找到请求的资源。",
@@ -905,11 +905,11 @@ def _build_zh() -> dict[str, str]:
 
 def _build_ja() -> dict[str, str]:
     return {
-        "menu_gallery": "ギャラリー",
-        "menu_gallery_hub": "OpenFocus ギャラリー",
+        "menu_gallery": "コミュニティ",
+        "menu_gallery_hub": "OpenFocus コミュニティ",
         "menu_account_center": "マイアカウント",
         "menu_message_box": "メッセージボックス",
-        "menu_upload_to_gallery": "ギャラリーにアップロード",
+        "menu_upload_to_gallery": "コミュニティにアップロード",
         "menu_gallery_screensaver": "フルスクリーンショーケース",
 
         "gallery_btn_close": "閉じる",
@@ -968,20 +968,20 @@ def _build_ja() -> dict[str, str]:
         "gallery_comments_author_badge": "作者",
         "gallery_comments_delete": "削除",
         "gallery_comments_empty": "コメントはまだありません。",
-        "gallery_empty_state": "OpenFocus ギャラリー",
+        "gallery_empty_state": "OpenFocus コミュニティ",
         "gallery_report_title": "報告理由",
         "gallery_screensaver_press_esc": "ESC キーで終了",
         "gallery_upvote": "高評価",
         "gallery_downvote": "低評価",
 
-        "gallery_settings_group": "ギャラリーとショーケース",
-        "gallery_settings_cache_dir": "ギャラリーキャッシュフォルダー",
-        "gallery_settings_download_dir": "ギャラリー保存先フォルダー",
-        "gallery_settings_clear_cache": "ギャラリーキャッシュを削除",
+        "gallery_settings_group": "コミュニティとショーケース",
+        "gallery_settings_cache_dir": "コミュニティキャッシュフォルダー",
+        "gallery_settings_download_dir": "コミュニティ保存先フォルダー",
+        "gallery_settings_clear_cache": "コミュニティキャッシュを削除",
         "gallery_settings_cache_cleared": "{files} 件のキャッシュを削除しました（{size_mb:.1f} MB 解放）。",
         "gallery_settings_slide_interval": "スライド切替間隔（秒）",
 
-        "gallery_hub_title": "OpenFocus ギャラリー",
+        "gallery_hub_title": "OpenFocus コミュニティ",
         "gallery_tab_square": "スクエア",
         "gallery_tab_leaderboard": "ランキング",
         "gallery_tab_publish": "作品を公開",
@@ -1031,7 +1031,7 @@ def _build_ja() -> dict[str, str]:
         "gallery_publish_selected_count": "{count} / {max_batch} 枚を選択中",
         "gallery_publish_title_label": "タイトル",
         "gallery_publish_title_placeholder": "作品のタイトル（任意）",
-        "gallery_publish_watermark_enable": "右下に著作権透かしを追加",
+        "gallery_publish_watermark_enable": "左上に著作権透かしを追加",
         "gallery_publish_watermark_label": "クレジット表記",
         "gallery_publish_watermark_placeholder": "お名前またはスタジオ名",
         "gallery_publish_use_nickname": "ニックネームを使う",
@@ -1048,18 +1048,18 @@ def _build_ja() -> dict[str, str]:
         "gallery_publish_exif_iso": "ISO",
         "gallery_publish_allow_download": "他のユーザーによるダウンロードを許可",
         "gallery_publish_openfocus_badge": "OpenFocus 専用バッジを表示",
-        "gallery_publish_agreement_check": "OpenFocus ギャラリー利用規約を確認し同意します",
+        "gallery_publish_agreement_check": "OpenFocus コミュニティ利用規約を確認し同意します",
         "gallery_publish_agreement_view": "規約を読む",
-        "gallery_publish_agreement_required": "公開する前にギャラリー利用規約に同意してください。",
+        "gallery_publish_agreement_required": "公開する前にコミュニティ利用規約に同意してください。",
         "gallery_publish_cost_hint": "承認された作品 1 件につき {cost} ポイント消費します（却下・失敗時は 0 ポイント）。",
         "gallery_hub_points_badge": "保有ポイント：{points}",
-        "gallery_showcase_window_title": "OpenFocus ギャラリーショーケース",
+        "gallery_showcase_window_title": "OpenFocus コミュニティショーケース",
         "gallery_fusion_waiting_status": "バックグラウンドで合成中…",
         "gallery_fusion_done_status": "合成が完了しました！",
         "gallery_fusion_return_btn": "今回は閉じる",
         "gallery_fusion_view_result_btn": "合成結果を表示",
-        "gallery_auto_show_during_fusion": "合成開始時にギャラリーウィンドウを自動で開く",
-        "menu_gallery_showcase": "ギャラリーショーケース",
+        "gallery_auto_show_during_fusion": "合成開始時にコミュニティウィンドウを自動で開く",
+        "menu_gallery_showcase": "コミュニティショーケース",
         "gallery_hub_points_signed_out": "未ログイン",
         "gallery_hub_top_up_btn": "チャージ / アカウント",
         "gallery_publish_cost_summary": "現在の残高：{balance} ポイント · 1件あたり：{cost} ポイント",
@@ -1083,7 +1083,7 @@ def _build_ja() -> dict[str, str]:
         "gallery_my_works_stats": "{likes} いいね · {comments} コメント · {downloads} DL",
         "gallery_my_works_delete": "削除",
         "gallery_my_works_delete_confirm_title": "作品を削除",
-        "gallery_my_works_delete_confirm_body": "「{title}」をギャラリーから完全に削除しますか？この操作は取り消せません。",
+        "gallery_my_works_delete_confirm_body": "「{title}」をコミュニティから完全に削除しますか？この操作は取り消せません。",
         "gallery_my_works_deleted": "作品を削除しました。",
 
         "gallery_author_showcase_title": "{author} のショーケース",
@@ -1094,8 +1094,8 @@ def _build_ja() -> dict[str, str]:
         "gallery_author_works_empty": "このクリエイターはまだ作品を公開していません。",
 
         "gallery_upload_prompt_title": "深度合成作品を共有しませんか",
-        "gallery_upload_prompt_body": "素晴らしい仕上がりです！OpenFocus ギャラリーで共有しますか？",
-        "gallery_upload_prompt_upload": "ギャラリーにアップロード",
+        "gallery_upload_prompt_body": "素晴らしい仕上がりです！OpenFocus コミュニティで共有しますか？",
+        "gallery_upload_prompt_upload": "コミュニティにアップロード",
         "gallery_upload_prompt_dismiss": "今はしない",
 
         "gallery_honor_card_title": "ランキング オナーカード",
@@ -1104,15 +1104,15 @@ def _build_ja() -> dict[str, str]:
         "gallery_honor_card_reward_points": "+{points} 報酬ポイントを付与しました",
         "gallery_honor_card_close": "受け取って閉じる",
 
-        "gallery_agreement_title": "OpenFocus ギャラリー利用規約",
+        "gallery_agreement_title": "OpenFocus コミュニティ利用規約",
         "gallery_agreement_body": (
-            "OpenFocus ギャラリーに作品を公開することで、以下に同意したものとみなされます：\n"
+            "OpenFocus コミュニティに作品を公開することで、以下に同意したものとみなされます：\n"
             "1. アップロードするすべての画像の著作権または公開権限を保有していること。\n"
             "2. 露骨な成人向け表現、暴力、ヘイト、違法またはスパムを含まないこと。\n"
-            "3. OpenFocus がデスクトップショーケースおよびコミュニティギャラリーで作品を表示でき、"
+            "3. OpenFocus がデスクトップショーケースおよびコミュニティスペースで作品を表示でき、"
             "ダウンロードは「ダウンロードを許可」を有効にした場合のみ提供されること。\n"
             "4. 自動審査で却下された場合やアップロード失敗時は一切課金されません（0 ポイント）。\n"
-            "5. 公開した作品はいつでもギャラリーから削除できます。"
+            "5. 公開した作品はいつでもコミュニティから削除できます。"
         ),
 
         "account_center_title": "OpenFocus アカウントとメッセージ",
@@ -1216,14 +1216,14 @@ def _build_ja() -> dict[str, str]:
         "gallery_notif_comment_upvoted": "{actor} さんが「{work_title}」のコメントを高評価しました。",
         "gallery_notif_work_downloaded": "{actor} さんが「{work_title}」をダウンロードしました。",
         "gallery_notif_user_followed": "{actor} さんにフォローされました。",
-        "gallery_notif_work_featured": "作品「{work_title}」が OpenFocus ギャラリーの注目作品に選ばれました。",
+        "gallery_notif_work_featured": "作品「{work_title}」が OpenFocus コミュニティの注目作品に選ばれました。",
         "gallery_notif_leaderboard_ranked": "作品「{work_title}」が {period} ランキングで {rank} 位になりました。",
         "gallery_notif_honor_card_awarded": "{period} オナーカード（{rank} 位）と +{points} ポイントを獲得しました！",
         "gallery_notif_points_granted": "+{points} ボーナスポイントを受け取りました。",
         "gallery_notif_points_recharged": "+{points} ポイントがチャージされました。",
         "gallery_notif_work_removed": "作品「{work_title}」が削除されました（{reason}）。",
         "gallery_notif_comment_removed": "コメントが削除されました（{reason}）。",
-        "gallery_notif_system_announcement": "OpenFocus ギャラリーのお知らせ：{detail}",
+        "gallery_notif_system_announcement": "OpenFocus コミュニティのお知らせ：{detail}",
         "gallery_notif_comment_liked": "{actor} さんが「{work_title}」のコメントにいいねしました。",
         "gallery_notif_new_follower": "{actor} さんにフォローされました。",
         "gallery_notif_work_rejected_nsfw": "「{work_title}」は安全審査を通過しませんでした（{reason}）。ポイントは消費されていません。",
@@ -1236,8 +1236,8 @@ def _build_ja() -> dict[str, str]:
 
         "gallery_err_unauthorized": "続行するにはサインインしてください。",
         "gallery_err_account_disabled": "このアカウントは現在無効化されています。",
-        "gallery_err_gallery_disabled": "OpenFocus ギャラリーは現在一時的に利用できません。",
-        "gallery_err_gallery_terms_required": "先にギャラリー利用規約に同意してください。",
+        "gallery_err_gallery_disabled": "OpenFocus コミュニティは現在一時的に利用できません。",
+        "gallery_err_gallery_terms_required": "先にコミュニティ利用規約に同意してください。",
         "gallery_err_privacy_restricted": "このユーザーのコンテンツは非公開です。",
         "gallery_err_forbidden": "この操作を実行する権限がありません。",
         "gallery_err_not_found": "指定された項目が見つかりません。",
@@ -1273,11 +1273,11 @@ def _build_ja() -> dict[str, str]:
 
 def _build_es() -> dict[str, str]:
     return {
-        "menu_gallery": "Galería",
-        "menu_gallery_hub": "Galería de OpenFocus",
+        "menu_gallery": "Comunidad",
+        "menu_gallery_hub": "Comunidad de OpenFocus",
         "menu_account_center": "Mi cuenta",
         "menu_message_box": "Bandeja de mensajes",
-        "menu_upload_to_gallery": "Subir a la galería",
+        "menu_upload_to_gallery": "Subir a la comunidad",
         "menu_gallery_screensaver": "Vitrina en pantalla completa",
 
         "gallery_btn_close": "Cerrar",
@@ -1336,20 +1336,20 @@ def _build_es() -> dict[str, str]:
         "gallery_comments_author_badge": "Autor",
         "gallery_comments_delete": "Eliminar",
         "gallery_comments_empty": "Todavía no hay comentarios.",
-        "gallery_empty_state": "Galería de OpenFocus",
+        "gallery_empty_state": "Comunidad de OpenFocus",
         "gallery_report_title": "Motivo de denuncia",
         "gallery_screensaver_press_esc": "Pulsa ESC para salir",
         "gallery_upvote": "Votar positivo",
         "gallery_downvote": "Votar negativo",
 
-        "gallery_settings_group": "Galería y vitrina",
-        "gallery_settings_cache_dir": "Carpeta de caché de la galería",
-        "gallery_settings_download_dir": "Carpeta de descargas de la galería",
-        "gallery_settings_clear_cache": "Vaciar caché de la galería",
+        "gallery_settings_group": "Comunidad y vitrina",
+        "gallery_settings_cache_dir": "Carpeta de caché de la comunidad",
+        "gallery_settings_download_dir": "Carpeta de descargas de la comunidad",
+        "gallery_settings_clear_cache": "Vaciar caché de la comunidad",
         "gallery_settings_cache_cleared": "Se eliminaron {files} archivos en caché ({size_mb:.1f} MB liberados).",
         "gallery_settings_slide_interval": "Intervalo de diapositivas (segundos)",
 
-        "gallery_hub_title": "Galería de OpenFocus",
+        "gallery_hub_title": "Comunidad de OpenFocus",
         "gallery_tab_square": "Explorar",
         "gallery_tab_leaderboard": "Clasificación",
         "gallery_tab_publish": "Publicar obra",
@@ -1399,7 +1399,7 @@ def _build_es() -> dict[str, str]:
         "gallery_publish_selected_count": "{count} / {max_batch} imágenes seleccionadas",
         "gallery_publish_title_label": "Título",
         "gallery_publish_title_placeholder": "Título opcional para tu obra",
-        "gallery_publish_watermark_enable": "Añadir marca de agua inferior derecha",
+        "gallery_publish_watermark_enable": "Añadir marca de agua superior izquierda",
         "gallery_publish_watermark_label": "Atribución",
         "gallery_publish_watermark_placeholder": "Tu nombre o estudio",
         "gallery_publish_use_nickname": "Usar mi apodo",
@@ -1416,18 +1416,18 @@ def _build_es() -> dict[str, str]:
         "gallery_publish_exif_iso": "ISO",
         "gallery_publish_allow_download": "Permitir que otros usuarios descarguen esta obra",
         "gallery_publish_openfocus_badge": "Mostrar insignia exclusiva de OpenFocus",
-        "gallery_publish_agreement_check": "He leído y acepto el Acuerdo de Usuario de la Galería OpenFocus",
+        "gallery_publish_agreement_check": "He leído y acepto el Acuerdo de Usuario de la Comunidad OpenFocus",
         "gallery_publish_agreement_view": "Leer acuerdo",
-        "gallery_publish_agreement_required": "Acepta el Acuerdo de Usuario de la Galería antes de publicar.",
+        "gallery_publish_agreement_required": "Acepta el Acuerdo de Usuario de la Comunidad antes de publicar.",
         "gallery_publish_cost_hint": "Publicar cuesta {cost} puntos por obra aceptada (0 puntos deducidos si se rechaza o falla).",
         "gallery_hub_points_badge": "Puntos: {points}",
-        "gallery_showcase_window_title": "Galería de OpenFocus",
+        "gallery_showcase_window_title": "Comunidad de OpenFocus",
         "gallery_fusion_waiting_status": "Fusionando en segundo plano…",
         "gallery_fusion_done_status": "¡Fusión completada!",
         "gallery_fusion_return_btn": "Cerrar por ahora",
         "gallery_fusion_view_result_btn": "Ver resultado",
-        "gallery_auto_show_during_fusion": "Abrir ventana de galería al fusionar",
-        "menu_gallery_showcase": "Escaparate de galería",
+        "gallery_auto_show_during_fusion": "Abrir ventana de comunidad al fusionar",
+        "menu_gallery_showcase": "Escaparate de comunidad",
         "gallery_hub_points_signed_out": "Sin sesión",
         "gallery_hub_top_up_btn": "Recargar / Cuenta",
         "gallery_publish_cost_summary": "Saldo: {balance} pts · {cost} pts / obra",
@@ -1451,7 +1451,7 @@ def _build_es() -> dict[str, str]:
         "gallery_my_works_stats": "{likes} me gusta · {comments} comentarios · {downloads} descargas",
         "gallery_my_works_delete": "Eliminar",
         "gallery_my_works_delete_confirm_title": "Eliminar obra",
-        "gallery_my_works_delete_confirm_body": "¿Eliminar permanentemente \"{title}\" de la galería? Esta acción no se puede deshacer.",
+        "gallery_my_works_delete_confirm_body": "¿Eliminar permanentemente \"{title}\" de la comunidad? Esta acción no se puede deshacer.",
         "gallery_my_works_deleted": "Obra eliminada.",
 
         "gallery_author_showcase_title": "Vitrina de {author}",
@@ -1462,8 +1462,8 @@ def _build_es() -> dict[str, str]:
         "gallery_author_works_empty": "Este creador todavía no ha publicado obras.",
 
         "gallery_upload_prompt_title": "Comparte tu apilado de enfoque",
-        "gallery_upload_prompt_body": "¡Tu imagen fusionada se ve nítida! ¿Quieres compartirla en la Galería OpenFocus?",
-        "gallery_upload_prompt_upload": "Subir a la galería",
+        "gallery_upload_prompt_body": "¡Tu imagen fusionada se ve nítida! ¿Quieres compartirla en la Comunidad OpenFocus?",
+        "gallery_upload_prompt_upload": "Subir a la comunidad",
         "gallery_upload_prompt_dismiss": "Ahora no",
 
         "gallery_honor_card_title": "Tarjeta de honor de clasificación",
@@ -1472,15 +1472,15 @@ def _build_es() -> dict[str, str]:
         "gallery_honor_card_reward_points": "+{points} puntos de recompensa añadidos",
         "gallery_honor_card_close": "Recoger y cerrar",
 
-        "gallery_agreement_title": "Acuerdo de Usuario de la Galería OpenFocus",
+        "gallery_agreement_title": "Acuerdo de Usuario de la Comunidad OpenFocus",
         "gallery_agreement_body": (
-            "Al publicar en la Galería OpenFocus, confirmas que:\n"
+            "Al publicar en la Comunidad OpenFocus, confirmas que:\n"
             "1. Posees los derechos de autor o autorización completa de cada imagen subida.\n"
             "2. Las imágenes no contienen contenido explícito, violento, de odio, ilegal ni spam.\n"
-            "3. OpenFocus puede mostrar tu obra en la vitrina de escritorio y la galería comunitaria, "
+            "3. OpenFocus puede mostrar tu obra en la vitrina de escritorio y el espacio comunitario, "
             "y permitir descargas solo si activas Permitir descarga.\n"
             "4. Las obras rechazadas en la revisión o con fallo de subida nunca se cobran (0 puntos deducidos).\n"
-            "5. Puedes eliminar tus obras de la galería en cualquier momento."
+            "5. Puedes eliminar tus obras de la comunidad en cualquier momento."
         ),
 
         "account_center_title": "Cuenta y mensajes de OpenFocus",
@@ -1514,7 +1514,7 @@ def _build_es() -> dict[str, str]:
         "account_center_redeem_success": "Código canjeado: +{points} puntos añadidos.",
         "account_center_redeem_empty": "Introduce un código de canje.",
         "account_center_interests_title": "Intereses",
-        "account_center_interests_hint": "Elige temas para personalizar tu galería.",
+        "account_center_interests_hint": "Elige temas para personalizar tu comunidad.",
         "account_center_interests_save": "Guardar intereses",
         "account_center_interests_saved": "Intereses guardados.",
         "account_center_privacy_title": "Ajustes de privacidad",
@@ -1584,14 +1584,14 @@ def _build_es() -> dict[str, str]:
         "gallery_notif_comment_upvoted": "{actor} votó positivo tu comentario en \"{work_title}\".",
         "gallery_notif_work_downloaded": "{actor} descargó tu obra \"{work_title}\".",
         "gallery_notif_user_followed": "{actor} comenzó a seguirte.",
-        "gallery_notif_work_featured": "Tu obra \"{work_title}\" fue destacada en la Galería OpenFocus.",
+        "gallery_notif_work_featured": "Tu obra \"{work_title}\" fue destacada en la Comunidad OpenFocus.",
         "gallery_notif_leaderboard_ranked": "Tu obra \"{work_title}\" alcanzó el puesto n.º {rank} en la clasificación de {period}.",
         "gallery_notif_honor_card_awarded": "¡Ganaste una Tarjeta de Honor de {period} (n.º {rank}) y +{points} puntos!",
         "gallery_notif_points_granted": "Has recibido +{points} puntos de bonificación.",
         "gallery_notif_points_recharged": "Se abonaron +{points} puntos en tu cuenta.",
         "gallery_notif_work_removed": "Tu obra \"{work_title}\" fue retirada ({reason}).",
         "gallery_notif_comment_removed": "Tu comentario fue eliminado ({reason}).",
-        "gallery_notif_system_announcement": "Aviso de la Galería OpenFocus: {detail}",
+        "gallery_notif_system_announcement": "Aviso de la Comunidad OpenFocus: {detail}",
         "gallery_notif_comment_liked": "A {actor} le gustó tu comentario en \"{work_title}\".",
         "gallery_notif_new_follower": "{actor} comenzó a seguirte.",
         "gallery_notif_work_rejected_nsfw": "Tu subida \"{work_title}\" no superó la revisión de seguridad ({reason}). 0 puntos deducidos.",
@@ -1604,8 +1604,8 @@ def _build_es() -> dict[str, str]:
 
         "gallery_err_unauthorized": "Inicia sesión para continuar.",
         "gallery_err_account_disabled": "Esta cuenta está deshabilitada actualmente.",
-        "gallery_err_gallery_disabled": "La Galería OpenFocus no está disponible temporalmente.",
-        "gallery_err_gallery_terms_required": "Acepta primero el Acuerdo de Usuario de la Galería.",
+        "gallery_err_gallery_disabled": "La Comunidad OpenFocus no está disponible temporalmente.",
+        "gallery_err_gallery_terms_required": "Acepta primero el Acuerdo de Usuario de la Comunidad.",
         "gallery_err_privacy_restricted": "El contenido de este usuario es privado.",
         "gallery_err_forbidden": "No tienes permiso para realizar esta acción.",
         "gallery_err_not_found": "No se encontró el elemento solicitado.",
@@ -1641,11 +1641,11 @@ def _build_es() -> dict[str, str]:
 
 def _build_de() -> dict[str, str]:
     return {
-        "menu_gallery": "Galerie",
-        "menu_gallery_hub": "OpenFocus-Galerie",
+        "menu_gallery": "Community",
+        "menu_gallery_hub": "OpenFocus-Community",
         "menu_account_center": "Mein Konto",
         "menu_message_box": "Nachrichten",
-        "menu_upload_to_gallery": "In Galerie hochladen",
+        "menu_upload_to_gallery": "In Community hochladen",
         "menu_gallery_screensaver": "Vollbild-Schaufenster",
 
         "gallery_btn_close": "Schließen",
@@ -1704,20 +1704,20 @@ def _build_de() -> dict[str, str]:
         "gallery_comments_author_badge": "Autor",
         "gallery_comments_delete": "Löschen",
         "gallery_comments_empty": "Noch keine Kommentare.",
-        "gallery_empty_state": "OpenFocus-Galerie",
+        "gallery_empty_state": "OpenFocus-Community",
         "gallery_report_title": "Meldegrund",
         "gallery_screensaver_press_esc": "Zum Beenden ESC drücken",
         "gallery_upvote": "Zustimmen",
         "gallery_downvote": "Ablehnen",
 
-        "gallery_settings_group": "Galerie & Schaufenster",
-        "gallery_settings_cache_dir": "Galerie-Cache-Ordner",
-        "gallery_settings_download_dir": "Galerie-Download-Ordner",
-        "gallery_settings_clear_cache": "Galerie-Cache leeren",
+        "gallery_settings_group": "Community & Schaufenster",
+        "gallery_settings_cache_dir": "Community-Cache-Ordner",
+        "gallery_settings_download_dir": "Community-Download-Ordner",
+        "gallery_settings_clear_cache": "Community-Cache leeren",
         "gallery_settings_cache_cleared": "{files} Cache-Dateien entfernt ({size_mb:.1f} MB freigegeben).",
         "gallery_settings_slide_interval": "Diashow-Intervall (Sekunden)",
 
-        "gallery_hub_title": "OpenFocus-Galerie",
+        "gallery_hub_title": "OpenFocus-Community",
         "gallery_tab_square": "Entdecken",
         "gallery_tab_leaderboard": "Bestenliste",
         "gallery_tab_publish": "Werk veröffentlichen",
@@ -1767,7 +1767,7 @@ def _build_de() -> dict[str, str]:
         "gallery_publish_selected_count": "{count} / {max_batch} Bilder ausgewählt",
         "gallery_publish_title_label": "Titel",
         "gallery_publish_title_placeholder": "Optionaler Titel für dein Werk",
-        "gallery_publish_watermark_enable": "Copyright-Wasserzeichen unten rechts hinzufügen",
+        "gallery_publish_watermark_enable": "Copyright-Wasserzeichen oben links hinzufügen",
         "gallery_publish_watermark_label": "Urheberhinweis",
         "gallery_publish_watermark_placeholder": "Dein Name oder Studio",
         "gallery_publish_use_nickname": "Meinen Spitznamen verwenden",
@@ -1784,18 +1784,18 @@ def _build_de() -> dict[str, str]:
         "gallery_publish_exif_iso": "ISO",
         "gallery_publish_allow_download": "Anderen Nutzern das Herunterladen erlauben",
         "gallery_publish_openfocus_badge": "Exklusives OpenFocus-Abzeichen anzeigen",
-        "gallery_publish_agreement_check": "Ich habe die Nutzungsvereinbarung der OpenFocus-Galerie gelesen und akzeptiere sie",
+        "gallery_publish_agreement_check": "Ich habe die Nutzungsvereinbarung der OpenFocus-Community gelesen und akzeptiere sie",
         "gallery_publish_agreement_view": "Vereinbarung lesen",
-        "gallery_publish_agreement_required": "Bitte stimme vor dem Veröffentlichen der Galerie-Vereinbarung zu.",
+        "gallery_publish_agreement_required": "Bitte stimme vor dem Veröffentlichen der Community-Vereinbarung zu.",
         "gallery_publish_cost_hint": "Die Veröffentlichung kostet {cost} Punkte je angenommenem Werk (0 Punkte Abzug bei Ablehnung oder Fehler).",
         "gallery_hub_points_badge": "Punkte: {points}",
-        "gallery_showcase_window_title": "OpenFocus Galerie-Schaufenster",
+        "gallery_showcase_window_title": "OpenFocus Community-Schaufenster",
         "gallery_fusion_waiting_status": "Fusion läuft im Hintergrund…",
         "gallery_fusion_done_status": "Fusion abgeschlossen!",
         "gallery_fusion_return_btn": "Diesmal schließen",
         "gallery_fusion_view_result_btn": "Ergebnis anzeigen",
-        "gallery_auto_show_during_fusion": "Galeriefenster beim Fusionieren öffnen",
-        "menu_gallery_showcase": "Galerie-Schaufenster",
+        "gallery_auto_show_during_fusion": "Community-Fenster beim Fusionieren öffnen",
+        "menu_gallery_showcase": "Community-Schaufenster",
         "gallery_hub_points_signed_out": "Abgemeldet",
         "gallery_hub_top_up_btn": "Aufladen / Konto",
         "gallery_publish_cost_summary": "Guthaben: {balance} Pkt. · {cost} Pkt. / Werk",
@@ -1819,7 +1819,7 @@ def _build_de() -> dict[str, str]:
         "gallery_my_works_stats": "{likes} Likes · {comments} Kommentare · {downloads} Downloads",
         "gallery_my_works_delete": "Löschen",
         "gallery_my_works_delete_confirm_title": "Werk löschen",
-        "gallery_my_works_delete_confirm_body": "„{title}“ dauerhaft aus der Galerie löschen? Dies kann nicht rückgängig gemacht werden.",
+        "gallery_my_works_delete_confirm_body": "„{title}“ dauerhaft aus der Community löschen? Dies kann nicht rückgängig gemacht werden.",
         "gallery_my_works_deleted": "Werk gelöscht.",
 
         "gallery_author_showcase_title": "Schaufenster von {author}",
@@ -1830,8 +1830,8 @@ def _build_de() -> dict[str, str]:
         "gallery_author_works_empty": "Dieser Ersteller hat noch keine Werke veröffentlicht.",
 
         "gallery_upload_prompt_title": "Teile deinen Fokus-Stack",
-        "gallery_upload_prompt_body": "Dein gestapeltes Bild sieht gestochen scharf aus! Möchtest du es in der OpenFocus-Galerie teilen?",
-        "gallery_upload_prompt_upload": "In Galerie hochladen",
+        "gallery_upload_prompt_body": "Dein gestapeltes Bild sieht gestochen scharf aus! Möchtest du es in der OpenFocus-Community teilen?",
+        "gallery_upload_prompt_upload": "In Community hochladen",
         "gallery_upload_prompt_dismiss": "Später",
 
         "gallery_honor_card_title": "Bestenlisten-Ehrenkarte",
@@ -1840,15 +1840,15 @@ def _build_de() -> dict[str, str]:
         "gallery_honor_card_reward_points": "+{points} Prämienpunkte gutgeschrieben",
         "gallery_honor_card_close": "Einsammeln & schließen",
 
-        "gallery_agreement_title": "Nutzungsvereinbarung der OpenFocus-Galerie",
+        "gallery_agreement_title": "Nutzungsvereinbarung der OpenFocus-Community",
         "gallery_agreement_body": (
-            "Mit dem Veröffentlichen in der OpenFocus-Galerie bestätigst du:\n"
+            "Mit dem Veröffentlichen in der OpenFocus-Community bestätigst du:\n"
             "1. Du besitzt das Urheberrecht oder die volle Freigabe für jedes hochgeladene Bild.\n"
             "2. Die Uploads enthalten keine expliziten, gewalttätigen, hasserfüllten, illegalen oder Spam-Inhalte.\n"
-            "3. OpenFocus darf dein Werk im Desktop-Schaufenster und in der Galerie anzeigen; "
+            "3. OpenFocus darf dein Werk im Desktop-Schaufenster und in der Communauté anzeigen; "
             "Downloads sind nur erlaubt, wenn du „Herunterladen erlauben“ aktivierst.\n"
             "4. Bei abgelehnter Prüfung oder fehlgeschlagenem Upload werden 0 Punkte abgezogen.\n"
-            "5. Du kannst deine Werke jederzeit aus der Galerie entfernen."
+            "5. Du kannst deine Werke jederzeit aus der Community entfernen."
         ),
 
         "account_center_title": "OpenFocus-Konto & Nachrichten",
@@ -1882,7 +1882,7 @@ def _build_de() -> dict[str, str]:
         "account_center_redeem_success": "Code eingelöst: +{points} Punkte gutgeschrieben.",
         "account_center_redeem_empty": "Bitte gib einen Einlösecode ein.",
         "account_center_interests_title": "Interessen",
-        "account_center_interests_hint": "Wähle Themen für einen personalisierten Galerie-Feed.",
+        "account_center_interests_hint": "Wähle Themen für einen personalisierten Community-Feed.",
         "account_center_interests_save": "Interessen speichern",
         "account_center_interests_saved": "Interessen gespeichert.",
         "account_center_privacy_title": "Datenschutzeinstellungen",
@@ -1952,14 +1952,14 @@ def _build_de() -> dict[str, str]:
         "gallery_notif_comment_upvoted": "{actor} hat deinem Kommentar zu „{work_title}“ zugestimmt.",
         "gallery_notif_work_downloaded": "{actor} hat dein Werk „{work_title}“ heruntergeladen.",
         "gallery_notif_user_followed": "{actor} folgt dir jetzt.",
-        "gallery_notif_work_featured": "Dein Werk „{work_title}“ wurde in der OpenFocus-Galerie hervorgehoben.",
+        "gallery_notif_work_featured": "Dein Werk „{work_title}“ wurde in der OpenFocus-Community hervorgehoben.",
         "gallery_notif_leaderboard_ranked": "Dein Werk „{work_title}“ erreichte Platz {rank} in der {period}-Bestenliste.",
         "gallery_notif_honor_card_awarded": "Du hast eine {period}-Ehrenkarte (Platz {rank}) und +{points} Punkte erhalten!",
         "gallery_notif_points_granted": "Du hast +{points} Bonuspunkte erhalten.",
         "gallery_notif_points_recharged": "Deinem Konto wurden +{points} Punkte gutgeschrieben.",
         "gallery_notif_work_removed": "Dein Werk „{work_title}“ wurde entfernt ({reason}).",
         "gallery_notif_comment_removed": "Dein Kommentar wurde entfernt ({reason}).",
-        "gallery_notif_system_announcement": "Hinweis der OpenFocus-Galerie: {detail}",
+        "gallery_notif_system_announcement": "Hinweis der OpenFocus-Community: {detail}",
         "gallery_notif_comment_liked": "{actor} gefällt dein Kommentar zu „{work_title}“.",
         "gallery_notif_new_follower": "{actor} folgt dir jetzt.",
         "gallery_notif_work_rejected_nsfw": "Dein Upload „{work_title}“ hat die Sicherheitsprüfung nicht bestanden ({reason}). 0 Punkte abgezogen.",
@@ -1972,8 +1972,8 @@ def _build_de() -> dict[str, str]:
 
         "gallery_err_unauthorized": "Bitte melde dich an, um fortzufahren.",
         "gallery_err_account_disabled": "Dieses Konto ist derzeit deaktiviert.",
-        "gallery_err_gallery_disabled": "Die OpenFocus-Galerie ist vorübergehend nicht verfügbar.",
-        "gallery_err_gallery_terms_required": "Bitte akzeptiere zuerst die Galerie-Nutzungsvereinbarung.",
+        "gallery_err_gallery_disabled": "Die OpenFocus-Community ist vorübergehend nicht verfügbar.",
+        "gallery_err_gallery_terms_required": "Bitte akzeptiere zuerst die Community-Nutzungsvereinbarung.",
         "gallery_err_privacy_restricted": "Die Inhalte dieses Nutzers sind privat.",
         "gallery_err_forbidden": "Du hast keine Berechtigung für diese Aktion.",
         "gallery_err_not_found": "Das angeforderte Element wurde nicht gefunden.",
@@ -2009,11 +2009,11 @@ def _build_de() -> dict[str, str]:
 
 def _build_fr() -> dict[str, str]:
     return {
-        "menu_gallery": "Galerie",
-        "menu_gallery_hub": "Galerie OpenFocus",
+        "menu_gallery": "Community",
+        "menu_gallery_hub": "Communauté OpenFocus",
         "menu_account_center": "Mon compte",
         "menu_message_box": "Boîte de messages",
-        "menu_upload_to_gallery": "Publier dans la galerie",
+        "menu_upload_to_gallery": "Publier dans la communauté",
         "menu_gallery_screensaver": "Vitrine plein écran",
 
         "gallery_btn_close": "Fermer",
@@ -2072,20 +2072,20 @@ def _build_fr() -> dict[str, str]:
         "gallery_comments_author_badge": "Auteur",
         "gallery_comments_delete": "Supprimer",
         "gallery_comments_empty": "Aucun commentaire pour le moment.",
-        "gallery_empty_state": "Galerie OpenFocus",
+        "gallery_empty_state": "Communauté OpenFocus",
         "gallery_report_title": "Motif du signalement",
         "gallery_screensaver_press_esc": "Appuyez sur Échap pour quitter",
         "gallery_upvote": "Vote positif",
         "gallery_downvote": "Vote négatif",
 
-        "gallery_settings_group": "Galerie et vitrine",
-        "gallery_settings_cache_dir": "Dossier du cache de la galerie",
-        "gallery_settings_download_dir": "Dossier de téléchargement de la galerie",
-        "gallery_settings_clear_cache": "Vider le cache de la galerie",
+        "gallery_settings_group": "Communauté et vitrine",
+        "gallery_settings_cache_dir": "Dossier du cache de la communauté",
+        "gallery_settings_download_dir": "Dossier de téléchargement de la communauté",
+        "gallery_settings_clear_cache": "Vider le cache de la communauté",
         "gallery_settings_cache_cleared": "{files} fichiers en cache supprimés ({size_mb:.1f} Mo libérés).",
         "gallery_settings_slide_interval": "Intervalle du diaporama (secondes)",
 
-        "gallery_hub_title": "Galerie OpenFocus",
+        "gallery_hub_title": "Communauté OpenFocus",
         "gallery_tab_square": "Explorer",
         "gallery_tab_leaderboard": "Classement",
         "gallery_tab_publish": "Publier une œuvre",
@@ -2135,7 +2135,7 @@ def _build_fr() -> dict[str, str]:
         "gallery_publish_selected_count": "{count} / {max_batch} images sélectionnées",
         "gallery_publish_title_label": "Titre",
         "gallery_publish_title_placeholder": "Titre facultatif pour votre œuvre",
-        "gallery_publish_watermark_enable": "Ajouter un filigrane de droits d'auteur en bas à droite",
+        "gallery_publish_watermark_enable": "Ajouter un filigrane de droits d'auteur en haut à gauche",
         "gallery_publish_watermark_label": "Attribution",
         "gallery_publish_watermark_placeholder": "Votre nom ou studio",
         "gallery_publish_use_nickname": "Utiliser mon pseudonyme",
@@ -2152,18 +2152,18 @@ def _build_fr() -> dict[str, str]:
         "gallery_publish_exif_iso": "ISO",
         "gallery_publish_allow_download": "Autoriser le téléchargement par d'autres utilisateurs",
         "gallery_publish_openfocus_badge": "Afficher le badge exclusif OpenFocus",
-        "gallery_publish_agreement_check": "J'ai lu et j'accepte l'accord utilisateur de la Galerie OpenFocus",
+        "gallery_publish_agreement_check": "J'ai lu et j'accepte l'accord utilisateur de la Communauté OpenFocus",
         "gallery_publish_agreement_view": "Lire l'accord",
         "gallery_publish_agreement_required": "Veuillez accepter l'accord utilisateur avant de publier.",
         "gallery_publish_cost_hint": "La publication coûte {cost} points par œuvre acceptée (0 point débité en cas de refus ou d'échec).",
         "gallery_hub_points_badge": "Points : {points}",
-        "gallery_showcase_window_title": "Vitrine de la galerie OpenFocus",
+        "gallery_showcase_window_title": "Vitrine de la communauté OpenFocus",
         "gallery_fusion_waiting_status": "Fusion en cours en arrière-plan…",
         "gallery_fusion_done_status": "Fusion terminée !",
         "gallery_fusion_return_btn": "Fermer pour l’instant",
         "gallery_fusion_view_result_btn": "Voir le résultat",
-        "gallery_auto_show_during_fusion": "Ouvrir la fenêtre Galerie pendant la fusion",
-        "menu_gallery_showcase": "Vitrine de la galerie",
+        "gallery_auto_show_during_fusion": "Ouvrir la fenêtre Communauté pendant la fusion",
+        "menu_gallery_showcase": "Vitrine de la communauté",
         "gallery_hub_points_signed_out": "Déconnecté",
         "gallery_hub_top_up_btn": "Recharger / Compte",
         "gallery_publish_cost_summary": "Solde : {balance} pts · {cost} pts / œuvre",
@@ -2187,7 +2187,7 @@ def _build_fr() -> dict[str, str]:
         "gallery_my_works_stats": "{likes} j'aime · {comments} commentaires · {downloads} téléchargements",
         "gallery_my_works_delete": "Supprimer",
         "gallery_my_works_delete_confirm_title": "Supprimer l'œuvre",
-        "gallery_my_works_delete_confirm_body": "Supprimer définitivement « {title} » de la galerie ? Cette action est irréversible.",
+        "gallery_my_works_delete_confirm_body": "Supprimer définitivement « {title} » de la communauté ? Cette action est irréversible.",
         "gallery_my_works_deleted": "Œuvre supprimée.",
 
         "gallery_author_showcase_title": "Vitrine de {author}",
@@ -2198,8 +2198,8 @@ def _build_fr() -> dict[str, str]:
         "gallery_author_works_empty": "Ce créateur n'a pas encore publié d'œuvre.",
 
         "gallery_upload_prompt_title": "Partagez votre empilement de mise au point",
-        "gallery_upload_prompt_body": "Votre image fusionnée est superbe ! Souhaitez-vous la partager dans la Galerie OpenFocus ?",
-        "gallery_upload_prompt_upload": "Publier dans la galerie",
+        "gallery_upload_prompt_body": "Votre image fusionnée est superbe ! Souhaitez-vous la partager dans la Communauté OpenFocus ?",
+        "gallery_upload_prompt_upload": "Publier dans la communauté",
         "gallery_upload_prompt_dismiss": "Pas maintenant",
 
         "gallery_honor_card_title": "Carte d'honneur du classement",
@@ -2208,15 +2208,15 @@ def _build_fr() -> dict[str, str]:
         "gallery_honor_card_reward_points": "+{points} points de récompense crédités",
         "gallery_honor_card_close": "Récupérer et fermer",
 
-        "gallery_agreement_title": "Accord utilisateur de la Galerie OpenFocus",
+        "gallery_agreement_title": "Accord utilisateur de la Communauté OpenFocus",
         "gallery_agreement_body": (
-            "En publiant dans la Galerie OpenFocus, vous confirmez que :\n"
+            "En publiant dans la Communauté OpenFocus, vous confirmez que :\n"
             "1. Vous détenez les droits d'auteur ou l'autorisation complète pour chaque image envoyée.\n"
             "2. Les envois ne contiennent aucun contenu explicite, violent, haineux, illégal ou spam.\n"
-            "3. OpenFocus peut afficher votre œuvre dans la vitrine de bureau et la galerie communautaire, "
+            "3. OpenFocus peut afficher votre œuvre dans la vitrine de bureau et l'espace communautaire, "
             "et autoriser le téléchargement uniquement si vous activez Autoriser le téléchargement.\n"
             "4. Les œuvres refusées ou dont l'envoi échoue ne sont jamais facturées (0 point débité).\n"
-            "5. Vous pouvez supprimer vos œuvres de la galerie à tout moment."
+            "5. Vous pouvez supprimer vos œuvres de la communauté à tout moment."
         ),
 
         "account_center_title": "Compte et messages OpenFocus",
@@ -2250,7 +2250,7 @@ def _build_fr() -> dict[str, str]:
         "account_center_redeem_success": "Code validé : +{points} points ajoutés.",
         "account_center_redeem_empty": "Veuillez saisir un code.",
         "account_center_interests_title": "Centres d'intérêt",
-        "account_center_interests_hint": "Choisissez des thèmes pour personnaliser votre fil galerie.",
+        "account_center_interests_hint": "Choisissez des thèmes pour personnaliser votre fil communauté.",
         "account_center_interests_save": "Enregistrer les intérêts",
         "account_center_interests_saved": "Centres d'intérêt enregistrés.",
         "account_center_privacy_title": "Confidentialité",
@@ -2320,14 +2320,14 @@ def _build_fr() -> dict[str, str]:
         "gallery_notif_comment_upvoted": "{actor} a approuvé votre commentaire sur « {work_title} ».",
         "gallery_notif_work_downloaded": "{actor} a téléchargé votre œuvre « {work_title} ».",
         "gallery_notif_user_followed": "{actor} vous suit désormais.",
-        "gallery_notif_work_featured": "Votre œuvre « {work_title} » a été mise à la une dans la Galerie OpenFocus.",
+        "gallery_notif_work_featured": "Votre œuvre « {work_title} » a été mise à la une dans la Communauté OpenFocus.",
         "gallery_notif_leaderboard_ranked": "Votre œuvre « {work_title} » s'est classée n° {rank} sur le classement {period}.",
         "gallery_notif_honor_card_awarded": "Vous avez reçu une carte d'honneur {period} (n° {rank}) et +{points} points !",
         "gallery_notif_points_granted": "Vous avez reçu +{points} points bonus.",
         "gallery_notif_points_recharged": "Votre compte a été crédité de +{points} points.",
         "gallery_notif_work_removed": "Votre œuvre « {work_title} » a été retirée ({reason}).",
         "gallery_notif_comment_removed": "Votre commentaire a été supprimé ({reason}).",
-        "gallery_notif_system_announcement": "Annonce de la Galerie OpenFocus : {detail}",
+        "gallery_notif_system_announcement": "Annonce de la Communauté OpenFocus : {detail}",
         "gallery_notif_comment_liked": "{actor} a aimé votre commentaire sur « {work_title} ».",
         "gallery_notif_new_follower": "{actor} vous suit désormais.",
         "gallery_notif_work_rejected_nsfw": "Votre envoi « {work_title} » n'a pas passé la vérification ({reason}). 0 point débité.",
@@ -2340,8 +2340,8 @@ def _build_fr() -> dict[str, str]:
 
         "gallery_err_unauthorized": "Veuillez vous connecter pour continuer.",
         "gallery_err_account_disabled": "Ce compte est actuellement désactivé.",
-        "gallery_err_gallery_disabled": "La Galerie OpenFocus est temporairement indisponible.",
-        "gallery_err_gallery_terms_required": "Veuillez d'abord accepter l'accord utilisateur de la galerie.",
+        "gallery_err_gallery_disabled": "La Communauté OpenFocus est temporairement indisponible.",
+        "gallery_err_gallery_terms_required": "Veuillez d'abord accepter l'accord utilisateur de la communauté.",
         "gallery_err_privacy_restricted": "Le contenu de cet utilisateur est privé.",
         "gallery_err_forbidden": "Vous n'avez pas l'autorisation d'effectuer cette action.",
         "gallery_err_not_found": "L'élément demandé est introuvable.",
@@ -2377,11 +2377,11 @@ def _build_fr() -> dict[str, str]:
 
 def _build_it() -> dict[str, str]:
     return {
-        "menu_gallery": "Galleria",
-        "menu_gallery_hub": "Galleria OpenFocus",
+        "menu_gallery": "Comunità",
+        "menu_gallery_hub": "Comunità OpenFocus",
         "menu_account_center": "Il mio account",
         "menu_message_box": "Casella messaggi",
-        "menu_upload_to_gallery": "Carica nella galleria",
+        "menu_upload_to_gallery": "Carica nella comunità",
         "menu_gallery_screensaver": "Vetrina a schermo intero",
 
         "gallery_btn_close": "Chiudi",
@@ -2440,20 +2440,20 @@ def _build_it() -> dict[str, str]:
         "gallery_comments_author_badge": "Autore",
         "gallery_comments_delete": "Elimina",
         "gallery_comments_empty": "Nessun commento al momento.",
-        "gallery_empty_state": "Galleria OpenFocus",
+        "gallery_empty_state": "Comunità OpenFocus",
         "gallery_report_title": "Motivo della segnalazione",
         "gallery_screensaver_press_esc": "Premi ESC per uscire",
         "gallery_upvote": "Voto positivo",
         "gallery_downvote": "Voto negativo",
 
-        "gallery_settings_group": "Galleria e vetrina",
-        "gallery_settings_cache_dir": "Cartella cache della galleria",
-        "gallery_settings_download_dir": "Cartella download della galleria",
-        "gallery_settings_clear_cache": "Svuota cache della galleria",
+        "gallery_settings_group": "Comunità e vetrina",
+        "gallery_settings_cache_dir": "Cartella cache della comunità",
+        "gallery_settings_download_dir": "Cartella download della comunità",
+        "gallery_settings_clear_cache": "Svuota cache della comunità",
         "gallery_settings_cache_cleared": "Rimossi {files} file dalla cache ({size_mb:.1f} MB liberati).",
         "gallery_settings_slide_interval": "Intervallo diapositive (secondi)",
 
-        "gallery_hub_title": "Galleria OpenFocus",
+        "gallery_hub_title": "Comunità OpenFocus",
         "gallery_tab_square": "Esplora",
         "gallery_tab_leaderboard": "Classifica",
         "gallery_tab_publish": "Pubblica opera",
@@ -2503,7 +2503,7 @@ def _build_it() -> dict[str, str]:
         "gallery_publish_selected_count": "{count} / {max_batch} immagini selezionate",
         "gallery_publish_title_label": "Titolo",
         "gallery_publish_title_placeholder": "Titolo facoltativo per l'opera",
-        "gallery_publish_watermark_enable": "Aggiungi filigrana di copyright in basso a destra",
+        "gallery_publish_watermark_enable": "Aggiungi filigrana di copyright in alto a sinistra",
         "gallery_publish_watermark_label": "Attribuzione",
         "gallery_publish_watermark_placeholder": "Il tuo nome o studio",
         "gallery_publish_use_nickname": "Usa il mio nickname",
@@ -2520,18 +2520,18 @@ def _build_it() -> dict[str, str]:
         "gallery_publish_exif_iso": "ISO",
         "gallery_publish_allow_download": "Consenti ad altri utenti di scaricare quest'opera",
         "gallery_publish_openfocus_badge": "Mostra badge esclusivo OpenFocus",
-        "gallery_publish_agreement_check": "Ho letto e accetto il Contratto Utente della Galleria OpenFocus",
+        "gallery_publish_agreement_check": "Ho letto e accetto il Contratto Utente della Comunità OpenFocus",
         "gallery_publish_agreement_view": "Leggi contratto",
-        "gallery_publish_agreement_required": "Accetta il Contratto Utente della Galleria prima di pubblicare.",
+        "gallery_publish_agreement_required": "Accetta il Contratto Utente della Comunità prima di pubblicare.",
         "gallery_publish_cost_hint": "La pubblicazione costa {cost} punti per opera approvata (0 punti scalati se rifiutata o fallita).",
         "gallery_hub_points_badge": "Punti: {points}",
-        "gallery_showcase_window_title": "Vetrina Galleria OpenFocus",
+        "gallery_showcase_window_title": "Vetrina Comunità OpenFocus",
         "gallery_fusion_waiting_status": "Fusione in corso in background…",
         "gallery_fusion_done_status": "Fusione completata!",
         "gallery_fusion_return_btn": "Chiudi per ora",
         "gallery_fusion_view_result_btn": "Visualizza risultato",
-        "gallery_auto_show_during_fusion": "Apri finestra Galleria durante la fusione",
-        "menu_gallery_showcase": "Vetrina Galleria",
+        "gallery_auto_show_during_fusion": "Apri finestra Comunità durante la fusione",
+        "menu_gallery_showcase": "Vetrina Comunità",
         "gallery_hub_points_signed_out": "Disconnesso",
         "gallery_hub_top_up_btn": "Ricarica / Account",
         "gallery_publish_cost_summary": "Saldo: {balance} pt · {cost} pt / opera",
@@ -2555,7 +2555,7 @@ def _build_it() -> dict[str, str]:
         "gallery_my_works_stats": "{likes} mi piace · {comments} commenti · {downloads} download",
         "gallery_my_works_delete": "Elimina",
         "gallery_my_works_delete_confirm_title": "Elimina opera",
-        "gallery_my_works_delete_confirm_body": "Eliminare definitivamente \"{title}\" dalla galleria? Questa azione è irreversibile.",
+        "gallery_my_works_delete_confirm_body": "Eliminare definitivamente \"{title}\" dalla comunità? Questa azione è irreversibile.",
         "gallery_my_works_deleted": "Opera eliminata.",
 
         "gallery_author_showcase_title": "Vetrina di {author}",
@@ -2566,8 +2566,8 @@ def _build_it() -> dict[str, str]:
         "gallery_author_works_empty": "Questo creatore non ha ancora pubblicato opere.",
 
         "gallery_upload_prompt_title": "Condividi il tuo focus stack",
-        "gallery_upload_prompt_body": "La tua immagine fusa è nitidissima! Vuoi condividerla nella Galleria OpenFocus?",
-        "gallery_upload_prompt_upload": "Carica nella galleria",
+        "gallery_upload_prompt_body": "La tua immagine fusa è nitidissima! Vuoi condividerla nella Comunità OpenFocus?",
+        "gallery_upload_prompt_upload": "Carica nella comunità",
         "gallery_upload_prompt_dismiss": "Non ora",
 
         "gallery_honor_card_title": "Carta d'Onore della classifica",
@@ -2576,15 +2576,15 @@ def _build_it() -> dict[str, str]:
         "gallery_honor_card_reward_points": "+{points} punti premio accreditati",
         "gallery_honor_card_close": "Riscuoti e chiudi",
 
-        "gallery_agreement_title": "Contratto Utente della Galleria OpenFocus",
+        "gallery_agreement_title": "Contratto Utente della Comunità OpenFocus",
         "gallery_agreement_body": (
-            "Pubblicando nella Galleria OpenFocus confermi che:\n"
+            "Pubblicando nella Comunità OpenFocus confermi che:\n"
             "1. Possiedi il copyright o piena autorizzazione per ogni immagine caricata.\n"
             "2. Le immagini non contengono contenuti espliciti, violenti, di odio, illegali o spam.\n"
-            "3. OpenFocus può mostrare la tua opera nella vetrina desktop e nella galleria comunitaria, "
+            "3. OpenFocus può mostrare la tua opera nella vetrina desktop e nello spazio della comunità, "
             "consentendo il download solo se attivi Consenti download.\n"
             "4. Le opere rifiutate o con caricamento fallito non vengono mai addebitate (0 punti scalati).\n"
-            "5. Puoi rimuovere le tue opere dalla galleria in qualsiasi momento."
+            "5. Puoi rimuovere le tue opere dalla comunità in qualsiasi momento."
         ),
 
         "account_center_title": "Account e messaggi OpenFocus",
@@ -2618,7 +2618,7 @@ def _build_it() -> dict[str, str]:
         "account_center_redeem_success": "Codice riscattato: +{points} punti aggiunti.",
         "account_center_redeem_empty": "Inserisci un codice di riscatto.",
         "account_center_interests_title": "Interessi",
-        "account_center_interests_hint": "Seleziona argomenti per personalizzare la galleria.",
+        "account_center_interests_hint": "Seleziona argomenti per personalizzare la comunità.",
         "account_center_interests_save": "Salva interessi",
         "account_center_interests_saved": "Interessi salvati.",
         "account_center_privacy_title": "Impostazioni privacy",
@@ -2688,14 +2688,14 @@ def _build_it() -> dict[str, str]:
         "gallery_notif_comment_upvoted": "{actor} ha approvato il tuo commento su \"{work_title}\".",
         "gallery_notif_work_downloaded": "{actor} ha scaricato la tua opera \"{work_title}\".",
         "gallery_notif_user_followed": "{actor} ha iniziato a seguirti.",
-        "gallery_notif_work_featured": "La tua opera \"{work_title}\" è stata messa in evidenza nella Galleria OpenFocus.",
+        "gallery_notif_work_featured": "La tua opera \"{work_title}\" è stata messa in evidenza nella Comunità OpenFocus.",
         "gallery_notif_leaderboard_ranked": "La tua opera \"{work_title}\" è al n. {rank} nella classifica {period}.",
         "gallery_notif_honor_card_awarded": "Hai vinto una Carta d'Onore {period} (n. {rank}) e +{points} punti!",
         "gallery_notif_points_granted": "Hai ricevuto +{points} punti bonus.",
         "gallery_notif_points_recharged": "Sono stati accreditati +{points} punti sul tuo account.",
         "gallery_notif_work_removed": "La tua opera \"{work_title}\" è stata rimossa ({reason}).",
         "gallery_notif_comment_removed": "Il tuo commento è stato rimosso ({reason}).",
-        "gallery_notif_system_announcement": "Avviso della Galleria OpenFocus: {detail}",
+        "gallery_notif_system_announcement": "Avviso della Comunità OpenFocus: {detail}",
         "gallery_notif_comment_liked": "A {actor} piace il tuo commento su \"{work_title}\".",
         "gallery_notif_new_follower": "{actor} ha iniziato a seguirti.",
         "gallery_notif_work_rejected_nsfw": "Il caricamento \"{work_title}\" non ha superato il controllo ({reason}). 0 punti scalati.",
@@ -2708,8 +2708,8 @@ def _build_it() -> dict[str, str]:
 
         "gallery_err_unauthorized": "Accedi per continuare.",
         "gallery_err_account_disabled": "Questo account è attualmente disabilitato.",
-        "gallery_err_gallery_disabled": "La Galleria OpenFocus è temporaneamente non disponibile.",
-        "gallery_err_gallery_terms_required": "Accetta prima il Contratto Utente della Galleria.",
+        "gallery_err_gallery_disabled": "La Comunità OpenFocus è temporaneamente non disponibile.",
+        "gallery_err_gallery_terms_required": "Accetta prima il Contratto Utente della Comunità.",
         "gallery_err_privacy_restricted": "I contenuti di questo utente sono privati.",
         "gallery_err_forbidden": "Non disponi dei permessi per eseguire questa azione.",
         "gallery_err_not_found": "L'elemento richiesto non è stato trovato.",
@@ -2745,11 +2745,11 @@ def _build_it() -> dict[str, str]:
 
 def _build_ko() -> dict[str, str]:
     return {
-        "menu_gallery": "갤러리",
-        "menu_gallery_hub": "OpenFocus 갤러리",
+        "menu_gallery": "커뮤니티",
+        "menu_gallery_hub": "OpenFocus 커뮤니티",
         "menu_account_center": "내 계정",
         "menu_message_box": "메시지함",
-        "menu_upload_to_gallery": "갤러리에 업로드",
+        "menu_upload_to_gallery": "커뮤니티에 업로드",
         "menu_gallery_screensaver": "전체 화면 쇼케이스",
 
         "gallery_btn_close": "닫기",
@@ -2808,20 +2808,20 @@ def _build_ko() -> dict[str, str]:
         "gallery_comments_author_badge": "작가",
         "gallery_comments_delete": "삭제",
         "gallery_comments_empty": "아직 댓글이 없습니다.",
-        "gallery_empty_state": "OpenFocus 갤러리",
+        "gallery_empty_state": "OpenFocus 커뮤니티",
         "gallery_report_title": "신고 사유",
         "gallery_screensaver_press_esc": "ESC를 눌러 종료",
         "gallery_upvote": "추천",
         "gallery_downvote": "비추천",
 
-        "gallery_settings_group": "갤러리 및 쇼케이스",
-        "gallery_settings_cache_dir": "갤러리 캐시 폴더",
-        "gallery_settings_download_dir": "갤러리 다운로드 폴더",
-        "gallery_settings_clear_cache": "갤러리 캐시 비우기",
+        "gallery_settings_group": "커뮤니티 및 쇼케이스",
+        "gallery_settings_cache_dir": "커뮤니티 캐시 폴더",
+        "gallery_settings_download_dir": "커뮤니티 다운로드 폴더",
+        "gallery_settings_clear_cache": "커뮤니티 캐시 비우기",
         "gallery_settings_cache_cleared": "캐시 파일 {files}개를 삭제했습니다 ({size_mb:.1f} MB 확보).",
         "gallery_settings_slide_interval": "슬라이드 전환 간격 (초)",
 
-        "gallery_hub_title": "OpenFocus 갤러리",
+        "gallery_hub_title": "OpenFocus 커뮤니티",
         "gallery_tab_square": "광장",
         "gallery_tab_leaderboard": "리더보드",
         "gallery_tab_publish": "작품 게시",
@@ -2871,7 +2871,7 @@ def _build_ko() -> dict[str, str]:
         "gallery_publish_selected_count": "{count} / {max_batch}장 선택됨",
         "gallery_publish_title_label": "제목",
         "gallery_publish_title_placeholder": "작품 제목 입력 (선택 사항)",
-        "gallery_publish_watermark_enable": "오른쪽 하단에 저작권 워터마크 추가",
+        "gallery_publish_watermark_enable": "왼쪽 상단에 저작권 워터마크 추가",
         "gallery_publish_watermark_label": "표기 이름",
         "gallery_publish_watermark_placeholder": "이름 또는 스튜디오명",
         "gallery_publish_use_nickname": "내 닉네임 사용",
@@ -2888,18 +2888,18 @@ def _build_ko() -> dict[str, str]:
         "gallery_publish_exif_iso": "ISO",
         "gallery_publish_allow_download": "다른 사용자의 작품 다운로드 허용",
         "gallery_publish_openfocus_badge": "OpenFocus 전용 배지 표시",
-        "gallery_publish_agreement_check": "OpenFocus 갤러리 이용 약관을 읽고 동의합니다",
+        "gallery_publish_agreement_check": "OpenFocus 커뮤니티 이용 약관을 읽고 동의합니다",
         "gallery_publish_agreement_view": "약관 보기",
-        "gallery_publish_agreement_required": "게시하기 전에 갤러리 이용 약관에 동의해 주세요.",
+        "gallery_publish_agreement_required": "게시하기 전에 커뮤니티 이용 약관에 동의해 주세요.",
         "gallery_publish_cost_hint": "승인된 작품당 {cost}포인트가 차감됩니다 (반려 또는 실패 시 0포인트 차감).",
         "gallery_hub_points_badge": "보유 포인트: {points}",
-        "gallery_showcase_window_title": "OpenFocus 갤러리 쇼케이스",
+        "gallery_showcase_window_title": "OpenFocus 커뮤니티 쇼케이스",
         "gallery_fusion_waiting_status": "백그라운드에서 합성 중…",
         "gallery_fusion_done_status": "합성이 완료되었습니다!",
         "gallery_fusion_return_btn": "이번에는 닫기",
         "gallery_fusion_view_result_btn": "합성 결과 보기",
-        "gallery_auto_show_during_fusion": "합성 중 갤러리 창 자동 열기",
-        "menu_gallery_showcase": "갤러리 쇼케이스 창",
+        "gallery_auto_show_during_fusion": "합성 중 커뮤니티 창 자동 열기",
+        "menu_gallery_showcase": "커뮤니티 쇼케이스 창",
         "gallery_hub_points_signed_out": "로그아웃됨",
         "gallery_hub_top_up_btn": "충전 / 계정",
         "gallery_publish_cost_summary": "현재 잔액: {balance}포인트 · 작품당: {cost}포인트",
@@ -2923,7 +2923,7 @@ def _build_ko() -> dict[str, str]:
         "gallery_my_works_stats": "좋아요 {likes} · 댓글 {comments} · 다운로드 {downloads}",
         "gallery_my_works_delete": "삭제",
         "gallery_my_works_delete_confirm_title": "작품 삭제",
-        "gallery_my_works_delete_confirm_body": "갤러리에서 \"{title}\" 작품을 영구적으로 삭제하시겠습니까? 되돌릴 수 없습니다.",
+        "gallery_my_works_delete_confirm_body": "커뮤니티에서 \"{title}\" 작품을 영구적으로 삭제하시겠습니까? 되돌릴 수 없습니다.",
         "gallery_my_works_deleted": "작품이 삭제되었습니다.",
 
         "gallery_author_showcase_title": "{author}님의 쇼케이스",
@@ -2934,8 +2934,8 @@ def _build_ko() -> dict[str, str]:
         "gallery_author_works_empty": "이 크리에이터가 아직 게시한 작품이 없습니다.",
 
         "gallery_upload_prompt_title": "초점 합성 작품을 공유해 보세요",
-        "gallery_upload_prompt_body": "합성 이미지가 선명하게 완성되었습니다! OpenFocus 갤러리에 공유하시겠습니까?",
-        "gallery_upload_prompt_upload": "갤러리에 업로드",
+        "gallery_upload_prompt_body": "합성 이미지가 선명하게 완성되었습니다! OpenFocus 커뮤니티에 공유하시겠습니까?",
+        "gallery_upload_prompt_upload": "커뮤니티에 업로드",
         "gallery_upload_prompt_dismiss": "나중에",
 
         "gallery_honor_card_title": "리더보드 명예 카드",
@@ -2944,15 +2944,15 @@ def _build_ko() -> dict[str, str]:
         "gallery_honor_card_reward_points": "+{points} 보상 포인트 지급 완료",
         "gallery_honor_card_close": "받기 및 닫기",
 
-        "gallery_agreement_title": "OpenFocus 갤러리 이용 약관",
+        "gallery_agreement_title": "OpenFocus 커뮤니티 이용 약관",
         "gallery_agreement_body": (
-            "OpenFocus 갤러리에 작품을 게시하면 다음에 동의하게 됩니다:\n"
+            "OpenFocus 커뮤니티에 작품을 게시하면 다음에 동의하게 됩니다:\n"
             "1. 업로드하는 모든 이미지의 저작권 또는 게시 권한을 보유하고 있습니다.\n"
             "2. 업로드에는 성인물, 폭력, 혐오, 불법 또는 스팸 콘텐츠가 포함되지 않습니다.\n"
-            "3. OpenFocus는 데스크톱 쇼케이스와 커뮤니티 갤러리에 작품을 표시할 수 있으며, "
+            "3. OpenFocus는 데스크톱 쇼케이스와 커뮤니티 공간에 작품을 표시할 수 있으며, "
             "다운로드 허용을 켠 경우에만 다운로드를 제공합니다.\n"
             "4. 자동 검토에서 반려되거나 업로드가 실패하면 포인트가 차감되지 않습니다 (0포인트).\n"
-            "5. 언제든지 갤러리에서 본인 작품을 삭제할 수 있습니다."
+            "5. 언제든지 커뮤니티에서 본인 작품을 삭제할 수 있습니다."
         ),
 
         "account_center_title": "OpenFocus 계정 및 메시지",
@@ -2986,7 +2986,7 @@ def _build_ko() -> dict[str, str]:
         "account_center_redeem_success": "코드 교환 완료: +{points}포인트가 추가되었습니다.",
         "account_center_redeem_empty": "교환 코드를 입력해 주세요.",
         "account_center_interests_title": "관심 분야",
-        "account_center_interests_hint": "관심 주제를 선택해 갤러리 피드를 맞춤 설정하세요.",
+        "account_center_interests_hint": "관심 주제를 선택해 커뮤니티 피드를 맞춤 설정하세요.",
         "account_center_interests_save": "관심 분야 저장",
         "account_center_interests_saved": "관심 분야가 저장되었습니다.",
         "account_center_privacy_title": "개인정보 설정",
@@ -3056,14 +3056,14 @@ def _build_ko() -> dict[str, str]:
         "gallery_notif_comment_upvoted": "{actor}님이 \"{work_title}\" 댓글을 추천했습니다.",
         "gallery_notif_work_downloaded": "{actor}님이 \"{work_title}\" 작품을 다운로드했습니다.",
         "gallery_notif_user_followed": "{actor}님이 회원님을 팔로우하기 시작했습니다.",
-        "gallery_notif_work_featured": "작품 \"{work_title}\"이(가) OpenFocus 갤러리 추천 작품으로 선정되었습니다.",
+        "gallery_notif_work_featured": "작품 \"{work_title}\"이(가) OpenFocus 커뮤니티 추천 작품으로 선정되었습니다.",
         "gallery_notif_leaderboard_ranked": "작품 \"{work_title}\"이(가) {period} 리더보드 {rank}위에 올랐습니다.",
         "gallery_notif_honor_card_awarded": "{period} 명예 카드({rank}위)와 +{points}포인트를 획득했습니다!",
         "gallery_notif_points_granted": "+{points} 보너스 포인트를 받았습니다.",
         "gallery_notif_points_recharged": "계정에 +{points}포인트가 충전되었습니다.",
         "gallery_notif_work_removed": "작품 \"{work_title}\"이(가) 삭제되었습니다 ({reason}).",
         "gallery_notif_comment_removed": "댓글이 삭제되었습니다 ({reason}).",
-        "gallery_notif_system_announcement": "OpenFocus 갤러리 공지: {detail}",
+        "gallery_notif_system_announcement": "OpenFocus 커뮤니티 공지: {detail}",
         "gallery_notif_comment_liked": "{actor}님이 \"{work_title}\" 댓글에 좋아요를 눌렀습니다.",
         "gallery_notif_new_follower": "{actor}님이 회원님을 팔로우하기 시작했습니다.",
         "gallery_notif_work_rejected_nsfw": "\"{work_title}\" 업로드가 안전 검토를 통과하지 못했습니다 ({reason}). 0포인트 차감.",
@@ -3076,8 +3076,8 @@ def _build_ko() -> dict[str, str]:
 
         "gallery_err_unauthorized": "계속하려면 로그인해 주세요.",
         "gallery_err_account_disabled": "이 계정은 현재 비활성화되어 있습니다.",
-        "gallery_err_gallery_disabled": "OpenFocus 갤러리를 일시적으로 사용할 수 없습니다.",
-        "gallery_err_gallery_terms_required": "먼저 갤러리 이용 약관에 동의해 주세요.",
+        "gallery_err_gallery_disabled": "OpenFocus 커뮤니티를 일시적으로 사용할 수 없습니다.",
+        "gallery_err_gallery_terms_required": "먼저 커뮤니티 이용 약관에 동의해 주세요.",
         "gallery_err_privacy_restricted": "이 사용자의 콘텐츠는 비공개입니다.",
         "gallery_err_forbidden": "이 작업을 수행할 권한이 없습니다.",
         "gallery_err_not_found": "요청한 항목을 찾을 수 없습니다.",
@@ -3113,11 +3113,11 @@ def _build_ko() -> dict[str, str]:
 
 def _build_nl() -> dict[str, str]:
     return {
-        "menu_gallery": "Galerij",
-        "menu_gallery_hub": "OpenFocus-galerij",
+        "menu_gallery": "Community",
+        "menu_gallery_hub": "OpenFocus-community",
         "menu_account_center": "Mijn account",
         "menu_message_box": "Berichtenbox",
-        "menu_upload_to_gallery": "Uploaden naar galerij",
+        "menu_upload_to_gallery": "Uploaden naar community",
         "menu_gallery_screensaver": "Volledig scherm vitrine",
 
         "gallery_btn_close": "Sluiten",
@@ -3176,20 +3176,20 @@ def _build_nl() -> dict[str, str]:
         "gallery_comments_author_badge": "Auteur",
         "gallery_comments_delete": "Verwijderen",
         "gallery_comments_empty": "Nog geen reacties.",
-        "gallery_empty_state": "OpenFocus-galerij",
+        "gallery_empty_state": "OpenFocus-community",
         "gallery_report_title": "Reden van melding",
         "gallery_screensaver_press_esc": "Druk op ESC om af te sluiten",
         "gallery_upvote": "Omhoog stemmen",
         "gallery_downvote": "Omlaag stemmen",
 
-        "gallery_settings_group": "Galerij & vitrine",
-        "gallery_settings_cache_dir": "Galerij-cachemap",
-        "gallery_settings_download_dir": "Galerij-downloadmap",
-        "gallery_settings_clear_cache": "Galerijcache wissen",
+        "gallery_settings_group": "Community & vitrine",
+        "gallery_settings_cache_dir": "Community-cachemap",
+        "gallery_settings_download_dir": "Community-downloadmap",
+        "gallery_settings_clear_cache": "Communitycache wissen",
         "gallery_settings_cache_cleared": "{files} cachebestanden gewist ({size_mb:.1f} MB vrijgemaakt).",
         "gallery_settings_slide_interval": "Diavoorstelling-interval (seconden)",
 
-        "gallery_hub_title": "OpenFocus-galerij",
+        "gallery_hub_title": "OpenFocus-community",
         "gallery_tab_square": "Plein",
         "gallery_tab_leaderboard": "Ranglijst",
         "gallery_tab_publish": "Werk publiceren",
@@ -3239,7 +3239,7 @@ def _build_nl() -> dict[str, str]:
         "gallery_publish_selected_count": "{count} / {max_batch} afbeeldingen geselecteerd",
         "gallery_publish_title_label": "Titel",
         "gallery_publish_title_placeholder": "Optionele titel voor je werk",
-        "gallery_publish_watermark_enable": "Auteursrechtwatermerk rechtsonder toevoegen",
+        "gallery_publish_watermark_enable": "Auteursrechtwatermerk linksboven toevoegen",
         "gallery_publish_watermark_label": "Naamsvermelding",
         "gallery_publish_watermark_placeholder": "Je naam of studio",
         "gallery_publish_use_nickname": "Mijn bijnaam gebruiken",
@@ -3256,18 +3256,18 @@ def _build_nl() -> dict[str, str]:
         "gallery_publish_exif_iso": "ISO",
         "gallery_publish_allow_download": "Andere gebruikers toestaan dit werk te downloaden",
         "gallery_publish_openfocus_badge": "Exclusieve OpenFocus-badge tonen",
-        "gallery_publish_agreement_check": "Ik heb de Gebruikersovereenkomst van de OpenFocus-galerij gelezen en ga akkoord",
+        "gallery_publish_agreement_check": "Ik heb de Gebruikersovereenkomst van de OpenFocus-community gelezen en ga akkoord",
         "gallery_publish_agreement_view": "Overeenkomst lezen",
         "gallery_publish_agreement_required": "Ga eerst akkoord met de Gebruikersovereenkomst voordat je publiceert.",
         "gallery_publish_cost_hint": "Publiceren kost {cost} punten per goedgekeurd werk (0 punten afgeschreven bij afwijzing of fout).",
         "gallery_hub_points_badge": "Punten: {points}",
-        "gallery_showcase_window_title": "OpenFocus Galerij-showcase",
+        "gallery_showcase_window_title": "OpenFocus Community-showcase",
         "gallery_fusion_waiting_status": "Samenvoegen op achtergrond…",
         "gallery_fusion_done_status": "Samenvoegen voltooid!",
         "gallery_fusion_return_btn": "Nu sluiten",
         "gallery_fusion_view_result_btn": "Resultaat bekijken",
-        "gallery_auto_show_during_fusion": "Galerijvenster openen tijdens samenvoegen",
-        "menu_gallery_showcase": "Galerij-showcasevenster",
+        "gallery_auto_show_during_fusion": "Communityvenster openen tijdens samenvoegen",
+        "menu_gallery_showcase": "Community-showcasevenster",
         "gallery_hub_points_signed_out": "Uitgelogd",
         "gallery_hub_top_up_btn": "Opwaarderen / Account",
         "gallery_publish_cost_summary": "Saldo: {balance} ptn · {cost} ptn / werk",
@@ -3291,7 +3291,7 @@ def _build_nl() -> dict[str, str]:
         "gallery_my_works_stats": "{likes} likes · {comments} reacties · {downloads} downloads",
         "gallery_my_works_delete": "Verwijderen",
         "gallery_my_works_delete_confirm_title": "Werk verwijderen",
-        "gallery_my_works_delete_confirm_body": "\"{title}\" permanent uit de galerij verwijderen? Dit kan niet ongedaan worden gemaakt.",
+        "gallery_my_works_delete_confirm_body": "\"{title}\" permanent uit de community verwijderen? Dit kan niet ongedaan worden gemaakt.",
         "gallery_my_works_deleted": "Werk verwijderd.",
 
         "gallery_author_showcase_title": "Vitrine van {author}",
@@ -3302,8 +3302,8 @@ def _build_nl() -> dict[str, str]:
         "gallery_author_works_empty": "Deze maker heeft nog geen werken gepubliceerd.",
 
         "gallery_upload_prompt_title": "Deel je focus-stack",
-        "gallery_upload_prompt_body": "Je samengevoegde afbeelding ziet er haarscherp uit! Wil je hem delen in de OpenFocus-galerij?",
-        "gallery_upload_prompt_upload": "Uploaden naar galerij",
+        "gallery_upload_prompt_body": "Je samengevoegde afbeelding ziet er haarscherp uit! Wil je hem delen in de OpenFocus-community?",
+        "gallery_upload_prompt_upload": "Uploaden naar community",
         "gallery_upload_prompt_dismiss": "Niet nu",
 
         "gallery_honor_card_title": "Ranglijst-erekaart",
@@ -3312,15 +3312,15 @@ def _build_nl() -> dict[str, str]:
         "gallery_honor_card_reward_points": "+{points} beloningspunten bijgeschreven",
         "gallery_honor_card_close": "Ophalen en sluiten",
 
-        "gallery_agreement_title": "Gebruikersovereenkomst OpenFocus-galerij",
+        "gallery_agreement_title": "Gebruikersovereenkomst OpenFocus-community",
         "gallery_agreement_body": (
-            "Door te publiceren in de OpenFocus-galerij bevestig je dat:\n"
+            "Door te publiceren in de OpenFocus-community bevestig je dat:\n"
             "1. Je het auteursrecht of volledige toestemming bezit voor elke geüploade afbeelding.\n"
             "2. Uploads geen expliciete, gewelddadige, haatdragende, illegale of spam-inhoud bevatten.\n"
-            "3. OpenFocus je werk mag tonen in de bureaubladvitrine en communitygalerij, "
+            "3. OpenFocus je werk mag tonen in de bureaubladvitrine en communityruimte, "
             "en downloads alleen toestaat wanneer je Downloaden toestaan inschakelt.\n"
             "4. Werken die worden afgewezen of mislukken worden nooit berekend (0 punten afgeschreven).\n"
-            "5. Je je werken op elk moment uit de galerij kunt verwijderen."
+            "5. Je je werken op elk moment uit de community kunt verwijderen."
         ),
 
         "account_center_title": "OpenFocus-account & berichten",
@@ -3354,7 +3354,7 @@ def _build_nl() -> dict[str, str]:
         "account_center_redeem_success": "Code ingewisseld: +{points} punten toegevoegd.",
         "account_center_redeem_empty": "Voer een inwisselcode in.",
         "account_center_interests_title": "Interesses",
-        "account_center_interests_hint": "Kies onderwerpen om je galerijfeed te personaliseren.",
+        "account_center_interests_hint": "Kies onderwerpen om je communityfeed te personaliseren.",
         "account_center_interests_save": "Interesses opslaan",
         "account_center_interests_saved": "Interesses opgeslagen.",
         "account_center_privacy_title": "Privacy-instellingen",
@@ -3424,14 +3424,14 @@ def _build_nl() -> dict[str, str]:
         "gallery_notif_comment_upvoted": "{actor} gaf een positieve stem aan je reactie bij \"{work_title}\".",
         "gallery_notif_work_downloaded": "{actor} heeft je werk \"{work_title}\" gedownload.",
         "gallery_notif_user_followed": "{actor} volgt je nu.",
-        "gallery_notif_work_featured": "Je werk \"{work_title}\" is uitgelicht in de OpenFocus-galerij.",
+        "gallery_notif_work_featured": "Je werk \"{work_title}\" is uitgelicht in de OpenFocus-community.",
         "gallery_notif_leaderboard_ranked": "Je werk \"{work_title}\" behaalde nr. {rank} op de {period}-ranglijst.",
         "gallery_notif_honor_card_awarded": "Je verdiende een {period}-erekaart (nr. {rank}) en +{points} punten!",
         "gallery_notif_points_granted": "Je hebt +{points} bonuspunten ontvangen.",
         "gallery_notif_points_recharged": "Er zijn +{points} punten op je account bijgeschreven.",
         "gallery_notif_work_removed": "Je werk \"{work_title}\" is verwijderd ({reason}).",
         "gallery_notif_comment_removed": "Je reactie is verwijderd ({reason}).",
-        "gallery_notif_system_announcement": "Melding OpenFocus-galerij: {detail}",
+        "gallery_notif_system_announcement": "Melding OpenFocus-community: {detail}",
         "gallery_notif_comment_liked": "{actor} vond je reactie bij \"{work_title}\" leuk.",
         "gallery_notif_new_follower": "{actor} volgt je nu.",
         "gallery_notif_work_rejected_nsfw": "Je upload \"{work_title}\" is afgewezen bij de controle ({reason}). 0 punten afgeschreven.",
@@ -3444,8 +3444,8 @@ def _build_nl() -> dict[str, str]:
 
         "gallery_err_unauthorized": "Meld je aan om door te gaan.",
         "gallery_err_account_disabled": "Dit account is momenteel uitgeschakeld.",
-        "gallery_err_gallery_disabled": "De OpenFocus-galerij is tijdelijk niet beschikbaar.",
-        "gallery_err_gallery_terms_required": "Ga eerst akkoord met de Gebruikersovereenkomst van de galerij.",
+        "gallery_err_gallery_disabled": "De OpenFocus-community is tijdelijk niet beschikbaar.",
+        "gallery_err_gallery_terms_required": "Ga eerst akkoord met de Gebruikersovereenkomst van de community.",
         "gallery_err_privacy_restricted": "De inhoud van deze gebruiker is privé.",
         "gallery_err_forbidden": "Je hebt geen toestemming voor deze actie.",
         "gallery_err_not_found": "Het gevraagde item is niet gevonden.",
@@ -3481,11 +3481,11 @@ def _build_nl() -> dict[str, str]:
 
 def _build_pl() -> dict[str, str]:
     return {
-        "menu_gallery": "Galeria",
-        "menu_gallery_hub": "Galeria OpenFocus",
+        "menu_gallery": "Społeczność",
+        "menu_gallery_hub": "Społeczność OpenFocus",
         "menu_account_center": "Moje konto",
         "menu_message_box": "Skrzynka wiadomości",
-        "menu_upload_to_gallery": "Prześlij do galerii",
+        "menu_upload_to_gallery": "Prześlij do społeczności",
         "menu_gallery_screensaver": "Pełnoekranowa wystawa",
 
         "gallery_btn_close": "Zamknij",
@@ -3544,20 +3544,20 @@ def _build_pl() -> dict[str, str]:
         "gallery_comments_author_badge": "Autor",
         "gallery_comments_delete": "Usuń",
         "gallery_comments_empty": "Brak komentarzy.",
-        "gallery_empty_state": "Galeria OpenFocus",
+        "gallery_empty_state": "Społeczność OpenFocus",
         "gallery_report_title": "Powód zgłoszenia",
         "gallery_screensaver_press_esc": "Naciśnij ESC, aby wyjść",
         "gallery_upvote": "Głos za",
         "gallery_downvote": "Głos przeciw",
 
-        "gallery_settings_group": "Galeria i wystawa",
-        "gallery_settings_cache_dir": "Folder pamięci podręcznej galerii",
-        "gallery_settings_download_dir": "Folder pobierania galerii",
+        "gallery_settings_group": "Społeczność i wystawa",
+        "gallery_settings_cache_dir": "Folder pamięci podręcznej społeczności",
+        "gallery_settings_download_dir": "Folder pobierania społeczności",
         "gallery_settings_clear_cache": "Wyczyść pamięć podręczną galerii",
         "gallery_settings_cache_cleared": "Usunięto {files} plików z pamięci podręcznej (zwolniono {size_mb:.1f} MB).",
         "gallery_settings_slide_interval": "Czas wyświetlania slajdu (sekundy)",
 
-        "gallery_hub_title": "Galeria OpenFocus",
+        "gallery_hub_title": "Społeczność OpenFocus",
         "gallery_tab_square": "Odkrywaj",
         "gallery_tab_leaderboard": "Ranking",
         "gallery_tab_publish": "Opublikuj pracę",
@@ -3607,7 +3607,7 @@ def _build_pl() -> dict[str, str]:
         "gallery_publish_selected_count": "Wybrano {count} / {max_batch} obrazów",
         "gallery_publish_title_label": "Tytuł",
         "gallery_publish_title_placeholder": "Opcjonalny tytuł pracy",
-        "gallery_publish_watermark_enable": "Dodaj znak wodny praw autorskich w prawym dolnym rogu",
+        "gallery_publish_watermark_enable": "Dodaj znak wodny praw autorskich w lewym górnym rogu",
         "gallery_publish_watermark_label": "Podpis autora",
         "gallery_publish_watermark_placeholder": "Twoje imię lub studio",
         "gallery_publish_use_nickname": "Użyj mojego pseudonimu",
@@ -3624,18 +3624,18 @@ def _build_pl() -> dict[str, str]:
         "gallery_publish_exif_iso": "ISO",
         "gallery_publish_allow_download": "Zezwól innym użytkownikom na pobieranie tej pracy",
         "gallery_publish_openfocus_badge": "Pokaż ekskluzywną odznakę OpenFocus",
-        "gallery_publish_agreement_check": "Przeczytałem i akceptuję Regulamin Galerii OpenFocus",
+        "gallery_publish_agreement_check": "Przeczytałem i akceptuję Regulamin Społeczności OpenFocus",
         "gallery_publish_agreement_view": "Czytaj regulamin",
-        "gallery_publish_agreement_required": "Zaakceptuj Regulamin Galerii przed publikacją.",
+        "gallery_publish_agreement_required": "Zaakceptuj Regulamin Społeczności przed publikacją.",
         "gallery_publish_cost_hint": "Publikacja kosztuje {cost} punktów za zatwierdzoną pracę (0 punktów pobranych w razie odrzucenia lub błędu).",
         "gallery_hub_points_badge": "Punkty: {points}",
-        "gallery_showcase_window_title": "Prezentacja galerii OpenFocus",
+        "gallery_showcase_window_title": "Prezentacja Społeczności OpenFocus",
         "gallery_fusion_waiting_status": "Łączenie w tle…",
         "gallery_fusion_done_status": "Łączenie zakończone!",
         "gallery_fusion_return_btn": "Zamknij tym razem",
         "gallery_fusion_view_result_btn": "Zobacz wynik",
-        "gallery_auto_show_during_fusion": "Otwórz okno galerii podczas łączenia",
-        "menu_gallery_showcase": "Okno prezentacji galerii",
+        "gallery_auto_show_during_fusion": "Otwórz okno społeczności podczas łączenia",
+        "menu_gallery_showcase": "Okno prezentacji społeczności",
         "gallery_hub_points_signed_out": "Wylogowano",
         "gallery_hub_top_up_btn": "Doładuj / Konto",
         "gallery_publish_cost_summary": "Saldo: {balance} pkt · {cost} pkt / pracę",
@@ -3659,7 +3659,7 @@ def _build_pl() -> dict[str, str]:
         "gallery_my_works_stats": "{likes} polubień · {comments} komentarzy · {downloads} pobrań",
         "gallery_my_works_delete": "Usuń",
         "gallery_my_works_delete_confirm_title": "Usuń pracę",
-        "gallery_my_works_delete_confirm_body": "Trwale usunąć „{title}” z galerii? Tej operacji nie można cofnąć.",
+        "gallery_my_works_delete_confirm_body": "Trwale usunąć „{title}” ze społeczności? Tej operacji nie można cofnąć.",
         "gallery_my_works_deleted": "Praca została usunięta.",
 
         "gallery_author_showcase_title": "Wystawa użytkownika {author}",
@@ -3670,8 +3670,8 @@ def _build_pl() -> dict[str, str]:
         "gallery_author_works_empty": "Ten twórca nie opublikował jeszcze żadnych prac.",
 
         "gallery_upload_prompt_title": "Podziel się swoim stackiem ostrości",
-        "gallery_upload_prompt_body": "Twoje złożone zdjęcie wygląda świetnie! Chcesz je udostępnić w Galerii OpenFocus?",
-        "gallery_upload_prompt_upload": "Prześlij do galerii",
+        "gallery_upload_prompt_body": "Twoje złożone zdjęcie wygląda świetnie! Chcesz je udostępnić w Społeczności OpenFocus?",
+        "gallery_upload_prompt_upload": "Prześlij do społeczności",
         "gallery_upload_prompt_dismiss": "Nie teraz",
 
         "gallery_honor_card_title": "Karta Honorowa Rankingu",
@@ -3680,15 +3680,15 @@ def _build_pl() -> dict[str, str]:
         "gallery_honor_card_reward_points": "Przyznano +{points} punktów nagrody",
         "gallery_honor_card_close": "Odbierz i zamknij",
 
-        "gallery_agreement_title": "Regulamin Galerii OpenFocus",
+        "gallery_agreement_title": "Regulamin Społeczności OpenFocus",
         "gallery_agreement_body": (
-            "Publikując w Galerii OpenFocus, potwierdzasz, że:\n"
+            "Publikując w Społeczności OpenFocus, potwierdzasz, że:\n"
             "1. Posiadasz prawa autorskie lub pełną zgodę na udostępnienie każdego przesłanego obrazu.\n"
             "2. Przesłane treści nie zawierają materiałów erotycznych, przemocy, mowy nienawiści, treści nielegalnych ani spamu.\n"
-            "3. OpenFocus może wyświetlać Twoją pracę w wystawie aplikacji i galerii społeczności, "
+            "3. OpenFocus może wyświetlać Twoją pracę w wystawie aplikacji i przestrzeni społeczności, "
             "a pobieranie jest dostępne wyłącznie po włączeniu opcji Zezwól na pobieranie.\n"
             "4. Prace odrzucone lub nieprzesłane nie są obciążane opłatą (0 pobranych punktów).\n"
-            "5. W każdej chwili możesz usunąć swoje prace z galerii."
+            "5. W każdej chwili możesz usunąć swoje prace ze społeczności."
         ),
 
         "account_center_title": "Konto i wiadomości OpenFocus",
@@ -3722,7 +3722,7 @@ def _build_pl() -> dict[str, str]:
         "account_center_redeem_success": "Kod zrealizowany: dodano +{points} punktów.",
         "account_center_redeem_empty": "Wpisz kod do realizacji.",
         "account_center_interests_title": "Zainteresowania",
-        "account_center_interests_hint": "Wybierz tematy, aby spersonalizować galerię.",
+        "account_center_interests_hint": "Wybierz tematy, aby spersonalizować społeczność.",
         "account_center_interests_save": "Zapisz zainteresowania",
         "account_center_interests_saved": "Zainteresowania zostały zapisane.",
         "account_center_privacy_title": "Ustawienia prywatności",
@@ -3792,14 +3792,14 @@ def _build_pl() -> dict[str, str]:
         "gallery_notif_comment_upvoted": "{actor} poparł Twój komentarz przy „{work_title}”.",
         "gallery_notif_work_downloaded": "{actor} pobrał Twoją pracę „{work_title}”.",
         "gallery_notif_user_followed": "{actor} zaczął Cię obserwować.",
-        "gallery_notif_work_featured": "Twoja praca „{work_title}” została wyróżniona w Galerii OpenFocus.",
+        "gallery_notif_work_featured": "Twoja praca „{work_title}” została wyróżniona w Społeczności OpenFocus.",
         "gallery_notif_leaderboard_ranked": "Twoja praca „{work_title}” zajęła miejsce nr {rank} w rankingu {period}.",
         "gallery_notif_honor_card_awarded": "Zdobyłeś Kartę Honorową {period} (nr {rank}) oraz +{points} punktów!",
         "gallery_notif_points_granted": "Otrzymałeś +{points} punktów bonusowych.",
         "gallery_notif_points_recharged": "Twoje konto zostało zasilone o +{points} punktów.",
         "gallery_notif_work_removed": "Twoja praca „{work_title}” została usunięta ({reason}).",
         "gallery_notif_comment_removed": "Twój komentarz został usunięty ({reason}).",
-        "gallery_notif_system_announcement": "Komunikat Galerii OpenFocus: {detail}",
+        "gallery_notif_system_announcement": "Komunikat Społeczności OpenFocus: {detail}",
         "gallery_notif_comment_liked": "{actor} polubił Twój komentarz przy „{work_title}”.",
         "gallery_notif_new_follower": "{actor} zaczął Cię obserwować.",
         "gallery_notif_work_rejected_nsfw": "Przesłana praca „{work_title}” nie przeszła weryfikacji ({reason}). Pobrano 0 punktów.",
@@ -3812,8 +3812,8 @@ def _build_pl() -> dict[str, str]:
 
         "gallery_err_unauthorized": "Zaloguj się, aby kontynuować.",
         "gallery_err_account_disabled": "To konto jest obecnie zablokowane.",
-        "gallery_err_gallery_disabled": "Galeria OpenFocus jest tymczasowo niedostępna.",
-        "gallery_err_gallery_terms_required": "Najpierw zaakceptuj Regulamin Galerii.",
+        "gallery_err_gallery_disabled": "Społeczność OpenFocus jest tymczasowo niedostępna.",
+        "gallery_err_gallery_terms_required": "Najpierw zaakceptuj Regulamin Społeczności.",
         "gallery_err_privacy_restricted": "Treści tego użytkownika są prywatne.",
         "gallery_err_forbidden": "Nie masz uprawnień do wykonania tej operacji.",
         "gallery_err_not_found": "Nie znaleziono żądanego elementu.",
@@ -3849,11 +3849,11 @@ def _build_pl() -> dict[str, str]:
 
 def _build_pt() -> dict[str, str]:
     return {
-        "menu_gallery": "Galeria",
-        "menu_gallery_hub": "Galeria OpenFocus",
+        "menu_gallery": "Społeczność",
+        "menu_gallery_hub": "Społeczność OpenFocus",
         "menu_account_center": "Minha conta",
         "menu_message_box": "Caixa de mensagens",
-        "menu_upload_to_gallery": "Enviar para a galeria",
+        "menu_upload_to_gallery": "Enviar para a comunidade",
         "menu_gallery_screensaver": "Vitrine em tela cheia",
 
         "gallery_btn_close": "Fechar",
@@ -3912,20 +3912,20 @@ def _build_pt() -> dict[str, str]:
         "gallery_comments_author_badge": "Autor",
         "gallery_comments_delete": "Excluir",
         "gallery_comments_empty": "Ainda não há comentários.",
-        "gallery_empty_state": "Galeria OpenFocus",
+        "gallery_empty_state": "Społeczność OpenFocus",
         "gallery_report_title": "Motivo da denúncia",
         "gallery_screensaver_press_esc": "Pressione ESC para sair",
         "gallery_upvote": "Votar positivo",
         "gallery_downvote": "Votar negativo",
 
-        "gallery_settings_group": "Galeria e vitrine",
-        "gallery_settings_cache_dir": "Pasta de cache da galeria",
-        "gallery_settings_download_dir": "Pasta de downloads da galeria",
-        "gallery_settings_clear_cache": "Limpar cache da galeria",
+        "gallery_settings_group": "Comunidade e vitrine",
+        "gallery_settings_cache_dir": "Pasta de cache da comunidade",
+        "gallery_settings_download_dir": "Pasta de downloads da comunidade",
+        "gallery_settings_clear_cache": "Limpar cache da comunidade",
         "gallery_settings_cache_cleared": "{files} arquivos em cache removidos ({size_mb:.1f} MB liberados).",
         "gallery_settings_slide_interval": "Intervalo de slides (segundos)",
 
-        "gallery_hub_title": "Galeria OpenFocus",
+        "gallery_hub_title": "Społeczność OpenFocus",
         "gallery_tab_square": "Explorar",
         "gallery_tab_leaderboard": "Ranking",
         "gallery_tab_publish": "Publicar obra",
@@ -3975,7 +3975,7 @@ def _build_pt() -> dict[str, str]:
         "gallery_publish_selected_count": "{count} / {max_batch} imagens selecionadas",
         "gallery_publish_title_label": "Título",
         "gallery_publish_title_placeholder": "Título opcional para sua obra",
-        "gallery_publish_watermark_enable": "Adicionar marca d'água de direitos autorais no canto inferior direito",
+        "gallery_publish_watermark_enable": "Adicionar marca d'água de direitos autorais no canto superior esquerdo",
         "gallery_publish_watermark_label": "Crédito",
         "gallery_publish_watermark_placeholder": "Seu nome ou estúdio",
         "gallery_publish_use_nickname": "Usar meu apelido",
@@ -3992,17 +3992,17 @@ def _build_pt() -> dict[str, str]:
         "gallery_publish_exif_iso": "ISO",
         "gallery_publish_allow_download": "Permitir que outros usuários baixem esta obra",
         "gallery_publish_openfocus_badge": "Exibir selo exclusivo OpenFocus",
-        "gallery_publish_agreement_check": "Li e concordo com o Contrato de Usuário da Galeria OpenFocus",
+        "gallery_publish_agreement_check": "Li e concordo com o Contrato de Usuário da Społeczność OpenFocus",
         "gallery_publish_agreement_view": "Ler contrato",
-        "gallery_publish_agreement_required": "Concorde com o Contrato de Usuário da Galeria antes de publicar.",
+        "gallery_publish_agreement_required": "Concorde com o Contrato de Usuário da Comunidade antes de publicar.",
         "gallery_publish_cost_hint": "A publicação custa {cost} pontos por obra aprovada (0 pontos descontados se recusada ou falhar).",
         "gallery_hub_points_badge": "Pontos: {points}",
-        "gallery_showcase_window_title": "Mostruário da Galeria OpenFocus",
+        "gallery_showcase_window_title": "Mostruário da Społeczność OpenFocus",
         "gallery_fusion_waiting_status": "Mesclando em segundo plano…",
         "gallery_fusion_done_status": "Fusão concluída!",
         "gallery_fusion_return_btn": "Fechar desta vez",
         "gallery_fusion_view_result_btn": "Ver resultado",
-        "gallery_auto_show_during_fusion": "Abrir janela da galeria durante a fusão",
+        "gallery_auto_show_during_fusion": "Abrir janela da comunidade durante a fusão",
         "menu_gallery_showcase": "Janela do mostruário",
         "gallery_hub_points_signed_out": "Desconectado",
         "gallery_hub_top_up_btn": "Recarregar / Conta",
@@ -4027,7 +4027,7 @@ def _build_pt() -> dict[str, str]:
         "gallery_my_works_stats": "{likes} curtidas · {comments} comentários · {downloads} downloads",
         "gallery_my_works_delete": "Excluir",
         "gallery_my_works_delete_confirm_title": "Excluir obra",
-        "gallery_my_works_delete_confirm_body": "Excluir permanentemente \"{title}\" da galeria? Esta ação não pode ser desfeita.",
+        "gallery_my_works_delete_confirm_body": "Excluir permanentemente \"{title}\" da comunidade? Esta ação não pode ser desfeita.",
         "gallery_my_works_deleted": "Obra excluída.",
 
         "gallery_author_showcase_title": "Vitrine de {author}",
@@ -4038,8 +4038,8 @@ def _build_pt() -> dict[str, str]:
         "gallery_author_works_empty": "Este criador ainda não publicou nenhuma obra.",
 
         "gallery_upload_prompt_title": "Compartilhe seu empilhamento de foco",
-        "gallery_upload_prompt_body": "Sua imagem fusionada ficou ótima! Deseja compartilhá-la na Galeria OpenFocus?",
-        "gallery_upload_prompt_upload": "Enviar para a galeria",
+        "gallery_upload_prompt_body": "Sua imagem fusionada ficou ótima! Deseja compartilhá-la na Społeczność OpenFocus?",
+        "gallery_upload_prompt_upload": "Enviar para a comunidade",
         "gallery_upload_prompt_dismiss": "Agora não",
 
         "gallery_honor_card_title": "Cartão de Honra do Ranking",
@@ -4048,15 +4048,15 @@ def _build_pt() -> dict[str, str]:
         "gallery_honor_card_reward_points": "+{points} pontos de recompensa creditados",
         "gallery_honor_card_close": "Resgatar e fechar",
 
-        "gallery_agreement_title": "Contrato de Usuário da Galeria OpenFocus",
+        "gallery_agreement_title": "Contrato de Usuário da Społeczność OpenFocus",
         "gallery_agreement_body": (
-            "Ao publicar na Galeria OpenFocus, você confirma que:\n"
+            "Ao publicar na Społeczność OpenFocus, você confirma que:\n"
             "1. Detém os direitos autorais ou autorização completa de cada imagem enviada.\n"
             "2. Os envios não contêm conteúdo explícito, violento, de ódio, ilegal ou spam.\n"
-            "3. O OpenFocus pode exibir sua obra na vitrine do aplicativo e na galeria da comunidade, "
+            "3. O OpenFocus pode exibir sua obra na vitrine do aplicativo e no espaço da comunidade, "
             "permitindo downloads somente quando você ativar Permitir download.\n"
             "4. Obras recusadas ou com falha no envio nunca são cobradas (0 pontos descontados).\n"
-            "5. Você pode remover suas obras da galeria a qualquer momento."
+            "5. Você pode remover suas obras da comunidade a qualquer momento."
         ),
 
         "account_center_title": "Conta e mensagens OpenFocus",
@@ -4090,7 +4090,7 @@ def _build_pt() -> dict[str, str]:
         "account_center_redeem_success": "Código resgatado: +{points} pontos adicionados.",
         "account_center_redeem_empty": "Digite um código de resgate.",
         "account_center_interests_title": "Interesses",
-        "account_center_interests_hint": "Escolha temas para personalizar seu feed da galeria.",
+        "account_center_interests_hint": "Escolha temas para personalizar seu feed da comunidade.",
         "account_center_interests_save": "Salvar interesses",
         "account_center_interests_saved": "Interesses salvos.",
         "account_center_privacy_title": "Configurações de privacidade",
@@ -4160,14 +4160,14 @@ def _build_pt() -> dict[str, str]:
         "gallery_notif_comment_upvoted": "{actor} votou positivo no seu comentário em \"{work_title}\".",
         "gallery_notif_work_downloaded": "{actor} baixou sua obra \"{work_title}\".",
         "gallery_notif_user_followed": "{actor} começou a seguir você.",
-        "gallery_notif_work_featured": "Sua obra \"{work_title}\" foi destacada na Galeria OpenFocus.",
+        "gallery_notif_work_featured": "Sua obra \"{work_title}\" foi destacada na Społeczność OpenFocus.",
         "gallery_notif_leaderboard_ranked": "Sua obra \"{work_title}\" ficou em n.º {rank} no ranking de {period}.",
         "gallery_notif_honor_card_awarded": "Você recebeu um Cartão de Honra de {period} (n.º {rank}) e +{points} pontos!",
         "gallery_notif_points_granted": "Você recebeu +{points} pontos de bônus.",
         "gallery_notif_points_recharged": "Sua conta recebeu +{points} pontos.",
         "gallery_notif_work_removed": "Sua obra \"{work_title}\" foi removida ({reason}).",
         "gallery_notif_comment_removed": "Seu comentário foi removido ({reason}).",
-        "gallery_notif_system_announcement": "Aviso da Galeria OpenFocus: {detail}",
+        "gallery_notif_system_announcement": "Aviso da Społeczność OpenFocus: {detail}",
         "gallery_notif_comment_liked": "{actor} curtiu seu comentário em \"{work_title}\".",
         "gallery_notif_new_follower": "{actor} começou a seguir você.",
         "gallery_notif_work_rejected_nsfw": "Seu envio \"{work_title}\" não passou na revisão ({reason}). 0 pontos descontados.",
@@ -4180,8 +4180,8 @@ def _build_pt() -> dict[str, str]:
 
         "gallery_err_unauthorized": "Faça login para continuar.",
         "gallery_err_account_disabled": "Esta conta está desativada no momento.",
-        "gallery_err_gallery_disabled": "A Galeria OpenFocus está temporariamente indisponível.",
-        "gallery_err_gallery_terms_required": "Aceite primeiro o Contrato de Usuário da Galeria.",
+        "gallery_err_gallery_disabled": "A Społeczność OpenFocus está temporariamente indisponível.",
+        "gallery_err_gallery_terms_required": "Aceite primeiro o Contrato de Usuário da Comunidade.",
         "gallery_err_privacy_restricted": "O conteúdo deste usuário é privado.",
         "gallery_err_forbidden": "Você não tem permissão para realizar esta ação.",
         "gallery_err_not_found": "O item solicitado não foi encontrado.",
@@ -4217,11 +4217,11 @@ def _build_pt() -> dict[str, str]:
 
 def _build_ru() -> dict[str, str]:
     return {
-        "menu_gallery": "Галерея",
-        "menu_gallery_hub": "Галерея OpenFocus",
+        "menu_gallery": "Сообщество",
+        "menu_gallery_hub": "Сообщество OpenFocus",
         "menu_account_center": "Мой аккаунт",
         "menu_message_box": "Сообщения",
-        "menu_upload_to_gallery": "Загрузить в галерею",
+        "menu_upload_to_gallery": "Загрузить в сообщество",
         "menu_gallery_screensaver": "Полноэкранная витрина",
 
         "gallery_btn_close": "Закрыть",
@@ -4280,20 +4280,20 @@ def _build_ru() -> dict[str, str]:
         "gallery_comments_author_badge": "Автор",
         "gallery_comments_delete": "Удалить",
         "gallery_comments_empty": "Комментариев пока нет.",
-        "gallery_empty_state": "Галерея OpenFocus",
+        "gallery_empty_state": "Сообщество OpenFocus",
         "gallery_report_title": "Причина жалобы",
         "gallery_screensaver_press_esc": "Нажмите ESC для выхода",
         "gallery_upvote": "Поддержать",
         "gallery_downvote": "Против",
 
-        "gallery_settings_group": "Галерея и витрина",
-        "gallery_settings_cache_dir": "Папка кэша галереи",
-        "gallery_settings_download_dir": "Папка загрузок галереи",
-        "gallery_settings_clear_cache": "Очистить кэш галереи",
+        "gallery_settings_group": "Сообщество и витрина",
+        "gallery_settings_cache_dir": "Папка кэша сообщества",
+        "gallery_settings_download_dir": "Папка загрузок сообщества",
+        "gallery_settings_clear_cache": "Очистить кэш сообщества",
         "gallery_settings_cache_cleared": "Удалено {files} файлов кэша (освобождено {size_mb:.1f} МБ).",
         "gallery_settings_slide_interval": "Интервал слайд-шоу (секунды)",
 
-        "gallery_hub_title": "Галерея OpenFocus",
+        "gallery_hub_title": "Сообщество OpenFocus",
         "gallery_tab_square": "Обзор",
         "gallery_tab_leaderboard": "Рейтинг",
         "gallery_tab_publish": "Опубликовать",
@@ -4343,7 +4343,7 @@ def _build_ru() -> dict[str, str]:
         "gallery_publish_selected_count": "Выбрано {count} / {max_batch} изображений",
         "gallery_publish_title_label": "Название",
         "gallery_publish_title_placeholder": "Необязательное название работы",
-        "gallery_publish_watermark_enable": "Добавить водяной знак авторства в правом нижнем углу",
+        "gallery_publish_watermark_enable": "Добавить водяной знак авторства в левом верхнем углу",
         "gallery_publish_watermark_label": "Подпись",
         "gallery_publish_watermark_placeholder": "Ваше имя или студия",
         "gallery_publish_use_nickname": "Использовать мой ник",
@@ -4360,18 +4360,18 @@ def _build_ru() -> dict[str, str]:
         "gallery_publish_exif_iso": "ISO",
         "gallery_publish_allow_download": "Разрешить другим пользователям скачивать работу",
         "gallery_publish_openfocus_badge": "Показывать фирменный значок OpenFocus",
-        "gallery_publish_agreement_check": "Я прочитал и принимаю Пользовательское соглашение Галереи OpenFocus",
+        "gallery_publish_agreement_check": "Я прочитал и принимаю Пользовательское соглашение Сообщества OpenFocus",
         "gallery_publish_agreement_view": "Читать соглашение",
-        "gallery_publish_agreement_required": "Примите Пользовательское соглашение Галереи перед публикацией.",
+        "gallery_publish_agreement_required": "Примите Пользовательское соглашение Сообщества перед публикацией.",
         "gallery_publish_cost_hint": "Публикация стоит {cost} баллов за одобренную работу (0 при отказе или сбое).",
         "gallery_hub_points_badge": "Баллы: {points}",
-        "gallery_showcase_window_title": "Витрина галереи OpenFocus",
+        "gallery_showcase_window_title": "Витрина сообщества OpenFocus",
         "gallery_fusion_waiting_status": "Идёт сведение в фоне…",
         "gallery_fusion_done_status": "Сведение завершено!",
         "gallery_fusion_return_btn": "Скрыть на этот раз",
         "gallery_fusion_view_result_btn": "Показать результат",
-        "gallery_auto_show_during_fusion": "Открывать окно галереи во время сведения",
-        "menu_gallery_showcase": "Окно витрины галереи",
+        "gallery_auto_show_during_fusion": "Открывать окно сообщества во время сведения",
+        "menu_gallery_showcase": "Окно витрины сообщества",
         "gallery_hub_points_signed_out": "Не выполнен вход",
         "gallery_hub_top_up_btn": "Пополнить / Аккаунт",
         "gallery_publish_cost_summary": "Баланс: {balance} балл. · {cost} балл. / работа",
@@ -4395,7 +4395,7 @@ def _build_ru() -> dict[str, str]:
         "gallery_my_works_stats": "{likes} лайков · {comments} комментариев · {downloads} скачиваний",
         "gallery_my_works_delete": "Удалить",
         "gallery_my_works_delete_confirm_title": "Удалить работу",
-        "gallery_my_works_delete_confirm_body": "Навсегда удалить «{title}» из галереи? Это действие нельзя отменить.",
+        "gallery_my_works_delete_confirm_body": "Навсегда удалить «{title}» из сообщества? Это действие нельзя отменить.",
         "gallery_my_works_deleted": "Работа удалена.",
 
         "gallery_author_showcase_title": "Витрина автора {author}",
@@ -4406,8 +4406,8 @@ def _build_ru() -> dict[str, str]:
         "gallery_author_works_empty": "Этот автор пока не опубликовал работ.",
 
         "gallery_upload_prompt_title": "Поделитесь результатом фокус-стекинга",
-        "gallery_upload_prompt_body": "Итоговое изображение получилось отличным! Хотите поделиться им в Галерее OpenFocus?",
-        "gallery_upload_prompt_upload": "Загрузить в галерею",
+        "gallery_upload_prompt_body": "Итоговое изображение получилось отличным! Хотите поделиться им в Сообществе OpenFocus?",
+        "gallery_upload_prompt_upload": "Загрузить в сообщество",
         "gallery_upload_prompt_dismiss": "Не сейчас",
 
         "gallery_honor_card_title": "Карта Почёта рейтинга",
@@ -4416,15 +4416,15 @@ def _build_ru() -> dict[str, str]:
         "gallery_honor_card_reward_points": "Начислено +{points} призовых баллов",
         "gallery_honor_card_close": "Принять и закрыть",
 
-        "gallery_agreement_title": "Пользовательское соглашение Галереи OpenFocus",
+        "gallery_agreement_title": "Пользовательское соглашение Сообщества OpenFocus",
         "gallery_agreement_body": (
-            "Публикуя материалы в Галерее OpenFocus, вы подтверждаете, что:\n"
+            "Публикуя материалы в Сообществе OpenFocus, вы подтверждаете, что:\n"
             "1. Обладаете авторскими правами или полным разрешением на каждое загружаемое изображение.\n"
             "2. Изображения не содержат откровенного, жестокого, разжигающего вражду, незаконного контента или спама.\n"
-            "3. OpenFocus может показывать вашу работу в витрине приложения и галерее сообщества, "
+            "3. OpenFocus может показывать вашу работу в витрине приложения и пространстве сообщества, "
             "разрешая скачивание только при включённой опции Разрешить скачивание.\n"
             "4. За отклонённые или незавершённые загрузки плата никогда не взимается (0 баллов).\n"
-            "5. Вы можете удалить свои работы из галереи в любой момент."
+            "5. Вы можете удалить свои работы из сообщества в любой момент."
         ),
 
         "account_center_title": "Аккаунт и сообщения OpenFocus",
@@ -4458,7 +4458,7 @@ def _build_ru() -> dict[str, str]:
         "account_center_redeem_success": "Код активирован: начислено +{points} баллов.",
         "account_center_redeem_empty": "Введите код активации.",
         "account_center_interests_title": "Интересы",
-        "account_center_interests_hint": "Выберите темы для персональной ленты галереи.",
+        "account_center_interests_hint": "Выберите темы для персональной ленты сообщества.",
         "account_center_interests_save": "Сохранить интересы",
         "account_center_interests_saved": "Интересы сохранены.",
         "account_center_privacy_title": "Настройки приватности",
@@ -4528,14 +4528,14 @@ def _build_ru() -> dict[str, str]:
         "gallery_notif_comment_upvoted": "{actor} поддержал ваш комментарий к «{work_title}».",
         "gallery_notif_work_downloaded": "{actor} скачал вашу работу «{work_title}».",
         "gallery_notif_user_followed": "{actor} подписался на вас.",
-        "gallery_notif_work_featured": "Ваша работа «{work_title}» попала в избранное Галереи OpenFocus.",
+        "gallery_notif_work_featured": "Ваша работа «{work_title}» попала в избранное Сообщества OpenFocus.",
         "gallery_notif_leaderboard_ranked": "Ваша работа «{work_title}» заняла место № {rank} в рейтинге за {period}.",
         "gallery_notif_honor_card_awarded": "Вы получили Карту Почёта за {period} (№ {rank}) и +{points} баллов!",
         "gallery_notif_points_granted": "Вам начислено +{points} бонусных баллов.",
         "gallery_notif_points_recharged": "На ваш аккаунт зачислено +{points} баллов.",
         "gallery_notif_work_removed": "Ваша работа «{work_title}» была удалена ({reason}).",
         "gallery_notif_comment_removed": "Ваш комментарий был удалён ({reason}).",
-        "gallery_notif_system_announcement": "Уведомление Галереи OpenFocus: {detail}",
+        "gallery_notif_system_announcement": "Уведомление Сообщества OpenFocus: {detail}",
         "gallery_notif_comment_liked": "{actor} оценил ваш комментарий к «{work_title}».",
         "gallery_notif_new_follower": "{actor} подписался на вас.",
         "gallery_notif_work_rejected_nsfw": "Загрузка «{work_title}» не прошла проверку безопасности ({reason}). Списано 0 баллов.",
@@ -4548,8 +4548,8 @@ def _build_ru() -> dict[str, str]:
 
         "gallery_err_unauthorized": "Войдите в аккаунт, чтобы продолжить.",
         "gallery_err_account_disabled": "Этот аккаунт сейчас отключён.",
-        "gallery_err_gallery_disabled": "Галерея OpenFocus временно недоступна.",
-        "gallery_err_gallery_terms_required": "Сначала примите Пользовательское соглашение Галереи.",
+        "gallery_err_gallery_disabled": "Сообщество OpenFocus временно недоступна.",
+        "gallery_err_gallery_terms_required": "Сначала примите Пользовательское соглашение Сообщества.",
         "gallery_err_privacy_restricted": "Материалы этого пользователя скрыты настройками приватности.",
         "gallery_err_forbidden": "У вас нет прав для выполнения этого действия.",
         "gallery_err_not_found": "Запрошенный элемент не найден.",
