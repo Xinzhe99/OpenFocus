@@ -64,9 +64,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Read TIFF calibration during the stack metadata scan.
 - Accelerate eligible mapped alignment warps, TIFF decoding, and 16-bit display
   conversion. Use shared memory for eligible render process transfers.
-- Speed up the OpenFocus alignment search, refinement, and RGB warps on AVX2
+- Speed up the OpenFocus alignment search, refinement, and warps on AVX2
   processors with identical output. On the laptop used for testing, aligning
-  four 5-megapixel frames ran about 1.5 times as fast.
+  four 5-megapixel frames ran about 1.5 times as fast, and warps that read
+  consecutive source columns, as most do, took about half the cycles.
 - Use OpenCL for eligible large integer ECC reductions, including 8×8 area
   downsizing. Apply exact Lanczos4 warps for large 8-bit and 16-bit frames
   during ECC and homography registration and whenever a GPU render resolves
@@ -130,6 +131,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Accelerate OpenFocus A Burt selection and shared A/B integer row kernels.
   Use scalar selection on small images to limit first-render compilation
   and include the expanded-row workspace in the large-image memory budget.
+- Select OpenFocus A background pixels eight at a time on AVX2 processors,
+  with identical output. On the laptop used for testing, the row selection
+  took 1.3 to 1.5 times less time, and CPU fusion with OpenFocus A took 1.15
+  to 1.3 times fewer processor cycles.
 - Plan StackMFF V1 and V3 tiles before building the grid. Put the manual
   tile controls in a collapsible section.
 - Reuse OpenCL contexts and compiled kernels across OpenFocus A/B/C and ECC
