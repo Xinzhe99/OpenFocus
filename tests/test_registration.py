@@ -368,9 +368,11 @@ def test_shift_limit_argument_stays_method_scoped():
     """
     assert ImageRegistration(method="openfocus",
                              max_shift_ratio=0.25).parameters["max_shift_ratio"] == 0.25
-    assert ImageRegistration(method="ecc", max_shift_ratio=0.25).parameters == {"failure_policy": "continue"}
-    assert ImageRegistration(method="homography",
-                             max_shift_ratio=0.25).parameters == {"failure_policy": "continue"}
+    for method in ("ecc", "homography"):
+        params = ImageRegistration(method=method, max_shift_ratio=0.25).parameters
+        assert "max_shift_ratio" not in params
+        assert params == ImageRegistration(method=method).parameters
+        assert params["failure_policy"] == "continue"
     # An explicit registry value still wins over the legacy argument.
     explicit = ImageRegistration(method="openfocus",
                                  parameters={"max_shift_ratio": 0.1},

@@ -22,6 +22,7 @@ from locales import trans
 _LAZY_IMPORTS = {
     'GifSaverWorker': ('core.workers', 'GifSaverWorker'),
     'DurationDialog': ('dialogs', 'DurationDialog'),
+    'HtmlAnimationDialog': ('dialogs.html_animation', 'HtmlAnimationDialog'),
 }
 
 
@@ -50,6 +51,7 @@ _IMAGE_WRITE_MESSAGE_KEYS = {
     "exif_too_large": "image_write_exif_too_large",
     "icc_too_large": "image_write_icc_too_large",
     "tiff_too_large": "image_write_tiff_too_large",
+    "jp2_unavailable": "image_write_jp2_unavailable",
 }
 
 
@@ -69,6 +71,8 @@ ALLOWED_EXPORT_EXTENSION_MAP = {
     ".tif": ".tif",
     ".tiff": ".tiff",
     ".webp": ".webp",
+    ".jp2": ".jp2",
+    ".psd": ".psd",
     ".dng": ".dng",
 }
 
@@ -193,6 +197,122 @@ class LayeredTiffWorker(QThread):
             self.completed.emit(True, os.fsdecode(self.path))
 
 
+class LayeredPsdWorker(QThread):
+    completed = pyqtSignal(bool, str)
+    progress_changed = pyqtSignal(int, int, str, str)
+
+    def __init__(self, path, image, context, icc_profile):
+        super().__init__()
+        configure_native_worker_stack(self)
+        self.path = path
+        self.image = image
+        self.context = context
+        self.icc_profile = icc_profile
+        self.source_paths = ()
+        self._cancelled = threading.Event()
+
+    def cancel(self):
+        self._cancelled.set()
+
+    def _emit_progress(self, current: int, total: int, stage: str, detail: str = "") -> None:
+        if not self._cancelled.is_set():
+            self.progress_changed.emit(int(current), int(total), str(stage), str(detail))
+
+    def run(self):
+        try:
+            from core.psd_export import export_layered_psd
+            from utils.layered_tiff import protect_sources, source_paths
+
+            cancelled = self._cancelled.is_set
+            sources_to_protect = source_paths(
+                self.source_paths,
+                getattr(self.context, "source_paths", ()) if self.context is not None else (),
+                (
+                    name
+                    for frame in (getattr(self.context, "frames", ()) or ())
+                    if (name := getattr(frame, "name", None)) and os.path.isabs(name)
+                ),
+            )
+            protect_sources((self.path,), sources_to_protect)
+            image = resolve_frame(self.image, should_cancel=cancelled)
+            metadata = getattr(self.context, "linear_dng_metadata", None) if self.context is not None else None
+            profile = self.icc_profile or b""
+            context = self.context
+            if metadata is not None:
+                from utils.linear_dng import develop_linear
+                from utils.image_utils import srgb_icc_profile
+                profile = srgb_icc_profile()
+                image = develop_linear(image, metadata)
+                if context is not None and getattr(context, "frames", None):
+                    developed_frames = []
+                    for frame in context.frames:
+                        if cancelled():
+                            raise ValueError("Layered PSD export cancelled")
+                        pixels = resolve_frame(frame.image, should_cancel=cancelled)
+                        developed_frames.append(replace(frame, image=develop_linear(pixels, metadata)))
+                    context = replace(context, frames=tuple(developed_frames), linear_dng_metadata=None)
+            export_layered_psd(
+                self.path,
+                image,
+                context,
+                icc_profile=profile,
+                cancelled=cancelled,
+                progress=self._emit_progress,
+                protected_sources=sources_to_protect,
+            )
+        except Exception as exc:
+            if self._cancelled.is_set():
+                self.completed.emit(False, "")
+            else:
+                self.completed.emit(False, str(exc) or type(exc).__name__)
+        else:
+            self.completed.emit(True, os.fsdecode(self.path))
+
+
+class HtmlAnimationWorker(QThread):
+    progress = pyqtSignal(int, int)
+    completed = pyqtSignal(bool, str, int)
+
+    def __init__(self, path, frames, labels, fused_image, options, linear_dng_metadata=None):
+        super().__init__()
+        configure_native_worker_stack(self)
+        self.path = path
+        self.frames = tuple(frames)
+        self.labels = tuple(labels) if labels is not None else ()
+        self.fused_image = fused_image
+        self.options = options
+        self.linear_dng_metadata = linear_dng_metadata
+        self._cancelled = threading.Event()
+
+    def cancel(self):
+        self._cancelled.set()
+
+    def run(self):
+        from core.html_animation_export import (
+            HtmlAnimationExportCancelled,
+            export_html_animation,
+        )
+        try:
+            written = export_html_animation(
+                self.path,
+                self.frames,
+                labels=self.labels,
+                fused_image=self.fused_image,
+                options=self.options,
+                progress_callback=lambda i, n: self.progress.emit(i, n),
+                should_cancel=self._cancelled.is_set,
+                linear_dng_metadata=self.linear_dng_metadata,
+            )
+            self.completed.emit(True, written, len(self.frames))
+        except HtmlAnimationExportCancelled:
+            self.completed.emit(False, 'CANCELLED', 0)
+        except Exception as exc:
+            if self._cancelled.is_set():
+                self.completed.emit(False, 'CANCELLED', 0)
+            else:
+                self.completed.emit(False, str(exc) or type(exc).__name__, 0)
+
+
 def _window_unavailable(window: Any) -> bool:
     """True when the host window is torn down or closing."""
     return window_unavailable(window)
@@ -208,6 +328,11 @@ class ExportManager:
         self.layered_worker: Optional[LayeredTiffWorker] = None
         self.layered_progress_dialog: Optional[QProgressDialog] = None
         self._layered_record = None
+        self.psd_worker: Optional[LayeredPsdWorker] = None
+        self.psd_progress_dialog: Optional[QProgressDialog] = None
+        self._psd_record = None
+        self.html_anim_worker: Optional[HtmlAnimationWorker] = None
+        self.html_anim_progress_dialog: Optional[Any] = None
 
     def normalize_export_path(self, file_path: str,
                               fallback_extension: str = DEFAULT_EXPORT_EXTENSION,
@@ -471,6 +596,251 @@ class ExportManager:
         self.layered_worker = None
         self._layered_record = None
 
+    def export_layered_psd(self, record, original, path) -> None:
+        """Export the selected output (plus aligned source layers and masks) as PSD v1."""
+        window = self.window
+        if self.psd_worker is not None:
+            return
+        if record is None or getattr(record, "image", None) is None:
+            show_warning_box(
+                window,
+                trans.t("action_export_layered_psd"),
+                trans.t("layered_psd_no_result"),
+            )
+            return
+        root, ext = os.path.splitext(path)
+        if not ext:
+            path = root + ".psd"
+        elif ext.lower() != ".psd":
+            show_error_box(
+                window,
+                trans.t("msg_save_failed_title"),
+                trans.t("layered_psd_extension"),
+            )
+            return
+        context = getattr(record, "context", None)
+        try:
+            from utils.layered_tiff import source_paths
+            frozen_sources = source_paths(
+                getattr(record, "source_paths", ()),
+                getattr(context, "source_paths", ()) if context is not None else (),
+                (
+                    name
+                    for frame in (getattr(context, "frames", ()) or ())
+                    if (name := getattr(frame, "name", None)) and os.path.isabs(name)
+                ),
+            )
+            self._safe_export_path(path, frozen_sources)
+            if context is not None and "source_paths" in getattr(context, "__dataclass_fields__", {}):
+                context = replace(context, source_paths=frozen_sources)
+        except (ValueError, OSError) as exc:
+            show_error_box(window, trans.t("msg_save_failed_title"), str(exc))
+            return
+
+        progress = QProgressDialog(
+            trans.t("layered_psd_exporting"), trans.t("btn_cancel"), 0, 0, window
+        )
+        progress.setWindowTitle(trans.t("action_export_layered_psd"))
+        progress.setStyleSheet(ui_styles.PROGRESS_DIALOG_STYLE)
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(0)
+        self.psd_progress_dialog = progress
+        profile = getattr(record, "icc_profile", b"") or (
+            getattr(context, "icc_profile", b"") if context is not None else b""
+        )
+        worker = LayeredPsdWorker(path, record.image, context, profile)
+        worker.source_paths = frozen_sources
+        self.psd_worker = worker
+        self._psd_record = original
+        progress.canceled.connect(self._cancel_layered_psd)
+        worker.progress_changed.connect(self._layered_psd_progress)
+        worker.completed.connect(self._layered_psd_completed)
+        worker.finished.connect(self._layered_psd_finished)
+        progress.show()
+        worker.start()
+
+    def _layered_psd_progress(self, current: int, total: int, stage: str, detail: str) -> None:
+        dialog = self.psd_progress_dialog
+        if not is_qobject_alive(dialog) or (self.psd_worker is not None and self.psd_worker._cancelled.is_set()):
+            return
+        if total > 0:
+            if dialog.maximum() != total:
+                dialog.setRange(0, total)
+            dialog.setValue(max(0, min(total, current)))
+        if stage == "masks":
+            dialog.setLabelText(trans.t("layered_psd_progress_masks"))
+        elif stage == "layer":
+            # Total layer count excludes mask and composite steps when present.
+            n_layers = max(1, total - 2) if total >= 3 else max(1, total - 1)
+            layer_num = max(1, min(n_layers, current - (1 if total >= 3 else 0)))
+            base = trans.t("layered_psd_progress_layer").format(
+                current=layer_num, total=n_layers
+            )
+            if detail:
+                short_name = detail if len(detail) <= 32 else detail[:29] + "..."
+                dialog.setLabelText(f"{base} ({short_name})")
+            else:
+                dialog.setLabelText(base)
+        elif stage == "composite":
+            dialog.setLabelText(trans.t("layered_psd_progress_composite"))
+
+    def _cancel_layered_psd(self):
+        if self.psd_worker is not None:
+            self.psd_worker.cancel()
+        if self.psd_progress_dialog is not None:
+            self.psd_progress_dialog.setLabelText(trans.t("depth_cancelling"))
+            self.psd_progress_dialog.setCancelButton(None)
+            self.psd_progress_dialog.show()
+
+    def _layered_psd_completed(self, success, message):
+        if _window_unavailable(self.window):
+            return
+        if success:
+            if self._psd_record is not None and self.psd_worker is not None:
+                self.window.output_manager._mark_record_exported(
+                    self._psd_record,
+                    self.psd_worker.image,
+                    message,
+                    {"labels": [], "scale": None, "watermark": None},
+                )
+            from utils.output_share import notify_saved_path
+            notify_saved_path(self.window, message)
+        elif message:
+            show_error_box(
+                self.window,
+                trans.t("action_export_layered_psd"),
+                f"{trans.t('msg_save_failed_text')}\n{message}",
+            )
+
+    def _layered_psd_finished(self):
+        dialog, self.psd_progress_dialog = self.psd_progress_dialog, None
+        if is_qobject_alive(dialog):
+            dialog.close()
+        self.psd_worker = None
+        self._psd_record = None
+
+    def export_layered_psd_dialog(self, item=None) -> None:
+        """Prompt for a .psd destination and export the selected output as a layered PSD."""
+        window = self.window
+        output_manager = getattr(window, "output_manager", None)
+        output_list = getattr(window, "output_list", None)
+        target_item = item if item is not None else (output_list.currentItem() if output_list is not None else None)
+        original = output_manager.record_for_item(target_item) if (output_manager is not None and target_item is not None) else None
+        if original is None and getattr(window, "fusion_result", None) is not None:
+            from controllers.output_manager import OutputRecord
+            original = OutputRecord.create(
+                window.fusion_result,
+                self.generate_default_filename(),
+                context=getattr(window, "last_render_context", None),
+            )
+        if original is None or getattr(original, "image", None) is None:
+            show_warning_box(
+                window,
+                trans.t("action_export_layered_psd"),
+                trans.t("layered_psd_no_result"),
+            )
+            return
+        record = original.snapshot_for_export()
+        default_name = self.filename_from_label(record.label) + ".psd"
+        from utils.settings_store import image_save_default, remember_image_save
+        file_path, _ = FileDialog.getSaveFileName(
+            window,
+            trans.t("action_export_layered_psd"),
+            image_save_default(default_name),
+            trans.t("layered_psd_filter"),
+        )
+        if not file_path:
+            return
+        remember_image_save(file_path)
+        self.export_layered_psd(record, original, file_path)
+
+    def _contrast_target(self, item=None):
+        """Return (image, default_stem, source_paths) for contrast map export."""
+        window = self.window
+        output_manager = getattr(window, "output_manager", None)
+        output_list = getattr(window, "output_list", None)
+        target_item = item if item is not None else (output_list.currentItem() if output_list is not None else None)
+        record = output_manager.record_for_item(target_item) if (output_manager is not None and target_item is not None) else None
+        if record is not None and getattr(record, "image", None) is not None:
+            return record.image, self.filename_from_label(record.label) + "_contrast", getattr(record, "source_paths", ())
+        if getattr(window, "fusion_result", None) is not None:
+            return window.fusion_result, self.generate_default_filename() + "_contrast", ()
+        raw = getattr(window, "raw_images", None) or ()
+        if raw:
+            idx = max(0, min(len(raw) - 1, int(getattr(window, "current_display_index", 0) or 0)))
+            names = getattr(window, "image_filenames", None) or ()
+            stem = os.path.splitext(names[idx])[0] if idx < len(names) else f"frame_{idx + 1}"
+            return raw[idx], self.filename_from_label(stem) + "_contrast", ()
+        return None, "", ()
+
+    def export_contrast_map_dialog(self, item=None) -> None:
+        """Compute and save a 16-bit/8-bit grayscale or colorized contrast map."""
+        window = self.window
+        target_image, default_stem, extra_sources = self._contrast_target(item=item)
+        if target_image is None:
+            show_warning_box(
+                window,
+                trans.t("contrast_map_title"),
+                trans.t("contrast_map_no_image"),
+            )
+            return
+        filters = trans.t("contrast_map_filter")
+        from utils.settings_store import image_save_default, remember_image_save
+        file_path, selected_filter = FileDialog.getSaveFileName(
+            window,
+            trans.t("contrast_map_title"),
+            image_save_default(default_stem + ".png"),
+            filters,
+        )
+        if not file_path:
+            return
+        remember_image_save(file_path)
+        root, ext = os.path.splitext(file_path)
+        if not ext:
+            ext = ".tif" if "tif" in (selected_filter or "").lower() else ".png"
+            file_path = root + ext
+        colorized = "8" in (selected_filter or "") and (
+            "color" in (selected_filter or "").lower()
+            or "伪彩" in (selected_filter or "")
+            or "カラー" in (selected_filter or "")
+            or "farb" in (selected_filter or "").lower()
+            or "color" in (selected_filter or "").lower()
+            or "컬러" in (selected_filter or "")
+            or "gekleurd" in (selected_filter or "").lower()
+            or "kolor" in (selected_filter or "").lower()
+            or "цвет" in (selected_filter or "").lower()
+        )
+        try:
+            self._safe_export_path(file_path, extra_sources)
+            from core.depth_products import export_contrast_map
+
+            def _write():
+                pixels = resolve_frame(target_image)
+                return export_contrast_map(
+                    file_path,
+                    pixels,
+                    bit_depth=8 if colorized else 16,
+                    colormap="turbo" if colorized else None,
+                )
+
+            if run_pixel_worker(window, trans.t("contrast_map_title"), _write):
+                from utils.output_share import notify_saved_path
+                notify_saved_path(window, file_path)
+            else:
+                show_error_box(
+                    window,
+                    trans.t("msg_save_failed_title"),
+                    trans.t("msg_save_failed_text"),
+                    trans.t("msg_save_failed_info_write"),
+                )
+        except Exception as exc:
+            show_error_box(
+                window,
+                trans.t("msg_save_failed_title"),
+                trans.t("msg_save_failed_text"),
+                image_write_error_text(exc),
+            )
+
     def save_result(self) -> None:
         window = self.window
         output_list = getattr(window, 'output_list', None)
@@ -542,9 +912,13 @@ class ExportManager:
         wm_cfg = watermark.export_cfg(window, target='output', record=record)
         if not default_filename:
             default_filename = self.generate_default_filename()
+        tiff32_filter = trans.t('export_filter_tiff32')
+        jp2_filter = trans.t('export_filter_jp2')
+        psd_filter = trans.t('layered_psd_filter')
         filters = ('PNG 8/16-bit (*.png);;TIFF 8/16-bit (*.tif *.tiff);;'
-                   'JPG 8-bit (*.jpg);;BMP 8-bit (*.bmp);;WebP 8-bit (*.webp);;'
-                   + trans.t('linear_dng_filter'))
+                   + tiff32_filter + ';;JPG 8-bit (*.jpg);;'
+                   + jp2_filter + ';;BMP 8-bit (*.bmp);;WebP 8-bit (*.webp);;'
+                   + trans.t('linear_dng_filter') + ';;' + psd_filter)
         from utils.settings_store import (image_save_default, image_save_filter,
                                           remember_image_save)
         file_path, selected_filter = FileDialog.getSaveFileName(
@@ -556,6 +930,18 @@ class ExportManager:
         remember_image_save(file_path, selected_filter)
 
         try:
+            if selected_filter == psd_filter or os.path.splitext(file_path)[1].lower() == '.psd':
+                from controllers.output_manager import OutputRecord
+                original = record
+                if original is not None:
+                    export_record = original.snapshot_for_export()
+                else:
+                    export_record = OutputRecord.create(
+                        result_to_save, default_filename,
+                        context=getattr(window, 'last_render_context', None),
+                    )
+                self.export_layered_psd(export_record, original, file_path)
+                return
             file_path = self.normalize_export_path(file_path, selected_filter=selected_filter)
             from utils.logging_setup import log_action, log_operation
             log_action('export_image', path=file_path)
@@ -587,11 +973,16 @@ class ExportManager:
             render_context = getattr(record, 'context', None) if record is not None else None
             if render_context is None and result_to_save is window.fusion_result:
                 render_context = getattr(window, 'last_render_context', None)
-            source_exif = (getattr(render_context, 'source_exif', b'')
-                           if render_context is not None else
-                           getattr(record, 'source_exif', b'') if record is not None else b'')
+            strip_exif = bool(getattr(window, 'strip_exif_on_export', False))
+            source_exif = b'' if strip_exif else (
+                getattr(render_context, 'source_exif', b'')
+                if render_context is not None else
+                getattr(record, 'source_exif', b'') if record is not None else b''
+            )
             profile = (getattr(render_context, 'icc_profile', b'')
                        if render_context is not None else b'')
+            float32_tiff = (selected_filter == tiff32_filter)
+            wm_exif_meta = watermark.context_exif_meta(window, target='output', record=record) if wm_cfg else None
             def write_result():
                 image = resolve_frame(result_to_save)
                 icc = profile
@@ -608,11 +999,15 @@ class ExportManager:
                                                      output_id=record.output_id if record else None)
                     image = scalebar.burn(image, cfg)
                 if wm_cfg:
-                    image = watermark.burn(image, wm_cfg)
+                    image = watermark.burn(image, wm_cfg, exif_meta=wm_exif_meta, value=1)
+                if float32_tiff and ext in ('.tif', '.tiff'):
+                    from utils.image_utils import to_normalized_float32
+                    image = to_normalized_float32(image)
                 with log_operation("export_image_write", path=file_path, extension=ext,
                                    shape=image.shape, dtype=str(image.dtype)) as operation:
                     written = imwrite_auto(file_path, image, get_imwrite_params(ext),
-                                           exif=source_exif, icc_profile=icc)
+                                           exif=source_exif, icc_profile=icc,
+                                           strip_exif=strip_exif)
                     if not written:
                         operation.fail()
                     return written
@@ -823,24 +1218,32 @@ class ExportManager:
                         image = labels.prepare_bgr_image(target, image, index)
                         image = scalebar.burn(image, cfg)
                     if wm_cfg:
-                        image = watermark.burn(image, wm_cfg)
+                        wm_meta = watermark.context_exif_meta(
+                            window, target='source' if target == 'input' else target,
+                            record=record, frame_index=index)
+                        image = watermark.burn(image, wm_cfg, exif_meta=wm_meta, value=index + 1)
+                    strip_exif = bool(getattr(window, 'strip_exif_on_export', False))
                     frame_exif = b''
                     frame_profile = stored_frame_icc[index] if index < len(stored_frame_icc) else b''
                     if metadata is not None and not baked:
                         from utils.image_utils import srgb_icc_profile
                         frame_profile = srgb_icc_profile()
-                    if baked:
-                        from core.image_loader import _read_exif_bytes, _read_icc_profile
-                        frame_exif = _read_exif_bytes(frame)
+                    if not strip_exif:
+                        if baked:
+                            from core.image_loader import _read_exif_bytes, _read_icc_profile
+                            frame_exif = _read_exif_bytes(frame)
+                            frame_profile = _read_icc_profile(frame)
+                        elif index < len(stored_frame_exif):
+                            frame_exif = stored_frame_exif[index]
+                        elif index == 0:
+                            frame_exif = stored_source_exif
+                    elif baked:
+                        from core.image_loader import _read_icc_profile
                         frame_profile = _read_icc_profile(frame)
-                    elif index < len(stored_frame_exif):
-                        frame_exif = stored_frame_exif[index]
-                    elif index == 0:
-                        frame_exif = stored_source_exif
                     path = publish_unique(
                         path, lambda staging: imwrite_auto(
                             staging, image, get_imwrite_params('.' + extension.lower()),
-                            exif=frame_exif, icc_profile=frame_profile),
+                            exif=frame_exif, icc_profile=frame_profile, strip_exif=strip_exif),
                         should_cancel=should_cancel)
                     saved += 1
                 except Exception as exc:
@@ -1093,6 +1496,130 @@ class ExportManager:
             show_warning_box(window, trans.t('msg_no_images_title'), trans.t('msg_no_images_save_stack_text'))
             return
         self._save_frames_as(window.raw_images, window.image_filenames, 'input')
+
+    def export_html_animation(self) -> None:
+        """Export a self-contained single-file HTML5 interactive focus-stack viewer."""
+        window = self.window
+        if self.html_anim_worker is not None:
+            return
+        reg_frames = list(getattr(window, 'registration_results', ()) or ())
+        raw_frames = list(getattr(window, 'raw_images', ()) or ())
+        if not reg_frames and not raw_frames:
+            show_warning_box(
+                window,
+                trans.t('action_export_html_animation'),
+                trans.t('html_anim_no_frames'),
+            )
+            return
+
+        selected_out = self.selected_output()
+        fused_img = selected_out[0] if selected_out is not None else getattr(window, 'fusion_result', None)
+        folder_name = os.path.basename(getattr(window, 'current_folder_path', '') or '').strip()
+        default_title = folder_name or "OpenFocus Interactive Focus Stack"
+
+        dlg = _resolve_lazy('HtmlAnimationDialog')(
+            window,
+            has_registered=bool(reg_frames),
+            has_input=bool(raw_frames),
+            has_fused=fused_img is not None,
+            default_title=default_title,
+        )
+        if not dlg.exec():
+            return
+
+        options = dlg.options()
+        source_choice = dlg.selected_source()
+        if source_choice == 'registered' and reg_frames:
+            frames = tuple(reg_frames)
+            names = tuple(getattr(window, 'registration_filenames', getattr(window, 'image_filenames', ())) or ())
+            record = self._registered_record()
+        else:
+            frames = tuple(raw_frames if raw_frames else reg_frames)
+            names = tuple(getattr(window, 'image_filenames', ()) or ())
+            record = None
+
+        default_filename = self.generate_default_filename() + "_interactive.html"
+        from utils.settings_store import image_save_default, remember_image_save
+        file_path, _ = FileDialog.getSaveFileName(
+            window,
+            trans.t('action_export_html_animation'),
+            image_save_default(default_filename),
+            "Interactive HTML (*.html);;All Files (*)",
+        )
+        if not file_path or self.html_anim_worker is not None or _window_unavailable(window):
+            return
+        if os.path.splitext(file_path)[1].lower() not in ('.html', '.htm'):
+            file_path = os.path.splitext(file_path)[0] + '.html'
+        remember_image_save(file_path)
+
+        try:
+            self._safe_export_path(
+                file_path, record.source_paths if record is not None else ())
+        except ValueError as exc:
+            show_error_box(window, trans.t('msg_save_failed_title'), trans.t('msg_save_failed_text'), str(exc))
+            return
+
+        metadata = (getattr(record, 'linear_dng_metadata', None) if record is not None
+                    else getattr(window, 'linear_dng_metadata', None))
+
+        from utils.frame_pixels import _PixelProgress
+        self.html_anim_progress_dialog = _PixelProgress(
+            window, trans.t('html_anim_exporting'), cancellable=True)
+        self.html_anim_progress_dialog.setWindowTitle(trans.t('action_export_html_animation'))
+        self.html_anim_progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        self.html_anim_progress_dialog.canceled.connect(self._cancel_html_animation)
+        self.html_anim_progress_dialog.show()
+
+        self.html_anim_worker = HtmlAnimationWorker(
+            file_path,
+            frames,
+            names,
+            fused_img if options.include_fused_frame else None,
+            options,
+            linear_dng_metadata=metadata,
+        )
+        self.html_anim_worker.completed.connect(self._on_html_animation_saved)
+        self.html_anim_worker.finished.connect(self._html_animation_thread_finished)
+        self.html_anim_worker.start()
+
+    def _cancel_html_animation(self):
+        if self.html_anim_worker is not None:
+            self.html_anim_worker.cancel()
+        if self.html_anim_progress_dialog is not None:
+            self.html_anim_progress_dialog.mark_cancelling()
+
+    def _html_animation_thread_finished(self):
+        worker = self.html_anim_worker
+        self.html_anim_worker = None
+        if worker is not None:
+            worker.deleteLater()
+
+    def _on_html_animation_saved(self, success: bool, message: str, count: int) -> None:
+        window = self.window
+        dialog, self.html_anim_progress_dialog = self.html_anim_progress_dialog, None
+        if is_qobject_alive(dialog):
+            dialog.finish()
+            dialog.deleteLater()
+        if _window_unavailable(window):
+            return
+        if message == 'CANCELLED':
+            window.statusBar().showMessage(trans.t('compare_cancelled'), 8000)
+            return
+        if success:
+            _show_saved_box_with_open_folder(
+                window,
+                trans.t('msg_success'),
+                trans.t('html_anim_saved_text'),
+                trans.t('html_anim_saved_info').format(count=count, path=message),
+                message if os.path.exists(str(message or '')) else "",
+            )
+        else:
+            show_error_box(
+                window,
+                trans.t('msg_save_failed_title'),
+                trans.t('msg_save_failed_text'),
+                message,
+            )
 
 
 def _show_saved_box_with_open_folder(window, title: str, text: str, info: str,

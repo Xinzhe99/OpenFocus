@@ -404,7 +404,7 @@ def _linear_dng_calibration(path):
         return metadata
 
 
-def load_linear_raw(path, scale_factor=1.0, *, before_decode=None):
+def load_linear_raw(path, scale_factor=1.0, *, before_decode=None, develop_settings=None):
     """Decode an oriented RAW into black-corrected, camera-linear BGR."""
     if not math.isfinite(scale_factor) or not 0 < scale_factor <= 1:
         raise ValueError("scale_factor must be in (0, 1]")
@@ -418,8 +418,18 @@ def load_linear_raw(path, scale_factor=1.0, *, before_decode=None):
     if os.path.splitext(os.fspath(path))[1].lower() == '.dng' and not is_dng:
         raise ValueError("Invalid DNG: DNGVersion tag is missing or unreadable")
     dng_metadata = _linear_dng_calibration(path) if is_dng else None
-    with rawpy.RawPy() as raw:
-        raw.open_file(os.fspath(path))
+    from core.raw_develop import (
+        RawDevelopSettings,
+        build_linear_rawpy_postprocess_kwargs,
+        load_raw_develop_settings,
+        open_raw_with_dng_fallback,
+    )
+    fallback_cfg = (
+        develop_settings.normalized()
+        if isinstance(develop_settings, RawDevelopSettings)
+        else load_raw_develop_settings()
+    )
+    with open_raw_with_dng_fallback(path, fallback_cfg, rawpy_module=rawpy) as (raw, opened_path):
         sizes = raw.sizes
         from core.resource_policy import raw_sensor_shape, raw_decode_bytes
         height, width = raw_sensor_shape(sizes)
@@ -462,7 +472,7 @@ def load_linear_raw(path, scale_factor=1.0, *, before_decode=None):
             if wb.shape != (3,) or not np.isfinite(wb).all() or np.any(wb <= 0):
                 raise ValueError("RAW has no valid camera white balance")
             neutral = wb[1] / wb
-            make, model = _camera_identity(path, raw)
+            make, model = _camera_identity(opened_path, raw)
             metadata = LinearDNGMetadata(tuple(map(tuple, matrix)), tuple(neutral), make, model)
             _validate_metadata(metadata)
         black = np.asarray(raw.black_level_per_channel, dtype=np.float64)
@@ -471,10 +481,17 @@ def load_linear_raw(path, scale_factor=1.0, *, before_decode=None):
         white = float(raw.white_level) - float(black.min())
         if not math.isfinite(white) or not 0 < white <= 65535:
             raise ValueError("Invalid RAW white level")
-        rgb = raw.postprocess(output_color=rawpy.ColorSpace.raw,
-                              user_wb=[1, 1, 1, 1], no_auto_scale=True,
-                              no_auto_bright=True, gamma=(1, 1), output_bps=16,
-                              half_size=half_size)
+        effective_settings = (
+            develop_settings
+            if isinstance(develop_settings, RawDevelopSettings)
+            else (None if fallback_cfg.is_default() else fallback_cfg)
+        )
+        post_kwargs = build_linear_rawpy_postprocess_kwargs(
+            effective_settings,
+            half_size=half_size,
+            rawpy_module=rawpy,
+        )
+        rgb = raw.postprocess(**post_kwargs)
     if rgb.dtype != np.uint16 or rgb.ndim != 3 or rgb.shape[2] != 3:
         raise ValueError("LibRaw returned an unsupported image")
     band_bytes = 4 << 20
@@ -512,7 +529,7 @@ def load_linear_raw(path, scale_factor=1.0, *, before_decode=None):
     return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR), metadata
 
 
-def develop_linear(linear_bgr, metadata):
+def develop_linear(linear_bgr, metadata, *, develop_settings=None):
     """Render camera-linear pixels to white-balanced, display-referred BGR."""
     _validate_image(linear_bgr)
     matrix, neutral = _validate_metadata(metadata)
@@ -521,13 +538,31 @@ def develop_linear(linear_bgr, metadata):
     conversion = np.linalg.inv(conversion)
     wb = 1.0 / neutral
     wb /= wb.min()
+    gain = 1.0
+    if develop_settings is not None:
+        from core.raw_develop import RawDevelopSettings, compute_custom_wb_multipliers
+        cfg = (
+            develop_settings.normalized()
+            if isinstance(develop_settings, RawDevelopSettings)
+            else RawDevelopSettings.from_dict(develop_settings)
+        )
+        if cfg.wb_mode == "custom":
+            shift = np.asarray(
+                compute_custom_wb_multipliers(cfg.wb_temp_shift, cfg.wb_tint_shift)[:3],
+                dtype=np.float64,
+            )
+            wb = wb * shift
+            wb /= wb.min()
+        if abs(cfg.exposure_ev) > 1e-6:
+            gain = float(2.0 ** cfg.exposure_ev)
     require_memory(linear_bgr.nbytes + min(128, linear_bgr.shape[0]) * linear_bgr.shape[1] * 80)
     # Process bounded strips to avoid several full-frame floating point buffers.
     result = np.empty_like(linear_bgr)
+    scale = (wb * (gain / 65535.0)).astype(np.float32)
     for start in range(0, linear_bgr.shape[0], 128):
         stop = min(start + 128, linear_bgr.shape[0])
         rgb = linear_bgr[start:stop, :, ::-1].astype(np.float32)
-        rgb *= (wb / 65535.0).astype(np.float32)
+        rgb *= scale
         rgb = cv2.transform(rgb, conversion.astype(np.float32))
         np.maximum(rgb, 0, out=rgb)
         rgb = np.where(rgb <= 0.0031308, 12.92 * rgb,
