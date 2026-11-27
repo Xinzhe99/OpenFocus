@@ -386,14 +386,28 @@ def registration_parameter_specs(id):
     return tuple(specs)
 
 
+def _normalize_registration_values(specs, values):
+    if values is None or not isinstance(values, Mapping):
+        return values
+    known = {spec.key for spec in specs}
+    if ('max_shift_ratio' in values and 'max_shift_ratio' not in known
+            and 'max_shift_x_ratio' in known and 'max_shift_y_ratio' in known):
+        values = dict(values)
+        legacy = values.pop('max_shift_ratio')
+        values.setdefault('max_shift_x_ratio', legacy)
+        values.setdefault('max_shift_y_ratio', legacy)
+    return values
+
+
 def resolve_registration_parameters(id, values=None):
-    return _resolve(registration_parameter_specs(id), values)
+    specs = registration_parameter_specs(id)
+    return _resolve(specs, _normalize_registration_values(specs, values))
 
 
 def desktop_registration_parameters(method, values=None):
     """Resolve desktop job and cache parameters, including older saved settings."""
     specs = registration_parameter_specs(method)
-    parameters = _resolve(specs, values)
+    parameters = _resolve(specs, _normalize_registration_values(specs, values))
     if _ALIGN_FAILURE in specs:
         parameters['failure_policy'] = 'fail'
     return parameters
@@ -418,6 +432,16 @@ _V3_SCALE = ParameterSpec('inference_scale', 'label_ai_inference_scale', 'single
                           choice_labels=('ai_inference_scale_single', 'ai_inference_scale_dual'))
 _ADAPTER = 'core.algorithm_adapters:'
 _ALIGN_FAILURE = ParameterSpec('failure_policy', 'label_align_failure_policy', 'continue', choices=('continue', 'fail'), choice_labels=('align_failure_continue', 'align_failure_fail'))
+_ALIGN_SHIFT_X = ParameterSpec('max_shift_x_ratio', 'label_align_max_shift_x', 0.25, 0.0, 1.0, 0.01, 2, hint_key='align_max_shift_x_hint')
+_ALIGN_SHIFT_Y = ParameterSpec('max_shift_y_ratio', 'label_align_max_shift_y', 0.25, 0.0, 1.0, 0.01, 2, hint_key='align_max_shift_y_hint')
+_ALIGN_MAX_ROT = ParameterSpec('max_rotation_deg', 'label_align_max_rotation', 15.0, 0.0, 180.0, 0.5, 1, hint_key='align_max_rotation_hint')
+_ALIGN_MAX_SCALE = ParameterSpec('max_scale_change', 'label_align_max_scale_change', 0.15, 0.0, 1.0, 0.01, 2, hint_key='align_max_scale_change_hint')
+_ALIGN_AUTO_CROP = ParameterSpec('auto_crop', 'label_align_auto_crop', True, choices=(True, False), hint_key='align_auto_crop_hint')
+_ALIGN_INTERP = ParameterSpec('interpolation', 'label_align_interpolation', 'lanczos', choices=('lanczos', 'cubic', 'linear'), choice_labels=('align_interp_lanczos', 'align_interp_cubic', 'align_interp_linear'), hint_key='align_interp_hint')
+_PERSPECTIVE_ALIGN_PARAMS = (
+    _ALIGN_SHIFT_X, _ALIGN_SHIFT_Y, _ALIGN_MAX_ROT, _ALIGN_MAX_SCALE,
+    _ALIGN_AUTO_CROP, _ALIGN_INTERP, _ALIGN_FAILURE,
+)
 _FUSION_CLASS = 'core.multi_focus_fusion:MultiFocusFusion.'
 
 FUSION_DEFAULT = 'openfocus_b'
@@ -442,7 +466,7 @@ register_fusion(FusionAlgorithm('openfocus_c', 'radio_openfocus_c', 'OpenFocus C
 register_fusion(FusionAlgorithm('dct', 'radio_dct', 'DCT', 'DCT', _FUSION_CLASS + '_fuse_dct', (_K_DCT,), DepthSpec(_ADAPTER + 'depth_dct', (_K_DCT,)), environment=_FUSION_CLASS + '_validate_dct_environment', resource_estimator=_ADAPTER + 'dct_resources', parallel_frames=True, hint_key='radio_dct_hint', roi=_ADAPTER + 'roi_dct', promotes_color=True, category='transform', streaming_sources=True))
 register_fusion(FusionAlgorithm('dtcwt', 'radio_dtcwt', 'DTCWT', 'DTCWT', _FUSION_CLASS + '_fuse_dtcwt', (_LEVELS,), DepthSpec(_ADAPTER + 'depth_dtcwt', (_LEVELS,)), environment=_FUSION_CLASS + '_validate_transform_environment', hint_key='radio_dtcwt_hint', resource_estimator=_ADAPTER + 'dtcwt_resources', parallel_frames=True, ordered_plan=True, roi=_ADAPTER + 'roi_dtcwt', promotes_color=True, tile_decider=_ADAPTER + 'dtcwt_needs_tiles', category='transform', streaming_sources=True))
 register_registration(RegistrationAlgorithm('none', 'check_align_none', '', hint_key='check_align_none_hint'))
-register_registration(RegistrationAlgorithm('homography', 'check_align_homography', 'Homography', _ADAPTER + 'registration_homography', (_ALIGN_FAILURE,), hint_key='check_align_homography_hint'))
-register_registration(RegistrationAlgorithm('ecc', 'check_align_ecc', 'ECC', _ADAPTER + 'registration_ecc', (_ALIGN_FAILURE,), hint_key='check_align_ecc_hint'))
+register_registration(RegistrationAlgorithm('homography', 'check_align_homography', 'Homography', _ADAPTER + 'registration_homography', _PERSPECTIVE_ALIGN_PARAMS, hint_key='check_align_homography_hint'))
+register_registration(RegistrationAlgorithm('ecc', 'check_align_ecc', 'ECC', _ADAPTER + 'registration_ecc', _PERSPECTIVE_ALIGN_PARAMS, hint_key='check_align_ecc_hint'))
 register_registration(RegistrationAlgorithm('openfocus', 'check_align_of', 'OpenFocusAlign', _ADAPTER + 'registration_openfocus', (ParameterSpec('max_shift_ratio', 'label_align_shift_limit', .03, 0, 1, .01, 2), ParameterSpec('rotation', 'label_align_rotation', 0., 0, 180, .1, 2, hint_key='align_rotation_hint'), ParameterSpec('magnification', 'label_align_magnification', 5., 0, 99, .1, 2, hint_key='align_magnification_hint'), _ALIGN_FAILURE, ParameterSpec('reference_frame', 'label_align_reference_frame', 1, 1, 1000000, hint_key='align_reference_frame_hint')), hint_key='check_align_of_hint'))
 register_registration(RegistrationAlgorithm('both', 'check_align_both', 'Homography_ECC', steps=('homography', 'ecc'), hint_key='check_align_both_hint'))

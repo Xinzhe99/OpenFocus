@@ -49,6 +49,10 @@ def _failed_alignment_detail(entries, names, indices):
     reason_keys = {
         'low detector quality': 'alignment_reason_low_quality',
         'motion outside limits': 'alignment_reason_outside_limits',
+        'horizontal shift outside limits': 'alignment_reason_shift_x_limit',
+        'vertical shift outside limits': 'alignment_reason_shift_y_limit',
+        'rotation outside limits': 'alignment_reason_rotation_limit',
+        'scale change outside limits': 'alignment_reason_scale_limit',
         'reference alignment fell back': 'alignment_reason_reference_fallback',
         'insufficient features': 'alignment_reason_insufficient_features',
         'insufficient matches': 'alignment_reason_insufficient_matches',
@@ -197,7 +201,7 @@ class RenderManager:
                 tuple(getattr(window, name, None) for name in (
                     'thread_count', 'resource_preference', 'current_scale_factor',
                     'align_cache_enabled', 'collect_alignment_report', 'roi_mode_active',
-                    'current_folder_path', 'tile_enabled', 'profile_performance')),
+                    'alignment_roi', 'current_folder_path', 'tile_enabled', 'profile_performance')),
                 bool(window.chk_quick_preview.isChecked()), frame_storage._storage_directory,
                 self._compare_token)
 
@@ -341,6 +345,7 @@ class RenderManager:
         return (getattr(window, "source_content_revision", 0), tuple(included),
                 tuple(id(window.raw_images[i]) for i in included),
                 alignment_steps(alignment), tuple(sorted(parameters.items())),
+                getattr(window, "alignment_roi", None),
                 getattr(window, "reg_downscale_width", None), brightness,
                 reverse_order,
                 bool(getattr(window, "defect_mask_path", "") or getattr(window, "sensor_denoise", False)),
@@ -1851,6 +1856,8 @@ class RenderManager:
             effective_last_alignment_options = window.last_alignment_options if reusable else None
         if disk_cache_request is not None:
             parameters = self._processing_parameters(method, queue_item=queue_item)
+            interp = registration_parameters.get("interpolation", "lanczos")
+            alignment_roi = getattr(window, "alignment_roi", None)
             disk_cache_request["identity"] = {
                 "source_revision": alignment_key[0],
                 "included": list(included_idx),
@@ -1860,10 +1867,12 @@ class RenderManager:
                 "brightness_reference": "last" if parameters["exposure_match"] else "first",
                 "exposure_match": parameters["exposure_match"],
                 "registration_backend": "opencv",
-                "interpolation": "lanczos4",
+                "interpolation": "lanczos4" if interp == "lanczos" else interp,
                 "registration_steps": list(requested_steps),
                 "registration_parameters": registration_parameters,
             }
+            if alignment_roi is not None:
+                disk_cache_request["identity"]["alignment_roi"] = list(alignment_roi)
             revision = getattr(window, "source_revision", 0)
             disk_cache_request["is_current"] = lambda: (
                 window.raw_images is source_ref
@@ -2127,6 +2136,7 @@ class RenderManager:
             retain_preparation=retain_preparation,
             preview=self._preview_mode,
             profile_performance=bool(getattr(window, "profile_performance", False)),
+            alignment_roi=getattr(window, "alignment_roi", None),
         )
         self.worker.storage_directory = storage_override
         self.worker.live_preview_requested = live_preview
@@ -2497,6 +2507,9 @@ class RenderManager:
 
                 # Bring attention back: flash the taskbar icon
                 QApplication.alert(window)
+                if not preview and not compare:
+                    from utils.sound_notify import play_completion_sound
+                    play_completion_sound(bool(getattr(window, "render_complete_sound", False)))
 
                 # Crash auto-recovery: new outputs refresh the snapshot
                 from utils import recovery
@@ -2603,6 +2616,9 @@ class RenderManager:
                 window.last_alignment_options = context["alignment_identity"]
                 window.alignment_request_key = context["alignment_key"]
                 window.alignment_registration_dispatch = getattr(registration_details, 'dispatch', ())
+                refresh_aligned = getattr(window, '_on_cached_alignment_updated', None)
+                if callable(refresh_aligned):
+                    refresh_aligned()
                 # The disk cache was written by the worker (it owns the PNG
                 # encode); writing it here again re-encoded the whole stack on
                 # the GUI thread for nothing.
@@ -3044,6 +3060,8 @@ class RenderManager:
         from PyQt6.QtWidgets import QWidget
         if isinstance(window, QWidget):
             QApplication.alert(window)
+        from utils.sound_notify import play_completion_sound
+        play_completion_sound(bool(getattr(window, "render_complete_sound", False)))
         if failures and getattr(self, "_render_interactive", True):
             details = "\n".join(f"{self.algo_display_name(method)}: {reason}"
                                  for method, reason in failures)

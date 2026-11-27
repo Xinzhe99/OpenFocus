@@ -17,12 +17,12 @@ import weakref
 
 import cv2
 import numpy as np
-from PyQt6.QtCore import (QEvent, QPointF, QRect, QRectF, QSize, Qt, QThread,
-                          QTimer, pyqtSignal)
+from PyQt6.QtCore import (QEasingCurve, QEvent, QPointF, QPropertyAnimation,
+                          QRect, QRectF, QSize, Qt, QThread, QTimer, pyqtSignal)
 from PyQt6.QtGui import (QBrush, QColor, QIcon, QImage, QPainter, QPainterPath, QPen, QPixmap)
 from utils.file_dialogs import FileDialog
 from PyQt6.QtWidgets import (
-    QAbstractSpinBox, QApplication, QButtonGroup, QCheckBox, QDialog,
+    QAbstractItemView, QAbstractSpinBox, QApplication, QButtonGroup, QCheckBox, QDialog,
     QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMessageBox, QProgressBar, QPushButton, QRadioButton, QScrollArea, QSizePolicy,
     QSlider, QSpinBox, QSplitter, QStyle, QVBoxLayout, QWidget,
@@ -218,8 +218,78 @@ def _release_dialog_buffers(dialog_ref):
                  "_source_display", "_source_clean_display", "_source_valid",
                  "_source_geometry", "_source_display_index", "_source_published",
                  "_before_qimage", "_result_display", "_result_qimage",
-                 "_sharpness_maps", "_depth_overlay_bgr", "_depth_overlay_valid"):
+                 "_sharpness_maps", "_depth_overlay_bgr", "_depth_overlay_valid",
+                 "_depth_overlay_qimage", "_depth_overlay_pixmap", "_depth_overlay_bounds"):
         setattr(dialog, name, None)
+
+
+_DEPTH_LEGEND_PIXMAPS: dict[tuple[int, int], QPixmap] = {}
+
+
+def _depth_legend_pixmap(bar_w: int, bar_h: int) -> QPixmap:
+    """Build and cache the Turbo color-ramp bar once so paintEvent never re-colormaps."""
+    key = (int(bar_w), int(bar_h))
+    cached = _DEPTH_LEGEND_PIXMAPS.get(key)
+    if cached is not None:
+        return cached
+    ramp = np.linspace(0, 255, key[0], dtype=np.uint8)[None, :]
+    bar_bgr = cv2.applyColorMap(np.repeat(ramp, key[1], axis=0), cv2.COLORMAP_TURBO)
+    pix = QPixmap.fromImage(_qimage_from_bgr(bar_bgr, copy=True))
+    _DEPTH_LEGEND_PIXMAPS[key] = pix
+    return pix
+
+
+class _ColorSwatchWidget(QWidget):
+    """Lightweight live color swatch for Color Tolerance without stylesheet repolish."""
+
+    def __init__(self, size: int = 18, parent=None):
+        super().__init__(parent)
+        self._rgb = None
+        self._locked = False
+        self._active = False
+        self.setFixedSize(size, size)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+
+    @property
+    def rgb(self):
+        return self._rgb
+
+    @property
+    def locked(self) -> bool:
+        return self._locked
+
+    def set_swatch(self, rgb, *, locked: bool = False, active: bool = False) -> None:
+        norm = None if rgb is None else (int(rgb[0]), int(rgb[1]), int(rgb[2]))
+        state = (norm, bool(locked), bool(active))
+        if state == (self._rgb, self._locked, self._active):
+            return
+        self._rgb, self._locked, self._active = state
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        t = tokens()
+        rect = QRectF(1.5, 1.5, self.width() - 3.0, self.height() - 3.0)
+        if self._active and self._rgb is not None:
+            r, g, b = self._rgb
+            painter.setBrush(QColor(r, g, b))
+            border_color = QColor(t["accent"]) if self._locked else QColor(t["borderStrong"])
+            border_w = 2.0 if self._locked else 1.2
+            painter.setPen(QPen(border_color, border_w))
+            painter.drawRoundedRect(rect, 4.0, 4.0)
+        else:
+            bg = QColor(t["surface"])
+            painter.setBrush(bg)
+            border_color = QColor(t["borderStrong"] if self._active else t["border"])
+            painter.setPen(QPen(border_color, 1.0, Qt.PenStyle.DashLine))
+            painter.drawRoundedRect(rect, 4.0, 4.0)
+            if not self._active:
+                slash_pen = QPen(QColor(t["textMuted"]), 1.0)
+                painter.setPen(slash_pen)
+                painter.drawLine(QPointF(rect.left() + 3.0, rect.bottom() - 3.0),
+                                 QPointF(rect.right() - 3.0, rect.top() + 3.0))
+        painter.end()
 
 
 def _qimage_from_bgr(bgr8: np.ndarray, copy: bool = True) -> QImage:
@@ -248,7 +318,7 @@ class _NumberRow(QWidget):
     valueChanged = pyqtSignal(int)
 
     def __init__(self, label: str, minimum: int, maximum: int, value: int,
-                 parent=None):
+                 parent=None, header_widget: Optional[QWidget] = None):
         super().__init__(parent)
         self._sync = False
         self._label = QLabel(label)
@@ -271,7 +341,15 @@ class _NumberRow(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(1)
-        layout.addWidget(self._label)
+        if header_widget is not None:
+            hdr = QHBoxLayout()
+            hdr.setContentsMargins(0, 0, 0, 0)
+            hdr.setSpacing(6)
+            hdr.addWidget(self._label, 1)
+            hdr.addWidget(header_widget, 0, Qt.AlignmentFlag.AlignVCenter)
+            layout.addLayout(hdr)
+        else:
+            layout.addWidget(self._label)
         layout.addLayout(row)
         self.setValue(value)
         self.slider.valueChanged.connect(self._from_slider)
@@ -957,6 +1035,49 @@ class _RetouchCanvas(QWidget):
         self.setCursor(Qt.CursorShape.CrossCursor)
         self._pan_from = None
         self._drawing = False
+        self._hud_text = ""
+        self._hud_opacity = 0.0
+        self._hud_hold_ticks = 0
+        self._hud_timer = QTimer(self)
+        self._hud_timer.setInterval(30)
+        self._hud_timer.timeout.connect(self._tick_hud)
+
+    # ------------------------------------------------------------ HUD pill
+    def hud_rect(self) -> QRect:
+        if not self._hud_text or self._hud_opacity <= 0.0:
+            return QRect()
+        fm = self.fontMetrics()
+        text_w = fm.horizontalAdvance(self._hud_text)
+        pill_w = text_w + 34
+        pill_h = max(28, fm.height() + 12)
+        x = max(8, int((self.width() - pill_w) / 2))
+        y = 12
+        return QRect(x - 2, y - 2, pill_w + 4, pill_h + 4).intersected(self.rect())
+
+    def flash_hud(self, text: str) -> None:
+        old = self.hud_rect()
+        self._hud_text = str(text or "")
+        self._hud_opacity = 1.0 if self._hud_text else 0.0
+        self._hud_hold_ticks = 36  # ~1.08s hold before smooth fade
+        if self._hud_text:
+            self._hud_timer.start()
+        else:
+            self._hud_timer.stop()
+        dirty = old.united(self.hud_rect()) if not old.isEmpty() else self.hud_rect()
+        if not dirty.isEmpty():
+            self.update(dirty)
+
+    def _tick_hud(self) -> None:
+        if self._hud_hold_ticks > 0:
+            self._hud_hold_ticks -= 1
+            return
+        dirty = self.hud_rect()
+        self._hud_opacity = max(0.0, self._hud_opacity - 0.085)
+        if self._hud_opacity <= 0.0:
+            self._hud_timer.stop()
+            self._hud_text = ""
+        if not dirty.isEmpty():
+            self.update(dirty)
 
     # ------------------------------------------------------------ coords
     def image_rect(self, width: int, height: int,
@@ -1015,20 +1136,55 @@ class _RetouchCanvas(QWidget):
             clone_pt = self.dlg.live_clone_source_point()
             if clone_pt is not None:
                 c = self.image_to_widget(clone_pt[0], clone_pt[1])
-                cross = QRectF(c.x() - 18.0, c.y() - 18.0, 36.0, 36.0).toAlignedRect().intersected(self.rect())
+                clone_radius = max(18.0, self.dlg.doc.diameter * self.dlg.view.scale / 2.0 + 4.0)
+                cross = QRectF(
+                    c.x() - clone_radius, c.y() - clone_radius,
+                    clone_radius * 2.0, clone_radius * 2.0,
+                ).toAlignedRect().intersected(self.rect())
                 rect = cross if rect.isEmpty() else rect.united(cross)
         return rect
 
     # ------------------------------------------------------------ paint
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor(tokens()['retouchCanvas']))
+        clip_rect = event.rect()
+        painter.fillRect(clip_rect, QColor(tokens()['retouchCanvas']))
         qimage, width, height, ox, oy = self.dlg.canvas_image(self.role)
         if qimage is not None and width > 0 and height > 0:
             rect = self.image_rect(width, height, ox, oy)
-            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform,
-                                  True)
-            painter.drawImage(rect, qimage)
+            # Sample only the dirty/visible sub-rectangle of large 45MP–102MP QImages
+            # (with a 2px bilinear margin) so 120Hz partial repaints stay sub-millisecond.
+            draw_target = QRectF(clip_rect).adjusted(-2.0, -2.0, 2.0, 2.0).intersected(rect)
+            if not draw_target.isEmpty() and rect.width() > 0 and rect.height() > 0:
+                sx = qimage.width() / rect.width()
+                sy = qimage.height() / rect.height()
+                src_rect = QRectF(
+                    (draw_target.x() - rect.x()) * sx,
+                    (draw_target.y() - rect.y()) * sy,
+                    draw_target.width() * sx,
+                    draw_target.height() * sy,
+                )
+                painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+                painter.drawImage(draw_target, qimage, src_rect)
+            if (self.role == "result" and not self.dlg.preview_active
+                    and self.dlg.chk_depth_map.isChecked()
+                    and self.dlg._depth_overlay_pixmap is not None
+                    and self.dlg._depth_overlay_bounds is not None):
+                dox, doy, dw, dh = self.dlg._depth_overlay_bounds
+                ov_rect = self.image_rect(dw, dh, dox, doy)
+                ov_target = QRectF(clip_rect).intersected(ov_rect)
+                if not ov_target.isEmpty() and ov_rect.width() > 0 and ov_rect.height() > 0:
+                    ov_pix = self.dlg._depth_overlay_pixmap
+                    osx = ov_pix.width() / ov_rect.width()
+                    osy = ov_pix.height() / ov_rect.height()
+                    ov_src = QRectF(
+                        (ov_target.x() - ov_rect.x()) * osx,
+                        (ov_target.y() - ov_rect.y()) * osy,
+                        ov_target.width() * osx,
+                        ov_target.height() * osy,
+                    )
+                    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
+                    painter.drawPixmap(ov_target, ov_pix, ov_src)
             painter.setPen(QPen(QColor(72, 72, 72), 1))
             painter.drawRect(rect.adjusted(0, 0, -1, -1))
             if self.role == "source":
@@ -1041,11 +1197,12 @@ class _RetouchCanvas(QWidget):
         if self.role == "result":
             self._paint_depth_legend(painter)
             self._paint_clone_crosshair(painter)
+            self._paint_hud_pill(painter)
         self._paint_cursor(painter)
         painter.end()
 
     def _paint_depth_legend(self, painter: QPainter) -> None:
-        if (self.dlg.preview_active or self.dlg._depth_overlay_bgr is None
+        if (self.dlg.preview_active or self.dlg._depth_overlay_pixmap is None
                 or not self.dlg.chk_depth_map.isChecked()):
             return
         n = max(1, self.dlg.doc.frame_count)
@@ -1075,13 +1232,48 @@ class _RetouchCanvas(QWidget):
         painter.drawText(x + 8, text_y, left_text)
         bx = x + 8 + lw + 5
         by = int(y + (box_h - bar_h) / 2)
-        ramp = np.linspace(0, 255, bar_w, dtype=np.uint8)[None, :]
-        bar_bgr = cv2.applyColorMap(np.repeat(ramp, bar_h, axis=0), cv2.COLORMAP_TURBO)
-        painter.drawImage(bx, by, _qimage_from_bgr(bar_bgr, copy=False))
+        painter.drawPixmap(bx, by, _depth_legend_pixmap(bar_w, bar_h))
         painter.setPen(QPen(border, 1.0))
         painter.drawRect(bx, by, bar_w, bar_h)
         painter.setPen(QColor(t["text"]))
         painter.drawText(bx + bar_w + 5, text_y, right_text)
+        painter.restore()
+
+    def _paint_hud_pill(self, painter: QPainter) -> None:
+        if not self._hud_text or self._hud_opacity <= 0.0:
+            return
+        fm = painter.fontMetrics()
+        text_w = fm.horizontalAdvance(self._hud_text)
+        pill_w = text_w + 34
+        pill_h = max(28, fm.height() + 12)
+        x = max(8.0, (self.width() - pill_w) / 2.0)
+        y = 12.0
+        t = tokens()
+        bg = QColor(t["surface"])
+        bg.setAlpha(232)
+        border = QColor(t["borderStrong"])
+        accent = QColor(t["accent"])
+        text_col = QColor(t["text"])
+        painter.save()
+        painter.setOpacity(self._hud_opacity)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setBrush(bg)
+        painter.setPen(QPen(border, 1.0))
+        painter.drawRoundedRect(QRectF(x, y, pill_w, pill_h), pill_h / 2.0, pill_h / 2.0)
+        # Subtle accent indicator dot
+        dot_r = 3.5
+        dot_cx = x + 13.0
+        dot_cy = y + pill_h / 2.0
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(accent)
+        painter.drawEllipse(QPointF(dot_cx, dot_cy), dot_r, dot_r)
+        # Crisp label text
+        font = painter.font()
+        font.setBold(True)
+        painter.setFont(font)
+        painter.setPen(text_col)
+        text_y = int(y + (pill_h + fm.ascent() - fm.descent()) / 2.0)
+        painter.drawText(int(x + 22), text_y, self._hud_text)
         painter.restore()
 
     def _paint_clone_crosshair(self, painter: QPainter) -> None:
@@ -1091,23 +1283,39 @@ class _RetouchCanvas(QWidget):
         if pt is None:
             return
         center = self.image_to_widget(pt[0], pt[1])
-        arm = 11.0
+        diameter = max(2.0, self.dlg.doc.diameter * self.dlg.view.scale)
+        radius = diameter / 2.0
+        arm = 10.0
         gap = 3.5
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.setBrush(Qt.BrushStyle.NoBrush)
         accent = QColor(tokens()["accent"])
-        # High-contrast dark halo + bright crisp crosshair.
-        for pen in (QPen(QColor(0, 0, 0, 220), 3.2), QPen(accent, 1.6)):
+        # Dual-Circle Clone Cursor: subtle synchronized brush-size source circle
+        # so the user always sees the exact source footprint being cloned.
+        ring_halo = QPen(QColor(0, 0, 0, 145), 2.8, Qt.PenStyle.DashLine)
+        ring_halo.setCosmetic(True)
+        ring_color = QColor(accent)
+        ring_color.setAlpha(205)
+        ring_pen = QPen(ring_color, 1.3, Qt.PenStyle.DashLine)
+        ring_pen.setCosmetic(True)
+        painter.setPen(ring_halo)
+        painter.drawEllipse(center, radius, radius)
+        painter.setPen(ring_pen)
+        painter.drawEllipse(center, radius, radius)
+        # High-contrast dark halo + bright crisp source-point reticle crosshair.
+        for pen in (QPen(QColor(0, 0, 0, 220), 3.0), QPen(accent, 1.5)):
             pen.setCosmetic(True)
             painter.setPen(pen)
             painter.drawLine(QPointF(center.x() - arm, center.y()), QPointF(center.x() - gap, center.y()))
             painter.drawLine(QPointF(center.x() + gap, center.y()), QPointF(center.x() + arm, center.y()))
             painter.drawLine(QPointF(center.x(), center.y() - arm), QPointF(center.x(), center.y() - gap))
             painter.drawLine(QPointF(center.x(), center.y() + gap), QPointF(center.x(), center.y() + arm))
-            painter.drawEllipse(center, 4.0, 4.0)
+            painter.drawEllipse(center, 3.5, 3.5)
             if self.dlg.doc.clone_mode == "pattern":
-                painter.drawRect(QRectF(center.x() - 7.0, center.y() - 7.0, 14.0, 14.0))
+                half_sq = max(7.0, min(radius, 11.0))
+                painter.drawRect(QRectF(center.x() - half_sq, center.y() - half_sq,
+                                        half_sq * 2.0, half_sq * 2.0))
         painter.restore()
 
     def _paint_cursor(self, painter: QPainter) -> None:
@@ -1264,10 +1472,17 @@ class RetouchDialog(QDialog):
         self._depth_overlay_bgr = None
         self._depth_overlay_valid = None
         self._depth_overlay_origin = (0, 0)
+        self._depth_overlay_bounds = None
+        self._depth_overlay_qimage = None
+        self._depth_overlay_pixmap = None
         self._depth_map_worker = None
         self._depth_map_started = False
         self._depth_map_request = 0
         self._picking_clone_origin = False
+        self._last_tolerance_rgb = None
+        self._f9_scroll_anim = None
+        self._f9_flash_row = None
+        self._f9_flash_timer = None
         self._notice = ""
         self._notice_timer = None
         self._eviction_announced = False
@@ -1284,6 +1499,9 @@ class RetouchDialog(QDialog):
         self._notice_timer = QTimer(self)
         self._notice_timer.setSingleShot(True)
         self._notice_timer.timeout.connect(self._clear_notice)
+        self._f9_flash_timer = QTimer(self)
+        self._f9_flash_timer.setSingleShot(True)
+        self._f9_flash_timer.timeout.connect(self._clear_f9_frame_highlight)
         self.window_main = window_main
         self.record = record
         self.apply_callback = apply_callback
@@ -1326,6 +1544,7 @@ class RetouchDialog(QDialog):
                 ("rb_clone", "retouch_tool_clone"),
                 ("btn_pick_clone", "retouch_clone_pick"),
                 ("chk_auto_brightness", "retouch_brightness_auto"),
+                ("color_tolerance_swatch", "retouch_color_tolerance_swatch"),
                 ("btn_auto_align", "retouch_auto_align_patch"),
                 ("btn_reset_offset", "retouch_reset_offset"),
                 ("btn_auto_bg", "retouch_auto_background"),
@@ -1539,7 +1758,10 @@ class RetouchDialog(QDialog):
         src_opts = QVBoxLayout(self.source_options_box)
         src_opts.setContentsMargins(SPACE["sm"], SPACE["sm"], SPACE["sm"], SPACE["sm"])
         src_opts.setSpacing(SPACE["xs"])
-        self.num_color_tolerance = _NumberRow("", 0, 100, self.doc.color_tolerance)
+        self.color_tolerance_swatch = _ColorSwatchWidget(size=18)
+        self.color_tolerance_swatch.setToolTip(trans.t("retouch_color_swatch_empty"))
+        self.num_color_tolerance = _NumberRow(
+            "", 0, 100, self.doc.color_tolerance, header_widget=self.color_tolerance_swatch)
         self.num_color_tolerance.setToolTip(trans.t("retouch_color_tolerance_hint") + "\n" + no_key)
         for child in (self.num_color_tolerance.slider, self.num_color_tolerance.spin, self.num_color_tolerance._label):
             child.setToolTip(self.num_color_tolerance.toolTip())
@@ -2096,8 +2318,11 @@ class RetouchDialog(QDialog):
         self._before_qimage = _qimage_from_bgr(display)
 
     def _refresh_result_display(self) -> None:
-        self._result_display = self._tint_result_overlays(self._display_image(self.doc.working))
-        self._result_qimage = _qimage_from_bgr(self._result_display)
+        display = self._tint_missing(self._display_image(self.doc.working))
+        if display.ndim == 2:
+            display = cv2.cvtColor(display, cv2.COLOR_GRAY2BGR)
+        self._result_display = np.ascontiguousarray(display)
+        self._result_qimage = _qimage_from_bgr(self._result_display, copy=False)
         self.result_canvas.update()
         self._update_status()
 
@@ -2106,16 +2331,18 @@ class RetouchDialog(QDialog):
             self._refresh_result_display()
             return
         x0, y0, x1, y1 = rect
-        patch = self.doc.working[y0:y1, x0:x1]
-        display = self._display_image(patch)
-        if self._result_display.ndim == 3 and display.ndim == 2:
-            display = cv2.cvtColor(display, cv2.COLOR_GRAY2BGR)
-        display = np.ascontiguousarray(self._tint_result_overlays(display, (y0, y1, x0, x1)))
-        self._result_display[y0:y1, x0:x1] = display
-        patch_image = _qimage_from_bgr(display, copy=False)
-        painter = QPainter(self._result_qimage)
-        painter.drawImage(x0, y0, patch_image)
-        painter.end()
+        missing_on = self.doc.background_fill is not None and self.chk_missing.isChecked()
+        if self._result_display is self.doc.working and not missing_on:
+            # uint8 fast path: working was updated in place; wrap pointer to bump cacheKey.
+            self._result_qimage = _qimage_from_bgr(self._result_display, copy=False)
+        else:
+            patch = self.doc.working[y0:y1, x0:x1]
+            display = self._display_image(patch)
+            if self._result_display.ndim == 3 and display.ndim == 2:
+                display = cv2.cvtColor(display, cv2.COLOR_GRAY2BGR)
+            display = self._tint_missing(display, (y0, y1, x0, x1))
+            self._result_display[y0:y1, x0:x1] = display
+            self._result_qimage = _qimage_from_bgr(self._result_display, copy=False)
         self.result_canvas.update(
             self.result_canvas.widget_rect_for_image_rect(rect))
 
@@ -2225,6 +2452,7 @@ class RetouchDialog(QDialog):
             dirty = rect.united(canvas.cursor_rect())
             if not dirty.isEmpty():
                 canvas.update(dirty)
+        self._update_tolerance_swatch()
         self._update_status()
 
     def clear_cursor(self) -> None:
@@ -2235,7 +2463,52 @@ class RetouchDialog(QDialog):
         for canvas, rect in zip((self.source_canvas, self.result_canvas), old):
             if not rect.isEmpty():
                 canvas.update(rect)
+        self._update_tolerance_swatch()
         self._update_status()
+
+    def _sample_rgb_at(self, x: float, y: float):
+        if self.doc is None or not self.image_contains(x, y):
+            return None
+        bgr = self.doc._sample_color_255(x, y)
+        if len(bgr) >= 3:
+            return (int(round(bgr[2])), int(round(bgr[1])), int(round(bgr[0])))
+        v = int(round(bgr[0])) if bgr else 0
+        return (v, v, v)
+
+    def _update_tolerance_swatch(self) -> None:
+        swatch = getattr(self, "color_tolerance_swatch", None)
+        if swatch is None or self.doc is None:
+            return
+        active = self.doc.tool == "source" and self.doc.color_tolerance > 0
+        if not active:
+            swatch.set_swatch(None, locked=False, active=False)
+            swatch.setToolTip(trans.t("retouch_color_swatch_empty"))
+            return
+        if (self.doc.stroke_active and self.doc._stroke is not None
+                and "tolerance_ref" in self.doc._stroke):
+            ref = self.doc._stroke["tolerance_ref"]
+            if len(ref) >= 3:
+                rgb = (int(round(ref[2])), int(round(ref[1])), int(round(ref[0])))
+            else:
+                v = int(round(ref[0])) if ref else 0
+                rgb = (v, v, v)
+            self._last_tolerance_rgb = rgb
+            swatch.set_swatch(rgb, locked=True, active=True)
+            swatch.setToolTip(trans.t("retouch_color_swatch_active").format(r=rgb[0], g=rgb[1], b=rgb[2]))
+            return
+        rgb = None
+        if self.cursor_pos is not None and self.image_contains(self.cursor_pos.x(), self.cursor_pos.y()):
+            rgb = self._sample_rgb_at(self.cursor_pos.x(), self.cursor_pos.y())
+            if rgb is not None:
+                self._last_tolerance_rgb = rgb
+        else:
+            rgb = self._last_tolerance_rgb
+        if rgb is not None:
+            swatch.set_swatch(rgb, locked=False, active=True)
+            swatch.setToolTip(trans.t("retouch_color_swatch_preview").format(r=rgb[0], g=rgb[1], b=rgb[2]))
+        else:
+            swatch.set_swatch(None, locked=False, active=True)
+            swatch.setToolTip(trans.t("retouch_color_swatch_empty"))
 
     def image_contains(self, x: float, y: float) -> bool:
         return 0 <= x < self.doc.width and 0 <= y < self.doc.height
@@ -2338,6 +2611,7 @@ class RetouchDialog(QDialog):
             self.btn_pick_clone.setChecked(False)
             self.btn_pick_clone.blockSignals(False)
         self._sync_tool_buttons()
+        self._update_tolerance_swatch()
         self._update_status()
         self.source_canvas.update()
         self.result_canvas.update()
@@ -2426,6 +2700,7 @@ class RetouchDialog(QDialog):
         if not self.doc.stroke_active:
             self.doc.set_color_tolerance(value)
             self._update_brush_labels()
+            self._update_tolerance_swatch()
 
     def _on_brightness_changed(self, value: int) -> None:
         if not self.doc.stroke_active:
@@ -2525,9 +2800,54 @@ class RetouchDialog(QDialog):
         self._update_status()
         return True
 
+    def _smooth_scroll_frame_list(self, idx: int) -> None:
+        item = self.frame_list.item(idx)
+        if item is None:
+            return
+        hbar = self.frame_list.horizontalScrollBar()
+        if hbar is None or hbar.maximum() <= hbar.minimum():
+            self.frame_list.scrollToItem(item, QAbstractItemView.ScrollHint.PositionAtCenter)
+            return
+        item_rect = self.frame_list.visualItemRect(item)
+        viewport_w = max(1, self.frame_list.viewport().width())
+        target = hbar.value() + item_rect.center().x() - viewport_w // 2
+        target = max(hbar.minimum(), min(hbar.maximum(), int(target)))
+        if target == hbar.value():
+            return
+        if self._f9_scroll_anim is not None:
+            self._f9_scroll_anim.stop()
+        anim = QPropertyAnimation(hbar, b"value", self)
+        anim.setDuration(180)
+        anim.setStartValue(hbar.value())
+        anim.setEndValue(target)
+        anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._f9_scroll_anim = anim
+        anim.start()
+
+    def _flash_f9_frame_highlight(self, idx: int) -> None:
+        self._clear_f9_frame_highlight()
+        item = self.frame_list.item(idx)
+        if item is None:
+            return
+        accent = QColor(tokens()["accent"])
+        accent.setAlpha(68)
+        item.setBackground(QBrush(accent))
+        self._f9_flash_row = idx
+        if self._f9_flash_timer is not None:
+            self._f9_flash_timer.start(1350)
+
+    def _clear_f9_frame_highlight(self) -> None:
+        if self._f9_flash_row is None:
+            return
+        item = self.frame_list.item(self._f9_flash_row)
+        if item is not None:
+            item.setBackground(QBrush())
+        self._f9_flash_row = None
+
     def _locate_contributing_frame(self) -> Optional[int]:
         if self._action_blocked() or self.doc.frame_count <= 0:
             return None
+        prev_focus = self.focusWidget()
         if self.cursor_pos is not None and self.image_contains(self.cursor_pos.x(), self.cursor_pos.y()):
             x, y = self.cursor_pos.x(), self.cursor_pos.y()
         else:
@@ -2538,6 +2858,13 @@ class RetouchDialog(QDialog):
             self._set_notice(trans.t("retouch_locate_frame_unavailable"))
             return None
         self._select_frame(idx)
+        self._smooth_scroll_frame_list(idx)
+        self._flash_f9_frame_highlight(idx)
+        # Never steal canvas focus when jumping via F9.
+        if prev_focus in (self.result_canvas, self.source_canvas) and self.focusWidget() is not prev_focus:
+            prev_focus.setFocus(Qt.FocusReason.OtherFocusReason)
+        self.result_canvas.flash_hud(
+            trans.t("retouch_f9_hud_pill").format(i=idx + 1, n=self.doc.frame_count))
         self._set_notice(
             trans.t("retouch_located_frame").format(i=idx + 1, n=self.doc.frame_count))
         return idx
@@ -2616,6 +2943,7 @@ class RetouchDialog(QDialog):
                 self._show_record_limit()
             return False
         self._set_stroke_ui(True)
+        self._update_tolerance_swatch()
         if self.doc.stroke_start_rect is not None:
             self._patch_result(self.doc.stroke_start_rect)
         self._update_dirty_ui()
@@ -2644,6 +2972,7 @@ class RetouchDialog(QDialog):
             self._stroke_failed(exc)
             return
         self._set_stroke_ui(False)
+        self._update_tolerance_swatch()
         if status == "oversize":
             self._refresh_result_display()
             self._set_notice(trans.t("retouch_stroke_too_large"))
@@ -2677,6 +3006,7 @@ class RetouchDialog(QDialog):
             return
         self.doc.cancel_stroke()
         self._set_stroke_ui(False)
+        self._update_tolerance_swatch()
         self._refresh_result_display()
         self._update_dirty_ui()
         self._update_controls()
@@ -2760,33 +3090,6 @@ class RetouchDialog(QDialog):
                 self._set_notice(trans.t("retouch_history_evicted"))
             self._update_dirty_ui()
             self._update_controls()
-
-    def _tint_result_overlays(self, display, region=None):
-        """Apply active result-canvas diagnostic overlays (missing-data & depth/source map)."""
-        out = self._tint_missing(display, region)
-        if not self.chk_depth_map.isChecked() or self._depth_overlay_bgr is None:
-            return out
-        y0, y1, x0, x1 = region or (0, out.shape[0], 0, out.shape[1])
-        ox, oy = self._depth_overlay_origin
-        overlay = self._depth_overlay_bgr
-        oh, ow = overlay.shape[:2]
-        ix0, iy0 = max(x0, ox), max(y0, oy)
-        ix1, iy1 = min(x1, ox + ow), min(y1, oy + oh)
-        if ix0 >= ix1 or iy0 >= iy1:
-            return out
-        if out.ndim == 2:
-            out = cv2.cvtColor(out, cv2.COLOR_GRAY2BGR)
-        else:
-            out = out.copy()
-        ov_slice = overlay[iy0 - oy:iy1 - oy, ix0 - ox:ix1 - ox]
-        dest_slice = out[iy0 - y0:iy1 - y0, ix0 - x0:ix1 - x0]
-        blended = cv2.addWeighted(dest_slice, 0.55, ov_slice, 0.45, 0)
-        if self._depth_overlay_valid is not None:
-            valid_slice = self._depth_overlay_valid[iy0 - oy:iy1 - oy, ix0 - ox:ix1 - ox]
-            dest_slice[valid_slice] = blended[valid_slice]
-        else:
-            out[iy0 - y0:iy1 - y0, ix0 - x0:ix1 - x0] = blended
-        return out
 
     def _tint_missing(self, display, region=None):
         """Tint the missing-data classes into an 8-bit display patch."""
@@ -3158,17 +3461,19 @@ class RetouchDialog(QDialog):
 
     # ----------------------------------------------------- depth/source map
     def _toggle_depth_map(self, checked: bool) -> None:
-        if checked and self._depth_overlay_bgr is None:
-            if (getattr(self.doc.context, "rendered_depth", None) is not None
-                    or self.doc._source_index_map is not None):
-                idx_map, origin, valid_mask = self.doc.source_index_map()
-                self._apply_depth_map_data(idx_map, origin, valid_mask)
+        if checked and self._depth_overlay_pixmap is None:
+            overlay = self.doc.overlay_depth_index(max_side=1024)
+            if overlay is not None:
+                self._apply_depth_map_data(*overlay)
             elif not self._depth_map_started:
                 self._start_depth_map_worker()
         self._set_depth_state(
-            "computing" if checked and self._depth_overlay_bgr is None
+            "computing" if checked and self._depth_overlay_pixmap is None
             else ("ready" if checked else ""))
-        self._refresh_result_display()
+        # Composite cached overlay QPixmap directly in paintEvent — zero full-frame
+        # buffer copy or QImage re-upload on 45MP–102MP canvases.
+        self.result_canvas.update()
+        self._update_status()
 
     def _set_depth_state(self, state: str) -> None:
         label = getattr(self, "lbl_depth_state", None)
@@ -3190,29 +3495,47 @@ class RetouchDialog(QDialog):
     def _apply_depth_map_data(self, idx_map, origin, valid_mask) -> None:
         if idx_map is None or self.doc is None:
             return
+        ih, iw = idx_map.shape[:2]
+        # Keep the cached overlay compact (<= 1024px) so 45MP–102MP canvases
+        # never allocate hundreds of megabytes or stall colormapping.
+        step = max(1, (max(ih, iw) + 1023) // 1024)
+        idx_small = idx_map[::step, ::step] if step > 1 else idx_map
+        valid_small = (valid_mask[::step, ::step]
+                       if (valid_mask is not None and step > 1) else valid_mask)
         n = max(1, self.doc.frame_count)
         if n <= 1:
-            norm = np.zeros(idx_map.shape[:2], dtype=np.uint8)
+            norm = np.zeros(idx_small.shape[:2], dtype=np.uint8)
         else:
             norm = np.clip(
-                idx_map.astype(np.float32) / float(n - 1) * 255.0, 0.0, 255.0
+                idx_small.astype(np.float32) * np.float32(255.0 / float(n - 1)),
+                np.float32(0.0), np.float32(255.0),
             ).astype(np.uint8)
         color = cv2.applyColorMap(norm, cv2.COLORMAP_TURBO)
-        ox, oy = origin
+        ox, oy = int(origin[0]), int(origin[1])
         if getattr(self.doc.context, "rendered_depth", None) is not None and self.doc.frames:
             target_w, target_h = self.doc.frames[0].width, self.doc.frames[0].height
         else:
             target_w, target_h = self.doc.width - ox, self.doc.height - oy
-        if color.shape[1] != target_w or color.shape[0] != target_h:
-            color = cv2.resize(color, (target_w, target_h), interpolation=cv2.INTER_NEAREST)
-        scaled_valid = valid_mask
-        if scaled_valid is not None and (scaled_valid.shape[1] != target_w or scaled_valid.shape[0] != target_h):
-            scaled_valid = cv2.resize(
-                scaled_valid.astype(np.uint8), (target_w, target_h),
-                interpolation=cv2.INTER_NEAREST) > 0
+        ch, cw = color.shape[:2]
+        rgba = np.empty((ch, cw, 4), dtype=np.uint8)
+        rgba[..., 0] = color[..., 2]
+        rgba[..., 1] = color[..., 1]
+        rgba[..., 2] = color[..., 0]
+        if valid_small is not None:
+            if valid_small.shape[:2] != (ch, cw):
+                valid_small = cv2.resize(
+                    valid_small.astype(np.uint8), (cw, ch),
+                    interpolation=cv2.INTER_NEAREST) > 0
+            rgba[..., 3] = np.where(valid_small, np.uint8(115), np.uint8(0))
+        else:
+            rgba[..., 3] = np.uint8(115)
+        qimg = QImage(rgba.data, cw, ch, 4 * cw, QImage.Format.Format_RGBA8888).copy()
         self._depth_overlay_bgr = color
-        self._depth_overlay_origin = (int(ox), int(oy))
-        self._depth_overlay_valid = scaled_valid
+        self._depth_overlay_origin = (ox, oy)
+        self._depth_overlay_bounds = (ox, oy, int(target_w), int(target_h))
+        self._depth_overlay_valid = valid_small
+        self._depth_overlay_qimage = qimg
+        self._depth_overlay_pixmap = QPixmap.fromImage(qimg)
 
     def _start_depth_map_worker(self) -> None:
         self._depth_map_started = True
@@ -3242,7 +3565,8 @@ class RetouchDialog(QDialog):
         self._apply_depth_map_data(idx_map, origin, valid_mask)
         if self.chk_depth_map.isChecked():
             self._set_depth_state("ready")
-            self._refresh_result_display()
+            self.result_canvas.update()
+            self._update_status()
 
     def _on_depth_map_failed(self, request: int, error: str) -> None:
         if self._closing or request != self._depth_map_request:
@@ -3282,6 +3606,13 @@ class RetouchDialog(QDialog):
         self._source_timer.stop()
         if self._notice_timer is not None:
             self._notice_timer.stop()
+        if self._f9_flash_timer is not None:
+            self._f9_flash_timer.stop()
+        if self._f9_scroll_anim is not None:
+            self._f9_scroll_anim.stop()
+            self._f9_scroll_anim = None
+        if hasattr(self, "result_canvas") and self.result_canvas is not None:
+            self.result_canvas._hud_timer.stop()
         self._held_keys.clear()
         self.space_down = False
         if self._source_worker is not None:
