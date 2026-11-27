@@ -32,6 +32,14 @@ _PARALLEL_BATCH_LOCK = threading.Lock()
 _ALIGNMENT_POOL = None
 
 
+def _measure_deferred_alignment():
+    reg = sys.modules.get('core.registration')
+    if reg is None:
+        return nullcontext()
+    measure = getattr(reg, 'measure_deferred_alignment', None)
+    return measure() if measure is not None else nullcontext()
+
+
 def _is_bgr_rev(image):
     return (isinstance(image, np.ndarray) and image.flags.aligned and not image.flags.c_contiguous
             and image.ndim == 3 and image.shape[2] == 3
@@ -794,15 +802,16 @@ def apply_translation(image, transform, *, should_cancel=None, source=None):
     Q8.8 truncates interpolation; out-of-bounds is black. The final source row
     and column use the verified W/H-1.001f clamp, even for integer shifts.
     """
-    _check_cancel(should_cancel)
-    _geometry(image)
-    if not isinstance(transform, TranslationTransform):
-        raise TypeError('transform must be a TranslationTransform')
-    resource_policy.require_memory(translation_resolution_bytes(image))
-    transform.source.validate_pixels(image, should_cancel, source=source)
-    result = _warp(image, transform.dx, transform.dy, should_cancel)
-    _check_cancel(should_cancel)
-    return result
+    with _measure_deferred_alignment():
+        _check_cancel(should_cancel)
+        _geometry(image)
+        if not isinstance(transform, TranslationTransform):
+            raise TypeError('transform must be a TranslationTransform')
+        resource_policy.require_memory(translation_resolution_bytes(image))
+        transform.source.validate_pixels(image, should_cancel, source=source)
+        result = _warp(image, transform.dx, transform.dy, should_cancel)
+        _check_cancel(should_cancel)
+        return result
 
 
 _ORIGINAL_APPLY_TRANSLATION = apply_translation
@@ -852,7 +861,7 @@ def _validate_direct_rgb_source(fingerprint, source_frame, should_cancel):
 def apply_translation_region(source_or_image, transform, x, y, width, height, *,
                              channels=None, should_cancel=None):
     """Compute a single rectangular translation crop bit-identical to apply_translation."""
-    from core.source_frames import _read_direct_rgb_tiff_region, is_direct_rgb_tiff
+    from core.source_frames import is_direct_rgb_tiff
 
     _check_cancel(should_cancel)
     if not isinstance(transform, TranslationTransform):
@@ -862,13 +871,27 @@ def apply_translation_region(source_or_image, transform, x, y, width, height, *,
         raise ValueError('Requested region does not fit the frame')
 
     direct_tiff = is_direct_rgb_tiff(source_or_image)
+    image = None
+    if not direct_tiff:
+        image = (source_or_image if isinstance(source_or_image, np.ndarray)
+                 else resolve_frame(source_or_image, should_cancel=should_cancel))
+    with _measure_deferred_alignment():
+        return _apply_translation_region_resolved(
+            source_or_image, image, direct_tiff, transform, x, y, width, height,
+            channels=channels, should_cancel=should_cancel,
+        )
+
+
+def _apply_translation_region_resolved(source_or_image, image, direct_tiff, transform,
+                                       x, y, width, height, *, channels=None, should_cancel=None):
+    from core.source_frames import _read_direct_rgb_tiff_region
+
+    src_h, src_w = transform.source.shape[:2]
     if direct_tiff:
         _validate_direct_rgb_source(transform.source, source_or_image, should_cancel)
         src_shape = tuple(source_or_image.shape)
         src_dtype = np.dtype(source_or_image.dtype)
     else:
-        image = (source_or_image if isinstance(source_or_image, np.ndarray)
-                 else resolve_frame(source_or_image, should_cancel=should_cancel))
         _geometry(image)
         src_obj = None if isinstance(source_or_image, np.ndarray) else source_or_image
         transform.source.validate_pixels(image, should_cancel, source=src_obj)
@@ -1857,17 +1880,18 @@ def _warp_alignment_cv(image, transform, interpolation, should_cancel):
 
 
 def apply_alignment(image, transform, *, should_cancel=None, interpolation=None):
-    _check_cancel(should_cancel)
-    _alignment_geometry(image)
-    _validate_internal_float(image, should_cancel)
-    if not isinstance(transform, AlignmentTransform):
-        raise TypeError('transform must be an AlignmentTransform')
-    transform.source.validate_pixels(image, should_cancel)
-    if not transform.is_identity:
-        resource_policy.require_memory(alignment_resolution_bytes(image))
-        if interpolation is not None:
-            return _warp_alignment_cv(image, transform, interpolation, should_cancel)
-    return _warp_alignment(image, transform.f8, should_cancel)
+    with _measure_deferred_alignment():
+        _check_cancel(should_cancel)
+        _alignment_geometry(image)
+        _validate_internal_float(image, should_cancel)
+        if not isinstance(transform, AlignmentTransform):
+            raise TypeError('transform must be an AlignmentTransform')
+        transform.source.validate_pixels(image, should_cancel)
+        if not transform.is_identity:
+            resource_policy.require_memory(alignment_resolution_bytes(image))
+            if interpolation is not None:
+                return _warp_alignment_cv(image, transform, interpolation, should_cancel)
+        return _warp_alignment(image, transform.f8, should_cancel)
 
 
 _ORIGINAL_APPLY_ALIGNMENT = apply_alignment
@@ -1875,17 +1899,18 @@ _ORIGINAL_APPLY_ALIGNMENT = apply_alignment
 
 def _apply_alignment_for_source(source_frame, image, transform, should_cancel=None, *, interpolation=None):
     """Apply full alignment using source_frame's render-scope digest if available."""
-    _check_cancel(should_cancel)
-    _alignment_geometry(image)
-    _validate_internal_float(image, should_cancel)
-    if not isinstance(transform, AlignmentTransform):
-        raise TypeError('transform must be an AlignmentTransform')
-    transform.source.validate_pixels(image, should_cancel, source=source_frame)
-    if not transform.is_identity:
-        resource_policy.require_memory(alignment_resolution_bytes(image))
-        if interpolation is not None:
-            return _warp_alignment_cv(image, transform, interpolation, should_cancel)
-    return _warp_alignment(image, transform.f8, should_cancel)
+    with _measure_deferred_alignment():
+        _check_cancel(should_cancel)
+        _alignment_geometry(image)
+        _validate_internal_float(image, should_cancel)
+        if not isinstance(transform, AlignmentTransform):
+            raise TypeError('transform must be an AlignmentTransform')
+        transform.source.validate_pixels(image, should_cancel, source=source_frame)
+        if not transform.is_identity:
+            resource_policy.require_memory(alignment_resolution_bytes(image))
+            if interpolation is not None:
+                return _warp_alignment_cv(image, transform, interpolation, should_cancel)
+        return _warp_alignment(image, transform.f8, should_cancel)
 
 
 def _warp_alignment_region_np(band, x, y, width, height, src_h, src_w, src_y0, fields, should_cancel):
@@ -1926,7 +1951,7 @@ def _warp_alignment_region_np(band, x, y, width, height, src_h, src_w, src_y0, f
 def apply_alignment_region(source_or_image, transform, x, y, width, height, *,
                            channels=None, should_cancel=None):
     """Compute a single rectangular similarity-warped crop bit-identical to apply_alignment."""
-    from core.source_frames import _read_direct_rgb_tiff_region, is_direct_rgb_tiff
+    from core.source_frames import is_direct_rgb_tiff
 
     _check_cancel(should_cancel)
     if not isinstance(transform, AlignmentTransform):
@@ -1936,13 +1961,27 @@ def apply_alignment_region(source_or_image, transform, x, y, width, height, *,
         raise ValueError('Requested region does not fit the frame')
 
     direct_tiff = is_direct_rgb_tiff(source_or_image)
+    image = None
+    if not direct_tiff:
+        image = (source_or_image if isinstance(source_or_image, np.ndarray)
+                 else resolve_frame(source_or_image, should_cancel=should_cancel))
+    with _measure_deferred_alignment():
+        return _apply_alignment_region_resolved(
+            source_or_image, image, direct_tiff, transform, x, y, width, height,
+            channels=channels, should_cancel=should_cancel,
+        )
+
+
+def _apply_alignment_region_resolved(source_or_image, image, direct_tiff, transform,
+                                     x, y, width, height, *, channels=None, should_cancel=None):
+    from core.source_frames import _read_direct_rgb_tiff_region
+
+    src_h, src_w = transform.source.shape[:2]
     if direct_tiff:
         _validate_direct_rgb_source(transform.source, source_or_image, should_cancel)
         src_shape = tuple(source_or_image.shape)
         src_dtype = np.dtype(source_or_image.dtype)
     else:
-        image = (source_or_image if isinstance(source_or_image, np.ndarray)
-                 else resolve_frame(source_or_image, should_cancel=should_cancel))
         _alignment_geometry(image)
         _validate_internal_float(image, should_cancel)
         src_obj = None if isinstance(source_or_image, np.ndarray) else source_or_image

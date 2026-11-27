@@ -330,7 +330,7 @@ __kernel void a_out_f32(__global const ushort* src, __global float* dst,
 
 
 def _source_staging_bytes(frame, shape, img_resize, native_upload):
-    from core.source_frames import frame_has_mapped_pixels, frame_resolution_bytes
+    from core.source_frames import SourceFrame, frame_has_mapped_pixels, frame_resolution_bytes
 
     # Resolution accounts for decode and deferred processors (including ECC).
     # Mapped input may also fault in pages while it is being read.
@@ -338,7 +338,9 @@ def _source_staging_bytes(frame, shape, img_resize, native_upload):
     if frame_has_mapped_pixels(frame):
         resolution = max(resolution, frame.nbytes)
     if native_upload:
-        packed = 0 if isinstance(frame, np.ndarray) and frame.flags.c_contiguous else frame.nbytes
+        is_packed = ((isinstance(frame, np.ndarray) and frame.flags.c_contiguous)
+                     or (type(frame) is SourceFrame and frame._rgb_tiff_offset is None))
+        packed = 0 if is_packed else frame.nbytes
         return resolution + packed + frame.nbytes  # packing and native upload staging
 
     source_strip = min(frame.shape[0], 128) * math.prod(frame.shape[1:])

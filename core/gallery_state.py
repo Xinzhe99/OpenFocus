@@ -109,13 +109,70 @@ def _badge_keys(value: Any) -> tuple[str, ...]:
 
 
 @dataclass(frozen=True)
+class BoostPackage:
+    """Server-driven optional fusion-showcase exposure boost tier."""
+
+    package_id: str
+    impressions: int
+    points: int
+    label: str = ""
+    recommended: bool = False
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "BoostPackage":
+        if not isinstance(data, Mapping):
+            return cls(package_id="", impressions=0, points=0)
+        pkg_id = _as_str(data.get("package_id")) or _as_str(data.get("id"))
+        impressions = _as_int(data.get("impressions", data.get("views", 0)), 0, minimum=0)
+        points = _as_int(data.get("points", data.get("cost_points", 0)), 0, minimum=0)
+        return cls(
+            package_id=pkg_id,
+            impressions=impressions,
+            points=points,
+            label=_as_str(data.get("label")),
+            recommended=_as_bool(data.get("recommended"), False),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "package_id": self.package_id,
+            "impressions": self.impressions,
+            "points": self.points,
+            "label": self.label,
+            "recommended": self.recommended,
+        }
+
+
+DEFAULT_BOOST_PACKAGES: tuple[BoostPackage, ...] = (
+    BoostPackage(package_id="boost_100", impressions=100, points=50),
+    BoostPackage(package_id="boost_500", impressions=500, points=200, recommended=True),
+    BoostPackage(package_id="boost_2000", impressions=2000, points=600),
+)
+
+
+def _parse_boost_packages(value: Any) -> tuple[BoostPackage, ...]:
+    if not isinstance(value, (list, tuple)):
+        return DEFAULT_BOOST_PACKAGES
+    parsed: list[BoostPackage] = []
+    for item in value:
+        if isinstance(item, BoostPackage):
+            if item.package_id and item.impressions > 0 and item.points >= 0:
+                parsed.append(item)
+        elif isinstance(item, Mapping):
+            pkg = BoostPackage.from_dict(item)
+            if pkg.package_id and pkg.impressions > 0 and pkg.points >= 0:
+                parsed.append(pkg)
+    return tuple(parsed) if parsed else DEFAULT_BOOST_PACKAGES
+
+
+@dataclass(frozen=True)
 class GalleryConfig:
     """Remote /api/v1/config settings including the global circuit breaker."""
 
     gallery_enabled: bool = True
     slide_interval_sec: int = 5
-    upload_prompt_probability: float = 0.2
-    upload_cost_points: int = 100
+    upload_prompt_probability: float = 1.0
+    upload_cost_points: int = 0
     max_batch_upload: int = 10
     danmaku_max_chars: int = 50
     danmaku_cooldown_sec: int = 10
@@ -130,6 +187,8 @@ class GalleryConfig:
     ai_tag_keys: tuple[str, ...] = AI_TAG_KEYS
     interest_keys: tuple[str, ...] = INTEREST_KEYS
     leaderboard_rewards: dict[str, Any] = field(default_factory=dict)
+    boost_enabled: bool = True
+    boost_packages: tuple[BoostPackage, ...] = DEFAULT_BOOST_PACKAGES
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "GalleryConfig":
@@ -139,13 +198,18 @@ class GalleryConfig:
         if region not in ("global", "cn"):
             region = "global"
         rewards = data.get("leaderboard_rewards")
+        raw_cost = (
+            data.get("upload_cost_points")
+            if "upload_cost_points" in data
+            else data.get("publish_cost", 0)
+        )
         return cls(
             gallery_enabled=_as_bool(data.get("gallery_enabled"), True),
             slide_interval_sec=_as_int(data.get("slide_interval_sec"), 5, minimum=1, maximum=3600),
             upload_prompt_probability=_as_float(
-                data.get("upload_prompt_probability"), 0.2, minimum=0.0, maximum=1.0
+                data.get("upload_prompt_probability"), 1.0, minimum=0.0, maximum=1.0
             ),
-            upload_cost_points=_as_int(data.get("upload_cost_points"), 100, minimum=0),
+            upload_cost_points=_as_int(raw_cost, 0, minimum=0),
             max_batch_upload=_as_int(data.get("max_batch_upload"), 10, minimum=1, maximum=50),
             danmaku_max_chars=_as_int(data.get("danmaku_max_chars"), 50, minimum=1, maximum=200),
             danmaku_cooldown_sec=_as_int(data.get("danmaku_cooldown_sec"), 10, minimum=0, maximum=3600),
@@ -160,6 +224,8 @@ class GalleryConfig:
             ai_tag_keys=_as_str_tuple(data.get("ai_tag_keys"), AI_TAG_KEYS) or AI_TAG_KEYS,
             interest_keys=_as_str_tuple(data.get("interest_keys"), INTEREST_KEYS) or INTEREST_KEYS,
             leaderboard_rewards=copy.deepcopy(dict(rewards)) if isinstance(rewards, Mapping) else {},
+            boost_enabled=_as_bool(data.get("boost_enabled"), True),
+            boost_packages=_parse_boost_packages(data.get("boost_packages")),
         )
 
 
@@ -333,6 +399,8 @@ class GalleryWork:
     created_at: str = ""
     is_builtin_fallback: bool = False
     rank: Optional[int] = None
+    showcase_impressions_remaining: int = 0
+    showcase_impressions_total: int = 0
 
     @property
     def id(self) -> str:
@@ -401,6 +469,12 @@ class GalleryWork:
             created_at=_as_str(data.get("created_at")),
             is_builtin_fallback=_as_bool(data.get("is_builtin_fallback"), False),
             rank=rank,
+            showcase_impressions_remaining=_as_int(
+                data.get("showcase_impressions_remaining", 0), 0, minimum=0
+            ),
+            showcase_impressions_total=_as_int(
+                data.get("showcase_impressions_total", 0), 0, minimum=0
+            ),
         )
 
 
@@ -1064,13 +1138,58 @@ class GalleryStateStore(QObject):
         return self._submit(f"account:{revision}", _work, generation=generation)
 
     def refresh_account_after_points_change(self) -> None:
-        """Refresh the shared profile after a publish or voucher changes points."""
+        """Refresh the shared profile after a publish, boost, or voucher changes points."""
         # An earlier request may have read the balance before the change.
         self._profile_refresh_revision += 1
         if self._fusion_busy:
             self._deferred_poll = True
         else:
             self.refresh_account_silently()
+
+    def apply_work_boost_local(
+        self,
+        work_id: str,
+        *,
+        showcase_impressions_remaining: Optional[int] = None,
+        impressions_added: int = 0,
+        points_balance: Optional[int] = None,
+    ) -> None:
+        """Update cached points balance and work showcase impressions locally after a boost."""
+        if self._closed:
+            return
+        if points_balance is not None and self._profile is not None:
+            new_balance = max(0, int(points_balance))
+            if new_balance != self._profile.points_balance:
+                self._profile = replace(self._profile, points_balance=new_balance)
+                self.profile_changed.emit(self._profile)
+        if work_id and self._feed_works:
+            changed = False
+            updated_feed: list[GalleryWork] = []
+            for work in self._feed_works:
+                if work.work_id == work_id:
+                    next_rem = (
+                        max(0, int(showcase_impressions_remaining))
+                        if showcase_impressions_remaining is not None
+                        else max(0, work.showcase_impressions_remaining + max(0, int(impressions_added)))
+                    )
+                    next_total = max(
+                        work.showcase_impressions_total,
+                        work.showcase_impressions_total + max(0, int(impressions_added)),
+                        next_rem,
+                    )
+                    updated_feed.append(
+                        replace(
+                            work,
+                            showcase_impressions_remaining=next_rem,
+                            showcase_impressions_total=next_total,
+                        )
+                    )
+                    changed = True
+                else:
+                    updated_feed.append(work)
+            if changed:
+                self._feed_works = updated_feed
+                self.feed_changed.emit(self.effective_showcase_works())
 
     def refresh_feed(
         self,

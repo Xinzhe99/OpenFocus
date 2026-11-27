@@ -85,6 +85,86 @@ _warp_threads_lock = threading.Lock()
 _deferred_warp_threads = ContextVar('deferred_warp_threads', default=None)
 _deferred_ecc_gpu = ContextVar('deferred_ecc_gpu', default=None)
 
+_deferred_alignment_timers_lock = threading.Lock()
+_deferred_alignment_timers = []
+
+
+class DeferredAlignmentTimer:
+    """Measure wall-clock time spent inside deferred alignment warps.
+
+    Uses active-depth reference counting so concurrent producer threads and
+    nested warp stages accumulate the wall-clock union of warp intervals
+    without double-counting or exceeding the enclosing stage's elapsed time.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._active = 0
+        self._started = 0.0
+        self._elapsed = 0.0
+        self._warps = 0
+
+    def _enter(self):
+        with self._lock:
+            if self._active == 0:
+                self._started = time.monotonic()
+            self._active += 1
+            self._warps += 1
+
+    def _exit(self):
+        with self._lock:
+            self._active -= 1
+            if self._active == 0:
+                self._elapsed += max(0.0, time.monotonic() - self._started)
+
+    @property
+    def elapsed(self) -> float:
+        with self._lock:
+            if self._active > 0:
+                return self._elapsed + max(0.0, time.monotonic() - self._started)
+            return self._elapsed
+
+    @property
+    def warps(self) -> int:
+        with self._lock:
+            return self._warps
+
+
+@contextmanager
+def deferred_alignment_timer():
+    """Observe wall-clock time spent applying deferred alignment transforms."""
+    timer = DeferredAlignmentTimer()
+    with _deferred_alignment_timers_lock:
+        _deferred_alignment_timers.append(timer)
+    try:
+        yield timer
+    finally:
+        with _deferred_alignment_timers_lock:
+            try:
+                _deferred_alignment_timers.remove(timer)
+            except ValueError:
+                pass
+
+
+@contextmanager
+def measure_deferred_alignment():
+    """Attribute this block's wall-clock span to all active alignment timers."""
+    if not _deferred_alignment_timers:
+        yield
+        return
+    with _deferred_alignment_timers_lock:
+        timers = tuple(_deferred_alignment_timers)
+    if not timers:
+        yield
+        return
+    for timer in timers:
+        timer._enter()
+    try:
+        yield
+    finally:
+        for timer in timers:
+            timer._exit()
+
 
 @contextmanager
 def deferred_warp_threads(threads):
@@ -516,14 +596,20 @@ def _align_homography_impl(input_source, output_path=None, img_filenames=None, d
     # --- 2. 并行特征提取 ---
     print("  - Step 1/3: Extracting features concurrently...")
 
+    from core.frame_resolution_cache import within_retention_limit
+    large_stack = not within_retention_limit(images)
+
     def get_features_task(img):
-        from core.source_frames import resolve_frame
+        from core.source_frames import resolve_frame, without_source_cache_growth
         from core.openfocus_alignment import _can_use_file_digest
         source = img
-        img = resolve_frame(img, should_cancel=should_cancel)
-        identity = (_perspective_source_file(source, should_cancel)
-                    if _can_use_file_digest(source)
-                    else _perspective_source(source, img, should_cancel))
+        use_file_digest = _can_use_file_digest(source)
+        identity = _perspective_source_file(source, should_cancel) if use_file_digest else None
+        cache_scope = without_source_cache_growth() if large_stack else nullcontext()
+        with cache_scope:
+            img = resolve_frame(img, should_cancel=should_cancel)
+        if identity is None:
+            identity = _perspective_source(source, img, should_cancel)
         if roi is not None:
             rx, ry, rw, rh = roi
             img = img[ry:ry + rh, rx:rx + rw]
@@ -534,6 +620,8 @@ def _align_homography_impl(input_source, output_path=None, img_filenames=None, d
         if scale < 1.0:
             # 使用 INTER_LINEAR 速度更快，对于特征检测通常足够
             img_small = cv2.resize(img, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_LINEAR)
+            # Release full-resolution source pixels before quantization and SIFT.
+            del img
         else:
             img_small = img
         if img_small.dtype != np.uint8:
@@ -977,14 +1065,16 @@ class PerspectiveWarp:
         return warped
 
     def __call__(self, image):
-        self.source.validate_pixels(image, self.should_cancel)
-        return self._apply_to_image(image)
+        with measure_deferred_alignment():
+            self.source.validate_pixels(image, self.should_cancel)
+            return self._apply_to_image(image)
 
     def call_with_source(self, source_frame, image, *, should_cancel=None):
         """Validate against the original source descriptor before applying the warp."""
         cancel_fn = _merge_cancel_callbacks(self.should_cancel, should_cancel)
-        self.source.validate_pixels(image, cancel_fn, source=source_frame)
-        return self._apply_to_image(image, should_cancel=cancel_fn)
+        with measure_deferred_alignment():
+            self.source.validate_pixels(image, cancel_fn, source=source_frame)
+            return self._apply_to_image(image, should_cancel=cancel_fn)
 
     def _call_mapped_jpeg(self, source_frame, image, *, should_cancel=None):
         """Warp packed BGR pixels into an owned mapping with bounded CPU workspace."""
@@ -992,27 +1082,28 @@ class PerspectiveWarp:
         from core.resource_policy import ResourceLimitError, require_memory
 
         cancel_fn = _merge_cancel_callbacks(self.should_cancel, should_cancel)
-        integer_crop = self._is_integer_crop(image.shape, image.dtype)
-        required = 128 * 1024 + (0 if integer_crop else _perspective_cpu_tile_bytes(self.dsize))
-        try:
-            require_memory(required)
-        except ResourceLimitError:
-            from core.source_frames import SOURCE_CACHE
+        with measure_deferred_alignment():
+            integer_crop = self._is_integer_crop(image.shape, image.dtype)
+            required = 128 * 1024 + (0 if integer_crop else _perspective_cpu_tile_bytes(self.dsize))
+            try:
+                require_memory(required)
+            except ResourceLimitError:
+                from core.source_frames import SOURCE_CACHE
 
-            SOURCE_CACHE.clear()
-            gc.collect()
-            require_memory(required)
-        with frame_region(image) as pixels:
-            self.source.validate_pixels(pixels, cancel_fn, source=source_frame)
-            output = create_frame(_perspective_output_shape(image.shape, self.dsize), image.dtype)
-            # Close the written view before the root mapping enters the staged stack.
-            with frame_region(output, write=True, writeback=True) as destination:
-                _check_cancel(cancel_fn)
-                warped = self._apply_to_image(pixels, should_cancel=cancel_fn, destination=destination)
-                if warped is not destination:
-                    np.copyto(destination, warped)
-        _check_cancel(cancel_fn)
-        return output
+                SOURCE_CACHE.clear()
+                gc.collect()
+                require_memory(required)
+            with frame_region(image) as pixels:
+                self.source.validate_pixels(pixels, cancel_fn, source=source_frame)
+                output = create_frame(_perspective_output_shape(image.shape, self.dsize), image.dtype)
+                # Close the written view before the root mapping enters the staged stack.
+                with frame_region(output, write=True, writeback=True) as destination:
+                    _check_cancel(cancel_fn)
+                    warped = self._apply_to_image(pixels, should_cancel=cancel_fn, destination=destination)
+                    if warped is not destination:
+                        np.copyto(destination, warped)
+            _check_cancel(cancel_fn)
+            return output
 
     def _full_warp_crop(self, image, x, y, width, height, channels, should_cancel):
         from core import _alignment_kernels
@@ -1038,10 +1129,7 @@ class PerspectiveWarp:
     def warp_region(self, source_or_image, x, y, width, height, *,
                     channels=None, should_cancel=None):
         """Compute one destination rectangle bit-identical to full warp[y:y+h, x:x+w]."""
-        from core import _alignment_kernels as _native_kernels
-        from core.openfocus_alignment import _is_bgr_rev, _run_row_bands, _validate_direct_rgb_source
-        from core.resource_policy import require_memory
-        from core.source_frames import _read_direct_rgb_tiff_region, is_direct_rgb_tiff, resolve_frame
+        from core.source_frames import is_direct_rgb_tiff, resolve_frame
 
         cancel_fn = _merge_cancel_callbacks(self.should_cancel, should_cancel)
         _check_cancel(cancel_fn)
@@ -1051,13 +1139,27 @@ class PerspectiveWarp:
 
         direct_tiff = is_direct_rgb_tiff(source_or_image)
         image = None
+        if not direct_tiff:
+            image = (source_or_image if isinstance(source_or_image, np.ndarray)
+                     else resolve_frame(source_or_image, should_cancel=cancel_fn))
+        with measure_deferred_alignment():
+            return self._warp_region_resolved(
+                source_or_image, image, direct_tiff, x, y, width, height,
+                channels=channels, cancel_fn=cancel_fn,
+            )
+
+    def _warp_region_resolved(self, source_or_image, image, direct_tiff, x, y, width, height, *,
+                              channels=None, cancel_fn=None):
+        from core import _alignment_kernels as _native_kernels
+        from core.openfocus_alignment import _is_bgr_rev, _run_row_bands, _validate_direct_rgb_source
+        from core.resource_policy import require_memory
+        from core.source_frames import _read_direct_rgb_tiff_region, resolve_frame
+
         if direct_tiff:
             _validate_direct_rgb_source(self.source, source_or_image, cancel_fn)
         elif isinstance(source_or_image, np.ndarray):
-            image = source_or_image
             self.source.validate_pixels(image, cancel_fn)
         else:
-            image = resolve_frame(source_or_image, should_cancel=cancel_fn)
             self.source.validate_pixels(image, cancel_fn, source=source_or_image)
 
         src_shape = tuple(source_or_image.shape)
@@ -1226,11 +1328,12 @@ def _perspective_cpu_tile_bytes(dsize):
 def _perspective_scratch_bytes(frame, warp, shape):
     from core.source_frames import SourceFrame
 
-    if (type(frame) is not SourceFrame or not frame._jpeg_components
+    if (type(frame) is not SourceFrame or frame._rgb_tiff_offset is not None
+            or not (frame._jpeg_components or frame.raw_sensor_shape)
             or frame.scale != 1.0 or frame.transforms):
         return None
-    # JPEG decode, orientation and resolution-cache reads all return packed
-    # pixels. OpenCV can borrow that input and write one independent output.
+    # Decoded JPEG and RAW sources resolve to packed C-contiguous BGR arrays.
+    # OpenCV can borrow that input and write one independent output.
     output = math.prod(shape) * frame.dtype.itemsize
     hash_bytes = 128 * 1024
     if warp._is_integer_crop(frame.shape, frame.dtype):
@@ -1857,9 +1960,11 @@ def _plan_deferred_ecc(images, downscale_width, accelerate_ecc, preference, thre
         decode = frame_resolution_bytes(frame)
         # Source hashing uses one band, independently of any pack that OpenCV
         # needs for resize or conversion. A direct TIFF still faults in pixels.
+        from core.source_frames import SourceFrame
         decoded = frame.nbytes if decode else 0
         packed = (0 if ((isinstance(frame, np.ndarray)
                          and (frame.flags.c_contiguous or _is_bgr_rev(frame)))
+                        or (type(frame) is SourceFrame and frame._rgb_tiff_offset is None)
                         or (is_direct_rgb_tiff(frame)
                             and frame._rgb_tiff_offset % frame.dtype.alignment == 0))
                   else frame.nbytes)
@@ -1872,7 +1977,7 @@ def _plan_deferred_ecc(images, downscale_width, accelerate_ecc, preference, thre
             # frames, and gracefully falls back if that headroom is absent.
             resize_scratch = 32 * (sum(frame.shape[:2]) + h + w * channels)
             prepare_cpu = max(prepare, decoded + packed + color + resize_scratch, color + gray)
-            if accelerate_ecc:
+            if accelerate_ecc and frame.dtype == np.uint8:
                 stripe_src_rows = min(frame.shape[0], math.ceil(_TILE_ROWS / max(scale, 1e-6)) + 2)
                 gpu_stripe = (
                     min(frame.nbytes, stripe_src_rows * frame.shape[1] * channels * itemsize)
@@ -1992,10 +2097,13 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
     recent_pairs = OrderedDict() if len(images) > 2 else None
     recent_pairs_lock = threading.Lock()
 
+    from core.frame_resolution_cache import within_retention_limit
+    large_stack = not within_retention_limit(images)
+
     # 预处理函数：转灰度 + 降采样 + 高斯模糊 + 归一化
     def preprocess(source):
         from core.openfocus_alignment import _can_use_file_digest, _is_bgr_rev
-        from core.source_frames import resolve_frame, source_area_resizer
+        from core.source_frames import resolve_frame, source_area_resizer, without_source_cache_growth
         # Resizing during JPEG decode avoids loading and transferring full-size
         # color pixels. Keep OpenCL area resizing for sources that need it.
         jpeg = None if roi is not None else (
@@ -2009,7 +2117,8 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
             # released as soon as resize or color conversion no longer needs it.
             use_file_digest = _can_use_file_digest(source)
             identity = _perspective_source_file(source, should_cancel) if use_file_digest else None
-            with source_area_resizer(area_gpu):
+            cache_scope = without_source_cache_growth() if large_stack else nullcontext()
+            with cache_scope, source_area_resizer(area_gpu):
                 pixels = resolve_frame(source, should_cancel=should_cancel)
             if identity is None:
                 identity = _perspective_source(source, pixels, should_cancel)
@@ -2756,11 +2865,25 @@ class ImageRegistration:
             if not deferred or self.steps != ('ecc',):
                 height, width = images[0].shape[:2]
                 channels = images[0].shape[2] if images[0].ndim == 3 else 1
-                # Other aligners and eager warps retain their existing shared budget.
                 from core.resource_policy import registration_working_set
                 from core.source_frames import frame_resolution_bytes
-                fixed, per_worker = registration_working_set(height, width,
-                    max(image.size * 16 + frame_resolution_bytes(image) for image in images))
+                if deferred and all(step in ('homography', 'ecc') for step in self.steps):
+                    # Deferred homography/combined estimation downscales each frame to
+                    # at most downscale_width (1024px for >=2048px sources) for SIFT
+                    # and never materializes full-resolution warps during registration.
+                    dw = 1024 if max(height, width) >= 2048 else self.downscale_width
+                    scale = min(1.0, dw / float(max(1, width)))
+                    scaled_px = max(1, round(height * scale) * round(width * scale))
+                    feature_scratch = scaled_px * 32 + 16 * 1024 * 1024
+                    fixed = 0
+                    per_worker = max(
+                        max(frame_resolution_bytes(image), image.nbytes) + feature_scratch
+                        for image in images
+                    )
+                else:
+                    # Other aligners and eager warps retain their existing shared budget.
+                    fixed, per_worker = registration_working_set(height, width,
+                        max(image.size * 16 + frame_resolution_bytes(image) for image in images))
                 plan = plan_execution(Workload(
                     algorithm='registration', frames=len(images), height=height,
                     width=width, channels=channels, itemsize=images[0].dtype.itemsize,

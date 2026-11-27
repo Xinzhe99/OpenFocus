@@ -631,7 +631,7 @@ def test_settings_tab_inventory_and_navigation(server):
 
         page_controls = ("chk_experimental_features", "sensor_cleanup_disclosure",
                          "registration_options_disclosure", "chk_include_beta",
-                         "chk_danmaku_enabled")
+                         "edit_developer_key")
         for index in (1, 2, 3, 4, 0):
             reply = call(server, "ui.set", path=tabs["path"], value=index)
             assert reply["result"]["value"] == index
