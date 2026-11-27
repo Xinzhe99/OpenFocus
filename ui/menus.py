@@ -22,6 +22,39 @@ class _UnavailableToolHint(QObject):
         return super().eventFilter(watched, event)
 
 
+_COMMUNITY_MENU_KEYS = ('menu_account', 'menu_gallery')
+_COMMUNITY_ACTION_KEYS = (
+    'action_my_account',
+    'action_message_box',
+    'action_open_gallery',
+    'action_gallery_showcase',
+    'action_gallery_screensaver',
+    'action_my_downloads',
+)
+
+
+def apply_community_menu_visibility(window: QMainWindow, enabled: bool) -> None:
+    """Show or hide top-level Community menus while keeping Help -> Account intact."""
+    visible = bool(enabled)
+    ui_objs = getattr(window, 'ui_objs', None) or {}
+    for key in _COMMUNITY_MENU_KEYS:
+        menu = ui_objs.get(key)
+        if menu is not None:
+            menu.setEnabled(visible)
+            menu_action = menu.menuAction()
+            if menu_action is not None:
+                menu_action.setVisible(visible)
+                menu_action.setEnabled(visible)
+    for key in _COMMUNITY_ACTION_KEYS:
+        action = ui_objs.get(key)
+        if action is not None:
+            action.setVisible(visible)
+            action.setEnabled(visible)
+    help_account = ui_objs.get('action_account')
+    if help_account is not None:
+        help_account.setVisible(True)
+
+
 def update_development_actions(window: QMainWindow) -> None:
     """Retranslate the unavailable tools after the standard menu sweep."""
     for key in ('mosaic_title', 'menu_dust_map'):
@@ -299,11 +332,39 @@ def setup_menus(window: QMainWindow) -> None:
     batch_menu.addAction(watch_folder_action)
     window.ui_objs['action_watch_folder'] = watch_folder_action
 
+    render_queue_action = QAction(trans.t('action_render_queue'), window)
+    render_queue_action.setToolTip(trans.t('action_render_queue_hint'))
+    render_queue_action.setProperty('trans_key', 'action_render_queue')
+    render_queue_action.triggered.connect(
+        lambda: getattr(window, 'show_render_queue_dialog', lambda: None)()
+    )
+    batch_menu.addAction(render_queue_action)
+    window.ui_objs['action_render_queue'] = render_queue_action
+
     compare_action = QAction(trans.t('action_method_compare'), window)
     compare_action.setToolTip(trans.t('action_method_compare_hint'))
     compare_action.triggered.connect(window.show_compare_dialog)
     batch_menu.addAction(compare_action)
     window.ui_objs['action_method_compare'] = compare_action
+
+    live_preview_action = QAction(trans.t('action_live_preview'), window)
+    live_preview_action.setProperty('trans_key', 'action_live_preview')
+    live_preview_action.setToolTip(trans.t('btn_live_preview_hint'))
+    live_preview_action.triggered.connect(
+        lambda: getattr(window, 'open_live_preview', lambda *_a, **_k: None)()
+    )
+    batch_menu.addAction(live_preview_action)
+    window.ui_objs['action_live_preview'] = live_preview_action
+
+    render_substacks_action = QAction(trans.t('action_render_substacks'), window)
+    render_substacks_action.setProperty('trans_key', 'action_render_substacks')
+    render_substacks_action.setToolTip(trans.t('action_render_substacks_hint'))
+    render_substacks_action.setEnabled(False)
+    render_substacks_action.triggered.connect(
+        lambda: getattr(window, 'show_render_substacks_dialog', lambda *_a, **_k: None)()
+    )
+    batch_menu.addAction(render_substacks_action)
+    window.ui_objs['action_render_substacks'] = render_substacks_action
 
     mosaic_action = QAction(trans.t('mosaic_title'), window)
     mosaic_action.setProperty('trans_key', 'mosaic_title')
@@ -670,11 +731,6 @@ def setup_menus(window: QMainWindow) -> None:
     help_menu.addAction(support_action)
     window.ui_objs['support_title'] = support_action
 
-    quickstart_action = QAction(trans.t('menu_quick_start'), window)
-    quickstart_action.triggered.connect(window.show_quick_start)
-    help_menu.addAction(quickstart_action)
-    window.ui_objs['menu_quick_start'] = quickstart_action
-
     guided_tour_action = QAction(trans.t('menu_guided_tour'), window)
     guided_tour_action.setProperty('trans_key', 'menu_guided_tour')
     guided_tour_action.triggered.connect(
@@ -716,3 +772,6 @@ def setup_menus(window: QMainWindow) -> None:
     menubar.addMenu(extensions_menu)
     window.ui_objs['menu_extensions'] = extensions_menu
     window.ui_objs['development_unavailable_hint'] = unavailable_action
+
+    from core.developer_options import is_community_enabled
+    apply_community_menu_visibility(window, is_community_enabled())

@@ -330,10 +330,12 @@ def test_batch_dialog_and_worker_exposure_split_wiring(qapp, tmp_path):
     try:
         dlg.rb_single_folder.setChecked(True)
         dlg.on_import_mode_changed()
-        assert dlg.split_method_combo.count() == 3
+        assert dlg.split_method_combo.count() == 4
         dlg.single_folder_images_with_times = entries
         dlg.single_folder_folder_path = str(tmp_path)
-        dlg.split_method_combo.setCurrentIndex(2)
+        exp_idx = dlg.split_method_combo.findData("exposure")
+        assert exp_idx >= 0
+        dlg.split_method_combo.setCurrentIndex(exp_idx)
         qapp.processEvents()
         method, param = dlg.get_split_settings()
         assert method == "exposure"

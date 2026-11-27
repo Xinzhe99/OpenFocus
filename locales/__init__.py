@@ -6,6 +6,7 @@ from importlib.util import find_spec
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from .en import EN
+from ._retouch_macro import RETOUCH_MACRO_TRANSLATIONS
 
 
 def __getattr__(name):
@@ -301,81 +302,452 @@ _GALLERY_EXTRA_KEYS = (
 
 _GALLERY_EXTRA_TEXT = {
     'en': (
-        'Account', 'My Downloads', 'Hide Fusion Result', 'Gallery & Danmaku',
-        'Gallery Storage & Cache', 'Cache size limit (MB)',
+        'Account', 'My Downloads', 'Hide Fusion Result', 'Community & Danmaku',
+        'Community Storage & Cache', 'Cache size limit (MB)',
         'Current usage: {used_mb} MB / {limit_mb} MB',
         'Show in Folder', 'Download failed: {reason}',
     ),
     'zh': (
-        '账户', '我的下载', '隐藏融合结果', '画廊与弹幕',
-        '画廊存储与缓存', '缓存上限（MB）',
+        '账户', '我的下载', '隐藏融合结果', '社区与弹幕',
+        '社区存储与缓存', '缓存上限（MB）',
         '当前占用：{used_mb} MB / {limit_mb} MB',
         '在文件夹中显示', '下载失败：{reason}',
     ),
     'ja': (
-        'アカウント', 'ダウンロード一覧', '合成結果を隠す', 'ギャラリーと弾幕',
-        'ギャラリー保存先とキャッシュ', 'キャッシュ上限（MB）',
+        'アカウント', 'ダウンロード一覧', '合成結果を隠す', 'コミュニティと弾幕',
+        'コミュニティ保存先とキャッシュ', 'キャッシュ上限（MB）',
         '現在の使用量：{used_mb} MB / {limit_mb} MB',
         'フォルダーで表示', 'ダウンロードに失敗しました：{reason}',
     ),
     'es': (
-        'Cuenta', 'Mis descargas', 'Ocultar resultado de fusión', 'Galería y comentarios',
-        'Almacenamiento y caché de la galería', 'Límite de caché (MB)',
+        'Cuenta', 'Mis descargas', 'Ocultar resultado de fusión', 'Comunidad y comentarios',
+        'Almacenamiento y caché de la comunidad', 'Límite de caché (MB)',
         'Uso actual: {used_mb} MB / {limit_mb} MB',
         'Mostrar en carpeta', 'Error de descarga: {reason}',
     ),
     'de': (
-        'Konto', 'Meine Downloads', 'Fusionsergebnis ausblenden', 'Galerie & Danmaku',
-        'Galerie-Speicher & Cache', 'Cache-Limit (MB)',
+        'Konto', 'Meine Downloads', 'Fusionsergebnis ausblenden', 'Community & Danmaku',
+        'Community-Speicher & Cache', 'Cache-Limit (MB)',
         'Aktuelle Belegung: {used_mb} MB / {limit_mb} MB',
         'Im Ordner anzeigen', 'Download fehlgeschlagen: {reason}',
     ),
     'fr': (
-        'Compte', 'Mes téléchargements', 'Masquer le résultat de fusion', 'Galerie et commentaires',
-        'Stockage et cache de la galerie', 'Limite du cache (Mo)',
+        'Compte', 'Mes téléchargements', 'Masquer le résultat de fusion', 'Communauté et commentaires',
+        'Stockage et cache de la communauté', 'Limite du cache (Mo)',
         'Utilisation actuelle : {used_mb} Mo / {limit_mb} Mo',
         'Afficher dans le dossier', 'Échec du téléchargement : {reason}',
     ),
     'ru': (
-        'Аккаунт', 'Мои загрузки', 'Скрыть результат слияния', 'Галерея и комментарии',
-        'Хранилище и кэш галереи', 'Лимит кэша (МБ)',
+        'Аккаунт', 'Мои загрузки', 'Скрыть результат слияния', 'Сообщество и комментарии',
+        'Хранилище и кэш сообщества', 'Лимит кэша (МБ)',
         'Использовано: {used_mb} МБ / {limit_mb} МБ',
         'Показать в папке', 'Ошибка загрузки: {reason}',
     ),
     'ko': (
-        '계정', '내 다운로드', '융합 결과 숨기기', '갤러리 및 탄막',
-        '갤러리 저장소 및 캐시', '캐시 용량 제한(MB)',
+        '계정', '내 다운로드', '융합 결과 숨기기', '커뮤니티 및 탄막',
+        '커뮤니티 저장소 및 캐시', '캐시 용량 제한(MB)',
         '현재 사용량: {used_mb} MB / {limit_mb} MB',
         '폴더에서 보기', '다운로드 실패: {reason}',
     ),
     'pt': (
-        'Conta', 'Meus downloads', 'Ocultar resultado da fusão', 'Galeria e comentários',
-        'Armazenamento e cache da galeria', 'Limite de cache (MB)',
+        'Conta', 'Meus downloads', 'Ocultar resultado da fusão', 'Comunidade e comentários',
+        'Armazenamento e cache da comunidade', 'Limite de cache (MB)',
         'Uso atual: {used_mb} MB / {limit_mb} MB',
         'Mostrar na pasta', 'Falha no download: {reason}',
     ),
     'it': (
-        'Account', 'I miei download', 'Nascondi risultato di fusione', 'Galleria e commenti',
-        'Archiviazione e cache della galleria', 'Limite cache (MB)',
+        'Account', 'I miei download', 'Nascondi risultato di fusione', 'Comunità e commenti',
+        'Archiviazione e cache della comunità', 'Limite cache (MB)',
         'Utilizzo attuale: {used_mb} MB / {limit_mb} MB',
         'Mostra nella cartella', 'Download non riuscito: {reason}',
     ),
     'nl': (
-        'Account', 'Mijn downloads', 'Fusieresultaat verbergen', 'Galerij & opmerkingen',
-        'Galerijopslag en cache', 'Cachelimiet (MB)',
+        'Account', 'Mijn downloads', 'Fusieresultaat verbergen', 'Community & opmerkingen',
+        'Communityopslag en cache', 'Cachelimiet (MB)',
         'Huidig gebruik: {used_mb} MB / {limit_mb} MB',
         'Tonen in map', 'Downloaden mislukt: {reason}',
     ),
     'pl': (
-        'Konto', 'Moje pobrania', 'Ukryj wynik łączenia', 'Galeria i komentarze',
-        'Pamięć i pamięć podręczna galerii', 'Limit pamięci podręcznej (MB)',
+        'Konto', 'Moje pobrania', 'Ukryj wynik łączenia', 'Społeczność i komentarze',
+        'Pamięć i pamięć podręczna społeczności', 'Limit pamięci podręcznej (MB)',
         'Bieżące użycie: {used_mb} MB / {limit_mb} MB',
         'Pokaż w folderze', 'Pobieranie nie powiodło się: {reason}',
     ),
 }
 
+_DEVELOPER_OPTIONS_KEYS = (
+    'developer_options_tab',
+    'dev_options_intro',
+    'dev_key_section',
+    'dev_key_label',
+    'dev_key_placeholder',
+    'dev_key_show',
+    'dev_key_hide',
+    'dev_key_verify_btn',
+    'dev_key_verifying',
+    'dev_key_lock_btn',
+    'dev_status_locked',
+    'dev_status_unlocked',
+    'dev_status_locked_detail',
+    'dev_status_unlocked_detail',
+    'dev_status_unlocked_expires',
+    'dev_key_err_empty',
+    'dev_key_err_invalid',
+    'dev_key_err_expired',
+    'dev_key_err_network',
+    'dev_key_err_rate_limited',
+    'dev_key_verified_ok',
+    'dev_key_locked_msg',
+    'dev_features_section',
+    'dev_feature_community',
+    'dev_feature_community_hint',
+    'dev_feature_requires_unlock',
+)
+
+_DEVELOPER_OPTIONS_TEXT = {
+    'en': (
+        'Developer Options',
+        'Developer Options control pre-release features that are hidden by default. Unlocking requires a valid developer key issued by the OpenFocus admin platform.',
+        'Developer Key',
+        'Access key:',
+        'Enter admin-issued developer key',
+        'Show',
+        'Hide',
+        'Verify & Unlock',
+        'Verifying developer key…',
+        'Lock & Clear Key',
+        'Locked',
+        'Unlocked',
+        'No active developer key. In-development features remain hidden.',
+        'Key {prefix} ({label}) · Scopes: {features}',
+        'Key {prefix} ({label}) · Scopes: {features} · Expires: {expires}',
+        'Please enter a developer key.',
+        'Developer key is invalid or has been revoked.',
+        'Developer key has expired.',
+        'Unable to reach the verification server. Check your network and try again.',
+        'Too many verification attempts. Please wait and try again.',
+        'Developer key verified and unlocked.',
+        'Developer key cleared. In-development features have been locked.',
+        'Feature Switches',
+        'Enable Community features (in development)',
+        'Shows Community menus, Gallery & Danmaku settings, fusion showcase, and community sync. Help → Account always remains available.',
+        'Verify a developer key with Community access to toggle this feature.',
+    ),
+    'zh': (
+        '开发者选项',
+        '开发者选项用于控制默认隐藏的开发中功能。解锁需要 OpenFocus 管理平台颁发的有效开发者密钥。',
+        '开发者密钥',
+        '访问密钥：',
+        '输入管理员颁发的开发者密钥',
+        '显示',
+        '隐藏',
+        '验证并解锁',
+        '正在验证开发者密钥…',
+        '锁定并清除密钥',
+        '已锁定',
+        '已解锁',
+        '未激活开发者密钥，开发中功能保持隐藏。',
+        '密钥 {prefix}（{label}）· 权限：{features}',
+        '密钥 {prefix}（{label}）· 权限：{features} · 到期：{expires}',
+        '请输入开发者密钥。',
+        '开发者密钥无效或已被吊销。',
+        '开发者密钥已过期。',
+        '无法连接验证服务器，请检查网络后重试。',
+        '验证请求过于频繁，请稍后重试。',
+        '开发者密钥验证通过，已解锁。',
+        '已清除开发者密钥并重新锁定开发中功能。',
+        '功能开关',
+        '启用社区功能（开发中）',
+        '开启后显示社区菜单、画廊与弹幕设置、融合展示窗口及社区同步。“帮助 → 账户”登录入口始终保持可用。',
+        '需先验证包含社区权限的开发者密钥方可切换此功能。',
+    ),
+    'ja': (
+        '開発者オプション',
+        '開発者オプションでは、既定で非表示の開発中機能を管理します。ロック解除には OpenFocus 管理プラットフォーム発行の有効な開発者キーが必要です。',
+        '開発者キー',
+        'アクセスキー：',
+        '管理者発行の開発者キーを入力',
+        '表示',
+        '非表示',
+        '検証してロック解除',
+        '開発者キーを検証中…',
+        'ロックしてキーを削除',
+        'ロック中',
+        'ロック解除済み',
+        '有効な開発者キーがありません。開発中機能は非表示のままです。',
+        'キー {prefix}（{label}）・権限：{features}',
+        'キー {prefix}（{label}）・権限：{features}・有効期限：{expires}',
+        '開発者キーを入力してください。',
+        '開発者キーが無効か、取り消されています。',
+        '開発者キーの有効期限が切れています。',
+        '検証サーバーに接続できません。ネットワークを確認して再試行してください。',
+        '検証の試行回数が多すぎます。しばらくしてから再試行してください。',
+        '開発者キーを検証し、ロックを解除しました。',
+        '開発者キーを削除し、開発中機能を再ロックしました。',
+        '機能スイッチ',
+        'コミュニティ機能を有効にする（開発中）',
+        'コミュニティメニュー、ギャラリーと弾幕の設定、合成ショーケース、同期を表示します。「ヘルプ → アカウント」は常に利用できます。',
+        'この機能を切り替えるには、コミュニティ権限のある開発者キーを検証してください。',
+    ),
+    'es': (
+        'Opciones de desarrollador',
+        'Las opciones de desarrollador controlan funciones en desarrollo ocultas por defecto. Para desbloquearlas se requiere una clave válida emitida por la plataforma de administración de OpenFocus.',
+        'Clave de desarrollador',
+        'Clave de acceso:',
+        'Introduce la clave de desarrollador',
+        'Mostrar',
+        'Ocultar',
+        'Verificar y desbloquear',
+        'Verificando clave de desarrollador…',
+        'Bloquear y borrar clave',
+        'Bloqueado',
+        'Desbloqueado',
+        'No hay ninguna clave de desarrollador activa. Las funciones en desarrollo siguen ocultas.',
+        'Clave {prefix} ({label}) · Permisos: {features}',
+        'Clave {prefix} ({label}) · Permisos: {features} · Caduca: {expires}',
+        'Introduce una clave de desarrollador.',
+        'La clave de desarrollador no es válida o fue revocada.',
+        'La clave de desarrollador ha caducado.',
+        'No se pudo conectar con el servidor de verificación. Comprueba tu red e inténtalo de nuevo.',
+        'Demasiados intentos de verificación. Espera un momento e inténtalo de nuevo.',
+        'Clave de desarrollador verificada y desbloqueada.',
+        'Clave borrada. Las funciones en desarrollo se han bloqueado.',
+        'Interruptores de funciones',
+        'Activar funciones de Comunidad (en desarrollo)',
+        'Muestra los menús de Comunidad, los ajustes de galería y comentarios, el escaparate de fusión y la sincronización. Ayuda → Cuenta permanece siempre disponible.',
+        'Verifica una clave de desarrollador con acceso a Comunidad para cambiar esta opción.',
+    ),
+    'de': (
+        'Entwickleroptionen',
+        'Die Entwickleroptionen steuern standardmäßig ausgeblendete Vorabfunktionen. Zum Entsperren ist ein gültiger Entwicklerschlüssel der OpenFocus-Verwaltungsplattform erforderlich.',
+        'Entwicklerschlüssel',
+        'Zugangsschlüssel:',
+        'Vom Administrator ausgestellten Schlüssel eingeben',
+        'Anzeigen',
+        'Verbergen',
+        'Prüfen & Entsperren',
+        'Entwicklerschlüssel wird geprüft…',
+        'Sperren & Schlüssel löschen',
+        'Gesperrt',
+        'Entsperrt',
+        'Kein aktiver Entwicklerschlüssel. Funktionen in Entwicklung bleiben ausgeblendet.',
+        'Schlüssel {prefix} ({label}) · Bereiche: {features}',
+        'Schlüssel {prefix} ({label}) · Bereiche: {features} · Läuft ab: {expires}',
+        'Bitte gib einen Entwicklerschlüssel ein.',
+        'Der Entwicklerschlüssel ist ungültig oder wurde widerrufen.',
+        'Der Entwicklerschlüssel ist abgelaufen.',
+        'Verifizierungsserver nicht erreichbar. Prüfe die Netzwerkverbindung und versuche es erneut.',
+        'Zu viele Prüfversuche. Bitte warte kurz und versuche es erneut.',
+        'Entwicklerschlüssel bestätigt und entsperrt.',
+        'Entwicklerschlüssel gelöscht. Funktionen in Entwicklung wurden wieder gesperrt.',
+        'Funktionsschalter',
+        'Community-Funktionen aktivieren (in Entwicklung)',
+        'Zeigt Community-Menüs, Galerie- & Danmaku-Einstellungen, Fusions-Showcase und Synchronisierung. Hilfe → Konto bleibt immer verfügbar.',
+        'Prüfe einen Entwicklerschlüssel mit Community-Berechtigung, um diese Funktion umzuschalten.',
+    ),
+    'fr': (
+        'Options développeur',
+        'Les options développeur contrôlent les fonctionnalités en cours de développement masquées par défaut. Le déverrouillage nécessite une clé développeur valide délivrée par la plateforme d’administration OpenFocus.',
+        'Clé développeur',
+        'Clé d’accès :',
+        'Saisir la clé développeur fournie par l’administrateur',
+        'Afficher',
+        'Masquer',
+        'Vérifier et déverrouiller',
+        'Vérification de la clé développeur…',
+        'Verrouiller et effacer la clé',
+        'Verrouillé',
+        'Déverrouillé',
+        'Aucune clé développeur active. Les fonctionnalités en développement restent masquées.',
+        'Clé {prefix} ({label}) · Portées : {features}',
+        'Clé {prefix} ({label}) · Portées : {features} · Expire le : {expires}',
+        'Veuillez saisir une clé développeur.',
+        'La clé développeur est invalide ou a été révoquée.',
+        'La clé développeur a expiré.',
+        'Impossible de joindre le serveur de vérification. Vérifiez votre réseau et réessayez.',
+        'Trop de tentatives de vérification. Veuillez patienter et réessayer.',
+        'Clé développeur vérifiée et déverrouillée.',
+        'Clé effacée. Les fonctionnalités en développement ont été verrouillées.',
+        'Interrupteurs de fonctionnalités',
+        'Activer les fonctionnalités Communauté (en développement)',
+        'Affiche les menus Communauté, les réglages Galerie et commentaires, la vitrine de fusion et la synchronisation. Aide → Compte reste toujours disponible.',
+        'Vérifiez une clé développeur disposant de l’accès Communauté pour modifier cette option.',
+    ),
+    'ru': (
+        'Параметры разработчика',
+        'Параметры разработчика управляют функциями в разработке, скрытыми по умолчанию. Для разблокировки требуется действующий ключ разработчика с платформы администрирования OpenFocus.',
+        'Ключ разработчика',
+        'Ключ доступа:',
+        'Введите выданный администратором ключ разработчика',
+        'Показать',
+        'Скрыть',
+        'Проверить и разблокировать',
+        'Проверка ключа разработчика…',
+        'Заблокировать и очистить ключ',
+        'Заблокировано',
+        'Разблокировано',
+        'Нет активного ключа разработчика. Функции в разработке остаются скрытыми.',
+        'Ключ {prefix} ({label}) · Доступ: {features}',
+        'Ключ {prefix} ({label}) · Доступ: {features} · Действует до: {expires}',
+        'Введите ключ разработчика.',
+        'Ключ разработчика недействителен или отозван.',
+        'Срок действия ключа разработчика истёк.',
+        'Не удалось связаться с сервером проверки. Проверьте сеть и повторите попытку.',
+        'Слишком много попыток проверки. Подождите и повторите попытку.',
+        'Ключ разработчика подтверждён и разблокирован.',
+        'Ключ очищен. Функции в разработке снова заблокированы.',
+        'Переключатели функций',
+        'Включить функции сообщества (в разработке)',
+        'Показывает меню сообщества, настройки галереи и комментариев, витрину слияния и синхронизацию. «Справка → Аккаунт» остаётся доступным всегда.',
+        'Подтвердите ключ разработчика с доступом к сообществу, чтобы переключить эту функцию.',
+    ),
+    'ko': (
+        '개발자 옵션',
+        '개발자 옵션은 기본적으로 숨겨진 개발 중 기능을 제어합니다. 잠금을 해제하려면 OpenFocus 관리 플랫폼에서 발급한 유효한 개발자 키가 필요합니다.',
+        '개발자 키',
+        '액세스 키:',
+        '관리자가 발급한 개발자 키 입력',
+        '표시',
+        '숨기기',
+        '확인 및 잠금 해제',
+        '개발자 키 확인 중…',
+        '잠그고 키 지우기',
+        '잠김',
+        '잠금 해제됨',
+        '활성화된 개발자 키가 없습니다. 개발 중인 기능은 숨겨진 상태로 유지됩니다.',
+        '키 {prefix} ({label}) · 권한: {features}',
+        '키 {prefix} ({label}) · 권한: {features} · 만료: {expires}',
+        '개발자 키를 입력해 주세요.',
+        '개발자 키가 유효하지 않거나 취소되었습니다.',
+        '개발자 키가 만료되었습니다.',
+        '인증 서버에 연결할 수 없습니다. 네트워크를 확인하고 다시 시도해 주세요.',
+        '인증 시도가 너무 많습니다. 잠시 후 다시 시도해 주세요.',
+        '개발자 키가 확인되어 잠금이 해제되었습니다.',
+        '개발자 키를 지우고 개발 중인 기능을 다시 잠갔습니다.',
+        '기능 스위치',
+        '커뮤니티 기능 사용(개발 중)',
+        '커뮤니티 메뉴, 갤러리 및 탄막 설정, 융합 쇼케이스, 커뮤니티 동기화를 표시합니다. 도움말 → 계정은 항상 사용할 수 있습니다.',
+        '이 기능을 전환하려면 커뮤니티 권한이 있는 개발자 키를 먼저 확인하세요.',
+    ),
+    'pt': (
+        'Opções de desenvolvedor',
+        'As opções de desenvolvedor controlam recursos em desenvolvimento ocultos por padrão. O desbloqueio exige uma chave válida emitida pela plataforma administrativa do OpenFocus.',
+        'Chave de desenvolvedor',
+        'Chave de acesso:',
+        'Digite a chave de desenvolvedor fornecida pelo administrador',
+        'Mostrar',
+        'Ocultar',
+        'Verificar e desbloquear',
+        'Verificando chave de desenvolvedor…',
+        'Bloquear e limpar chave',
+        'Bloqueado',
+        'Desbloqueado',
+        'Nenhuma chave de desenvolvedor ativa. Recursos em desenvolvimento permanecem ocultos.',
+        'Chave {prefix} ({label}) · Escopos: {features}',
+        'Chave {prefix} ({label}) · Escopos: {features} · Expira em: {expires}',
+        'Digite uma chave de desenvolvedor.',
+        'A chave de desenvolvedor é inválida ou foi revogada.',
+        'A chave de desenvolvedor expirou.',
+        'Não foi possível contatar o servidor de verificação. Verifique sua rede e tente novamente.',
+        'Muitas tentativas de verificação. Aguarde e tente novamente.',
+        'Chave de desenvolvedor verificada e desbloqueada.',
+        'Chave removida. Os recursos em desenvolvimento foram bloqueados.',
+        'Chaves de recursos',
+        'Ativar recursos da Comunidade (em desenvolvimento)',
+        'Exibe os menus da Comunidade, ajustes de galeria e comentários, vitrine de fusão e sincronização. Ajuda → Conta permanece sempre disponível.',
+        'Verifique uma chave de desenvolvedor com acesso à Comunidade para alternar este recurso.',
+    ),
+    'it': (
+        'Opzioni sviluppatore',
+        'Le opzioni sviluppatore controllano le funzionalità in sviluppo nascoste per impostazione predefinita. Lo sblocco richiede una chiave valida emessa dalla piattaforma di amministrazione OpenFocus.',
+        'Chiave sviluppatore',
+        'Chiave di accesso:',
+        'Inserisci la chiave sviluppatore fornita dall’amministratore',
+        'Mostra',
+        'Nascondi',
+        'Verifica e sblocca',
+        'Verifica chiave sviluppatore in corso…',
+        'Blocca e cancella chiave',
+        'Bloccato',
+        'Sbloccato',
+        'Nessuna chiave sviluppatore attiva. Le funzionalità in sviluppo restano nascoste.',
+        'Chiave {prefix} ({label}) · Ambiti: {features}',
+        'Chiave {prefix} ({label}) · Ambiti: {features} · Scadenza: {expires}',
+        'Inserisci una chiave sviluppatore.',
+        'La chiave sviluppatore non è valida o è stata revocata.',
+        'La chiave sviluppatore è scaduta.',
+        'Impossibile raggiungere il server di verifica. Controlla la rete e riprova.',
+        'Troppi tentativi di verifica. Attendi e riprova.',
+        'Chiave sviluppatore verificata e sbloccata.',
+        'Chiave cancellata. Le funzionalità in sviluppo sono state bloccate.',
+        'Interruttori funzionalità',
+        'Abilita funzionalità Community (in sviluppo)',
+        'Mostra i menu Community, le impostazioni Galleria e commenti, la vetrina di fusione e la sincronizzazione. Aiuto → Account rimane sempre disponibile.',
+        'Verifica una chiave sviluppatore con accesso Community per attivare questa opzione.',
+    ),
+    'nl': (
+        'Ontwikkelaarsopties',
+        'Ontwikkelaarsopties beheren functies in ontwikkeling die standaard verborgen zijn. Voor ontgrendeling is een geldige ontwikkelaarssleutel van het OpenFocus-beheerplatform vereist.',
+        'Ontwikkelaarssleutel',
+        'Toegangssleutel:',
+        'Voer de door de beheerder verstrekte sleutel in',
+        'Tonen',
+        'Verbergen',
+        'Verifiëren en ontgrendelen',
+        'Ontwikkelaarssleutel verifiëren…',
+        'Vergrendelen en sleutel wissen',
+        'Vergrendeld',
+        'Ontgrendeld',
+        'Geen actieve ontwikkelaarssleutel. Functies in ontwikkeling blijven verborgen.',
+        'Sleutel {prefix} ({label}) · Bereiken: {features}',
+        'Sleutel {prefix} ({label}) · Bereiken: {features} · Verloopt: {expires}',
+        'Voer een ontwikkelaarssleutel in.',
+        'De ontwikkelaarssleutel is ongeldig of ingetrokken.',
+        'De ontwikkelaarssleutel is verlopen.',
+        'Kan de verificatieserver niet bereiken. Controleer uw netwerk en probeer het opnieuw.',
+        'Te veel verificatiepogingen. Wacht even en probeer het opnieuw.',
+        'Ontwikkelaarssleutel geverifieerd en ontgrendeld.',
+        'Sleutel gewist. Functies in ontwikkeling zijn weer vergrendeld.',
+        'Functieschakelaars',
+        'Communityfuncties inschakelen (in ontwikkeling)',
+        'Toont Community-menu’s, galerij- en opmerkingsinstellingen, fusieshowcase en synchronisatie. Help → Account blijft altijd beschikbaar.',
+        'Verifieer een ontwikkelaarssleutel met Community-toegang om deze functie te schakelen.',
+    ),
+    'pl': (
+        'Opcje programisty',
+        'Opcje programisty sterują funkcjami w fazie rozwoju, domyślnie ukrytymi. Odblokowanie wymaga prawidłowego klucza programisty wydanego przez platformę administracyjną OpenFocus.',
+        'Klucz programisty',
+        'Klucz dostępu:',
+        'Wpisz klucz programisty wydany przez administratora',
+        'Pokaż',
+        'Ukryj',
+        'Zweryfikuj i odblokuj',
+        'Weryfikowanie klucza programisty…',
+        'Zablokuj i usuń klucz',
+        'Zablokowano',
+        'Odblokowano',
+        'Brak aktywnego klucza programisty. Funkcje w fazie rozwoju pozostają ukryte.',
+        'Klucz {prefix} ({label}) · Zakresy: {features}',
+        'Klucz {prefix} ({label}) · Zakresy: {features} · Wygasa: {expires}',
+        'Wpisz klucz programisty.',
+        'Klucz programisty jest nieprawidłowy lub został unieważniony.',
+        'Klucz programisty wygasł.',
+        'Nie można połączyć się z serwerem weryfikacji. Sprawdź sieć i spróbuj ponownie.',
+        'Zbyt wiele prób weryfikacji. Poczekaj chwilę i spróbuj ponownie.',
+        'Klucz programisty został zweryfikowany i odblokowany.',
+        'Usunięto klucz programisty. Funkcje w fazie rozwoju zostały zablokowane.',
+        'Przełączniki funkcji',
+        'Włącz funkcje Społeczności (w fazie rozwoju)',
+        'Wyświetla menu Społeczności, ustawienia galerii i komentarzy, prezentację podczas łączenia oraz synchronizację. Pomoc → Konto pozostaje zawsze dostępne.',
+        'Zweryfikuj klucz programisty z uprawnieniem Społeczności, aby przełączyć tę funkcję.',
+    ),
+}
+
 _GALLERY_PACKS_CACHE = None
 _WATCH_TEMPLATES_PACKS_CACHE = None
+_LIVE_PREVIEW_PACKS_CACHE = None
+_SUBSTACK_PACKS_CACHE = None
+_RENDER_QUEUE_PACKS_CACHE = None
 
 
 def _gallery_pack(code: str):
@@ -398,6 +770,39 @@ def _watch_templates_pack(code: str):
         except Exception:
             _WATCH_TEMPLATES_PACKS_CACHE = {}
     return _WATCH_TEMPLATES_PACKS_CACHE.get(code)
+
+
+def _live_preview_pack(code: str):
+    global _LIVE_PREVIEW_PACKS_CACHE
+    if _LIVE_PREVIEW_PACKS_CACHE is None:
+        try:
+            from .live_preview_i18n import LIVE_PREVIEW_TRANSLATIONS
+            _LIVE_PREVIEW_PACKS_CACHE = LIVE_PREVIEW_TRANSLATIONS
+        except Exception:
+            _LIVE_PREVIEW_PACKS_CACHE = {}
+    return _LIVE_PREVIEW_PACKS_CACHE.get(code)
+
+
+def _substack_pack(code: str):
+    global _SUBSTACK_PACKS_CACHE
+    if _SUBSTACK_PACKS_CACHE is None:
+        try:
+            from .substack_i18n import SUBSTACK_TRANSLATIONS
+            _SUBSTACK_PACKS_CACHE = SUBSTACK_TRANSLATIONS
+        except Exception:
+            _SUBSTACK_PACKS_CACHE = {}
+    return _SUBSTACK_PACKS_CACHE.get(code)
+
+
+def _render_queue_pack(code: str):
+    global _RENDER_QUEUE_PACKS_CACHE
+    if _RENDER_QUEUE_PACKS_CACHE is None:
+        try:
+            from .render_queue_i18n import RENDER_QUEUE_TRANSLATIONS
+            _RENDER_QUEUE_PACKS_CACHE = RENDER_QUEUE_TRANSLATIONS
+        except Exception:
+            _RENDER_QUEUE_PACKS_CACHE = {}
+    return _RENDER_QUEUE_PACKS_CACHE.get(code)
 
 
 def _apply_pack_overlays(code: str, table: dict) -> dict:
@@ -432,6 +837,21 @@ def _apply_pack_overlays(code: str, table: dict) -> dict:
     gallery_extra = _GALLERY_EXTRA_TEXT.get(code)
     if gallery_extra is not None:
         table.update(zip(_GALLERY_EXTRA_KEYS, gallery_extra))
+    dev_opts = _DEVELOPER_OPTIONS_TEXT.get(code)
+    if dev_opts is not None:
+        table.update(zip(_DEVELOPER_OPTIONS_KEYS, dev_opts))
+    render_queue = _render_queue_pack(code)
+    if render_queue:
+        table.update(render_queue)
+    substack = _substack_pack(code)
+    if substack:
+        table.update(substack)
+    retouch_macro = RETOUCH_MACRO_TRANSLATIONS.get(code)
+    if retouch_macro:
+        table.update(retouch_macro)
+    live_preview = _live_preview_pack(code)
+    if live_preview:
+        table.update(live_preview)
     watch_templates = _watch_templates_pack(code)
     if watch_templates:
         table.update(watch_templates)

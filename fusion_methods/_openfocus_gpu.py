@@ -1149,14 +1149,18 @@ class Merge:
                 resolution = max(resolution, frame.nbytes)
             raw_native = img_resize is None and getattr(frame, 'dtype', None) in (np.uint8, np.uint16)
             if raw_native:
+                from core.source_frames import SourceFrame
                 if isinstance(frame, np.ndarray):
                     packed = (frame.flags.c_contiguous
                               or (frame.ndim == 3 and frame.shape[2] == 3
                                   and frame[..., ::-1].flags.c_contiguous))
                     working = frame.nbytes * (1 if packed else 2)
+                elif type(frame) is SourceFrame:
+                    # Direct RGB TIFFs and decoded SourceFrames resolve to contiguous arrays.
+                    working = frame.nbytes
                 else:
-                    # Mapped descriptors may resolve to strided views requiring a copy.
-                    working = frame.nbytes * (1 if getattr(frame, '_rgb_tiff_offset', None) is not None else 2)
+                    # Mapped/processed descriptors may resolve to strided views requiring a copy.
+                    working = frame.nbytes * 2
             else:
                 channels = 1 if frame.ndim == 2 else int(frame.shape[2])
                 source_codes = int(frame.size) * 4
