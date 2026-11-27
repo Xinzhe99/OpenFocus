@@ -744,6 +744,7 @@ _DEVELOPER_OPTIONS_TEXT = {
 }
 
 _GALLERY_PACKS_CACHE = None
+_LIVE_PREVIEW_PACKS_CACHE = None
 _SUBSTACK_PACKS_CACHE = None
 _RENDER_QUEUE_PACKS_CACHE = None
 
@@ -757,6 +758,17 @@ def _gallery_pack(code: str):
         except Exception:
             _GALLERY_PACKS_CACHE = {}
     return _GALLERY_PACKS_CACHE.get(code)
+
+
+def _live_preview_pack(code: str):
+    global _LIVE_PREVIEW_PACKS_CACHE
+    if _LIVE_PREVIEW_PACKS_CACHE is None:
+        try:
+            from .live_preview_i18n import LIVE_PREVIEW_TRANSLATIONS
+            _LIVE_PREVIEW_PACKS_CACHE = LIVE_PREVIEW_TRANSLATIONS
+        except Exception:
+            _LIVE_PREVIEW_PACKS_CACHE = {}
+    return _LIVE_PREVIEW_PACKS_CACHE.get(code)
 
 
 def _substack_pack(code: str):
@@ -825,6 +837,9 @@ def _apply_pack_overlays(code: str, table: dict) -> dict:
     retouch_macro = RETOUCH_MACRO_TRANSLATIONS.get(code)
     if retouch_macro:
         table.update(retouch_macro)
+    live_preview = _live_preview_pack(code)
+    if live_preview:
+        table.update(live_preview)
     return table
 
 

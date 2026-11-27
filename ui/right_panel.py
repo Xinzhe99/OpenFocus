@@ -449,6 +449,7 @@ class RightPanelComponents:
     config_scroll: QScrollArea
     btn_reset: QPushButton
     btn_render: QPushButton
+    btn_live_preview: QPushButton
     btn_enqueue: QPushButton
     btn_render_queue: QPushButton
     btn_compare: QPushButton
@@ -611,6 +612,11 @@ def create_right_panel() -> RightPanelComponents:
     btn_reset.setObjectName("secondaryButton")
     btn_render = ElidingButton(trans.t('btn_render'))
     btn_render.setObjectName("primaryButton")
+    btn_live_preview = ElidingButton(trans.t('btn_live_preview'))
+    btn_live_preview.setObjectName("secondaryButton")
+    btn_live_preview.setToolTip(
+        f"{trans.t('btn_live_preview')}\n{trans.t('btn_live_preview_hint')}")
+    btn_live_preview.setEnabled(False)
     btn_enqueue = ElidingButton(trans.t('btn_enqueue'))
     btn_enqueue.setObjectName("secondaryButton")
     btn_enqueue.setToolTip(
@@ -625,12 +631,17 @@ def create_right_panel() -> RightPanelComponents:
     btn_compare.setObjectName("secondaryButton")
     btn_compare.setToolTip(
         f"{trans.t('btn_compare_all')}\n{trans.t('btn_compare_all_hint')}")
-    for _btn in (btn_reset, btn_render, btn_enqueue, btn_render_queue,
+    for _btn in (btn_reset, btn_render, btn_live_preview, btn_enqueue, btn_render_queue,
                  btn_render_settings, btn_compare):
         _btn.setSizePolicy(QSizePolicy.Policy.Ignored,
                            QSizePolicy.Policy.Fixed)
 
-    config_layout.addWidget(btn_render)
+    primary_bar = QHBoxLayout()
+    primary_bar.setSpacing(8)
+    primary_bar.addWidget(btn_render, 3)
+    primary_bar.addWidget(btn_live_preview, 2)
+    config_layout.addLayout(primary_bar)
+
     queue_bar = QHBoxLayout()
     queue_bar.setSpacing(8)
     queue_bar.addWidget(btn_enqueue, 1)
@@ -754,7 +765,7 @@ def create_right_panel() -> RightPanelComponents:
     # Stable identifiers for agents, independent of QSS object names.
     for _control in ("combo_fusion", "combo_align", "fusion_parameter_panel",
                      "registration_parameter_panel", "btn_reset", "btn_render",
-                     "btn_enqueue", "btn_render_queue",
+                     "btn_live_preview", "btn_enqueue", "btn_render_queue",
                      "btn_render_settings", "btn_compare", "chk_quick_preview", "chk_reverse_order",
                      "chk_exposure_match", "chk_base_correct", "chk_sharpen_output", "file_list",
                      "output_list"):
@@ -768,6 +779,7 @@ def create_right_panel() -> RightPanelComponents:
         config_scroll=config_scroll,
         btn_reset=btn_reset,
         btn_render=btn_render,
+        btn_live_preview=btn_live_preview,
         btn_enqueue=btn_enqueue,
         btn_render_queue=btn_render_queue,
         btn_compare=btn_compare,
@@ -849,6 +861,8 @@ def bind_right_panel(window, components: RightPanelComponents) -> None:
     # force_algorithm parameter, forcing need_fusion=True; drop the bool.
     components.btn_render.clicked.connect(
         lambda: window.render_manager.start_render())
+    components.btn_live_preview.clicked.connect(
+        lambda: getattr(window, 'open_live_preview', lambda: None)())
     components.btn_enqueue.clicked.connect(
         lambda: getattr(window, 'enqueue_render_job', lambda: None)())
     components.btn_render_queue.clicked.connect(
