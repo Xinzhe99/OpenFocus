@@ -375,6 +375,7 @@ _GALLERY_EXTRA_TEXT = {
 }
 
 _GALLERY_PACKS_CACHE = None
+_RAW_DEVELOP_PACKS_CACHE = None
 
 
 def _gallery_pack(code: str):
@@ -386,6 +387,17 @@ def _gallery_pack(code: str):
         except Exception:
             _GALLERY_PACKS_CACHE = {}
     return _GALLERY_PACKS_CACHE.get(code)
+
+
+def _raw_develop_pack(code: str):
+    global _RAW_DEVELOP_PACKS_CACHE
+    if _RAW_DEVELOP_PACKS_CACHE is None:
+        try:
+            from .raw_develop_i18n import RAW_DEVELOP_TRANSLATIONS
+            _RAW_DEVELOP_PACKS_CACHE = RAW_DEVELOP_TRANSLATIONS
+        except Exception:
+            _RAW_DEVELOP_PACKS_CACHE = {}
+    return _RAW_DEVELOP_PACKS_CACHE.get(code)
 
 
 def _apply_pack_overlays(code: str, table: dict) -> dict:
@@ -420,6 +432,9 @@ def _apply_pack_overlays(code: str, table: dict) -> dict:
     gallery_extra = _GALLERY_EXTRA_TEXT.get(code)
     if gallery_extra is not None:
         table.update(zip(_GALLERY_EXTRA_KEYS, gallery_extra))
+    raw_develop = _raw_develop_pack(code)
+    if raw_develop:
+        table.update(raw_develop)
     return table
 
 
