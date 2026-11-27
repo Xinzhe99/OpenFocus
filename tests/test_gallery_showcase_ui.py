@@ -865,11 +865,16 @@ def test_standalone_showcase_window_fusion_bar_and_return_flow(qapp):
 
     win.set_fusion_in_progress("Fusing 2/4", done=2, total=4)
     assert win.fusion_bar.isVisible() is True
+    assert win.btn_return.isVisible() is True
+    assert win.lbl_fusion_status.isVisible() is False
+    assert win.fusion_progress.isVisible() is False
     assert win.fusion_progress.maximum() == 4
     assert win.fusion_progress.value() == 2
     assert "2/4" in win.lbl_fusion_status.text()
 
     win.set_fusion_completed()
+    assert win.lbl_fusion_status.isVisible() is False
+    assert win.fusion_progress.isVisible() is False
     assert win.fusion_progress.value() == 1
 
     win.btn_return.click()
@@ -919,8 +924,9 @@ def test_foreground_scaled_cache_slide_lru_eviction_and_drawer_upvote_toggle(qap
         {"id": "c-unvoted", "author_nickname": "A", "content": "One", "upvotes": 2, "viewer_vote": 0},
         {"id": "c-voted", "author_nickname": "B", "content": "Two", "upvotes": 5, "viewer_vote": 1},
     ])
-    up_btns = [b for b in drawer.findChildren(QPushButton) if b.text().startswith("▲")]
+    up_btns = drawer.findChildren(QPushButton, "btn_comment_upvote")
     assert len(up_btns) == 2
+    assert all(not b.icon().isNull() for b in up_btns)
     assert up_btns[0].isCheckable() and not up_btns[0].isChecked()
     assert up_btns[1].isCheckable() and up_btns[1].isChecked()
     up_btns[0].click()
@@ -964,6 +970,116 @@ def test_comment_drawer_clears_empty_label_and_avoids_window_controls_overlap(qa
     win.showcase._layout_overlays()
     qapp.processEvents()
     assert win.showcase.comment_drawer.geometry().top() > win.window_controls.geometry().bottom()
+    win.close()
+    win.deleteLater()
+    qapp.processEvents()
+
+
+def test_minimalist_line_icons_and_light_dark_theme_consistency(qapp):
+    from PyQt6.QtGui import QColor
+    from utils.design_tokens import palette, rgba
+    from widgets.gallery_screensaver import GalleryScreensaverWindow
+    from widgets.gallery_showcase import GalleryShowcaseWindow
+
+    win = GalleryShowcaseWindow()
+    win.resize(900, 560)
+    works = [
+        {
+            "id": "w-1",
+            "title": "Macro Study",
+            "author_id": "a1",
+            "author_nickname": "OpenFocus",
+            "allow_download": True,
+            "like_count": 14,
+            "comment_count": 3,
+            "pixmap": _make_pixmap(400, 300, QColor("#2a4d69")),
+            "comments": [
+                {
+                    "id": "c1",
+                    "author_nickname": "Alex",
+                    "content": "Clean focus plane!",
+                    "upvotes": 2,
+                    "downvotes": 0,
+                    "viewer_vote": 0,
+                }
+            ],
+        },
+        {
+            "id": "w-2",
+            "title": "Second Study",
+            "author_id": "a2",
+            "author_nickname": "Studio",
+            "allow_download": True,
+            "like_count": 5,
+            "comment_count": 0,
+            "pixmap": _make_pixmap(400, 300, QColor("#6b4f3b")),
+            "comments": [],
+        },
+    ]
+    win.set_works(works)
+    win.set_fusion_in_progress("1/4", done=1, total=4)
+    win.show()
+    qapp.processEvents()
+
+    # No duplicate fusion status/progress strip; top danmaku stays below window_controls
+    assert win.lbl_fusion_status.isVisible() is False
+    assert win.fusion_progress.isVisible() is False
+    assert win.btn_return.isVisible() is True
+    bullets = win.showcase.danmaku_overlay.active_bullets
+    assert bullets
+    assert all(b.y > win.window_controls.geometry().bottom() for b in bullets)
+
+    # All HUD buttons, window controls, and nav arrows use crisp QIcons with no emoji text
+    for btn in (
+        win.showcase.btn_like,
+        win.showcase.btn_comment,
+        win.showcase.btn_download,
+        win.showcase.btn_fullscreen,
+        win.showcase.btn_report,
+        win.showcase.btn_prev_slide,
+        win.showcase.btn_next_slide,
+        win.btn_win_min,
+        win.btn_win_max,
+        win.btn_win_close,
+    ):
+        assert not btn.icon().isNull()
+
+    assert "\U0001f4ac" not in win.showcase.btn_comment.text()
+    assert "\u2b07" not in win.showcase.btn_download.text()
+    assert "\u26f6" not in win.showcase.btn_fullscreen.text()
+    assert "\u2691" not in win.showcase.btn_report.text()
+    assert "\u2661" not in win.showcase.btn_like.text()
+    assert "14" in win.showcase.btn_like.text()
+    assert "3" in win.showcase.btn_comment.text()
+
+    # Applying Light theme updates Showcase, Danmaku overlay, Drawer, and Frame coherently
+    win.apply_theme("light")
+    light_p = palette("light")
+    assert win._theme == "light"
+    assert win.showcase._theme == "light"
+    assert win.showcase.danmaku_overlay._theme == "light"
+    assert win.showcase.danmaku_overlay.popover._theme == "light"
+    assert win.showcase.danmaku_overlay.composer._theme == "light"
+    assert win.showcase.comment_drawer._theme == "light"
+    assert light_p["canvas"] in win.styleSheet()
+    assert light_p["text"] in win.showcase.styleSheet()
+    assert rgba(light_p["surface"], 0.96) in win.showcase.comment_drawer.styleSheet()
+    assert light_p["text"] in win.showcase.comment_drawer.styleSheet()
+    assert win.showcase.grab() is not None
+
+    # Switching back to Dark theme updates everything cleanly
+    win.apply_theme("dark")
+    dark_p = palette("dark")
+    assert dark_p["canvas"] in win.styleSheet()
+    assert win.showcase.danmaku_overlay._theme == "dark"
+    assert win.showcase.grab() is not None
+
+    # Screensaver deliberately stays dark even when app theme is light
+    screensaver = GalleryScreensaverWindow()
+    screensaver.apply_theme("light")
+    assert screensaver.showcase._theme == "dark"
+    screensaver.deleteLater()
+
     win.close()
     win.deleteLater()
     qapp.processEvents()

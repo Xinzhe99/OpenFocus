@@ -12,6 +12,7 @@ dialog open.
 from __future__ import annotations
 
 import os
+from typing import Optional
 import weakref
 
 import cv2
@@ -72,6 +73,7 @@ def _add_wrapped_option(layout, option):
     return row
 
 _SHARPNESS_WORKERS = set()
+_DEPTH_MAP_WORKERS = set()
 _SOURCE_WORKERS = set()
 
 
@@ -215,7 +217,8 @@ def _release_dialog_buffers(dialog_ref):
     for name in ("doc", "record", "_source_qimage", "_pure_source_qimage",
                  "_source_display", "_source_clean_display", "_source_valid",
                  "_source_geometry", "_source_display_index", "_source_published",
-                 "_before_qimage", "_result_display", "_result_qimage", "_sharpness_maps"):
+                 "_before_qimage", "_result_display", "_result_qimage",
+                 "_sharpness_maps", "_depth_overlay_bgr", "_depth_overlay_valid"):
         setattr(dialog, name, None)
 
 
@@ -358,6 +361,31 @@ class _SharpnessWorker(QThread):
             self.ready.emit(self.request_id, maps)
         except Exception as exc:
             self.failed.emit(self.request_id, str(exc))
+
+
+class _DepthMapWorker(QThread):
+    """Compute a compact per-pixel contributing source frame index map."""
+
+    ready = pyqtSignal(int, object, object, object)
+    failed = pyqtSignal(int, str)
+
+    def __init__(self, doc, request_id: int, max_side: int = 512):
+        super().__init__()
+        configure_native_worker_stack(self)
+        self.doc = doc
+        self.request_id = int(request_id)
+        self.max_side = int(max_side)
+
+    def run(self) -> None:
+        try:
+            idx_map, origin, valid_mask = self.doc.source_index_map(
+                max_side=self.max_side, cancelled=self.isInterruptionRequested)
+            if self.isInterruptionRequested():
+                return
+            self.ready.emit(self.request_id, idx_map, origin, valid_mask)
+        except Exception as exc:
+            if not self.isInterruptionRequested():
+                self.failed.emit(self.request_id, str(exc))
 
 
 class _ToneWorker(QThread):
@@ -965,15 +993,31 @@ class _RetouchCanvas(QWidget):
                        rect.y() + y * self.dlg.view.scale)
 
     def cursor_rect(self):
+        rect = QRect()
         pos = self.dlg.cursor_pos
-        if (pos is None or self.dlg.preview_active
-                or not self.dlg.image_contains(pos.x(), pos.y())
-                or (self.role == 'source' and not self.dlg.source_frame_contains(pos.x(), pos.y()))):
-            return QRect()
-        center = self.image_to_widget(pos.x(), pos.y())
-        radius = max(2.0, self.dlg.doc.diameter * self.dlg.view.scale) / 2.0 + 3.0
-        return QRectF(center.x() - radius, center.y() - radius,
-                      radius * 2, radius * 2).toAlignedRect().intersected(self.rect())
+        if (pos is not None and not self.dlg.preview_active
+                and self.dlg.image_contains(pos.x(), pos.y())):
+            if self.role == "source":
+                sox = self.dlg.doc.source_offset_x if self.dlg.doc.tool == "source" else 0
+                soy = self.dlg.doc.source_offset_y if self.dlg.doc.tool == "source" else 0
+                sx, sy = pos.x() - sox, pos.y() - soy
+                if self.dlg.source_frame_contains(sx, sy):
+                    center = self.image_to_widget(sx, sy)
+                    radius = max(2.0, self.dlg.doc.diameter * self.dlg.view.scale) / 2.0 + 3.0
+                    rect = QRectF(center.x() - radius, center.y() - radius,
+                                  radius * 2, radius * 2).toAlignedRect().intersected(self.rect())
+            else:
+                center = self.image_to_widget(pos.x(), pos.y())
+                radius = max(2.0, self.dlg.doc.diameter * self.dlg.view.scale) / 2.0 + 3.0
+                rect = QRectF(center.x() - radius, center.y() - radius,
+                              radius * 2, radius * 2).toAlignedRect().intersected(self.rect())
+        if self.role == "result" and not self.dlg.preview_active:
+            clone_pt = self.dlg.live_clone_source_point()
+            if clone_pt is not None:
+                c = self.image_to_widget(clone_pt[0], clone_pt[1])
+                cross = QRectF(c.x() - 18.0, c.y() - 18.0, 36.0, 36.0).toAlignedRect().intersected(self.rect())
+                rect = cross if rect.isEmpty() else rect.united(cross)
+        return rect
 
     # ------------------------------------------------------------ paint
     def paintEvent(self, event) -> None:
@@ -994,8 +1038,77 @@ class _RetouchCanvas(QWidget):
                 covered.addRect(rect)
                 painter.fillPath(domain.subtracted(covered),
                     QBrush(QColor(160, 160, 160, 150), Qt.BrushStyle.DiagCrossPattern))
+        if self.role == "result":
+            self._paint_depth_legend(painter)
+            self._paint_clone_crosshair(painter)
         self._paint_cursor(painter)
         painter.end()
+
+    def _paint_depth_legend(self, painter: QPainter) -> None:
+        if (self.dlg.preview_active or self.dlg._depth_overlay_bgr is None
+                or not self.dlg.chk_depth_map.isChecked()):
+            return
+        n = max(1, self.dlg.doc.frame_count)
+        pad = 8
+        bar_w = 110
+        bar_h = 10
+        left_text = "1"
+        right_text = str(n)
+        fm = painter.fontMetrics()
+        lw = fm.horizontalAdvance(left_text)
+        rw = fm.horizontalAdvance(right_text)
+        box_w = lw + rw + bar_w + 26
+        box_h = max(24, fm.height() + 8)
+        x = pad
+        y = max(pad, self.height() - box_h - pad)
+        t = tokens()
+        bg = QColor(t["surface"])
+        bg.setAlpha(215)
+        border = QColor(t["borderStrong"])
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setBrush(bg)
+        painter.setPen(QPen(border, 1.0))
+        painter.drawRoundedRect(QRectF(x, y, box_w, box_h), 6, 6)
+        painter.setPen(QColor(t["text"]))
+        text_y = int(y + (box_h + fm.ascent() - fm.descent()) / 2)
+        painter.drawText(x + 8, text_y, left_text)
+        bx = x + 8 + lw + 5
+        by = int(y + (box_h - bar_h) / 2)
+        ramp = np.linspace(0, 255, bar_w, dtype=np.uint8)[None, :]
+        bar_bgr = cv2.applyColorMap(np.repeat(ramp, bar_h, axis=0), cv2.COLORMAP_TURBO)
+        painter.drawImage(bx, by, _qimage_from_bgr(bar_bgr, copy=False))
+        painter.setPen(QPen(border, 1.0))
+        painter.drawRect(bx, by, bar_w, bar_h)
+        painter.setPen(QColor(t["text"]))
+        painter.drawText(bx + bar_w + 5, text_y, right_text)
+        painter.restore()
+
+    def _paint_clone_crosshair(self, painter: QPainter) -> None:
+        if self.dlg.preview_active:
+            return
+        pt = self.dlg.live_clone_source_point()
+        if pt is None:
+            return
+        center = self.image_to_widget(pt[0], pt[1])
+        arm = 11.0
+        gap = 3.5
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        accent = QColor(tokens()["accent"])
+        # High-contrast dark halo + bright crisp crosshair.
+        for pen in (QPen(QColor(0, 0, 0, 220), 3.2), QPen(accent, 1.6)):
+            pen.setCosmetic(True)
+            painter.setPen(pen)
+            painter.drawLine(QPointF(center.x() - arm, center.y()), QPointF(center.x() - gap, center.y()))
+            painter.drawLine(QPointF(center.x() + gap, center.y()), QPointF(center.x() + arm, center.y()))
+            painter.drawLine(QPointF(center.x(), center.y() - arm), QPointF(center.x(), center.y() - gap))
+            painter.drawLine(QPointF(center.x(), center.y() + gap), QPointF(center.x(), center.y() + arm))
+            painter.drawEllipse(center, 4.0, 4.0)
+            if self.dlg.doc.clone_mode == "pattern":
+                painter.drawRect(QRectF(center.x() - 7.0, center.y() - 7.0, 14.0, 14.0))
+        painter.restore()
 
     def _paint_cursor(self, painter: QPainter) -> None:
         pos = self.dlg.cursor_pos
@@ -1003,14 +1116,17 @@ class _RetouchCanvas(QWidget):
             return
         if not self.dlg.image_contains(pos.x(), pos.y()):
             return
-        if self.role == "source" and not self.dlg.source_frame_contains(
-                pos.x(), pos.y()):
+        sox = self.dlg.doc.source_offset_x if (self.role == "source" and self.dlg.doc.tool == "source") else 0
+        soy = self.dlg.doc.source_offset_y if (self.role == "source" and self.dlg.doc.tool == "source") else 0
+        draw_x = pos.x() - sox
+        draw_y = pos.y() - soy
+        if self.role == "source" and not self.dlg.source_frame_contains(draw_x, draw_y):
             return
         frame = self.dlg.doc.active_frame
         ox, oy = (frame.offset_x, frame.offset_y) if self.role == "source" else (0, 0)
         # The cursor is expressed in result coordinates; `image_to_widget`
         # expects frame-local coordinates plus the frame offset.
-        center = self.image_to_widget(pos.x() - ox, pos.y() - oy, ox, oy)
+        center = self.image_to_widget(draw_x - ox, draw_y - oy, ox, oy)
         diameter = max(2.0, self.dlg.doc.diameter * self.dlg.view.scale)
         valid = self.dlg.cursor_source_valid()
         color = QColor(255, 88, 88, 240) if not valid else QColor(255, 255, 255, 235)
@@ -1049,6 +1165,10 @@ class _RetouchCanvas(QWidget):
             image_pos = self.widget_to_image(pos)
             self.dlg.set_cursor(image_pos.x(), image_pos.y())
             if self.role == "result":
+                alt_pick = bool(event.modifiers() & Qt.KeyboardModifier.AltModifier)
+                if self.dlg.doc.tool == "clone" and (alt_pick or self.dlg._picking_clone_origin):
+                    self.dlg._pick_clone_origin(image_pos.x(), image_pos.y())
+                    return
                 if self.dlg.begin_stroke(image_pos.x(), image_pos.y()):
                     self._drawing = True
 
@@ -1141,6 +1261,13 @@ class RetouchDialog(QDialog):
         self._sharpness_worker = None
         self._sharpness_started = False
         self._sharpness_request = 0
+        self._depth_overlay_bgr = None
+        self._depth_overlay_valid = None
+        self._depth_overlay_origin = (0, 0)
+        self._depth_map_worker = None
+        self._depth_map_started = False
+        self._depth_map_request = 0
+        self._picking_clone_origin = False
         self._notice = ""
         self._notice_timer = None
         self._eviction_announced = False
@@ -1192,8 +1319,15 @@ class RetouchDialog(QDialog):
                 ("btn_save_checkpoint", "retouch_save_checkpoint"),
                 ("btn_load_checkpoint", "retouch_load_checkpoint"),
                 ("btn_before", "retouch_before"),
+                ("btn_locate_frame", "retouch_locate_frame"),
                 ("btn_shortcuts", "retouch_shortcuts"),
                 ("chk_sharp", "retouch_sharpness"),
+                ("chk_depth_map", "retouch_depth_map"),
+                ("rb_clone", "retouch_tool_clone"),
+                ("btn_pick_clone", "retouch_clone_pick"),
+                ("chk_auto_brightness", "retouch_brightness_auto"),
+                ("btn_auto_align", "retouch_auto_align_patch"),
+                ("btn_reset_offset", "retouch_reset_offset"),
                 ("btn_auto_bg", "retouch_auto_background"),
                 ("chk_missing", "retouch_missing_data"),
                 ("btn_save_missing", "retouch_save_missing"),
@@ -1206,7 +1340,9 @@ class RetouchDialog(QDialog):
                 _widget.setProperty("controlId", _control)
         for _name, _row in (("diameter", self.num_diameter),
                             ("hardness", self.num_hardness),
-                            ("opacity", self.num_opacity)):
+                            ("opacity", self.num_opacity),
+                            ("color_tolerance", self.num_color_tolerance),
+                            ("brightness", self.num_brightness)):
             _row.slider.setProperty("controlId", f"retouch_{_name}_slider")
             _row.spin.setProperty("controlId", f"retouch_{_name}_spin")
         self._install_filters()
@@ -1271,6 +1407,9 @@ class RetouchDialog(QDialog):
         self.btn_before.setToolTip(trans.t("retouch_view_before"))
         self.btn_before.pressed.connect(lambda: self._press_preview("before"))
         self.btn_before.released.connect(lambda: self._release_preview("before"))
+        self.btn_locate_frame = QPushButton(trans.t("retouch_locate_frame_short"))
+        self.btn_locate_frame.setAutoDefault(False)
+        self.btn_locate_frame.clicked.connect(self._locate_contributing_frame)
         self.btn_shortcuts = ElidingButton(trans.t("retouch_open_shortcuts"))
         self.btn_shortcuts.setAutoDefault(False)
         self.btn_shortcuts.clicked.connect(self._show_shortcuts)
@@ -1281,9 +1420,11 @@ class RetouchDialog(QDialog):
         self.btn_load_checkpoint.setToolTip(trans.t("retouch_tip_load") + "\n" + no_key)
         self.btn_before.setToolTip(trans.t("retouch_shortcut_before") + " (Tab)\n"
                                    + trans.t("retouch_shortcut_scope"))
+        self.btn_locate_frame.setToolTip(trans.t("retouch_locate_frame_hint") + " (F9)")
         self.btn_shortcuts.setToolTip(trans.t("retouch_tip_shortcuts") + "\n" + no_key)
         for widget in (self.btn_undo, self.btn_redo, self.btn_save_checkpoint,
-                       self.btn_load_checkpoint, self.btn_before, self.btn_shortcuts):
+                       self.btn_load_checkpoint, self.btn_before,
+                       self.btn_locate_frame, self.btn_shortcuts):
             toolbar.add(widget)
 
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -1348,22 +1489,28 @@ class RetouchDialog(QDialog):
         self.rb_source = QRadioButton(trans.t("retouch_tool_source"))
         self.rb_restore = QRadioButton(trans.t("retouch_tool_restore"))
         self.rb_exposure = QRadioButton(trans.t("retouch_tool_exposure"))
+        self.rb_clone = QRadioButton(trans.t("retouch_tool_clone"))
         self.tool_group = QButtonGroup(self)
         self.tool_group.addButton(self.rb_source, 0)
         self.tool_group.addButton(self.rb_restore, 1)
         self.tool_group.addButton(self.rb_exposure, 2)
+        self.tool_group.addButton(self.rb_clone, 3)
         self.rb_source.toggled.connect(
             lambda on: self._set_tool("source") if on else None)
         self.rb_restore.toggled.connect(
             lambda on: self._set_tool("restore") if on else None)
         self.rb_exposure.toggled.connect(
             lambda on: self._set_tool("exposure") if on else None)
+        self.rb_clone.toggled.connect(
+            lambda on: self._set_tool("clone") if on else None)
         self.rb_source.setToolTip(trans.t("retouch_help") + " (B)")
         self.rb_restore.setToolTip(trans.t("retouch_help_restore") + " (E)")
         self.rb_exposure.setToolTip(trans.t("retouch_exposure_hint") + "\n" + no_key)
+        self.rb_clone.setToolTip(trans.t("retouch_clone_hint") + " (S)")
         _add_wrapped_option(side, self.rb_source)
         _add_wrapped_option(side, self.rb_restore)
         _add_wrapped_option(side, self.rb_exposure)
+        _add_wrapped_option(side, self.rb_clone)
         self.num_exposure = _NumberRow(trans.t("retouch_exposure_amount"),
                                        -200, 200, 50)
         self.num_exposure.setToolTip(trans.t("retouch_exposure_hint") + "\n" + no_key)
@@ -1386,6 +1533,106 @@ class RetouchDialog(QDialog):
             control.valueChanged.connect(self._on_brush_changed)
             side.addWidget(control)
 
+        # Tool-specific precision options for the Source Brush (hidden for other tools)
+        self.source_options_box = QFrame()
+        self.source_options_box.setObjectName("card")
+        src_opts = QVBoxLayout(self.source_options_box)
+        src_opts.setContentsMargins(SPACE["sm"], SPACE["sm"], SPACE["sm"], SPACE["sm"])
+        src_opts.setSpacing(SPACE["xs"])
+        self.num_color_tolerance = _NumberRow("", 0, 100, self.doc.color_tolerance)
+        self.num_color_tolerance.setToolTip(trans.t("retouch_color_tolerance_hint") + "\n" + no_key)
+        for child in (self.num_color_tolerance.slider, self.num_color_tolerance.spin, self.num_color_tolerance._label):
+            child.setToolTip(self.num_color_tolerance.toolTip())
+        self.num_color_tolerance.valueChanged.connect(self._on_color_tolerance_changed)
+        src_opts.addWidget(self.num_color_tolerance)
+
+        self.num_brightness = _NumberRow("", -50, 50, self.doc.brush_brightness)
+        self.num_brightness.setToolTip(trans.t("retouch_brightness_hint") + "\n" + no_key)
+        for child in (self.num_brightness.slider, self.num_brightness.spin, self.num_brightness._label):
+            child.setToolTip(self.num_brightness.toolTip())
+        self.num_brightness.valueChanged.connect(self._on_brightness_changed)
+        src_opts.addWidget(self.num_brightness)
+
+        self.chk_auto_brightness = QCheckBox(trans.t("retouch_brightness_auto"))
+        self.chk_auto_brightness.setToolTip(trans.t("retouch_brightness_auto_hint") + "\n" + no_key)
+        self.chk_auto_brightness.toggled.connect(self._on_auto_brightness_toggled)
+        _add_wrapped_option(src_opts, self.chk_auto_brightness)
+
+        lbl_offset = QLabel(trans.t("retouch_local_offset"))
+        lbl_offset.setWordWrap(True)
+        lbl_offset.setToolTip(trans.t("retouch_local_offset_hint"))
+        src_opts.addWidget(lbl_offset)
+        offset_row = QHBoxLayout()
+        offset_row.setContentsMargins(0, 0, 0, 0)
+        offset_row.setSpacing(SPACE["xs"])
+        self.spin_offset_x = QSpinBox()
+        self.spin_offset_x.setRange(-self.doc.MAX_SOURCE_OFFSET, self.doc.MAX_SOURCE_OFFSET)
+        self.spin_offset_x.setPrefix("X ")
+        self.spin_offset_x.setMinimumWidth(72)
+        self.spin_offset_x.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.spin_offset_x.setKeyboardTracking(False)
+        self.spin_offset_x.setToolTip(trans.t("retouch_local_offset_hint"))
+        self.spin_offset_x.valueChanged.connect(self._on_source_offset_changed)
+        self.spin_offset_y = QSpinBox()
+        self.spin_offset_y.setRange(-self.doc.MAX_SOURCE_OFFSET, self.doc.MAX_SOURCE_OFFSET)
+        self.spin_offset_y.setPrefix("Y ")
+        self.spin_offset_y.setMinimumWidth(72)
+        self.spin_offset_y.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.spin_offset_y.setKeyboardTracking(False)
+        self.spin_offset_y.setToolTip(trans.t("retouch_local_offset_hint"))
+        self.spin_offset_y.valueChanged.connect(self._on_source_offset_changed)
+        offset_row.addWidget(self.spin_offset_x, 1)
+        offset_row.addWidget(self.spin_offset_y, 1)
+        src_opts.addLayout(offset_row)
+
+        offset_btns = QHBoxLayout()
+        offset_btns.setContentsMargins(0, 0, 0, 0)
+        offset_btns.setSpacing(SPACE["xs"])
+        self.btn_auto_align = ElidingButton(trans.t("retouch_auto_align_patch"))
+        self.btn_auto_align.setAutoDefault(False)
+        self.btn_auto_align.setToolTip(trans.t("retouch_auto_align_patch_hint"))
+        self.btn_auto_align.clicked.connect(self._auto_align_patch)
+        self.btn_reset_offset = ElidingButton(trans.t("retouch_reset_offset"))
+        self.btn_reset_offset.setAutoDefault(False)
+        self.btn_reset_offset.setToolTip(trans.t("retouch_reset_offset_hint"))
+        self.btn_reset_offset.clicked.connect(self._reset_source_offset)
+        offset_btns.addWidget(self.btn_auto_align, 2)
+        offset_btns.addWidget(self.btn_reset_offset, 1)
+        src_opts.addLayout(offset_btns)
+        side.addWidget(self.source_options_box)
+
+        # Tool-specific options for the Clone Stamp (hidden for other tools)
+        self.clone_options_box = QFrame()
+        self.clone_options_box.setObjectName("card")
+        clone_opts = QVBoxLayout(self.clone_options_box)
+        clone_opts.setContentsMargins(SPACE["sm"], SPACE["sm"], SPACE["sm"], SPACE["sm"])
+        clone_opts.setSpacing(SPACE["xs"])
+        self.rb_clone_area = QRadioButton(trans.t("retouch_clone_mode_area"))
+        self.rb_clone_pattern = QRadioButton(trans.t("retouch_clone_mode_pattern"))
+        self.clone_mode_group = QButtonGroup(self)
+        self.clone_mode_group.addButton(self.rb_clone_area, 0)
+        self.clone_mode_group.addButton(self.rb_clone_pattern, 1)
+        self.rb_clone_area.setChecked(True)
+        self.rb_clone_area.setToolTip(trans.t("retouch_clone_mode_area_hint"))
+        self.rb_clone_pattern.setToolTip(trans.t("retouch_clone_mode_pattern_hint"))
+        self.rb_clone_area.toggled.connect(
+            lambda on: self._set_clone_mode("area") if on else None)
+        self.rb_clone_pattern.toggled.connect(
+            lambda on: self._set_clone_mode("pattern") if on else None)
+        _add_wrapped_option(clone_opts, self.rb_clone_area)
+        _add_wrapped_option(clone_opts, self.rb_clone_pattern)
+        self.btn_pick_clone = ElidingButton(trans.t("retouch_clone_pick"))
+        self.btn_pick_clone.setCheckable(True)
+        self.btn_pick_clone.setAutoDefault(False)
+        self.btn_pick_clone.setToolTip(trans.t("retouch_clone_pick_hint"))
+        self.btn_pick_clone.toggled.connect(self._toggle_pick_clone)
+        clone_opts.addWidget(self.btn_pick_clone)
+        self.lbl_clone_origin = QLabel(trans.t("retouch_clone_origin_unset"))
+        self.lbl_clone_origin.setObjectName("mutedLabel")
+        self.lbl_clone_origin.setWordWrap(True)
+        clone_opts.addWidget(self.lbl_clone_origin)
+        side.addWidget(self.clone_options_box)
+
         self.chk_sharp = QCheckBox(trans.t("retouch_show_sharpness"))
         self.chk_sharp.setToolTip(trans.t("retouch_show_sharpness_hint") + "\n"
                                   + trans.t("retouch_sharpness_legend") + "\n" + no_key)
@@ -1396,6 +1643,16 @@ class RetouchDialog(QDialog):
         self.lbl_sharp_state.setWordWrap(True)
         self.lbl_sharp_state.setVisible(False)
         side.addWidget(self.lbl_sharp_state)
+
+        self.chk_depth_map = QCheckBox(trans.t("retouch_show_depth_map"))
+        self.chk_depth_map.setToolTip(trans.t("retouch_show_depth_map_hint") + "\n" + no_key)
+        self.chk_depth_map.toggled.connect(self._toggle_depth_map)
+        _add_wrapped_option(side, self.chk_depth_map)
+        self.lbl_depth_state = QLabel("")
+        self.lbl_depth_state.setObjectName("mutedLabel")
+        self.lbl_depth_state.setWordWrap(True)
+        self.lbl_depth_state.setVisible(False)
+        side.addWidget(self.lbl_depth_state)
 
         self.btn_auto_bg = ElidingButton(trans.t("retouch_auto_bg") + "…")
         self.btn_auto_bg.setToolTip(trans.t("retouch_auto_bg_hint") + "\n" + no_key)
@@ -1453,7 +1710,7 @@ class RetouchDialog(QDialog):
         self.splitter.setStretchFactor(0, 1)
         self.splitter.setStretchFactor(1, 1)
         self.splitter.setStretchFactor(2, 0)
-        self.splitter.setSizes([460, 460, 272])
+        self.splitter.setSizes([460, 460, 292])
 
         strip = QWidget()
         strip_layout = QVBoxLayout(strip)
@@ -1517,11 +1774,16 @@ class RetouchDialog(QDialog):
 
         self._stroke_lock_widgets = [
             self.btn_undo, self.btn_redo, self.btn_save_checkpoint,
-            self.btn_load_checkpoint, self.btn_before, self.btn_shortcuts,
+            self.btn_load_checkpoint, self.btn_before, self.btn_locate_frame,
+            self.btn_shortcuts,
             self.frame_list, self.frame_spin, self.frame_slider,
             self.btn_prev, self.btn_next,
-            self.rb_source, self.rb_restore, self.rb_exposure, self.num_exposure, self.num_diameter,
-            self.num_hardness, self.num_opacity, self.chk_sharp,
+            self.rb_source, self.rb_restore, self.rb_exposure, self.rb_clone,
+            self.num_exposure, self.num_diameter, self.num_hardness, self.num_opacity,
+            self.num_color_tolerance, self.num_brightness, self.chk_auto_brightness,
+            self.spin_offset_x, self.spin_offset_y, self.btn_auto_align, self.btn_reset_offset,
+            self.rb_clone_area, self.rb_clone_pattern, self.btn_pick_clone,
+            self.chk_sharp, self.chk_depth_map,
             self.btn_restore_all, self.btn_tones, self.btn_auto_bg, self.chk_missing,
             self.btn_save_missing, self.btn_apply,
         ]
@@ -1834,7 +2096,7 @@ class RetouchDialog(QDialog):
         self._before_qimage = _qimage_from_bgr(display)
 
     def _refresh_result_display(self) -> None:
-        self._result_display = self._tint_missing(self._display_image(self.doc.working))
+        self._result_display = self._tint_result_overlays(self._display_image(self.doc.working))
         self._result_qimage = _qimage_from_bgr(self._result_display)
         self.result_canvas.update()
         self._update_status()
@@ -1848,7 +2110,7 @@ class RetouchDialog(QDialog):
         display = self._display_image(patch)
         if self._result_display.ndim == 3 and display.ndim == 2:
             display = cv2.cvtColor(display, cv2.COLOR_GRAY2BGR)
-        display = np.ascontiguousarray(self._tint_missing(display, (y0, y1, x0, x1)))
+        display = np.ascontiguousarray(self._tint_result_overlays(display, (y0, y1, x0, x1)))
         self._result_display[y0:y1, x0:x1] = display
         patch_image = _qimage_from_bgr(display, copy=False)
         painter = QPainter(self._result_qimage)
@@ -1987,22 +2249,38 @@ class RetouchDialog(QDialog):
                 and published[0] == self.doc.frame_index and published[1] == self._source_request
                 and published[2] == self.doc.active_frame.frame_id)
 
+    def live_clone_source_point(self):
+        if self.doc is None or self.doc.tool != "clone" or self.doc.clone_origin is None:
+            return None
+        if (self.doc.stroke_active and self.doc._stroke is not None
+                and self.doc._stroke.get("clone_mode") == "area"
+                and self.cursor_pos is not None):
+            origin = self.doc._stroke["clone_origin"]
+            start = self.doc._stroke["points"][0]
+            return (self.cursor_pos.x() + (origin[0] - start[0]),
+                    self.cursor_pos.y() + (origin[1] - start[1]))
+        return self.doc.clone_origin
+
     def cursor_source_valid(self) -> bool:
         if self.cursor_pos is None:
             return True
         x, y = self.cursor_pos.x(), self.cursor_pos.y()
         if not self.image_contains(x, y):
             return False
+        if self.doc.tool == "clone":
+            return self.doc.clone_origin is not None
         if self.doc.tool != 'source':
             return True
         if not self._has_current_source():
             return False
         frame, mask = self.doc.active_frame, self._source_published[3]
-        if not frame.contains(x, y):
+        sx = x - self.doc.source_offset_x
+        sy = y - self.doc.source_offset_y
+        if not frame.contains(sx, sy):
             return False
         if mask is None:
             return True
-        lx, ly = frame.local_point(x, y)
+        lx, ly = frame.local_point(sx, sy)
         return bool(mask[int(ly), int(lx)])
 
     def _update_status(self) -> None:
@@ -2021,12 +2299,17 @@ class RetouchDialog(QDialog):
             i=self.doc.frame_index + 1, n=self.doc.frame_count,
             name=os.path.basename(frame.name)))
         tool = trans.t({"source": "retouch_tool_source", "restore": "retouch_tool_restore",
-                        "exposure": "retouch_tool_exposure"}[self.doc.tool])
+                        "exposure": "retouch_tool_exposure",
+                        "clone": "retouch_tool_clone"}[self.doc.tool])
         if self.doc.tool == 'source' and self._source_loading:
             tool = self.lbl_source_header.text()
+        elif self.doc.tool == "clone" and self.doc.clone_origin is None:
+            tool = trans.t("retouch_clone_origin_unset")
         elif self.cursor_pos is not None and self.doc.tool == "source" and not self.cursor_source_valid():
+            sx = self.cursor_pos.x() - self.doc.source_offset_x
+            sy = self.cursor_pos.y() - self.doc.source_offset_y
             tool = (trans.t("retouch_source_roi") + " · "
-                    if not frame.contains(self.cursor_pos.x(), self.cursor_pos.y()) else "")
+                    if not frame.contains(sx, sy) else "")
             tool += trans.t("retouch_source_unavailable")
         self.lbl_state.setText(self._notice or tool)
 
@@ -2049,13 +2332,16 @@ class RetouchDialog(QDialog):
         if self.doc.stroke_active or not self.doc.set_tool(tool):
             self._sync_tool_buttons()
             return
+        if tool != "clone" and self._picking_clone_origin:
+            self._picking_clone_origin = False
+            self.btn_pick_clone.blockSignals(True)
+            self.btn_pick_clone.setChecked(False)
+            self.btn_pick_clone.blockSignals(False)
         self._sync_tool_buttons()
         self._update_status()
         self.source_canvas.update()
         self.result_canvas.update()
-        # The exposure amount only applies to the exposure brush; hide it
-        # for the source/restore tools instead of leaving a live control
-        # whose value the stroke never reads.
+        # Show only controls that apply to the active tool so the sidebar stays clean.
         self._update_controls()
 
     def _show_shortcuts(self) -> None:
@@ -2076,9 +2362,13 @@ class RetouchDialog(QDialog):
                 ('F', 'retouch_fit'), ('1', 'retouch_zoom_100'),
                 ('+ / −', 'retouch_shortcut_zoom'),
                 (', / .', 'retouch_shortcut_frames'),
+                ('F9', 'retouch_locate_frame_hint'),
                 ('F11', 'compare_fullscreen'))),
             ('retouch_tools', (
                 ('B', 'retouch_tool_source'), ('E', 'retouch_tool_restore'),
+                ('S', 'retouch_tool_clone'),
+                ('Alt + Click', 'retouch_clone_pick_hint'),
+                ('Shift + ↑↓←→', 'retouch_local_offset_hint'),
                 ('[ / ]', 'retouch_diameter'),
                 (trans.t('retouch_shortcut_ctrl_wheel'), 'retouch_diameter'),
                 (trans.t('retouch_shortcut_left_drag'), 'retouch_shortcut_paint'))),
@@ -2123,11 +2413,134 @@ class RetouchDialog(QDialog):
         self.rb_source.setChecked(self.doc.tool == "source")
         self.rb_restore.setChecked(self.doc.tool == "restore")
         self.rb_exposure.setChecked(self.doc.tool == "exposure")
+        self.rb_clone.setChecked(self.doc.tool == "clone")
+        self.rb_clone_area.setChecked(self.doc.clone_mode == "area")
+        self.rb_clone_pattern.setChecked(self.doc.clone_mode == "pattern")
         self._syncing_tools = False
 
     def _on_exposure_changed(self, value: int) -> None:
         if not self.doc.stroke_active:
             self.doc.exposure = value / 100.0
+
+    def _on_color_tolerance_changed(self, value: int) -> None:
+        if not self.doc.stroke_active:
+            self.doc.set_color_tolerance(value)
+            self._update_brush_labels()
+
+    def _on_brightness_changed(self, value: int) -> None:
+        if not self.doc.stroke_active:
+            self.doc.set_brush_brightness(value)
+            self._update_brush_labels()
+
+    def _on_auto_brightness_toggled(self, checked: bool) -> None:
+        if not self.doc.stroke_active:
+            self.doc.set_brush_auto_brightness(checked)
+
+    def _on_source_offset_changed(self, _value: int = 0) -> None:
+        if self.doc.stroke_active:
+            return
+        self.doc.set_source_offset(self.spin_offset_x.value(), self.spin_offset_y.value())
+        self.source_canvas.update()
+        self.result_canvas.update()
+        self._update_controls()
+        self._update_status()
+
+    def _nudge_source_offset(self, dx: int, dy: int) -> None:
+        if self.doc.stroke_active or self.doc.tool != "source":
+            return
+        nx = max(-self.doc.MAX_SOURCE_OFFSET, min(self.doc.MAX_SOURCE_OFFSET, self.doc.source_offset_x + dx))
+        ny = max(-self.doc.MAX_SOURCE_OFFSET, min(self.doc.MAX_SOURCE_OFFSET, self.doc.source_offset_y + dy))
+        self.spin_offset_x.blockSignals(True)
+        self.spin_offset_y.blockSignals(True)
+        self.spin_offset_x.setValue(nx)
+        self.spin_offset_y.setValue(ny)
+        self.spin_offset_x.blockSignals(False)
+        self.spin_offset_y.blockSignals(False)
+        self.doc.set_source_offset(nx, ny)
+        self._set_notice(trans.t("retouch_offset_status").format(x=nx, y=ny))
+        self.source_canvas.update()
+        self.result_canvas.update()
+        self._update_controls()
+
+    def _reset_source_offset(self) -> None:
+        if self.doc.stroke_active:
+            return
+        self.spin_offset_x.blockSignals(True)
+        self.spin_offset_y.blockSignals(True)
+        self.spin_offset_x.setValue(0)
+        self.spin_offset_y.setValue(0)
+        self.spin_offset_x.blockSignals(False)
+        self.spin_offset_y.blockSignals(False)
+        self.doc.reset_source_offset()
+        self.source_canvas.update()
+        self.result_canvas.update()
+        self._update_controls()
+        self._update_status()
+
+    def _auto_align_patch(self) -> None:
+        if self._action_blocked() or self.doc.tool != "source" or not self._has_current_source():
+            return
+        if self.cursor_pos is not None and self.image_contains(self.cursor_pos.x(), self.cursor_pos.y()):
+            cx, cy = self.cursor_pos.x(), self.cursor_pos.y()
+        else:
+            cx, cy = self.view.center.x(), self.view.center.y()
+        cx = min(self.doc.width - 1, max(0.0, cx))
+        cy = min(self.doc.height - 1, max(0.0, cy))
+        window = max(64, min(256, self.doc.diameter * 2))
+        dx, dy, _resp = self.doc.auto_align_patch(cx, cy, window_size=window)
+        self.spin_offset_x.blockSignals(True)
+        self.spin_offset_y.blockSignals(True)
+        self.spin_offset_x.setValue(dx)
+        self.spin_offset_y.setValue(dy)
+        self.spin_offset_x.blockSignals(False)
+        self.spin_offset_y.blockSignals(False)
+        self._set_notice(trans.t("retouch_offset_aligned").format(x=dx, y=dy))
+        self.source_canvas.update()
+        self.result_canvas.update()
+        self._update_controls()
+
+    def _set_clone_mode(self, mode: str) -> None:
+        if self.doc.stroke_active or not self.doc.set_clone_mode(mode):
+            self._sync_tool_buttons()
+            return
+        self.result_canvas.update()
+
+    def _toggle_pick_clone(self, checked: bool) -> None:
+        self._picking_clone_origin = bool(checked)
+        if checked:
+            self._set_notice(trans.t("retouch_clone_pick_hint"))
+
+    def _pick_clone_origin(self, x: float, y: float) -> bool:
+        if self.doc.stroke_active or not self.doc.set_clone_origin(x, y):
+            return False
+        self._picking_clone_origin = False
+        self.btn_pick_clone.blockSignals(True)
+        self.btn_pick_clone.setChecked(False)
+        self.btn_pick_clone.blockSignals(False)
+        self.lbl_clone_origin.setText(
+            trans.t("retouch_clone_origin_set").format(x=int(round(x)), y=int(round(y))))
+        self._set_notice(
+            trans.t("retouch_clone_origin_set").format(x=int(round(x)), y=int(round(y))))
+        self.result_canvas.update()
+        self._update_status()
+        return True
+
+    def _locate_contributing_frame(self) -> Optional[int]:
+        if self._action_blocked() or self.doc.frame_count <= 0:
+            return None
+        if self.cursor_pos is not None and self.image_contains(self.cursor_pos.x(), self.cursor_pos.y()):
+            x, y = self.cursor_pos.x(), self.cursor_pos.y()
+        else:
+            x = min(self.doc.width - 1, max(0.0, self.view.center.x()))
+            y = min(self.doc.height - 1, max(0.0, self.view.center.y()))
+        idx = self.doc.locate_contributing_frame(x, y)
+        if idx is None:
+            self._set_notice(trans.t("retouch_locate_frame_unavailable"))
+            return None
+        self._select_frame(idx)
+        self._set_notice(
+            trans.t("retouch_located_frame").format(i=idx + 1, n=self.doc.frame_count))
+        return idx
 
     def _on_brush_changed(self, _value=None) -> None:
         if self.doc.stroke_active:
@@ -2144,6 +2557,14 @@ class RetouchDialog(QDialog):
             trans.t("retouch_hardness").format(self.num_hardness.value()))
         self.num_opacity.set_label(
             trans.t("retouch_opacity").format(self.num_opacity.value()))
+        tol = self.num_color_tolerance.value()
+        self.num_color_tolerance.set_label(
+            trans.t("retouch_color_tolerance_off") if tol == 0
+            else trans.t("retouch_color_tolerance_val").format(tol))
+        br = self.num_brightness.value()
+        sign = "+" if br > 0 else ""
+        self.num_brightness.set_label(
+            trans.t("retouch_brightness_val").format(f"{sign}{br}"))
 
     def _bump_diameter(self, factor: float) -> None:
         """Resize the brush from a shortcut.
@@ -2180,7 +2601,10 @@ class RetouchDialog(QDialog):
                 or (self.doc.tool == 'source' and not self._has_current_source())):
             return False
         if not self.doc.source_valid_at(x, y):
-            self._set_notice(trans.t("retouch_source_unavailable"))
+            if self.doc.tool == "clone" and self.doc.clone_origin is None:
+                self._set_notice(trans.t("retouch_clone_pick_required"))
+            else:
+                self._set_notice(trans.t("retouch_source_unavailable"))
             return False
         try:
             started = self.doc.begin_stroke(x, y)
@@ -2336,6 +2760,33 @@ class RetouchDialog(QDialog):
                 self._set_notice(trans.t("retouch_history_evicted"))
             self._update_dirty_ui()
             self._update_controls()
+
+    def _tint_result_overlays(self, display, region=None):
+        """Apply active result-canvas diagnostic overlays (missing-data & depth/source map)."""
+        out = self._tint_missing(display, region)
+        if not self.chk_depth_map.isChecked() or self._depth_overlay_bgr is None:
+            return out
+        y0, y1, x0, x1 = region or (0, out.shape[0], 0, out.shape[1])
+        ox, oy = self._depth_overlay_origin
+        overlay = self._depth_overlay_bgr
+        oh, ow = overlay.shape[:2]
+        ix0, iy0 = max(x0, ox), max(y0, oy)
+        ix1, iy1 = min(x1, ox + ow), min(y1, oy + oh)
+        if ix0 >= ix1 or iy0 >= iy1:
+            return out
+        if out.ndim == 2:
+            out = cv2.cvtColor(out, cv2.COLOR_GRAY2BGR)
+        else:
+            out = out.copy()
+        ov_slice = overlay[iy0 - oy:iy1 - oy, ix0 - ox:ix1 - ox]
+        dest_slice = out[iy0 - y0:iy1 - y0, ix0 - x0:ix1 - x0]
+        blended = cv2.addWeighted(dest_slice, 0.55, ov_slice, 0.45, 0)
+        if self._depth_overlay_valid is not None:
+            valid_slice = self._depth_overlay_valid[iy0 - oy:iy1 - oy, ix0 - ox:ix1 - ox]
+            dest_slice[valid_slice] = blended[valid_slice]
+        else:
+            out[iy0 - y0:iy1 - y0, ix0 - x0:ix1 - x0] = blended
+        return out
 
     def _tint_missing(self, display, region=None):
         """Tint the missing-data classes into an 8-bit display patch."""
@@ -2558,13 +3009,31 @@ class RetouchDialog(QDialog):
         if self._confirm_apply_button is not None:
             self._confirm_apply_button.setEnabled(self._can_apply())
         self.btn_before.setEnabled(not blocked and self.preview_mode != "source")
+        self.btn_locate_frame.setEnabled(not blocked and not preview and self.doc.frame_count > 1)
         self.chk_sharp.setEnabled(not sources_busy)
+        self.chk_depth_map.setEnabled(not blocked and not preview and self.doc.frame_count > 1)
         self.rb_source.setEnabled(not blocked)
         self.rb_restore.setEnabled(not blocked)
         self.rb_exposure.setEnabled(not blocked)
+        self.rb_clone.setEnabled(not blocked)
+        source_tool = self.doc.tool == "source"
         exposure_tool = self.doc.tool == "exposure"
+        clone_tool = self.doc.tool == "clone"
         self.num_exposure.setVisible(exposure_tool)
         self.num_exposure.setEnabled(exposure_tool and not blocked)
+        self.source_options_box.setVisible(source_tool)
+        self.num_color_tolerance.setEnabled(source_tool and not blocked)
+        self.num_brightness.setEnabled(source_tool and not blocked)
+        self.chk_auto_brightness.setEnabled(source_tool and not blocked)
+        self.spin_offset_x.setEnabled(source_tool and not blocked)
+        self.spin_offset_y.setEnabled(source_tool and not blocked)
+        self.btn_auto_align.setEnabled(source_tool and not sources_busy and not preview)
+        has_offset = self.doc.source_offset_x != 0 or self.doc.source_offset_y != 0
+        self.btn_reset_offset.setEnabled(source_tool and not blocked and has_offset)
+        self.clone_options_box.setVisible(clone_tool)
+        self.rb_clone_area.setEnabled(clone_tool and not blocked)
+        self.rb_clone_pattern.setEnabled(clone_tool and not blocked)
+        self.btn_pick_clone.setEnabled(clone_tool and not blocked and not preview)
         self.num_diameter.setEnabled(not blocked)
         self.num_hardness.setEnabled(not blocked)
         self.num_opacity.setEnabled(not blocked)
@@ -2687,6 +3156,111 @@ class RetouchDialog(QDialog):
             self._set_sharp_state("ready")
             self._render_source_overlay()
 
+    # ----------------------------------------------------- depth/source map
+    def _toggle_depth_map(self, checked: bool) -> None:
+        if checked and self._depth_overlay_bgr is None:
+            if (getattr(self.doc.context, "rendered_depth", None) is not None
+                    or self.doc._source_index_map is not None):
+                idx_map, origin, valid_mask = self.doc.source_index_map()
+                self._apply_depth_map_data(idx_map, origin, valid_mask)
+            elif not self._depth_map_started:
+                self._start_depth_map_worker()
+        self._set_depth_state(
+            "computing" if checked and self._depth_overlay_bgr is None
+            else ("ready" if checked else ""))
+        self._refresh_result_display()
+
+    def _set_depth_state(self, state: str) -> None:
+        label = getattr(self, "lbl_depth_state", None)
+        if label is None:
+            return
+        if not state or state == "ready":
+            label.setVisible(False)
+            label.setText("")
+            return
+        key = {"computing": "retouch_depth_computing",
+               "failed": "retouch_depth_failed"}.get(state)
+        if key is None:
+            label.setVisible(False)
+            return
+        label.setText(trans.t(key))
+        label.setStyleSheet(f"color: {tokens()['danger']};" if state == "failed" else "")
+        label.setVisible(True)
+
+    def _apply_depth_map_data(self, idx_map, origin, valid_mask) -> None:
+        if idx_map is None or self.doc is None:
+            return
+        n = max(1, self.doc.frame_count)
+        if n <= 1:
+            norm = np.zeros(idx_map.shape[:2], dtype=np.uint8)
+        else:
+            norm = np.clip(
+                idx_map.astype(np.float32) / float(n - 1) * 255.0, 0.0, 255.0
+            ).astype(np.uint8)
+        color = cv2.applyColorMap(norm, cv2.COLORMAP_TURBO)
+        ox, oy = origin
+        if getattr(self.doc.context, "rendered_depth", None) is not None and self.doc.frames:
+            target_w, target_h = self.doc.frames[0].width, self.doc.frames[0].height
+        else:
+            target_w, target_h = self.doc.width - ox, self.doc.height - oy
+        if color.shape[1] != target_w or color.shape[0] != target_h:
+            color = cv2.resize(color, (target_w, target_h), interpolation=cv2.INTER_NEAREST)
+        scaled_valid = valid_mask
+        if scaled_valid is not None and (scaled_valid.shape[1] != target_w or scaled_valid.shape[0] != target_h):
+            scaled_valid = cv2.resize(
+                scaled_valid.astype(np.uint8), (target_w, target_h),
+                interpolation=cv2.INTER_NEAREST) > 0
+        self._depth_overlay_bgr = color
+        self._depth_overlay_origin = (int(ox), int(oy))
+        self._depth_overlay_valid = scaled_valid
+
+    def _start_depth_map_worker(self) -> None:
+        self._depth_map_started = True
+        self._depth_map_request += 1
+        worker = _DepthMapWorker(self.doc, self._depth_map_request)
+        self._depth_map_worker = worker
+        worker.ready.connect(self._on_depth_map_ready)
+        worker.failed.connect(self._on_depth_map_failed)
+        _DEPTH_MAP_WORKERS.add(worker)
+        worker.finished.connect(lambda w=worker: _DEPTH_MAP_WORKERS.discard(w))
+        dialog_ref = weakref.ref(self)
+        request = self._depth_map_request
+
+        def finished():
+            dialog = dialog_ref()
+            if dialog is not None and not dialog._closing:
+                dialog._on_depth_map_finished(request)
+
+        self._depth_map_finished_callback = finished
+        worker.finished.connect(self._depth_map_finished_callback)
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+
+    def _on_depth_map_ready(self, request: int, idx_map, origin, valid_mask) -> None:
+        if self._closing or request != self._depth_map_request:
+            return
+        self._apply_depth_map_data(idx_map, origin, valid_mask)
+        if self.chk_depth_map.isChecked():
+            self._set_depth_state("ready")
+            self._refresh_result_display()
+
+    def _on_depth_map_failed(self, request: int, error: str) -> None:
+        if self._closing or request != self._depth_map_request:
+            return
+        self._set_depth_state("failed")
+        self.lbl_depth_state.setToolTip(error)
+
+    def _on_depth_map_finished(self, request: int) -> None:
+        if self._closing or request != self._depth_map_request:
+            return
+        if self._depth_map_worker is not None:
+            self._depth_map_worker = None
+        if self._depth_overlay_bgr is None:
+            self._depth_map_started = False
+            self._set_depth_state("failed")
+        else:
+            self._set_depth_state("ready" if self.chk_depth_map.isChecked() else "")
+
     def _on_focus_changed(self, old, new) -> None:
         if self._closing:
             return
@@ -2723,6 +3297,14 @@ class RetouchDialog(QDialog):
             safe_disconnect(worker.finished, getattr(self, "_sharpness_finished_callback", None))
             worker.requestInterruption()
             self._sharpness_request += 1
+        dworker = self._depth_map_worker
+        self._depth_map_worker = None
+        if dworker is not None:
+            safe_disconnect(dworker.ready, self._on_depth_map_ready)
+            safe_disconnect(dworker.failed, self._on_depth_map_failed)
+            safe_disconnect(dworker.finished, getattr(self, "_depth_map_finished_callback", None))
+            dworker.requestInterruption()
+            self._depth_map_request += 1
         self.hide()
         _release_dialog_buffers(weakref.ref(self))
         self.deleteLater()
@@ -2922,6 +3504,9 @@ class RetouchDialog(QDialog):
         if key == Qt.Key.Key_F11:
             self._toggle_fullscreen()
             return True
+        if key == Qt.Key.Key_F9:
+            self._locate_contributing_frame()
+            return True
         if ctrl and key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             self._apply()
             return True
@@ -2941,6 +3526,9 @@ class RetouchDialog(QDialog):
                 self._held_keys.add(key)
             return True
         if key == Qt.Key.Key_Alt and self._canvas_focused():
+            # Keep Alt available for Alt+Click clone source picking.
+            if self.doc.tool == "clone":
+                return False
             if self.preview_mode is not None or self.doc.stroke_active:
                 return False
             self._press_preview("source")
@@ -2957,6 +3545,16 @@ class RetouchDialog(QDialog):
         # numeric field must never resize the brush or change frames.
         if not self._canvas_focused():
             return False
+        if shift and self.doc.tool == "source" and key in (
+                Qt.Key.Key_Left, Qt.Key.Key_Right, Qt.Key.Key_Up, Qt.Key.Key_Down):
+            step = {
+                Qt.Key.Key_Left: (-1, 0),
+                Qt.Key.Key_Right: (1, 0),
+                Qt.Key.Key_Up: (0, -1),
+                Qt.Key.Key_Down: (0, 1),
+            }[key]
+            self._nudge_source_offset(*step)
+            return True
         if key == Qt.Key.Key_F:
             self._fit()
             return True
@@ -2974,6 +3572,9 @@ class RetouchDialog(QDialog):
             return True
         if key == Qt.Key.Key_E:
             self._set_tool("restore")
+            return True
+        if key == Qt.Key.Key_S:
+            self._set_tool("clone")
             return True
         if key == Qt.Key.Key_BracketLeft:
             self._bump_diameter(0.8)

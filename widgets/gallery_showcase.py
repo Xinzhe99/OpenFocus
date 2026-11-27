@@ -49,6 +49,7 @@ from locales.gallery_i18n import (
     resolve_comment_translation,
     should_display_comment_for_mode,
 )
+from utils.community_icons import community_icon, community_icon_color
 from utils.design_tokens import FONT, RADIUS, SPACE, WEIGHT, palette, rgba
 from utils.frame_pixels import block_signals, is_qobject_alive
 from widgets.danmaku_overlay import (
@@ -323,9 +324,10 @@ class CommentReplyDrawer(QFrame):
         header = QHBoxLayout()
         self.lbl_title = QLabel("", self)
         self.lbl_title.setObjectName("commentDrawerTitle")
-        self.btn_close = QPushButton("\u2715", self)
+        self.btn_close = QPushButton("", self)
         self.btn_close.setObjectName("btn_comment_drawer_close")
         self.btn_close.setFixedSize(24, 24)
+        self.btn_close.setIconSize(QSize(12, 12))
         self.btn_close.setFlat(True)
         self.btn_close.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_close.clicked.connect(self.close_drawer)
@@ -384,10 +386,21 @@ class CommentReplyDrawer(QFrame):
         self.btn_close.setToolTip(_tr("gallery_close"))
         self._rebuild_rows()
 
+    def _sync_drawer_icons(self) -> None:
+        self.btn_close.setIcon(
+            community_icon("close", community_icon_color(self._theme, "muted"), size=12, stroke_width=1.5)
+        )
+        for btn_up in self.list_container.findChildren(QPushButton, "btn_comment_upvote"):
+            icon_role = "accent" if btn_up.isChecked() else "muted"
+            btn_up.setIcon(
+                community_icon("arrow_up", community_icon_color(self._theme, icon_role), size=11, stroke_width=1.5)
+            )
+            btn_up.setIconSize(QSize(11, 11))
+
     def apply_theme(self, theme: str) -> None:
         self._theme = theme
-        p = palette("dark")
-        bg = rgba(p["surface"], 0.94)
+        p = palette(theme)
+        bg = rgba(p["surface"], 0.96 if theme == "light" else 0.94)
         self.setStyleSheet(
             f"QFrame#gallery_comment_drawer {{"
             f" background-color: {bg};"
@@ -409,13 +422,14 @@ class CommentReplyDrawer(QFrame):
             f" QLabel#commentEmpty {{ color: {p['textMuted']};"
             f" font-size: {FONT['body']}pt; background: transparent; }}"
             f" QFrame#commentCard, QFrame#replyCard {{"
-            f" background-color: {rgba(p['surfaceHover'], 0.85)};"
+            f" background-color: {rgba(p['surfaceHover'], 0.90 if theme == 'light' else 0.85)};"
             f" border: 1px solid {p['border']}; border-radius: {RADIUS['sm']}px; }}"
             f" QPushButton {{ background: transparent; color: {p['textMuted']};"
             f" border: none; font-size: {FONT['caption']}pt; padding: 2px 4px; }}"
             f" QPushButton:hover {{ color: {p['text']}; }}"
             f" QPushButton:checked {{ color: {p['accent']}; font-weight: {WEIGHT['semibold']}; }}"
         )
+        self._sync_drawer_icons()
 
     def _clear_rows(self) -> None:
         while self.list_layout.count():
@@ -546,7 +560,17 @@ class CommentReplyDrawer(QFrame):
 
         actions = QHBoxLayout()
         actions.setSpacing(SPACE["xs"])
-        btn_up = QPushButton(f"\u25b2 {upvotes}", card)
+        btn_up = QPushButton(f"{upvotes}", card)
+        btn_up.setObjectName("btn_comment_upvote")
+        btn_up.setIcon(
+            community_icon(
+                "arrow_up",
+                community_icon_color(self._theme, "accent" if viewer_vote == 1 else "muted"),
+                size=11,
+                stroke_width=1.5,
+            )
+        )
+        btn_up.setIconSize(QSize(11, 11))
         actionable = is_actionable_comment_id(cid)
         btn_up.setEnabled(actionable)
         btn_up.setCheckable(True)
@@ -751,6 +775,7 @@ class GalleryShowcaseWidget(QWidget):
         self.btn_like = QPushButton("", self.action_bar)
         self.btn_like.setObjectName("btn_gallery_like")
         self.btn_like.setProperty("controlId", "btn_gallery_like")
+        self.btn_like.setIconSize(QSize(16, 16))
         self.btn_like.setCheckable(True)
         self.btn_like.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_like.clicked.connect(self._on_like_clicked)
@@ -758,24 +783,28 @@ class GalleryShowcaseWidget(QWidget):
         self.btn_comment = QPushButton("", self.action_bar)
         self.btn_comment.setObjectName("btn_gallery_comment")
         self.btn_comment.setProperty("controlId", "btn_gallery_comment")
+        self.btn_comment.setIconSize(QSize(16, 16))
         self.btn_comment.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_comment.clicked.connect(self._on_comment_clicked)
 
         self.btn_download = QPushButton("", self.action_bar)
         self.btn_download.setObjectName("btn_gallery_download")
         self.btn_download.setProperty("controlId", "btn_gallery_download")
+        self.btn_download.setIconSize(QSize(16, 16))
         self.btn_download.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_download.clicked.connect(self._on_download_clicked)
 
         self.btn_fullscreen = QPushButton("", self.action_bar)
         self.btn_fullscreen.setObjectName("btn_gallery_fullscreen")
         self.btn_fullscreen.setProperty("controlId", "btn_gallery_fullscreen")
+        self.btn_fullscreen.setIconSize(QSize(16, 16))
         self.btn_fullscreen.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_fullscreen.clicked.connect(self.fullscreen_requested.emit)
 
         self.btn_report = QPushButton("", self.action_bar)
         self.btn_report.setObjectName("btn_gallery_report")
         self.btn_report.setProperty("controlId", "btn_gallery_report")
+        self.btn_report.setIconSize(QSize(16, 16))
         self.btn_report.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_report.clicked.connect(self._on_report_clicked)
 
@@ -791,17 +820,19 @@ class GalleryShowcaseWidget(QWidget):
         self.action_bar.hide()
 
         # Left/right slide navigation buttons for manual browsing (shown when multiple works exist)
-        self.btn_prev_slide = QPushButton("\u2039", self)
+        self.btn_prev_slide = QPushButton("", self)
         self.btn_prev_slide.setObjectName("btn_gallery_prev_slide")
         self.btn_prev_slide.setProperty("controlId", "btn_gallery_prev_slide")
+        self.btn_prev_slide.setIconSize(QSize(18, 18))
         self.btn_prev_slide.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_prev_slide.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_prev_slide.clicked.connect(self._on_prev_clicked)
         self.btn_prev_slide.hide()
 
-        self.btn_next_slide = QPushButton("\u203a", self)
+        self.btn_next_slide = QPushButton("", self)
         self.btn_next_slide.setObjectName("btn_gallery_next_slide")
         self.btn_next_slide.setProperty("controlId", "btn_gallery_next_slide")
+        self.btn_next_slide.setIconSize(QSize(18, 18))
         self.btn_next_slide.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_next_slide.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_next_slide.clicked.connect(self._on_next_clicked)
@@ -1188,6 +1219,7 @@ class GalleryShowcaseWidget(QWidget):
     def set_top_right_inset(self, px: int) -> None:
         """Reserve horizontal space at top-right (e.g., frameless window controls)."""
         self._top_right_inset = max(0, int(px))
+        self.danmaku_overlay.set_top_safe_margin(48.0 if self._top_right_inset > 0 else 14.0)
         self._layout_overlays()
 
     def _on_prev_clicked(self) -> None:
@@ -1311,18 +1343,19 @@ class GalleryShowcaseWidget(QWidget):
 
         # Bottom-right actions in fixed horizontal order:
         # [Like] [Comment/Danmaku] [Download] [Fullscreen Screensaver] [Report]
-        heart = "\u2665" if work.viewer_liked else "\u2661"
         self.btn_like.setChecked(work.viewer_liked)
-        self.btn_like.setText(f"{heart} {work.like_count}")
+        self.btn_like.setText(str(work.like_count))
 
-        self.btn_comment.setText(f"\U0001f4ac {work.comment_count}")
+        self.btn_comment.setText(str(work.comment_count))
         self.danmaku_overlay.composer.set_comment_count(work.comment_count)
 
         self.btn_download.setVisible(bool(work.allow_download))
         self.btn_download.setEnabled(bool(work.allow_download))
 
-        self.btn_fullscreen.setText("\u26f6")
-        self.btn_report.setText("\u2691")
+        self.btn_download.setText("")
+        self.btn_fullscreen.setText("")
+        self.btn_report.setText("")
+        self._sync_hud_icons()
         self.action_bar.show()
 
     # ------------------------------------------------------------ slot handlers
@@ -1409,29 +1442,50 @@ class GalleryShowcaseWidget(QWidget):
 
     # --------------------------------------------------------- Qt event hooks
 
+    def _sync_hud_icons(self) -> None:
+        primary = community_icon_color(self._theme, "primary")
+        danger = community_icon_color(self._theme, "danger")
+        liked = bool(self.btn_like.isChecked())
+        heart_fill = QColor(danger) if liked else None
+        if heart_fill is not None:
+            heart_fill.setAlpha(68)
+        self.btn_like.setIcon(
+            community_icon("heart", danger if liked else primary, fill_color=heart_fill, size=16, stroke_width=1.55)
+        )
+        self.btn_comment.setIcon(community_icon("comment", primary, size=16, stroke_width=1.55))
+        self.btn_download.setIcon(community_icon("download", primary, size=16, stroke_width=1.55))
+        self.btn_fullscreen.setIcon(community_icon("fullscreen", primary, size=16, stroke_width=1.55))
+        self.btn_report.setIcon(community_icon("flag", primary, size=16, stroke_width=1.55))
+        self.btn_prev_slide.setIcon(community_icon("chevron_left", primary, size=18, stroke_width=1.65))
+        self.btn_next_slide.setIcon(community_icon("chevron_right", primary, size=18, stroke_width=1.65))
+
     def apply_theme(self, theme: str) -> None:
         self._theme = theme
-        p = palette("dark")
-        glass = rgba(p["bg"], 0.68)
-        glass_hover = rgba(p["surfaceActive"], 0.85)
+        p = palette(theme)
+        is_light = theme == "light"
+        glass = rgba(p["surface"], 0.86) if is_light else rgba(p["bg"], 0.68)
+        glass_hover = rgba(p["surfaceHover"], 0.94) if is_light else rgba(p["surfaceActive"], 0.85)
+        slide_bg = rgba(p["surface"], 0.78) if is_light else rgba(p["bg"], 0.48)
+        slide_hover = rgba(p["surfaceHover"], 0.95) if is_light else rgba(p["surfaceActive"], 0.85)
+        border_col = rgba(p["borderStrong"], 0.75 if is_light else 0.55)
         accent = p["accent"]
         danger = p["danger"]
         self.setStyleSheet(
             f"QLabel#gallery_source_badge {{"
             f" background-color: {glass}; color: {p['text']};"
-            f" border: 1px solid {rgba(p['borderStrong'], 0.65)};"
+            f" border: 1px solid {rgba(p['borderStrong'], 0.75 if is_light else 0.65)};"
             f" border-radius: {RADIUS['sm']}px; padding: 2px 8px;"
             f" font-size: {FONT['caption']}pt; font-weight: {WEIGHT['semibold']}; }}"
             f" QFrame#gallery_meta_panel, QFrame#gallery_action_bar {{"
             f" background-color: {glass};"
-            f" border: 1px solid {rgba(p['borderStrong'], 0.55)};"
+            f" border: 1px solid {border_col};"
             f" border-radius: {RADIUS['md']}px; }}"
             f" QPushButton#btn_gallery_author {{ background: transparent;"
             f" color: {p['text']}; border: none; padding: 0;"
             f" font-size: {FONT['subtitle']}pt; font-weight: {WEIGHT['semibold']}; }}"
             f" QPushButton#btn_gallery_author:hover {{ color: {accent}; }}"
             f" QLabel#gallery_openfocus_badge {{"
-            f" background-color: {rgba(accent, 0.16)}; color: {p['accentSoftText']};"
+            f" background-color: {rgba(accent, 0.14 if is_light else 0.16)}; color: {p['accentSoftText']};"
             f" border: 1px solid {rgba(accent, 0.40)};"
             f" border-radius: {RADIUS['xs']}px; padding: 1px 5px;"
             f" font-size: 8pt; font-weight: {WEIGHT['medium']}; }}"
@@ -1444,23 +1498,25 @@ class GalleryShowcaseWidget(QWidget):
             f" QFrame#gallery_action_bar QPushButton:hover {{"
             f" background-color: {glass_hover}; }}"
             f" QPushButton#btn_gallery_prev_slide, QPushButton#btn_gallery_next_slide {{"
-            f" background-color: {rgba(p['bg'], 0.48)}; color: {p['text']};"
-            f" border: 1px solid {rgba(p['borderStrong'], 0.42)};"
-            f" border-radius: 18px; font-size: 20pt; padding: 0 0 3px 0; }}"
+            f" background-color: {slide_bg}; color: {p['text']};"
+            f" border: 1px solid {rgba(p['borderStrong'], 0.68 if is_light else 0.42)};"
+            f" border-radius: 18px; padding: 0; }}"
             f" QPushButton#btn_gallery_prev_slide:hover, QPushButton#btn_gallery_next_slide:hover {{"
-            f" background-color: {rgba(p['surfaceActive'], 0.85)}; border-color: {accent}; }}"
+            f" background-color: {slide_hover}; border-color: {accent}; }}"
             f" QPushButton#btn_gallery_like:checked {{"
             f" color: {danger}; font-weight: {WEIGHT['semibold']}; }}"
         )
+        self._sync_hud_icons()
         self.danmaku_overlay.apply_theme(theme)
         self.comment_drawer.apply_theme(theme)
+        self.update()
 
     @pyqtSlot()
     def retranslate(self) -> None:
         self.btn_like.setToolTip(_tr("gallery_btn_like"))
         self.btn_comment.setToolTip(_tr("gallery_btn_comment"))
         self.btn_download.setToolTip(_tr("gallery_btn_download"))
-        self.btn_download.setText("\u2b07")
+        self.btn_download.setText("")
         self.btn_fullscreen.setToolTip(_tr("gallery_btn_fullscreen"))
         self.btn_report.setToolTip(_tr("gallery_btn_report"))
         self.danmaku_overlay.retranslate()
@@ -1512,6 +1568,8 @@ class GalleryShowcaseWidget(QWidget):
             crop_h = min(bg_h, rect.height() / scale)
             src_rect = QRectF((bg_w - crop_w) / 2.0, (bg_h - crop_h) / 2.0, crop_w, crop_h)
             painter.drawPixmap(QRectF(rect), bg, src_rect)
+            if self._theme == "light":
+                painter.fillRect(rect, QColor(245, 246, 248, 56))
         else:
             painter.fillRect(rect, QColor(palette(self._theme)["canvas"]))
 
@@ -1587,23 +1645,26 @@ class GalleryShowcaseWindow(QWidget):
         wc_lay.setContentsMargins(4, 3, 4, 3)
         wc_lay.setSpacing(2)
 
-        self.btn_win_min = QPushButton("\u2212", self.window_controls)
+        self.btn_win_min = QPushButton("", self.window_controls)
         self.btn_win_min.setObjectName("btn_gallery_win_min")
         self.btn_win_min.setFixedSize(26, 24)
+        self.btn_win_min.setIconSize(QSize(12, 12))
         self.btn_win_min.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_win_min.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_win_min.clicked.connect(self.showMinimized)
 
-        self.btn_win_max = QPushButton("\u25a1", self.window_controls)
+        self.btn_win_max = QPushButton("", self.window_controls)
         self.btn_win_max.setObjectName("btn_gallery_win_max")
         self.btn_win_max.setFixedSize(26, 24)
+        self.btn_win_max.setIconSize(QSize(12, 12))
         self.btn_win_max.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_win_max.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_win_max.clicked.connect(self._toggle_maximized)
 
-        self.btn_win_close = QPushButton("\u2715", self.window_controls)
+        self.btn_win_close = QPushButton("", self.window_controls)
         self.btn_win_close.setObjectName("btn_gallery_win_close")
         self.btn_win_close.setFixedSize(26, 24)
+        self.btn_win_close.setIconSize(QSize(12, 12))
         self.btn_win_close.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_win_close.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_win_close.clicked.connect(self._on_return_clicked)
@@ -1612,28 +1673,27 @@ class GalleryShowcaseWindow(QWidget):
         wc_lay.addWidget(self.btn_win_max)
         wc_lay.addWidget(self.btn_win_close)
 
+        # Minimal floating return pill (no redundant fusion status/progress strip;
+        # the main window status bar already displays live fusion progress).
         self.fusion_bar = QFrame(self)
         self.fusion_bar.setObjectName("galleryFusionStatusBar")
         self.fusion_bar.setProperty("controlId", "gallery_fusion_status_bar")
+        self.fusion_bar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         bar_lay = QHBoxLayout(self.fusion_bar)
-        bar_lay.setContentsMargins(SPACE["md"], SPACE["xs"], SPACE["md"], SPACE["xs"])
-        bar_lay.setSpacing(SPACE["sm"])
+        bar_lay.setContentsMargins(4, 3, 4, 3)
+        bar_lay.setSpacing(SPACE["xs"])
 
         self.lbl_fusion_status = QLabel("", self.fusion_bar)
         self.lbl_fusion_status.setObjectName("galleryFusionStatusLabel")
         self.lbl_fusion_status.setProperty("controlId", "gallery_fusion_status_label")
-        bar_lay.addWidget(self.lbl_fusion_status)
+        self.lbl_fusion_status.hide()
 
         self.fusion_progress = QProgressBar(self.fusion_bar)
         self.fusion_progress.setObjectName("galleryFusionProgress")
         self.fusion_progress.setTextVisible(False)
         self.fusion_progress.setFixedHeight(6)
-        self.fusion_progress.setMinimumWidth(140)
-        self.fusion_progress.setMaximumWidth(260)
         self.fusion_progress.setRange(0, 0)
-        bar_lay.addWidget(self.fusion_progress)
-
-        bar_lay.addStretch(1)
+        self.fusion_progress.hide()
 
         self.btn_return = QPushButton("", self.fusion_bar)
         self.btn_return.setObjectName("btn_gallery_return_workspace")
@@ -1643,7 +1703,6 @@ class GalleryShowcaseWindow(QWidget):
         bar_lay.addWidget(self.btn_return)
 
         self.fusion_bar.hide()
-        root.addWidget(self.fusion_bar)
 
         for watched in (self.showcase, self.showcase.danmaku_overlay, self.fusion_bar):
             watched.setMouseTracking(True)
@@ -1771,6 +1830,19 @@ class GalleryShowcaseWindow(QWidget):
             self.showNormal()
         else:
             self.showMaximized()
+        self._sync_window_control_icons()
+
+    def _layout_fusion_bar(self) -> None:
+        self.fusion_bar.adjustSize()
+        sz = self.fusion_bar.sizeHint()
+        wc_x = self.window_controls.x()
+        max_right = max(SPACE["md"] + sz.width(), wc_x - SPACE["md"] - 84)
+        ideal_x = (self.width() - sz.width()) // 2
+        x = max(SPACE["md"], min(ideal_x, max_right - sz.width()))
+        y = SPACE["sm"]
+        self.fusion_bar.setGeometry(x, y, sz.width(), sz.height())
+        if self.fusion_bar.isVisible():
+            self.fusion_bar.raise_()
 
     def _layout_window_controls(self) -> None:
         self.window_controls.adjustSize()
@@ -1779,6 +1851,13 @@ class GalleryShowcaseWindow(QWidget):
         y = SPACE["sm"]
         self.window_controls.setGeometry(x, y, sz.width(), sz.height())
         self.window_controls.raise_()
+        self._layout_fusion_bar()
+        if is_qobject_alive(self.showcase):
+            top_clear = max(
+                48.0,
+                float(self.window_controls.geometry().bottom() + SPACE["sm"]),
+            )
+            self.showcase.danmaku_overlay.set_top_safe_margin(top_clear)
 
     def resizeEvent(self, event: QResizeEvent | None) -> None:
         super().resizeEvent(event)
@@ -1847,25 +1926,30 @@ class GalleryShowcaseWindow(QWidget):
             self.fusion_progress.setValue(min(max(0, int(done)), int(total)))
         else:
             self.fusion_progress.setRange(0, 0)
-        self.fusion_progress.show()
+        self.lbl_fusion_status.hide()
+        self.fusion_progress.hide()
         if self.btn_return.property("primary") is not False:
             self.btn_return.setProperty("primary", False)
             self.btn_return.style().unpolish(self.btn_return)
             self.btn_return.style().polish(self.btn_return)
         self.btn_return.setText(_tr("gallery_fusion_return_btn"))
         self.fusion_bar.show()
+        self._layout_fusion_bar()
 
     def set_fusion_completed(self) -> None:
         self._fusion_done = True
         self.lbl_fusion_status.setText(_tr("gallery_fusion_done_status"))
         self.fusion_progress.setRange(0, 1)
         self.fusion_progress.setValue(1)
+        self.lbl_fusion_status.hide()
+        self.fusion_progress.hide()
         if self.btn_return.property("primary") is not True:
             self.btn_return.setProperty("primary", True)
             self.btn_return.style().unpolish(self.btn_return)
             self.btn_return.style().polish(self.btn_return)
         self.btn_return.setText(_tr("gallery_fusion_view_result_btn"))
         self.fusion_bar.show()
+        self._layout_fusion_bar()
 
     def hide_fusion_bar(self) -> None:
         self._fusion_done = False
@@ -1883,25 +1967,35 @@ class GalleryShowcaseWindow(QWidget):
         if is_qobject_alive(self.showcase):
             self.showcase.set_fusion_busy(busy)
 
+    def _sync_window_control_icons(self) -> None:
+        muted = community_icon_color(self._theme, "muted")
+        primary = community_icon_color(self._theme, "primary")
+        self.btn_win_min.setIcon(community_icon("win_min", muted, size=12, stroke_width=1.4))
+        max_name = "win_restore" if self.isMaximized() else "win_max"
+        self.btn_win_max.setIcon(community_icon(max_name, muted, size=12, stroke_width=1.4))
+        self.btn_win_close.setIcon(community_icon("win_close", primary, size=12, stroke_width=1.5))
+
     def apply_theme(self, theme: str) -> None:
         self._theme = theme
-        # Keep the showcase frame permanently dark for borderless photography immersion.
-        p = palette("dark")
-        glass = rgba(p["bg"], 0.72)
+        p = palette(theme)
+        is_light = theme == "light"
+        glass = rgba(p["surface"], 0.86) if is_light else rgba(p["bg"], 0.72)
+        border_rule = f"1px solid {rgba(p['borderStrong'], 0.55)}" if is_light else "none"
         self.setStyleSheet(
-            f"QWidget#gallery_showcase_window {{ background-color: {p['canvas']}; border: none; }}"
+            f"QWidget#gallery_showcase_window {{ background-color: {p['canvas']}; border: {border_rule}; }}"
             f" QFrame#gallery_window_controls {{ background-color: {glass};"
-            f" border: 1px solid {rgba(p['borderStrong'], 0.50)};"
+            f" border: 1px solid {rgba(p['borderStrong'], 0.70 if is_light else 0.50)};"
             f" border-radius: {RADIUS['md']}px; }}"
             f" QFrame#gallery_window_controls QPushButton {{ background: transparent;"
             f" color: {p['textMuted']}; border: none; border-radius: {RADIUS['sm']}px;"
             f" font-size: {FONT['body']}pt; padding: 0; }}"
             f" QFrame#gallery_window_controls QPushButton:hover {{ color: {p['text']};"
-            f" background-color: {rgba(p['surfaceActive'], 0.85)}; }}"
-            f" QPushButton#btn_gallery_win_close:hover {{ color: #ffffff;"
-            f" background-color: {p['danger']}; }}"
-            f" QFrame#galleryFusionStatusBar {{ background-color: {rgba(p['surface'], 0.96)};"
-            f" border-top: 1px solid {rgba(p['border'], 0.65)}; }}"
+            f" background-color: {rgba(p['surfaceHover'] if is_light else p['surfaceActive'], 0.92)}; }}"
+            f" QPushButton#btn_gallery_win_close:hover {{ color: {p['danger']};"
+            f" background-color: {rgba(p['danger'], 0.20)}; }}"
+            f" QFrame#galleryFusionStatusBar {{ background-color: {glass};"
+            f" border: 1px solid {rgba(p['borderStrong'], 0.70 if is_light else 0.50)};"
+            f" border-radius: {RADIUS['md']}px; }}"
             f" QLabel#galleryFusionStatusLabel {{ color: {p['text']};"
             f" font-size: {FONT['caption']}pt; font-weight: {WEIGHT['medium']};"
             " background: transparent; }"
@@ -1910,18 +2004,18 @@ class GalleryShowcaseWindow(QWidget):
             f" QProgressBar#galleryFusionProgress::chunk {{ background: {p['accent']};"
             " border-radius: 3px; }"
             f" QPushButton#btn_gallery_return_workspace {{ background: transparent;"
-            f" color: {p['textMuted']}; border: 1px solid {p['border']};"
+            f" color: {p['text']}; border: none;"
             f" border-radius: {RADIUS['sm']}px; padding: 3px 10px;"
-            f" font-size: {FONT['caption']}pt; font-weight: {WEIGHT['regular']}; }}"
+            f" font-size: {FONT['caption']}pt; font-weight: {WEIGHT['medium']}; }}"
             f" QPushButton#btn_gallery_return_workspace:hover {{"
-            f" color: {p['text']}; background-color: {p['surfaceHover']};"
-            f" border-color: {p['borderStrong']}; }}"
+            f" color: {p['text']}; background-color: {rgba(p['surfaceHover'] if is_light else p['surfaceActive'], 0.92)}; }}"
             f" QPushButton#btn_gallery_return_workspace[primary=\"true\"] {{"
             f" background-color: {p['accent']}; color: {p['textOnAccent']}; border: none;"
-            f" padding: 4px 12px; font-weight: {WEIGHT['semibold']}; }}"
+            f" padding: 3px 12px; font-weight: {WEIGHT['semibold']}; }}"
             f" QPushButton#btn_gallery_return_workspace[primary=\"true\"]:hover {{"
             f" background-color: {p['accentHover']}; }}"
         )
+        self._sync_window_control_icons()
         if is_qobject_alive(self.showcase):
             self.showcase.apply_theme(theme)
 
@@ -1938,6 +2032,7 @@ class GalleryShowcaseWindow(QWidget):
             self.btn_return.setText(_tr("gallery_fusion_return_btn"))
         if is_qobject_alive(self.showcase):
             self.showcase.retranslate()
+        self._layout_fusion_bar()
 
     def _on_return_clicked(self) -> None:
         self.return_to_workspace_requested.emit()
