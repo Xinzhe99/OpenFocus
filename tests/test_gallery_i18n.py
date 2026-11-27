@@ -234,5 +234,12 @@ def test_community_naming_across_all_12_locales():
 
     assert GALLERY_TRANSLATIONS["zh"]["menu_gallery"] == "社区"
     assert GALLERY_TRANSLATIONS["en"]["menu_gallery"] == "Community"
+    assert GALLERY_TRANSLATIONS["fr"]["menu_gallery"] == "Communauté"
+    assert GALLERY_TRANSLATIONS["pt"]["menu_gallery"] == "Comunidade"
+    assert GALLERY_TRANSLATIONS["pt"]["menu_gallery_hub"] == "Comunidade OpenFocus"
     assert GALLERY_TRANSLATIONS["zh"]["menu_gallery_hub"] == "OpenFocus 社区"
     assert GALLERY_TRANSLATIONS["en"]["menu_gallery_hub"] == "OpenFocus Community"
+    for lang in GALLERY_LANGUAGES:
+        if lang != "pl":
+            for key, value in GALLERY_TRANSLATIONS[lang].items():
+                assert "Społeczność" not in value, f"Polish leak in {lang}.{key}: {value!r}"
