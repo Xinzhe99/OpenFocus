@@ -53,7 +53,7 @@ LAST_IMAGE_SAVE_DIR_KEY = "ui/last_image_save_dir"
 LAST_IMAGE_SAVE_TYPE_KEY = "ui/last_image_save_type"
 LAST_IMAGE_SAVE_FILTER_KEY = "ui/last_image_save_filter"
 IMAGE_SAVE_TYPES = frozenset({
-    ".png", ".tif", ".tiff", ".jpg", ".jpeg", ".jpe", ".jfif", ".bmp", ".webp", ".dng",
+    ".png", ".tif", ".tiff", ".jpg", ".jpeg", ".jpe", ".jfif", ".bmp", ".webp", ".dng", ".jp2", ".psd",
 })
 # The "AI runs on the CPU" warning is informational and repeat-per-launch
 # annoying; once the user says "don't show again" it must stay gone.
@@ -91,6 +91,8 @@ _PERSISTED_FIELDS = {
     "use_gpu": ("rendering/use_gpu", True, "bool"),
     "align_cache_enabled": ("rendering/align_cache_enabled", True, "bool"),
     "output_name_prefix": ("export/name_prefix", "", "str"),
+    "strip_exif_on_export": ("export/strip_exif_on_export", False, "bool"),
+    "enable_ui_icc_preview": ("ui/enable_ui_icc_preview", True, "bool"),
     "output_filename_template": ("export/filename_template", "", "str"),
     "render_complete_sound": ("ui/render_complete_sound", False, "bool"),
     "restore_last_stack": ("ui/restore_last_stack", False, "bool"),
