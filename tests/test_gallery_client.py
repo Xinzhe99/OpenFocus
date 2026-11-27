@@ -1031,3 +1031,63 @@ def test_tls_create_ssl_context_caches_by_ca_env_vars(monkeypatch, tmp_path):
         assert tls.create_ssl_context() is ctx3
     finally:
         tls.clear_ssl_context_cache()
+
+
+def test_boost_work_endpoint_idempotency_and_graceful_404_degradation():
+    recorded: list[tuple[str, str, dict[str, str], dict[str, Any]]] = []
+
+    def ok_transport(method, url, headers, body, timeout):
+        recorded.append((method, url, dict(headers), json.loads(body.decode("utf-8"))))
+        return _json_response({
+            "work_id": "wrk_boost_1",
+            "showcase_impressions_remaining": 500,
+            "points_balance": 300,
+        })
+
+    client = gc.GalleryClient(token="tok-boost", transport=ok_transport)
+    res = client.boost_work(
+        "wrk_boost_1",
+        package_id="boost_500",
+        impressions=500,
+        points=200,
+        idempotency_key="idem-boost-1",
+    )
+    assert res["showcase_impressions_remaining"] == 500
+    assert len(recorded) == 1
+    method, url, headers, payload = recorded[0]
+    assert method == "POST"
+    assert urllib.parse.urlsplit(url).path == "/api/v1/works/wrk_boost_1/boost"
+    assert headers["Idempotency-Key"] == "idem-boost-1"
+    assert headers["Authorization"] == "Bearer tok-boost"
+    assert payload == {"package_id": "boost_500", "impressions": 500, "points": 200}
+
+    # Validation rejects empty boost request
+    with pytest.raises(gc.GalleryClientError) as bad_exc:
+        client.boost_work("wrk_boost_1")
+    assert bad_exc.value.code == "invalid_request"
+
+    # Graceful fallback when server has not yet deployed /api/v1/works/:id/boost
+    not_deployed = gc.GalleryClient(
+        token="tok-boost",
+        transport=lambda *_a: gc.HttpResponse(status=404, headers={}, body=b'{"error":"not_found"}'),
+    )
+    with pytest.raises(gc.GalleryClientError) as unavail_exc:
+        not_deployed.boost_work("wrk_boost_1", package_id="boost_100", impressions=100, points=50)
+    assert unavail_exc.value.code == "boost_unavailable"
+    assert unavail_exc.value.points_deducted is False
+
+
+def test_get_feed_forwards_search_query_when_non_empty():
+    urls: list[str] = []
+
+    def transport(method, url, headers, body, timeout):
+        urls.append(url)
+        return _json_response({"items": [], "next_cursor": None})
+
+    client = gc.GalleryClient(transport=transport)
+    client.get_feed(tag="insects", q="jumping spider")
+    client.get_feed(tag="insects", q="   ")
+    qs1 = urllib.parse.parse_qs(urllib.parse.urlsplit(urls[0]).query)
+    qs2 = urllib.parse.parse_qs(urllib.parse.urlsplit(urls[1]).query)
+    assert qs1["q"] == ["jumping spider"]
+    assert "q" not in qs2

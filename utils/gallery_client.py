@@ -86,6 +86,7 @@ ROUTES: dict[str, str] = {
     "upload_inspect": f"{API_PREFIX}/gallery/uploads/inspect",
     "upload_confirm": f"{API_PREFIX}/gallery/uploads/{{upload_id}}/confirm",
     "work_like": f"{API_PREFIX}/gallery/works/{{work_id}}/like",
+    "work_boost": f"{API_PREFIX}/works/{{work_id}}/boost",
     "work_download": f"{API_PREFIX}/gallery/works/{{work_id}}/download",
     "work_report": f"{API_PREFIX}/gallery/works/{{work_id}}/report",
     "work_comments": f"{API_PREFIX}/gallery/works/{{work_id}}/comments",
@@ -232,6 +233,7 @@ LOCAL_ERROR_CODES: frozenset[str] = frozenset({
     "backoff_active",
     "not_signed_in",
     "upload_put_failed",
+    "boost_unavailable",
     "cancelled",
 })
 
@@ -1460,19 +1462,23 @@ class GalleryClient:
         tag: Optional[str] = None,
         sort: Optional[str] = None,
         source: Optional[str] = None,
+        q: Optional[str] = None,
         bypass_backoff: bool = False,
     ) -> dict[str, Any]:
         """GET /api/v1/gallery/feed"""
+        query: dict[str, Any] = {
+            "cursor": cursor,
+            "limit": limit,
+            "tag": tag,
+            "sort": sort,
+            "source": source,
+        }
+        if isinstance(q, str) and q.strip():
+            query["q"] = q.strip()
         data, _ = self._request_json(
             "GET",
             ROUTES["feed"],
-            query={
-                "cursor": cursor,
-                "limit": limit,
-                "tag": tag,
-                "sort": sort,
-                "source": source,
-            },
+            query=query,
             auth_optional=True,
             respect_backoff=not bypass_backoff,
         )
@@ -1789,6 +1795,58 @@ class GalleryClient:
         path = ROUTES["work_like"].format(work_id=_quote_path_segment(work_id, "work_id"))
         data, _ = self._request_json("POST", path, auth_required=True)
         return data
+
+    def boost_work(
+        self,
+        work_id: str,
+        *,
+        package_id: Optional[str] = None,
+        impressions: Optional[int] = None,
+        points: Optional[int] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """POST /api/v1/works/:work_id/boost (optional paid fusion-showcase exposure).
+
+        Degrades gracefully to ``GalleryClientError('boost_unavailable', points_deducted=False)``
+        when the server has not yet deployed the boost endpoint (HTTP 404/405/501).
+        """
+        body: dict[str, Any] = {}
+        if isinstance(package_id, str) and package_id.strip():
+            body["package_id"] = package_id.strip()
+        if impressions is not None:
+            if isinstance(impressions, bool) or int(impressions) <= 0:
+                raise GalleryClientError("invalid_request", "Boost impressions must be positive")
+            body["impressions"] = int(impressions)
+        if points is not None:
+            if isinstance(points, bool) or int(points) < 0:
+                raise GalleryClientError("invalid_request", "Boost points must be non-negative")
+            body["points"] = int(points)
+        if not body:
+            raise GalleryClientError("invalid_request", "Boost package_id or impressions is required")
+
+        path = ROUTES["work_boost"].format(work_id=_quote_path_segment(work_id, "work_id"))
+        key = idempotency_key or str(uuid.uuid4())
+        try:
+            data, _ = self._request_json(
+                "POST",
+                path,
+                json_body=body,
+                auth_required=True,
+                idempotency_key=key,
+                stage="boost",
+            )
+            return data
+        except GalleryClientError as exc:
+            if exc.status in (404, 405, 501) and exc.code in ("not_found", "http_error"):
+                raise GalleryClientError(
+                    "boost_unavailable",
+                    "Fusion-showcase boost endpoint is not yet enabled on the server",
+                    status=exc.status,
+                    edge_request_id=exc.edge_request_id,
+                    stage="boost",
+                    points_deducted=False,
+                ) from None
+            raise
 
     def unlike_work(self, work_id: str) -> dict[str, Any]:
         """DELETE /api/v1/gallery/works/:work_id/like"""
