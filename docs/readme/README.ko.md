@@ -290,7 +290,7 @@ OpenFocus 애플리케이션은 [MIT 라이선스](../../LICENSE)로 배포됩�
 체크아웃에서 실행:
 
 ```bash
-conda create -n openfocus python=3.10
+conda create -n openfocus python=3.12
 conda activate openfocus
 pip install -r requirements.txt
 python main.py

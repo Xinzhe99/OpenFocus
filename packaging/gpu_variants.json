@@ -6,11 +6,11 @@
     {
       "name": "cuda",
       "display": "NVIDIA CUDA (RTX 3090 / sm_86)",
-      "python": "3.10",
-      "wheel_cp": "cp310",
+      "python": "3.12",
+      "wheel_cp": "cp312",
       "torch": "2.5.1+cu124",
-      "torch_wheel": "https://download.pytorch.org/whl/cu124/torch-2.5.1%2Bcu124-cp310-cp310-win_amd64.whl",
-      "torch_sha256": "6f99d8459369cfd6661c2aee14787592fe50156a33faf9ef643ba04e42d6543f",
+      "torch_wheel": "https://download.pytorch.org/whl/cu124/torch-2.5.1%2Bcu124-cp312-cp312-win_amd64.whl",
+      "torch_sha256": "3c3f705fb125edbd77f9579fa11a138c56af8968a10fc95834cdd9fdf4f1f1a6",
       "support_wheels": [],
       "device_api": "torch.cuda",
       "asset_suffix": "windows-x64.zip",
@@ -63,18 +63,18 @@
         "cuda": null,
         "arch_prefix": "gfx"
       },
-      "notes": "AMD ships Windows ROCm PyTorch wheels only for CPython 3.12 (torch 2.9.1 at the time of writing), so this is a separate Python 3.12 build, not a drop-in torch swap in the Python 3.10 stable bundle. HIP exposes the torch.cuda API, so the existing inference device contract can use it, but no AMD hardware has run it in CI. The bundle must collect rocm_sdk and _rocm_sdk_* because torch/lib itself contains only 13 DLLs."
+      "notes": "AMD ships Windows ROCm PyTorch wheels only for CPython 3.12 (torch 2.9.1 at the time of writing), matching the Python 3.12 desktop runtime as a separate ROCm PyTorch build rather than a drop-in swap in the DirectML stable bundle. HIP exposes the torch.cuda API, so the existing inference device contract can use it, but no AMD hardware has run it in CI. The bundle must collect rocm_sdk and _rocm_sdk_* because torch/lib itself contains only 13 DLLs."
     },
     {
       "name": "xpu",
       "display": "Intel XPU for Windows (preview)",
-      "python": "3.10",
-      "wheel_cp": "cp310",
+      "python": "3.12",
+      "wheel_cp": "cp312",
       "torch": "2.9.1+xpu",
-      "torch_wheel": "https://download.pytorch.org/whl/xpu/torch-2.9.1%2Bxpu-cp310-cp310-win_amd64.whl",
-      "torch_sha256": "2f318fb6a4bf1101cc17f35a5371f7c1768b41fceed03628397834e85b3edfdd",
+      "torch_wheel": "https://download.pytorch.org/whl/xpu/torch-2.9.1%2Bxpu-cp312-cp312-win_amd64.whl",
+      "torch_sha256": "bee9623254d0f95a1ca115dbd17e9a9d966fdb8ae123e2ada4a9eb2fb8d38db8",
       "support_wheels": [
-        "https://download.pytorch.org/whl/pytorch_triton_xpu-3.5.0-cp310-cp310-win_amd64.whl#sha256=c83ab007311d9cfb6e809ee5a4587d99a9eef4be720b90da4f1aaa68b45139a0"
+        "https://download.pytorch.org/whl/pytorch_triton_xpu-3.5.0-cp312-cp312-win_amd64.whl#sha256=97337a47425f1963a723475bd61037460e84ba01db4f87a1d662c3718ff6c47e"
       ],
       "device_api": "torch.xpu",
       "asset_suffix": "windows-x64-xpu.zip",
@@ -91,7 +91,7 @@
       "expected": {
         "xpu": true
       },
-      "notes": "Official cp310 Windows XPU wheels exist. The shared core.torch_backend contract now resolves torch.xpu, uses torch.xpu.mem_get_info for VRAM admission and synchronizes XPU work, so this is a real Python 3.10 preview build. No Intel GPU has run it in CI; Conv3d/SDPA and the bundled model remain unverified on XPU."
+      "notes": "Official cp312 Windows XPU wheels exist. The shared core.torch_backend contract now resolves torch.xpu, uses torch.xpu.mem_get_info for VRAM admission and synchronizes XPU work, so this is a real Python 3.12 preview build. No Intel GPU has run it in CI; Conv3d/SDPA and the bundled model remain unverified on XPU."
     }
   ]
 }
