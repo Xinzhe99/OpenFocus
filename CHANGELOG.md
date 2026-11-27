@@ -41,6 +41,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   your phone or computer to sign in automatically on the desktop.
 
 ### Changed
+- Start renders and tiles sooner on macOS: OpenFocus remembers which volumes
+  are internal until a volume is mounted or unmounted, and no longer asks
+  the system before every scratch choice.
 - Run the full CI suite in parallel slices. Preserve pytest selection and
   collection errors, isolate temporary directories, and replay a crashing
   slice for native diagnostics.
