@@ -411,6 +411,8 @@ class OutputRecord:
     source_paths: tuple = ()
     fusion_details: Any = None
     registration_details: Any = None
+    source_output_names: tuple = ()
+    source_output_ids: tuple = ()
 
     @classmethod
     def create(cls, image, label: str, *, context=None, kind: str = "fusion",
@@ -631,6 +633,11 @@ class OutputManager:
             h, w = record.image.shape[:2]
             lines.append(trans.t('status_res_fmt').format(w, h))
         lines.extend(line for line in record.tooltip_details if line not in lines)
+        if record.source_output_names:
+            lineage = trans.t("stack_outputs_lineage").format(
+                sources=", ".join(record.source_output_names))
+            if lineage not in lines:
+                lines.append(lineage)
         details = record.registration_details or getattr(record.context, 'registration_details', None)
         lines.extend(line for line in registration_tooltip_lines(details) if line not in lines)
         if record.kind in ('fusion', 'compare'):
@@ -796,7 +803,8 @@ class OutputManager:
 
     def update_output_list_for_fusion(self, label: str, *, context=None,
                                       linear_dng_metadata=None, source_paths=(),
-                                      fusion_details=None, registration_details=None) -> None:
+                                      fusion_details=None, registration_details=None,
+                                      source_output_names=(), source_output_ids=()) -> None:
         window = self.window
 
         image = None
@@ -813,6 +821,10 @@ class OutputManager:
                 record.linear_dng_metadata = deepcopy(linear_dng_metadata)
             if source_paths:
                 record.source_paths = tuple(source_paths)
+            if source_output_names:
+                record.source_output_names = tuple(str(name) for name in source_output_names)
+            if source_output_ids:
+                record.source_output_ids = tuple(str(oid) for oid in source_output_ids)
         self._insert_output(image, label, record)
 
     def add_batch_outputs(self, paths, watermark_baked: bool = False) -> int:
@@ -1619,9 +1631,43 @@ class OutputManager:
                 target_item, QItemSelectionModel.SelectionFlag.NoUpdate)
         return target_item
 
+    def stackable_selected_records(self, target_item=None) -> list[OutputRecord]:
+        """Selected image-bearing output records in chronological (oldest-first) order."""
+        window = self.window
+        selected = list(window.output_list.selectedItems())
+        if target_item is not None and target_item not in selected:
+            selected = [target_item]
+        # Rows are newest-first (row 0 = latest); sort descending by row so
+        # chronological / substack order (Substack 1 -> 2 -> 3) is preserved.
+        ordered = sorted(
+            ((window.output_list.row(item), item) for item in selected),
+            key=lambda pair: pair[0],
+            reverse=True,
+        )
+        records = []
+        for row, item in ordered:
+            if row < 0:
+                continue
+            record = self._share_record_for_item(item, attach=True)
+            if record is not None and record.kind != "aligned" and record.image is not None:
+                records.append(record)
+        return records
+
+    def stack_selected_outputs(self, records=None, *, composite_label: str | None = None,
+                               interactive: bool = True):
+        """Directly fuse 2+ selected output records into a new composite output."""
+        if records is None:
+            records = self.stackable_selected_records()
+        return self.window.render_manager.start_stack_outputs(
+            list(records),
+            composite_label=composite_label,
+            interactive=interactive,
+        )
+
     def _build_output_context_menu(self, target_item) -> QMenu:
         window = self.window
         menu = QMenu(window.output_list)
+        menu.setToolTipsVisible(True)
 
         delete_action = QAction(trans.t("action_delete"), menu)
         delete_action.triggered.connect(self.delete_selected_output_images)
@@ -1643,6 +1689,22 @@ class OutputManager:
         record = self.record_for_item(action_target)
         retouch_action.setEnabled(record is not None and record.retouchable)
         menu.addAction(retouch_action)
+
+        stackable = self.stackable_selected_records(target_item)
+        render_mgr = getattr(window, "render_manager", None)
+        render_busy = bool(
+            render_mgr is not None
+            and (getattr(render_mgr, "_render_worker_active", lambda: False)()
+                 or getattr(render_mgr, "_compare_mode", False)
+                 or getattr(render_mgr, "_substack_mode", False))
+        )
+        stack_outputs_action = QAction(trans.t("action_stack_selected_outputs"), menu)
+        stack_outputs_action.setToolTip(trans.t("action_stack_selected_outputs_hint"))
+        stack_outputs_action.setEnabled(len(stackable) >= 2 and not render_busy)
+        stack_outputs_action.triggered.connect(
+            lambda _checked=False, recs=tuple(stackable): self.stack_selected_outputs(list(recs))
+        )
+        menu.addAction(stack_outputs_action)
 
         share_menu = menu.addMenu(trans.t("menu_share"))
         preview_action = QAction(trans.t("share_copy_preview"), share_menu)

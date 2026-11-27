@@ -375,6 +375,7 @@ _GALLERY_EXTRA_TEXT = {
 }
 
 _GALLERY_PACKS_CACHE = None
+_SUBSTACK_PACKS_CACHE = None
 
 
 def _gallery_pack(code: str):
@@ -386,6 +387,17 @@ def _gallery_pack(code: str):
         except Exception:
             _GALLERY_PACKS_CACHE = {}
     return _GALLERY_PACKS_CACHE.get(code)
+
+
+def _substack_pack(code: str):
+    global _SUBSTACK_PACKS_CACHE
+    if _SUBSTACK_PACKS_CACHE is None:
+        try:
+            from .substack_i18n import SUBSTACK_TRANSLATIONS
+            _SUBSTACK_PACKS_CACHE = SUBSTACK_TRANSLATIONS
+        except Exception:
+            _SUBSTACK_PACKS_CACHE = {}
+    return _SUBSTACK_PACKS_CACHE.get(code)
 
 
 def _apply_pack_overlays(code: str, table: dict) -> dict:
@@ -420,6 +432,9 @@ def _apply_pack_overlays(code: str, table: dict) -> dict:
     gallery_extra = _GALLERY_EXTRA_TEXT.get(code)
     if gallery_extra is not None:
         table.update(zip(_GALLERY_EXTRA_KEYS, gallery_extra))
+    substack = _substack_pack(code)
+    if substack:
+        table.update(substack)
     return table
 
 

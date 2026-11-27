@@ -138,6 +138,18 @@ class RenderManager:
         self._compare_failures: List[tuple] = []
         self._compare_token = object()
         self._compare_context = None
+        self._substack_mode = False
+        self._substack_cancelling = False
+        self._substack_queue: List[Any] = []
+        self._substack_total = 0
+        self._substack_current = None
+        self._substack_auto_restack = False
+        self._substack_interactive = True
+        self._substack_confirmed = False
+        self._substack_results: List[Any] = []
+        self._substack_token = object()
+        self._substack_context = None
+        self._substack_chain_timer = None
         self._preview_mode = False
         self._live_preview_timer = None
         # What the *running* render was launched with; see start_render().
@@ -243,6 +255,15 @@ class RenderManager:
         self._compare_context = None
         self._compare_current = None
         self._compare_mode = False
+        self._stop_substack_timer()
+        self._substack_token = object()
+        self._substack_queue = []
+        self._substack_context = None
+        self._substack_current = None
+        self._substack_mode = False
+        self._substack_cancelling = False
+        self._substack_auto_restack = False
+        self._substack_results = []
         self._render_after_load = None
         self.cancel_storage_preflight()
         if queued:
@@ -698,6 +719,7 @@ class RenderManager:
 
     def _render_is_cancelling(self) -> bool:
         return bool(getattr(self, '_compare_cancelling', False)
+                    or getattr(self, '_substack_cancelling', False)
                     or getattr(self.worker, 'is_cancelled', False)
                     or getattr(getattr(self, 'context_worker', None), 'is_cancelled', False))
 
@@ -726,6 +748,11 @@ class RenderManager:
                 render.setEnabled(False)
                 render.setText(trans.t('btn_render_processing'))
             self._set_compare_button("cancel")
+        elif getattr(self, '_substack_mode', False):
+            if render is not None:
+                render.setEnabled(True)
+                render.setText(trans.t('btn_cancel_render'))
+            self._set_compare_button("disabled")
         elif busy:
             if render is not None:
                 render.setEnabled(True)
@@ -793,10 +820,295 @@ class RenderManager:
             except Exception:
                 pass
 
+    def _stop_substack_timer(self) -> None:
+        timer = getattr(self, "_substack_chain_timer", None)
+        if timer is not None:
+            timer.stop()
+            timer.deleteLater()
+            self._substack_chain_timer = None
+
+    def _queue_next_substack(self) -> None:
+        self._stop_substack_timer()
+        token = self._substack_token
+        timer = self._substack_chain_timer = QTimer(
+            self.window if isinstance(self.window, QObject) else None)
+        timer.setSingleShot(True)
+        timer.timeout.connect(lambda: self._start_next_substack()
+                              if token is self._substack_token else None)
+        timer.start(50)
+
+    def _abort_substack_run(self) -> None:
+        """Abort a queued substack run and unlock UI controls."""
+        self._stop_substack_timer()
+        self._substack_token = object()
+        self._substack_context = None
+        was_active = bool(getattr(self, '_substack_mode', False))
+        self._substack_mode = False
+        self._substack_cancelling = False
+        self._substack_queue = []
+        self._substack_current = None
+        self._substack_auto_restack = False
+        self._substack_results = []
+        if was_active:
+            self._restore_ui_controls()
+
+    def cancel_substack_render(self) -> None:
+        """Cancel an active or queued substack render cleanly."""
+        if not getattr(self, '_substack_mode', False):
+            return
+        self._substack_queue = []
+        self._substack_auto_restack = False
+        self._stop_substack_timer()
+        self._substack_token = object()
+        context_worker = getattr(self, "context_worker", None)
+        running = context_worker is not None or self._render_worker_active()
+        if running:
+            self._substack_cancelling = True
+            if context_worker is not None:
+                context_worker.cancel()
+            else:
+                self._cancel_worker()
+            self.dismiss_live_preview()
+            self.refresh_action_labels()
+            self._show_progress_bar(trans.t('depth_cancelling'))
+        else:
+            self._abort_substack_run()
+            self.last_state = 'cancelled'
+            self._hide_progress_bar()
+            self.window.statusBar().showMessage(trans.t('msg_render_cancelled'), 4000)
+
+    def start_substack_render(
+        self,
+        ranges,
+        *,
+        auto_restack: bool = False,
+        interactive: bool = True,
+        confirmed: bool = False,
+    ) -> str:
+        """Sequentially render overlapping substacks and keep every output."""
+        window = self.window
+        if (getattr(self, "_render_pending", False) or self._render_after_load is not None
+                or self._pending_storage is not None
+                or getattr(self, 'context_worker', None) is not None
+                or self._render_worker_active()
+                or getattr(self, '_compare_mode', False)
+                or getattr(self, '_substack_mode', False)):
+            if interactive:
+                window.statusBar().showMessage(trans.t('substack_busy'), 3000)
+            return "busy"
+
+        queue = list(ranges or ())
+        if not queue:
+            return "no_frames"
+
+        if len(window.effective_stack()[0]) < 2:
+            if interactive:
+                show_warning_box(window, trans.t("substack_dialog_title"), trans.t("substack_need_frames"))
+            return "no_frames"
+
+        if window.current_fusion_method() == "none":
+            if interactive:
+                show_warning_box(window, trans.t("substack_dialog_title"), trans.t("substack_need_fusion_method"))
+            return "no_fusion_method"
+
+        reason = self._render_lock_reason()
+        if reason:
+            if interactive:
+                show_warning_box(window, trans.t("msg_error"), reason)
+            return "unavailable"
+
+        self._substack_queue = queue
+        self._substack_total = len(queue)
+        self._substack_current = None
+        self._substack_auto_restack = bool(auto_restack)
+        self._substack_interactive = bool(interactive)
+        self._substack_confirmed = bool(confirmed)
+        self._substack_results = []
+        self._stop_substack_timer()
+        self._substack_token = object()
+        self._substack_context = None
+        self._substack_cancelling = False
+        self._substack_mode = True
+        self.refresh_action_labels()
+        return self._start_next_substack()
+
+    def _start_next_substack(self) -> str:
+        if not self._substack_mode or not self._substack_queue:
+            return "idle"
+        if self._stack_changed_since(self._substack_context):
+            self._abort_substack_run()
+            self.window.statusBar().showMessage(trans.t('msg_render_stack_changed'), 8000)
+            return "stack_changed"
+        sr = self._substack_queue.pop(0)
+        self._substack_current = sr
+        self.window.statusBar().showMessage(
+            trans.t("substack_progress").format(
+                i=sr.index, n=sr.total, start=sr.display_start, end=sr.display_end
+            ),
+            5000,
+        )
+        return self.start_render(
+            interactive=self._substack_interactive,
+            confirmed=self._substack_confirmed,
+            _substack_range=sr,
+        )
+
+    def _finish_substack_run(self) -> None:
+        """Complete a substack run and optionally stack the kept substack outputs."""
+        window = self.window
+        results = list(self._substack_results)
+        auto_restack = bool(self._substack_auto_restack)
+        interactive = bool(self._substack_interactive)
+        self._substack_mode = False
+        self._substack_cancelling = False
+        self._substack_queue = []
+        self._substack_current = None
+        self._substack_auto_restack = False
+        self._substack_results = []
+        self._substack_context = None
+        self._stop_substack_timer()
+        self._substack_token = object()
+        self._restore_ui_controls()
+
+        if auto_restack and len(results) >= 2:
+            method_name = self.algo_display_name(window.current_fusion_method())
+            composite_label = trans.t("substack_composite_label").format(
+                count=len(results), method=method_name
+            )
+            self.start_stack_outputs(
+                results,
+                composite_label=composite_label,
+                interactive=interactive,
+                confirmed=True,
+                _from_substack_count=len(results),
+            )
+            return
+
+        window.statusBar().showMessage(
+            trans.t("substack_done").format(count=len(results)), 10000
+        )
+        from PyQt6.QtWidgets import QWidget
+        if isinstance(window, QWidget):
+            QApplication.alert(window)
+
+    def start_stack_outputs(
+        self,
+        records,
+        *,
+        composite_label: str | None = None,
+        interactive: bool = True,
+        confirmed: bool = False,
+        _from_substack_count: int | None = None,
+    ) -> str:
+        """Directly fuse 2+ selected OutputRecord pixel buffers into a composite output."""
+        window = self.window
+        if (getattr(self, "_render_pending", False) or self._render_after_load is not None
+                or self._pending_storage is not None
+                or getattr(self, 'context_worker', None) is not None
+                or self._render_worker_active()
+                or getattr(self, '_compare_mode', False)
+                or getattr(self, '_substack_mode', False)):
+            if interactive:
+                window.statusBar().showMessage(trans.t('btn_render_processing'), 3000)
+            return "busy"
+
+        valid_records = [
+            rec for rec in (records or ())
+            if rec is not None and getattr(rec, "kind", "fusion") != "aligned"
+            and getattr(rec, "image", None) is not None
+        ]
+        if len(valid_records) < 2:
+            if interactive:
+                show_warning_box(
+                    window,
+                    trans.t("action_stack_selected_outputs"),
+                    trans.t("stack_outputs_need_two"),
+                )
+            return "no_frames"
+
+        method = window.current_fusion_method()
+        if method == "none":
+            if interactive:
+                show_warning_box(
+                    window,
+                    trans.t("action_stack_selected_outputs"),
+                    trans.t("stack_outputs_need_fusion_method"),
+                )
+            return "no_fusion_method"
+
+        reason = desktop_fusion_lock_reason(window, method)
+        if reason:
+            if interactive:
+                show_warning_box(window, trans.t("msg_error"), reason)
+            return "unavailable"
+
+        # Preserve shared linear RAW metadata when every selected output shares
+        # linear metadata; otherwise develop linear inputs to sRGB before fusing.
+        linear_metas = [getattr(rec, "linear_dng_metadata", None) for rec in valid_records]
+        raw_images = []
+        if all(meta is not None for meta in linear_metas):
+            shared_linear_metadata = deepcopy(linear_metas[0])
+            raw_images = [rec.image for rec in valid_records]
+        else:
+            shared_linear_metadata = None
+            from core.source_frames import resolve_frame
+            for rec, meta in zip(valid_records, linear_metas):
+                if meta is not None:
+                    from utils.linear_dng import develop_linear
+                    raw_images.append(develop_linear(resolve_frame(rec.image), meta))
+                else:
+                    raw_images.append(rec.image)
+
+        from core.substack_utils import prepare_output_images_for_stacking
+        prepared_images, needs_alignment = prepare_output_images_for_stacking(raw_images)
+
+        if needs_alignment:
+            ws_align = window.current_alignment_method()
+            effective_alignment = (
+                ws_align
+                if ws_align != "none" and not alignment_is_locked(window, ws_align)
+                else "ecc"
+            )
+        else:
+            effective_alignment = "none"
+
+        source_names = tuple(
+            rec.label or f"output_{idx + 1}" for idx, rec in enumerate(valid_records)
+        )
+        source_ids = tuple(
+            str(getattr(rec, "output_id", "") or "")
+            for rec in valid_records
+            if getattr(rec, "output_id", "")
+        )
+        label = composite_label or trans.t("stack_outputs_label").format(
+            count=len(valid_records),
+            method=self.algo_display_name(method),
+        )
+        spec = {
+            "images": prepared_images,
+            "filenames": list(source_names),
+            "source_output_names": source_names,
+            "source_output_ids": source_ids,
+            "alignment": effective_alignment,
+            "composite_label": label,
+            "linear_dng_metadata": shared_linear_metadata,
+            "icc_profile": getattr(valid_records[0], "icc_profile", b"") or b"",
+            "from_substack_count": _from_substack_count,
+        }
+        window.statusBar().showMessage(
+            trans.t("stack_outputs_progress").format(count=len(valid_records)), 5000
+        )
+        return self.start_render(
+            interactive=interactive,
+            confirmed=confirmed,
+            _stack_outputs=spec,
+        )
+
     def _restore_ui_controls(self) -> None:
         """Re-enable every control disabled by start_render (safe to call anywhere)."""
         window = self.window
         self._compare_cancelling = False
+        self._substack_cancelling = False
         if getattr(self, '_compare_mode', False):
             # A comparison queue is still running - keep controls locked and
             # show progress instead. The Compare button stays enabled because
@@ -807,6 +1119,12 @@ class RenderManager:
             window.btn_render.setText(
                 f"{trans.t('msg_compare_progress').format(i=done + 1, n=self._compare_total, method=trans.t('btn_render_processing'))}")
             self._set_compare_button("cancel")
+            return
+        if getattr(self, '_substack_mode', False):
+            self._set_render_settings_enabled(False)
+            window.btn_render.setEnabled(True)
+            window.btn_render.setText(trans.t('btn_cancel_render'))
+            self._set_compare_button("disabled")
             return
         for name in ("fusion_parameter_panel", "registration_parameter_panel", "combo_fusion"):
             widget = getattr(window, name, None)
@@ -874,7 +1192,7 @@ class RenderManager:
             window.statusBar().showMessage(trans.t(key), 3000)
             return
 
-        if getattr(self, 'context_worker', None) is not None or self._render_worker_active():
+        if getattr(self, 'context_worker', None) is not None or self._render_worker_active() or getattr(self, '_substack_mode', False):
             # A single render owns the pipeline. The button is disabled in
             # that state, but keep the programmatic path truthful too.
             window.statusBar().showMessage(trans.t('btn_render_processing'), 3000)
@@ -924,7 +1242,8 @@ class RenderManager:
     def start_render(self, force_algorithm: str | None = None, *,
                      interactive: bool = True, confirmed: bool = False,
                      roi_choice: dict | None = None, _storage_assessment=_STORAGE_UNSET,
-                     _cpu_confirmed: bool = False):
+                     _cpu_confirmed: bool = False, _substack_range=None,
+                     _stack_outputs: dict | None = None):
         """Start a render and report why it did or did not start.
 
         ``interactive=False`` is the control-channel path: it never opens a
@@ -945,6 +1264,11 @@ class RenderManager:
         if (self._compare_mode and self._render_after_load is None
                 and force_algorithm != self._compare_current):
             return "busy"
+        if (self._substack_mode and _substack_range is None and _stack_outputs is None):
+            if interactive:
+                self.cancel_substack_render()
+                return 'cancelled'
+            return 'busy'
         self._render_pending = True
         try:
             stop_warmup = getattr(self.window, '_cancel_depth_warmup', None)
@@ -952,7 +1276,8 @@ class RenderManager:
                 stop_warmup()
             self._start_render_inner(force_algorithm, interactive=interactive,
                                      confirmed=confirmed, roi_choice=roi_choice,
-                                     storage_assessment=_storage_assessment, cpu_confirmed=_cpu_confirmed)
+                                     storage_assessment=_storage_assessment, cpu_confirmed=_cpu_confirmed,
+                                     substack_range=_substack_range, stack_outputs=_stack_outputs)
         except Exception as exc:
             self.last_state = "error"
             self.last_error = str(exc)
@@ -960,6 +1285,7 @@ class RenderManager:
             self._render_context = None
             self._preview_mode = False
             self._abort_compare_run()
+            self._abort_substack_run()
             self._restore_ui_controls()
             self._hide_progress_bar()
             raise
@@ -970,8 +1296,11 @@ class RenderManager:
     def _start_render_inner(self, force_algorithm: str | None = None, *,
                             interactive: bool = True, confirmed: bool = False,
                             roi_choice: dict | None = None, storage_assessment=_STORAGE_UNSET,
-                            cpu_confirmed: bool = False) -> None:
+                            cpu_confirmed: bool = False, substack_range=None,
+                            stack_outputs: dict | None = None) -> None:
         window = self.window
+        is_substack = substack_range is not None
+        is_stack_outputs = stack_outputs is not None
         # "started" means the request was accepted, even for a cache hit.
         self._start_status = "started"
 
@@ -1009,7 +1338,11 @@ class RenderManager:
                 getattr(window, "source_manager", None), "_load_worker", None) is not None else "cancelled"
             window.statusBar().showMessage(trans.t("msg_render_queue_cancelled"), 5000)
             return
-        reason = self._render_lock_reason(force_algorithm)
+        reason = (
+            desktop_fusion_lock_reason(window, force_algorithm or window.current_fusion_method())
+            if is_stack_outputs and stack_outputs.get("alignment") == "none"
+            else self._render_lock_reason(force_algorithm)
+        )
         if reason:
             self._start_status = 'unavailable'
             self._abort_compare_run()
@@ -1043,15 +1376,33 @@ class RenderManager:
         source_ref = window.raw_images
         source_revision = getattr(window, "source_revision", 0)
         compare_token = self._compare_token
-        stack_images, stack_filenames, included_idx = window.effective_stack()
+        substack_token = self._substack_token
+        full_included_idx = None
+        full_alignment_key = None
+        reusable_aligned_slice = []
+        if is_stack_outputs:
+            stack_images = list(stack_outputs["images"])
+            stack_filenames = list(stack_outputs["filenames"])
+            included_idx = list(range(len(stack_images)))
+        elif is_substack:
+            full_images, full_filenames, full_included_idx = window.effective_stack()
+            stack_images = list(full_images[substack_range.start:substack_range.end])
+            stack_filenames = list(full_filenames[substack_range.start:substack_range.end])
+            included_idx = list(full_included_idx[substack_range.start:substack_range.end])
+        else:
+            stack_images, stack_filenames, included_idx = window.effective_stack()
         if len(stack_images) < 2:
             if interactive:
                 show_warning_box(window, trans.t("msg_no_images_title"), trans.t("msg_render_need_images_text"))
             self._start_status = "no_frames"
             self._abort_compare_run()
+            self._abort_substack_run()
             return
-        cleanup = bool(getattr(window, "defect_mask_path", "")
-                       or getattr(window, "sensor_denoise", False))
+        cleanup = (
+            False if is_stack_outputs
+            else bool(getattr(window, "defect_mask_path", "")
+                      or getattr(window, "sensor_denoise", False))
+        )
         if cleanup:
             if (getattr(window, "source_transforms", None)
                     or getattr(window, "unrecoverable_source_changes", None)):
@@ -1092,20 +1443,40 @@ class RenderManager:
 
         fusion_method = window.current_fusion_method()
         method = force_algorithm or fusion_method
-        alignment_method = window.current_alignment_method()
+        alignment_method = stack_outputs["alignment"] if is_stack_outputs else window.current_alignment_method()
         registration_parameters = window.registration_parameters_for(alignment_method)
         requested_steps = alignment_steps(alignment_method)
-        collect_report = bool(getattr(window, 'collect_alignment_report', False) and requested_steps)
+        collect_report = bool(getattr(window, 'collect_alignment_report', False) and requested_steps and not is_stack_outputs)
         need_fusion = force_algorithm is not None or method != "none"
-        alignment_key = self._alignment_key(included_idx, method)
-        reusable = bool(window.is_images_aligned
-                        and getattr(window, "aligned_images", None)
-                        and len(window.aligned_images) == len(stack_images)
-                        and getattr(window, "alignment_request_key", None) == alignment_key
-                        and not cleanup)
+        if is_stack_outputs:
+            alignment_key = None
+            reusable = False
+        elif is_substack:
+            alignment_key = self._alignment_key(included_idx, method)
+            full_alignment_key = self._alignment_key(full_included_idx, method)
+            full_reusable = bool(
+                window.is_images_aligned
+                and getattr(window, "aligned_images", None)
+                and len(window.aligned_images) == len(full_included_idx)
+                and getattr(window, "alignment_request_key", None) == full_alignment_key
+                and not cleanup
+            )
+            reusable = full_reusable
+            if full_reusable:
+                reusable_aligned_slice = list(
+                    window.aligned_images[substack_range.start:substack_range.end]
+                )
+        else:
+            alignment_key = self._alignment_key(included_idx, method)
+            reusable = bool(window.is_images_aligned
+                            and getattr(window, "aligned_images", None)
+                            and len(window.aligned_images) == len(stack_images)
+                            and getattr(window, "alignment_request_key", None) == alignment_key
+                            and not cleanup)
         preview = getattr(window, 'chk_quick_preview', None)
         publish_cached_alignment = (
             not need_fusion and requested_steps and reusable and not collect_report
+            and not is_substack and not is_stack_outputs
             and not getattr(window, 'roi_mode_active', False)
             and not (preview is not None and preview.isChecked()))
 
@@ -1113,7 +1484,7 @@ class RenderManager:
         storage_override = None
         from core.frame_storage import automatic_preflight_may_block
         assessment = None
-        if not publish_cached_alignment:
+        if not publish_cached_alignment and not is_substack and not is_stack_outputs:
             if (storage_assessment is _STORAGE_UNSET and force_algorithm is None
                     and not getattr(window, 'roi_mode_active', False)
                     and not (preview is not None and preview.isChecked())
@@ -1203,7 +1574,7 @@ class RenderManager:
         use_roi_aligned_images = False
         
         # 检查ROI模式是否激活，并从右侧面板获取ROI区域
-        if getattr(window, 'roi_mode_active', False) and window.roi_aligned_images:
+        if not is_substack and not is_stack_outputs and getattr(window, 'roi_mode_active', False) and window.roi_aligned_images:
             if (getattr(window, "roi_source_revision", None) !=
                     getattr(window, "source_revision", 0)
                     or list(getattr(window, "roi_included_indices", None) or []) != list(included_idx)
@@ -1275,6 +1646,8 @@ class RenderManager:
             and preview_downscale.isChecked()
             and not use_roi_aligned_images
             and not compare
+            and not is_substack
+            and not is_stack_outputs
         )
         if (not use_roi_aligned_images and not self._preview_mode
                 and not getattr(window, 'roi_mode_active', False)
@@ -1328,7 +1701,7 @@ class RenderManager:
                 effective_is_aligned = False
                 effective_last_alignment_options = None
         elif requested_steps \
-                and not reusable and self._disk_cache_eligible() \
+                and not reusable and not is_stack_outputs and self._disk_cache_eligible() \
                 and getattr(window, "align_cache_enabled", True):
             # Ask the worker to look in the on-disk registration cache.
             # The lookup itself (stat + decode every cached PNG) runs on the
@@ -1352,7 +1725,12 @@ class RenderManager:
         else:
             source_images = stack_images
             effective_alignment = alignment_method
-            effective_aligned_images = window.aligned_images if reusable else []
+            if reusable:
+                effective_aligned_images = (
+                    reusable_aligned_slice if is_substack else window.aligned_images
+                )
+            else:
+                effective_aligned_images = []
             effective_is_aligned = reusable
             effective_last_alignment_options = window.last_alignment_options if reusable else None
         if disk_cache_request is not None:
@@ -1393,17 +1771,20 @@ class RenderManager:
             self._restore_ui_controls()
             return
 
-        if compare_token is not self._compare_token:
+        if compare_token is not self._compare_token or substack_token is not self._substack_token:
             self._start_status = "cancelled"
             self.last_state = "cancelled"
             self._restore_ui_controls()
             return
-        if (window.raw_images is not source_ref
+        expected_included = full_included_idx if is_substack else included_idx
+        if (not is_stack_outputs and (
+                window.raw_images is not source_ref
                 or getattr(window, "source_revision", 0) != source_revision
-                or window.included_indices() != included_idx
-                or getattr(getattr(window, "source_manager", None), "_load_worker", None) is not None):
+                or window.included_indices() != expected_included
+                or getattr(getattr(window, "source_manager", None), "_load_worker", None) is not None)):
             self._start_status = "stack_changed"
             self._abort_compare_run()
+            self._abort_substack_run()
             self._restore_ui_controls()
             return
 
@@ -1413,6 +1794,16 @@ class RenderManager:
         # stack than the one the UI shows (quick preview and ROI mode hand the
         # worker downscaled / cropped copies instead of window.raw_images).
         from core.image_loader import stack_icc_profile
+        custom_output_label = None
+        if is_stack_outputs:
+            custom_output_label = stack_outputs["composite_label"]
+        elif is_substack:
+            custom_output_label = trans.t("substack_output_label").format(
+                index=substack_range.index,
+                total=substack_range.total,
+                start=substack_range.display_start,
+                end=substack_range.display_end,
+            )
         self._render_context = {
             "source": source_images,
             # Preserve the original input frames even when alignment reuse
@@ -1423,9 +1814,10 @@ class RenderManager:
             # "source" is a filtered copy, so identity must be checked against
             # this, never against "source".
             "source_ref": window.raw_images,
+            "alignment_method": alignment_method,
             "alignment_options": requested_steps,
             "alignment_identity": ((requested_steps, registration_parameters,
-                                    alignment_key[-1] == 'reverse-registration-v1')
+                                    bool(alignment_key and alignment_key[-1] == 'reverse-registration-v1'))
                                    if 'openfocus' in requested_steps
                                    else (requested_steps, registration_parameters)),
             "preview": self._preview_mode,
@@ -1439,7 +1831,7 @@ class RenderManager:
             "memory_estimate": memory_estimate,
             "aligned": bool(effective_is_aligned),
             "registration_reuse": ('roi' if use_roi_aligned_images and effective_is_aligned
-                                   else 'session' if self._preview_mode and effective_is_aligned
+                                   else 'session' if (self._preview_mode or is_substack) and effective_is_aligned
                                    else None),
             "cached_registration_dispatch": (
                 getattr(getattr(window, 'roi_registration_details', None), 'dispatch', ())
@@ -1451,27 +1843,42 @@ class RenderManager:
             "alignment_key": alignment_key,
             "disk_alignment_options": disk_alignment_options,
             "full_filenames": list(window.image_filenames),
-            "icc_profile": stack_icc_profile(window, included_idx),
-            "linear_dng_metadata": deepcopy(getattr(window, "linear_dng_metadata", None)),
+            "icc_profile": (stack_outputs["icc_profile"] if is_stack_outputs
+                            else stack_icc_profile(window, included_idx)),
+            "linear_dng_metadata": (
+                deepcopy(stack_outputs["linear_dng_metadata"]) if is_stack_outputs
+                else deepcopy(getattr(window, "linear_dng_metadata", None))
+            ),
             # Match the frames actually sent to the worker, not every loaded
             # file: EXIF/source provenance is indexed by processed_images.
-            "source_paths": tuple(
+            "source_paths": (() if is_stack_outputs else tuple(
                 window.image_source_paths[i]
                 for i in included_idx
                 if 0 <= i < len(getattr(window, "image_source_paths", ()) or ())
-            ),
-            "frame_exif": self._source_exif_snapshot(included_idx),
-            "frame_icc_profiles": tuple(
+            )),
+            "frame_exif": (() if is_stack_outputs else self._source_exif_snapshot(included_idx)),
+            "frame_icc_profiles": (() if is_stack_outputs else tuple(
                 (getattr(window, "image_icc_profiles", ()) or ())[i]
                 if i < len(getattr(window, "image_icc_profiles", ()) or ()) else b""
-                for i in included_idx),
+                for i in included_idx)),
             "parameters": self._processing_parameters(force_algorithm or fusion_method),
+            "substack": is_substack,
+            "substack_range": substack_range,
+            "full_included": list(full_included_idx) if is_substack else None,
+            "full_alignment_key": full_alignment_key if is_substack else None,
+            "stack_outputs": is_stack_outputs,
+            "output_label": custom_output_label,
+            "source_output_names": (stack_outputs["source_output_names"] if is_stack_outputs else ()),
+            "source_output_ids": (stack_outputs["source_output_ids"] if is_stack_outputs else ()),
+            "from_substack_count": (stack_outputs["from_substack_count"] if is_stack_outputs else None),
         }
         if compare:
             self._compare_context = self._render_context
+        if is_substack:
+            self._substack_context = self._render_context
         from utils.scalebar import effective_px_um
         frame_ids = getattr(getattr(window, "label_manager", None), "frame_ids", None)
-        if callable(frame_ids):
+        if callable(frame_ids) and not is_stack_outputs:
             identities = frame_ids("input")
             self._render_context["frame_ids"] = [identities[i] for i in included_idx]
         self._render_context.update(
@@ -1499,8 +1906,11 @@ class RenderManager:
             return
 
         all_source_paths = list(getattr(window, "image_source_paths", None) or [])
-        source_paths = ([all_source_paths[i] for i in included_idx]
-                        if len(all_source_paths) == len(window.raw_images) else [])
+        source_paths = (
+            [] if is_stack_outputs
+            else ([all_source_paths[i] for i in included_idx]
+                  if len(all_source_paths) == len(window.raw_images) else [])
+        )
         # Retain one prepared stack. Methods that do not build snapshots can
         # leave it in place as long as the full-resolution alignment is valid.
         from core.source_frames import SourceFrame
@@ -1511,7 +1921,8 @@ class RenderManager:
             from core.frame_storage import storage_directory
             preparation_key += (method, storage_override or storage_directory())
         retain_preparation = bool(
-            descriptor and descriptor.streaming_sources
+            not is_substack and not is_stack_outputs
+            and descriptor and descriptor.streaming_sources
             and (native_preparation or (
                 descriptor.neural and getattr(window, 'tile_enabled', None) is not False
                 and not (descriptor.sort_frames and getattr(window, 'stack_reverse_order', False))))
@@ -1520,19 +1931,20 @@ class RenderManager:
             and all(isinstance(frame, SourceFrame) and
                     not (frame.ndim == 3 and frame.shape[2] == 4)
                     for frame in stack_images))
-        replaces_alignment = (requested_steps and not self._preview_mode
+        replaces_alignment = (not is_substack and not is_stack_outputs
+                              and requested_steps and not self._preview_mode
                               and roi_rect is None and not use_roi_aligned_images
                               and (not reusable or collect_report))
-        if self._prepared_cache is not None and (
+        if (not is_substack and not is_stack_outputs and self._prepared_cache is not None and (
                 self._prepared_cache_source is not source_ref
                 or self._prepared_cache_key[0] != alignment_key
                 or replaces_alignment
-                or (retain_preparation and self._prepared_cache_key != preparation_key)):
+                or (retain_preparation and self._prepared_cache_key != preparation_key))):
             self.clear_prepared_cache()
         prepared_cache = self._prepared_cache if retain_preparation else None
         self._render_context['preparation_key'] = preparation_key if retain_preparation else None
         live_preview = (
-            interactive and not compare and need_fusion
+            interactive and not compare and not is_substack and not is_stack_outputs and need_fusion
             and method in ('openfocus_a', 'openfocus_b', 'openfocus_c')
             and not self._preview_mode and roi_rect is None and not use_roi_aligned_images
             and getattr(window, 'live_preview_page', None) is not None
@@ -1568,13 +1980,14 @@ class RenderManager:
             use_gpu=getattr(window, "use_gpu", True),
             base_frame=_base_frame(force_algorithm or fusion_method,
                                    _brightness(window, "base_correct", force_algorithm or fusion_method)),
-            sort_mode="desc" if getattr(window, "stack_reverse_order", False)
-                else "asc",
+            sort_mode="asc" if is_stack_outputs else (
+                "desc" if getattr(window, "stack_reverse_order", False) else "asc"
+            ),
             exposure_match=_brightness(window, "exposure_match", force_algorithm or fusion_method),
             sharpen_output=processing["sharpen_output"],
             sharpen_strength=processing["sharpen_strength"],
-            defect_mask_path=getattr(window, "defect_mask_path", ""),
-            sensor_denoise=bool(getattr(window, "sensor_denoise", False)),
+            defect_mask_path="" if is_stack_outputs else getattr(window, "defect_mask_path", ""),
+            sensor_denoise=False if is_stack_outputs else bool(getattr(window, "sensor_denoise", False)),
             source_paths=source_paths,
             load_scale_factor=getattr(window, "current_scale_factor", 1.0),
             disk_cache=disk_cache_request,
@@ -1677,17 +2090,33 @@ class RenderManager:
     def _stack_changed_since(self, context) -> bool:
         """True when the stack (or the settings it was rendered with) is no
         longer the one a render context was started for."""
+        if context is None:
+            return False
+        if context.get("stack_outputs"):
+            return False
         window = self.window
+        if context.get("substack"):
+            full_included = context.get("full_included")
+            return (
+                window.raw_images is not context.get("source_ref")
+                or (full_included is not None and window.included_indices() != full_included)
+                or getattr(window, "source_revision", 0) != context.get("source_revision", 0)
+                or list(window.image_filenames or []) != context.get("full_filenames", context["filenames"])
+                or (context.get("full_alignment_key") is not None
+                    and full_included is not None
+                    and self._alignment_key(full_included, context["algorithm"]) != context["full_alignment_key"])
+                or ("parameters" in context and self._processing_parameters(
+                    context["algorithm"]) != context["parameters"])
+            )
         return (
-            context is not None
-            and (window.raw_images is not context.get("source_ref")
-                 or window.included_indices() != context.get("included")
-                 or getattr(window, "source_revision", 0) != context.get("source_revision", 0)
-                 or list(window.image_filenames or []) != context.get("full_filenames", context["filenames"])
-                 or ("alignment_key" in context and self._alignment_key(
-                     context["included"], context["algorithm"]) != context["alignment_key"])
-                 or ("parameters" in context and self._processing_parameters(
-                     context["algorithm"]) != context["parameters"]))
+            window.raw_images is not context.get("source_ref")
+            or window.included_indices() != context.get("included")
+            or getattr(window, "source_revision", 0) != context.get("source_revision", 0)
+            or list(window.image_filenames or []) != context.get("full_filenames", context["filenames"])
+            or ("alignment_key" in context and context["alignment_key"] is not None
+                and self._alignment_key(context["included"], context["algorithm"]) != context["alignment_key"])
+            or ("parameters" in context and self._processing_parameters(
+                context["algorithm"]) != context["parameters"])
         )
 
     def on_render_finished(
@@ -1709,6 +2138,7 @@ class RenderManager:
         preview = context["preview"] if context else getattr(self, '_preview_mode', False)
         # Preserve the request while a context worker is active.
         compare = getattr(self, '_compare_mode', False)
+        substack = bool(getattr(self, '_substack_mode', False) and (context or {}).get('substack'))
 
         # The stack can change while a render runs (a frame deleted, a new
         # folder loaded, rotate/flip/resize). Publishing that result would show
@@ -1732,6 +2162,7 @@ class RenderManager:
             # untouched compare run left the render button disabled forever
             # with a stale "-1/0" progress label.
             self._abort_compare_run()
+            self._abort_substack_run()
             self._render_context = None
             self._hide_progress_bar()
             self._dispose_worker()
@@ -1894,14 +2325,18 @@ class RenderManager:
                             "could not record render provenance; "
                             "the output will not be retouchable")
                     method = (context or {}).get("algorithm")
-                    label = window.export_manager.generate_default_filename(fusion_method=method)
+                    custom_label = (context or {}).get("output_label")
+                    label = custom_label or window.export_manager.generate_default_filename(fusion_method=method)
                     window.output_manager.update_output_list_for_fusion(
                         label,
                         context=new_context,
                         fusion_details=getattr(self.worker, 'fusion_details', None),
                         registration_details=registration_details,
                         linear_dng_metadata=(context or {}).get("linear_dng_metadata"),
-                        source_paths=(context or {}).get("source_paths", ()))
+                        source_paths=(context or {}).get("source_paths", ()),
+                        source_output_names=(context or {}).get("source_output_names", ()),
+                        source_output_ids=(context or {}).get("source_output_ids", ()),
+                    )
 
                 # New output: refresh the wipe B-side history, keep selection
                 if getattr(window, "wipe_active", False):
@@ -2009,6 +2444,8 @@ class RenderManager:
                 context is not None
                 and not context["preview"]
                 and not context["roi"]
+                and not context.get("substack")
+                and not context.get("stack_outputs")
                 and window.raw_images is context.get("source_ref")
                 and not stack_changed
                 and len(processed_images) == len(context["included"])
@@ -2038,7 +2475,7 @@ class RenderManager:
             if effective_registration and reuse:
                 info_lines.append(trans.t("info_align_time").format(0.0))
             elif effective_registration:
-                alignment_method = window.current_alignment_method()
+                alignment_method = (context or {}).get("alignment_method") or window.current_alignment_method()
                 align_method_str = trans.t(get_registration(alignment_method).label_key)
                 info_lines.append(trans.t("info_align_method").format(align_method_str))
                 info_lines.append(trans.t("info_align_time").format(alignment_time))
@@ -2078,10 +2515,21 @@ class RenderManager:
             # and covered the result the user wanted to inspect. The summary
             # goes to the status bar; the full timing sits in the output
             # entry's tooltip.
-            if not compare:
-                window.statusBar().showMessage(
-                    trans.t("dialog_completed_title") + " — "
-                    + " · ".join(info_lines), 15000)
+            if not compare and not substack:
+                if (context or {}).get("stack_outputs"):
+                    from_substack_count = (context or {}).get("from_substack_count")
+                    if from_substack_count:
+                        summary_prefix = trans.t("substack_done_with_restack").format(
+                            count=from_substack_count)
+                    else:
+                        summary_prefix = trans.t("stack_outputs_done").format(
+                            count=len((context or {}).get("source_output_names") or ()))
+                    window.statusBar().showMessage(
+                        summary_prefix + " — " + " · ".join(info_lines), 15000)
+                else:
+                    window.statusBar().showMessage(
+                        trans.t("dialog_completed_title") + " — "
+                        + " · ".join(info_lines), 15000)
             if (fusion_result is not None and not preview
                     and window.output_list.count() > 0):
                 newest = window.output_list.item(0)
@@ -2122,7 +2570,7 @@ class RenderManager:
 
         finally:
             self._dispose_worker()
-            if not compare:
+            if not compare and not substack:
                 self._restore_ui_controls()
             produced_output = self.last_state == 'done' and (
                 fusion_result is not None or (effective_registration and not preview))
@@ -2134,7 +2582,7 @@ class RenderManager:
                         fusion_result,
                         interactive=getattr(self, "_render_interactive", True),
                         is_preview=bool(preview),
-                        is_compare=bool(compare),
+                        is_compare=bool(compare or substack),
                     )
                 else:
                     gallery.on_render_ended()
@@ -2147,6 +2595,17 @@ class RenderManager:
                     self._queue_next_compare()
                 else:
                     self._finish_compare_run()
+            elif substack:
+                if self.last_state == 'done' and fusion_result is not None and window.output_list.count() > 0:
+                    rec = window.output_manager.record_for_row(0)
+                    if rec is not None:
+                        self._substack_results.append(rec)
+                if self._substack_cancelling:
+                    self._abort_substack_run()
+                elif self._substack_queue:
+                    self._queue_next_substack()
+                else:
+                    self._finish_substack_run()
 
     def _render_context_kwargs(self, context, compare, registration_performed):
         ctx = context or {}
@@ -2348,6 +2807,9 @@ class RenderManager:
         done = min(max(0, done), total)
         bar = getattr(self, "_status_bar_progress", None)
         if bar is not None:
+            from PyQt6 import sip
+            if sip.isdeleted(bar):
+                return
             # Range first, then value: Qt clamps a value outside the current
             # range, so setting the value while the bar is still in its
             # indeterminate (0..0) mode silently drops it and the bar looks
@@ -2406,6 +2868,7 @@ class RenderManager:
         if gallery is not None:
             gallery.on_render_ended()
         if (getattr(self, "_compare_cancelling", False)
+                or getattr(self, "_substack_cancelling", False)
                 or bool(getattr(self.worker, "is_cancelled", False))):
             error_message = "CANCELLED: render cancelled"
         try:
@@ -2473,6 +2936,19 @@ class RenderManager:
             self._compare_token = object()
             self._compare_context = None
             self._compare_current = None
+
+        if getattr(self, '_substack_mode', False):
+            # Stop the substack queue cleanly; already-published substack
+            # outputs remain in the Output list.
+            self._substack_mode = False
+            self._substack_cancelling = False
+            self._substack_queue = []
+            self._stop_substack_timer()
+            self._substack_token = object()
+            self._substack_context = None
+            self._substack_current = None
+            self._substack_auto_restack = False
+            self._substack_results = []
 
         self._restore_ui_controls()
 
