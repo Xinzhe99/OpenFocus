@@ -1,8 +1,10 @@
 """Client-side media preparation for OpenFocus Gallery.
 
-Handles EXIF summary extraction, optional crisp top-left attribution watermark
-rendering, 2K WebP + bounded 512px WebP thumbnail preparation, and atomic
-WebP-to-JPEG conversion. Purely local; never touches the network.
+Handles EXIF summary extraction, optional attribution watermark rendering
+(OFF by default, top-left when enabled so it never collides with bottom-right
+HUD buttons), compressed 2K WebP (bounded size budget) + bounded <=480px WebP
+thumbnail preparation, and atomic WebP-to-JPEG conversion. Purely local; never
+touches the network.
 """
 from __future__ import annotations
 
@@ -25,10 +27,18 @@ from utils.image_utils import imwrite_auto, read_image_exif, to_display_uint8
 from utils.raw_exif import read_raw_exif_bytes
 
 DEFAULT_MAX_LONG_EDGE = 2560
-DEFAULT_THUMB_LONG_EDGE = 512
-DEFAULT_MAIN_QUALITY = 86
-DEFAULT_THUMB_QUALITY = 80
+DEFAULT_THUMB_LONG_EDGE = 480
+DEFAULT_MAIN_QUALITY = 84
+DEFAULT_THUMB_QUALITY = 78
+DEFAULT_MAX_MAIN_BYTES = 2 * 1024 * 1024
 DEFAULT_MAX_THUMB_BYTES = 256 * 1024
+DEFAULT_WATERMARK_POSITION = "top_left"
+WATERMARK_POSITIONS: tuple[str, ...] = (
+    "top_left",
+    "top_right",
+    "bottom_left",
+    "bottom_right",
+)
 
 _EXIF_IFD = 0x8769
 _DNG_UNIQUE_CAMERA_MODEL = 50708
@@ -97,6 +107,7 @@ class PreparedGalleryUpload:
     thumb_sha256: str
     exif: dict
     watermark_enabled: bool = False
+    watermark_position: str = DEFAULT_WATERMARK_POSITION
     attribution: str = ""
     main_quality: int = DEFAULT_MAIN_QUALITY
     thumb_quality: int = DEFAULT_THUMB_QUALITY
@@ -369,20 +380,18 @@ def _format_watermark_label(attribution: str) -> str:
 def render_watermark(
     image_bgr_or_rgb: np.ndarray,
     attribution: str,
-    enabled: bool = True,
-    position: str = "top_left",
+    enabled: bool = False,
+    *,
+    position: str = DEFAULT_WATERMARK_POSITION,
 ) -> np.ndarray:
     """Render a crisp ``© <attribution>`` watermark on an image.
 
-    Places the attribution badge at ``top_left`` by default so it never
-    overlaps the bottom-left author HUD or bottom-right action bar in
-    Community Showcase. Also supports ``top_right``, ``bottom_left``, and
-    ``bottom_right``.
-
-    Uses a subtle translucent dark backing pill and soft drop-shadow behind
-    crisp white text so the attribution stays legible on both bright and dark
-    corners. Because the rendered mark is strictly monochrome, it works
-    identically on BGR and RGB arrays.
+    Defaults to ``enabled=False`` and ``position='top_left'`` (so enabled
+    watermarks never collide with bottom-right HUD buttons). Uses a subtle
+    translucent dark backing pill and soft drop-shadow behind crisp white text
+    so the attribution stays legible on both bright and dark corners. Because
+    the rendered mark is strictly monochrome, it works identically on BGR and
+    RGB arrays.
 
     Returns the input unchanged when ``enabled`` is False or ``attribution``
     is empty. Never mutates the input array in place.
@@ -393,6 +402,7 @@ def render_watermark(
     if not label:
         return image_bgr_or_rgb
 
+    pos = position if position in WATERMARK_POSITIONS else DEFAULT_WATERMARK_POSITION
     arr = np.asarray(image_bgr_or_rgb)
     if arr.ndim not in (2, 3) or arr.shape[0] < 8 or arr.shape[1] < 8:
         return image_bgr_or_rgb
@@ -446,19 +456,18 @@ def render_watermark(
     alpha = ov[:, :, 3:4] / 255.0  # (bh, bw, 1)
     rgb_val = ov[:, :, 0:1]        # Monochrome: R == G == B
 
-    pos = (position or "top_left").strip().lower()
-    if pos == "bottom_right":
-        x1 = max(0, w - margin - badge_w)
-        y1 = max(0, h - margin - badge_h)
-    elif pos == "bottom_left":
-        x1 = min(margin, max(0, w - badge_w))
-        y1 = max(0, h - margin - badge_h)
+    if pos == "top_left":
+        x1 = min(max(0, w - badge_w), margin)
+        y1 = min(max(0, h - badge_h), margin)
     elif pos == "top_right":
         x1 = max(0, w - margin - badge_w)
-        y1 = min(margin, max(0, h - badge_h))
-    else:  # default: top_left (clear of bottom-left author card and bottom-right HUD bar)
-        x1 = min(margin, max(0, w - badge_w))
-        y1 = min(margin, max(0, h - badge_h))
+        y1 = min(max(0, h - badge_h), margin)
+    elif pos == "bottom_left":
+        x1 = min(max(0, w - badge_w), margin)
+        y1 = max(0, h - margin - badge_h)
+    else:  # bottom_right
+        x1 = max(0, w - margin - badge_w)
+        y1 = max(0, h - margin - badge_h)
     x2 = min(w, x1 + badge_w)
     y2 = min(h, y1 + badge_h)
     pw = x2 - x1
@@ -575,16 +584,56 @@ def _encode_bounded_webp_thumb(
     return data, current.shape[1], current.shape[0], 1
 
 
+def _encode_bounded_webp_main(
+    main_rgb: np.ndarray,
+    *,
+    initial_quality: int,
+    max_bytes: int,
+) -> tuple[bytes, int, int, int]:
+    """Encode main WebP guaranteed to stay within ``max_bytes``.
+
+    Keeps full dimensions while stepping down WebP quality first so normal
+    macro photographs stay crisp and lean; only reduces dimensions as a last
+    resort on extreme synthetic/uncompressible noise.
+    """
+    current = main_rgb
+    q = max(1, min(100, int(initial_quality)))
+    data = _encode_webp(current, quality=q, method=4)
+    if max_bytes <= 0 or len(data) <= max_bytes:
+        return data, current.shape[1], current.shape[0], q
+
+    candidates = [step for step in range(q - 6, 39, -6)] + [34, 28, 20, 12, 6, 1]
+    for candidate_q in candidates:
+        data = _encode_webp(current, quality=candidate_q, method=6)
+        if len(data) <= max_bytes:
+            return data, current.shape[1], current.shape[0], candidate_q
+
+    while len(data) > max_bytes and max(current.shape[:2]) > 64:
+        long_edge = max(current.shape[:2])
+        current = _resize_long_edge(current, max(64, int(long_edge * 0.85)))
+        data = _encode_webp(current, quality=50, method=6)
+        if len(data) <= max_bytes:
+            return data, current.shape[1], current.shape[0], 50
+        data = _encode_webp(current, quality=20, method=6)
+        if len(data) <= max_bytes:
+            return data, current.shape[1], current.shape[0], 20
+
+    if len(data) > max_bytes:
+        raise ValueError(f"Gallery image cannot fit within {max_bytes} bytes")
+    return data, current.shape[1], current.shape[0], 1
+
+
 def prepare_gallery_upload(
     source: Union[str, os.PathLike, np.ndarray, Image.Image],
     *,
     attribution: str = "",
     watermark_enabled: bool = False,
-    watermark_position: str = "top_left",
+    watermark_position: str = DEFAULT_WATERMARK_POSITION,
     max_long_edge: int = DEFAULT_MAX_LONG_EDGE,
     thumb_long_edge: int = DEFAULT_THUMB_LONG_EDGE,
     quality: int = DEFAULT_MAIN_QUALITY,
     thumb_quality: int = DEFAULT_THUMB_QUALITY,
+    max_main_bytes: int = DEFAULT_MAX_MAIN_BYTES,
     max_thumb_bytes: int = DEFAULT_MAX_THUMB_BYTES,
     source_is_rgb: bool = False,
     exif: Optional[dict] = None,
@@ -592,10 +641,12 @@ def prepare_gallery_upload(
     """Prepare a local image for Gallery upload (zero network I/O).
 
     1. Extracts EXIF summary (when ``source`` is a file path or PIL image).
-    2. Resizes main image to at most ``max_long_edge`` px (no upscaling).
-    3. Applies optional top-left ``© <attribution>`` watermark (off by default).
-    4. Encodes main WebP and bounded ``thumb_long_edge`` WebP thumbnail
-       guaranteed to stay ``<= max_thumb_bytes`` (256 KiB default).
+    2. Resizes main image to at most ``max_long_edge`` px (default 2560px, no upscaling).
+    3. Applies optional ``© <attribution>`` watermark (OFF by default; ``top_left``
+       when enabled so it never collides with bottom-right HUD buttons).
+    4. Encodes compressed main WebP bounded by ``max_main_bytes`` (2 MiB default)
+       and compressed ``thumb_long_edge`` (480px default) WebP thumbnail guaranteed
+       to stay ``<= max_thumb_bytes`` (256 KiB default).
     5. Computes SHA-256 digests and output dimensions.
     """
     metadata = exif
@@ -618,14 +669,16 @@ def prepare_gallery_upload(
         else:
             rgb = _to_rgb_uint8(decoded, source_is_rgb=False)
 
+    pos = watermark_position if watermark_position in WATERMARK_POSITIONS else DEFAULT_WATERMARK_POSITION
     main_rgb = _resize_long_edge(rgb, max_long_edge)
     if watermark_enabled and _format_watermark_label(attribution):
-        main_rgb = render_watermark(
-            main_rgb, attribution, enabled=True, position=watermark_position
-        )
+        main_rgb = render_watermark(main_rgb, attribution, enabled=True, position=pos)
 
-    main_q = max(1, min(100, int(quality)))
-    main_webp = _encode_webp(main_rgb, quality=main_q, method=4)
+    main_webp, main_w, main_h, actual_main_q = _encode_bounded_webp_main(
+        main_rgb,
+        initial_quality=quality,
+        max_bytes=max_main_bytes,
+    )
 
     thumb_rgb = _resize_long_edge(main_rgb, thumb_long_edge)
     thumb_webp, thumb_w, thumb_h, actual_thumb_q = _encode_bounded_webp_thumb(
@@ -637,8 +690,8 @@ def prepare_gallery_upload(
     return PreparedGalleryUpload(
         main_webp=main_webp,
         thumb_webp=thumb_webp,
-        width=int(main_rgb.shape[1]),
-        height=int(main_rgb.shape[0]),
+        width=int(main_w),
+        height=int(main_h),
         thumb_width=int(thumb_w),
         thumb_height=int(thumb_h),
         full_bytes=len(main_webp),
@@ -647,8 +700,9 @@ def prepare_gallery_upload(
         thumb_sha256=hashlib.sha256(thumb_webp).hexdigest(),
         exif=filter_public_exif(metadata),
         watermark_enabled=bool(watermark_enabled),
+        watermark_position=pos,
         attribution=_clean_text(attribution),
-        main_quality=main_q,
+        main_quality=actual_main_q,
         thumb_quality=actual_thumb_q,
     )
 

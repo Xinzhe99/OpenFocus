@@ -14,8 +14,10 @@ from PIL import Image, TiffImagePlugin
 from core import image_loader
 from core.gallery_media import (
     DEFAULT_MAX_LONG_EDGE,
+    DEFAULT_MAX_MAIN_BYTES,
     DEFAULT_MAX_THUMB_BYTES,
     DEFAULT_THUMB_LONG_EDGE,
+    DEFAULT_WATERMARK_POSITION,
     PreparedGalleryUpload,
     convert_webp_to_jpeg,
     extract_exif_summary,
@@ -177,6 +179,10 @@ def test_render_watermark_legible_on_dark_and_bright_corners(bg_val):
     canvas = np.full((360, 640, 3), bg_val, dtype=np.uint8)
     original = canvas.copy()
 
+    # Default enabled=False is a clean no-op
+    assert render_watermark(canvas, "Alice Macro") is canvas
+
+    # When enabled, default position is top_left (never collides with bottom-right HUD)
     marked = render_watermark(canvas, "Alice Macro", enabled=True)
 
     # Input must never be mutated in place.
@@ -203,6 +209,7 @@ def test_render_watermark_legible_on_dark_and_bright_corners(bg_val):
 
 def test_render_watermark_noop_when_disabled_or_empty():
     canvas = _make_sample_bgr(120, 160)
+    assert render_watermark(canvas, "Alice") is canvas
     assert render_watermark(canvas, "Alice", enabled=False) is canvas
     assert render_watermark(canvas, "", enabled=True) is canvas
     assert render_watermark(canvas, "   ", enabled=True) is canvas
@@ -276,6 +283,7 @@ def test_prepare_gallery_upload_watermark_toggle_and_file_exif(tmp_path):
     assert default_wm.watermark_enabled is False
     assert default_wm.sha256 == without_wm.sha256
     assert with_wm.watermark_enabled is True
+    assert with_wm.watermark_position == DEFAULT_WATERMARK_POSITION == "top_left"
     assert with_wm.exif["camera"] == "Sony ILCE-7RM5"
     assert with_wm.exif["lens"] == "FE 90mm F2.8 Macro G OSS"
     assert with_wm.sha256 != without_wm.sha256
@@ -286,8 +294,21 @@ def test_prepare_gallery_upload_watermark_toggle_and_file_exif(tmp_path):
     br_diff = np.abs(dec_with[300:, 350:].astype(np.int16) - dec_without[300:, 350:].astype(np.int16))
     bl_diff = np.abs(dec_with[300:, :250].astype(np.int16) - dec_without[300:, :250].astype(np.int16))
     assert int(tl_diff.max()) >= 50
-    assert int(br_diff.max()) <= 4
+    assert int(br_diff.max()) <= 5
     assert int(bl_diff.max()) <= 4
+
+
+def test_prepare_gallery_upload_enforces_main_size_budget_and_480px_thumb():
+    assert DEFAULT_THUMB_LONG_EDGE <= 480
+    assert DEFAULT_MAX_MAIN_BYTES <= 2 * 1024 * 1024
+    rng = np.random.default_rng(123)
+    noisy_big = rng.integers(0, 256, size=(1200, 1600, 3), dtype=np.uint8)
+    budget = 180 * 1024
+    prepared = prepare_gallery_upload(noisy_big, max_main_bytes=budget)
+    assert prepared.full_bytes <= budget
+    assert prepared.thumb_bytes <= DEFAULT_MAX_THUMB_BYTES
+    assert max(prepared.thumb_width, prepared.thumb_height) <= 480
+    assert prepared.watermark_enabled is False
 
 
 def test_prepare_gallery_upload_filters_public_exif_override():

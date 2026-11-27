@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import QApplication, QLabel, QPushButton
 from dialogs.gallery_hub import (
     MAX_BATCH_UPLOAD,
     AuthorShowcaseDialog,
+    BoostWorkDialog,
     GalleryHubDialog,
     HonorCardDialog,
     ReportContentDialog,
@@ -69,7 +70,7 @@ class FakeStateStore:
             "gallery_terms_accepted_version": accepted_terms,
         }
         self.config = {
-            "upload_cost_points": 100,
+            "upload_cost_points": 0,
             "gallery_terms_version": "2026-11",
             "leaderboard_rewards": {"7d": {"first": 300}, "1m": {"first": 800}},
         }
@@ -86,11 +87,15 @@ class FakeGalleryClient:
         self.upload_calls: list[dict[str, Any]] = []
         self.update_work_calls: list[tuple[str, bool]] = []
         self.deleted_works: list[str] = []
+        self.boost_calls: list[dict[str, Any]] = []
+        self.liked_works: list[str] = []
+        self.unliked_works: list[str] = []
         self.followed: list[str] = []
         self.unfollowed: list[str] = []
         self.acked_cards: list[str] = []
         self.profile_updates: list[dict[str, Any]] = []
         self.upload_behavior = "ok"
+        self.boost_error: str | None = None
         self.update_work_error: str | None = None
         self.feed_delay_sec: float = 0.0
         self.user_works_response: Any = None
@@ -160,6 +165,30 @@ class FakeGalleryClient:
 
     def delete_work(self, work_id: str):
         self.deleted_works.append(work_id)
+
+    def like_work(self, work_id: str):
+        self.liked_works.append(work_id)
+        return {"liked": True}
+
+    def unlike_work(self, work_id: str):
+        self.unliked_works.append(work_id)
+        return {"liked": False}
+
+    def boost_work(self, work_id: str, *, package_id=None, impressions=None, points=None, idempotency_key=None):
+        self.boost_calls.append({
+            "work_id": work_id,
+            "package_id": package_id,
+            "impressions": impressions,
+            "points": points,
+            "idempotency_key": idempotency_key,
+        })
+        if self.boost_error:
+            raise FakeGalleryError(self.boost_error, points_deducted=False, stage="boost")
+        return {
+            "work_id": work_id,
+            "showcase_impressions_remaining": int(impressions or 100),
+            "points_balance": max(0, 500 - int(points or 0)),
+        }
 
     def upload_work_atomic(self, thumb_webp, full_webp, meta, *, on_stage=None, idempotency_key=None):
         self.upload_calls.append({
@@ -524,8 +553,7 @@ def test_terms_consent_and_safe_confirm_retry_zero_double_charge(qapp, tmp_path)
     store.profile['points_balance'] = 0
     dlg._on_store_profile_changed(store.profile)
     assert not dlg.insufficient_points_label.isVisible()
-    assert dlg.cost_hint_label.text() == t_gallery(
-        'gallery_publish_cost_hint', cost=store.config['upload_cost_points'])
+    assert dlg.cost_hint_label.text() == t_gallery('gallery_publish_free_hint')
 
     # Attempt 2 (Retry Confirm): MUST NOT re-run inspect or PUT; reuses exact upload_id + Idempotency-Key!
     items = dlg.publish_all(wait=True)
@@ -1108,8 +1136,97 @@ def test_gallery_hub_displays_points_balance_and_dynamic_publish_cost(qapp, tmp_
 
     store.config['upload_cost_points'] = 0
     dlg._on_store_config_changed(store.config)
-    assert dlg.cost_hint_label.text() == t_gallery('gallery_publish_batch_estimate', count=2, total=0)
+    assert dlg.cost_hint_label.text() == t_gallery('gallery_publish_free_batch_summary', count=2)
     assert not dlg.insufficient_points_label.isVisible()
+    dlg.close()
+
+
+def test_discovery_square_nav_rail_search_inline_like_free_upload_and_boost_flows(qapp, tmp_path):
+    store = FakeStateStore()
+    store.profile["points_balance"] = 300
+    client = FakeGalleryClient()
+    dlg = GalleryHubDialog(
+        client=client,
+        state_store=store,
+        media_fetcher=lambda _u: _png_bytes((60, 140, 190)),
+    )
+    dlg.show()
+    assert dlg.wait_for_idle()
+
+    # Left navigation rail switches tabs & exposes My Downloads + Account/Messages
+    dl_clicks = []
+    acct_clicks = []
+    dlg.downloads_folder_requested.connect(lambda: dl_clicks.append(True))
+    dlg.account_center_requested.connect(lambda: acct_clicks.append(True))
+    dlg.nav_buttons[2].click()
+    assert dlg.tabs.currentIndex() == 2
+    dlg.nav_buttons[0].click()
+    assert dlg.tabs.currentIndex() == 0
+    dlg.nav_downloads_btn.click()
+    dlg.nav_account_btn.click()
+    assert dl_clicks == [True]
+    assert acct_clicks == [True]
+
+    # Search filters cards cleanly
+    dlg.search_input.setText("nonexistent-beetle-xyz")
+    dlg._apply_search_query()
+    assert dlg.wait_for_idle()
+    assert dlg._square_grid.count() == 1
+    dlg.search_input.clear()
+    dlg._apply_search_query()
+    assert dlg.wait_for_idle()
+
+    # Minimalist inline heart toggle on discovery card
+    like_btn = dlg.findChild(QPushButton, "gallery_work_like_w1")
+    assert like_btn is not None
+    assert "♡" in like_btn.text()
+    like_btn.click()
+    assert dlg.wait_for_idle()
+    assert "♥" in like_btn.text()
+    assert client.liked_works == ["w1"]
+
+    # Free community publish (0 points) works even at 0 balance; optional boost adds paid impressions
+    store.profile["points_balance"] = 0
+    dlg._on_store_profile_changed(store.profile)
+    img_path = _write_test_png(tmp_path / "free_shot.png")
+    dlg.open_publish_with_image(img_path, title="Free Macro")
+    assert dlg.tabs.currentIndex() == 2
+    assert dlg.publish_free_badge.isVisible() is True
+    assert dlg.boost_enable_check.isChecked() is False
+    assert dlg.insufficient_points_label.isVisible() is False
+
+    # Opt into boost -> warns at 0 points, succeeds once points are topped up
+    dlg.boost_enable_check.setChecked(True)
+    assert dlg.insufficient_points_label.isVisible() is True
+    store.profile["points_balance"] = 500
+    dlg._on_store_profile_changed(store.profile)
+    assert dlg.insufficient_points_label.isVisible() is False
+    items = dlg.publish_all(wait=True)
+    assert items[0].stage == "done"
+    assert len(client.boost_calls) == 1
+    assert client.boost_calls[0]["package_id"] == "boost_500"
+
+    # My Showcase Boost Exposure dialog + graceful boost_unavailable handling
+    dlg.tabs.setCurrentIndex(3)
+    assert dlg.wait_for_idle()
+    boost_btn = dlg.findChild(QPushButton, "gallery_my_work_boost_mine-1")
+    assert boost_btn is not None
+    boost_btn.click()
+    boost_dlg = dlg.findChild(BoostWorkDialog)
+    assert boost_dlg is not None
+    boost_dlg.tier_buttons["boost_100"].click()
+    boost_dlg.confirm_btn.click()
+    assert boost_dlg.wait_for_idle()
+    assert client.boost_calls[-1]["work_id"] == "mine-1"
+    assert client.boost_calls[-1]["package_id"] == "boost_100"
+    assert "100" in boost_dlg.status_label.text()
+
+    # Graceful server-not-deployed boost_unavailable feedback
+    client.boost_error = "boost_unavailable"
+    boost_dlg.confirm_btn.click()
+    assert boost_dlg.wait_for_idle()
+    assert boost_dlg.status_label.text() == t_gallery("gallery_boost_unavailable")
+    boost_dlg.close()
     dlg.close()
 
 
