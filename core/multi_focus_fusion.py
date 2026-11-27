@@ -1063,10 +1063,12 @@ class MultiFocusFusion:
                     max(h, height), max(w, width), kwargs, count)
                 decode = max(frame_resolution_bytes(frame) for frame in input_source)
                 budget = memory_budget_bytes()
-                if not self.use_gpu and self.algorithm in ('openfocus_a', 'openfocus_b'):
-                    # CPU A and B stream without retaining decoded sources.
+                openfocus_native_family = self.algorithm in ('openfocus_a', 'openfocus_b', 'openfocus_c')
+                if openfocus_native_family:
+                    # OpenFocus A/B/C stream without retaining decoded sources and
+                    # spill large transient planes above the shared frame RAM cap.
                     cache_growth = 0
-                    if (method_b and img_resize is None
+                    if (img_resize is None
                             and all(frame.dtype in (np.uint8, np.uint16) for frame in input_source)):
                         worker = min(worker, policy.frame_ram_budget(policy.probe_memory()))
                 else:
