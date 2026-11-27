@@ -380,22 +380,34 @@ def test_publish_batch_cap_strictly_10_and_prefill_openfocus_badge(qapp, tmp_pat
     dlg.close()
 
 
-def test_watermark_preview_default_off_nickname_fill_toggle_on_and_16bit(qapp, tmp_path):
+def test_watermark_preview_default_off_top_left_nickname_fill_and_16bit(qapp, tmp_path):
     store = FakeStateStore(nickname="FocusWizard")
-    dlg = GalleryHubDialog(state_store=store, initial_tab=2)
+    client = FakeGalleryClient()
+    dlg = GalleryHubDialog(client=client, state_store=store, initial_tab=2)
     img_path = _write_test_png(tmp_path / "sample.png", color=(230, 230, 230))
     dlg.add_publish_files([img_path])
     assert dlg.wait_for_idle()
 
-    # Watermark is OFF by default
+    # Watermark is OFF by default so showcase HUD stays clean without attribution overlap.
     assert dlg.watermark_enabled_check.isChecked() is False
     assert dlg._watermark_preview_has_overlay is False
+    assert dlg._watermark_preview_rendered_text == ""
     assert dlg.watermark_text_edit.isEnabled() is False
-    off_img = dlg.watermark_preview_label.pixmap().toImage()
+    assert dlg.use_nickname_btn.isEnabled() is False
 
-    # Opting in renders top-left attribution watermark
+    off_pix = dlg.watermark_preview_label.pixmap()
+    assert off_pix is not None and not off_pix.isNull()
+    off_img = off_pix.toImage()
+
+    # Publishing with default settings reports watermark_enabled=False.
+    items = dlg.publish_all(wait=True)
+    assert items[0].stage == "done"
+    assert client.upload_calls[-1]["meta"]["watermark_enabled"] is False
+
+    # Enabling watermark unlocks controls and places the attribution at top-left.
     dlg.watermark_enabled_check.setChecked(True)
     assert dlg.watermark_text_edit.isEnabled() is True
+    assert dlg.use_nickname_btn.isEnabled() is True
     dlg.watermark_text_edit.clear()
     dlg.use_nickname_btn.click()
     assert dlg.watermark_text_edit.text() == "FocusWizard"
@@ -407,16 +419,29 @@ def test_watermark_preview_default_off_nickname_fill_toggle_on_and_16bit(qapp, t
     on_img = on_pix.toImage()
     assert on_img != off_img
 
+    # Top-left quadrant reflects the badge while bottom-right & bottom-left HUD corners stay clean.
+    w, h = on_img.width(), on_img.height()
+    assert on_img.copy(0, 0, w // 2, h // 2) != off_img.copy(0, 0, w // 2, h // 2)
+    assert on_img.copy(w // 2, h // 2, w - w // 2, h - h // 2) == off_img.copy(
+        w // 2, h // 2, w - w // 2, h - h // 2
+    )
+    assert on_img.copy(0, h // 2, w // 2, h - h // 2) == off_img.copy(
+        0, h // 2, w // 2, h - h // 2
+    )
+
     # 16-bit numpy array watermark preview preserves mid-gray tone (~128, NOT clipped to 255)
+    # and draws in top-left while leaving bottom-right untouched.
     img16 = np.full((140, 220, 3), 32768, dtype=np.uint16)
     pix16_off = render_watermark_preview(img16, "Studio16", enabled=False)
     pix16_on = render_watermark_preview(img16, "Studio16", enabled=True)
     assert not pix16_off.isNull()
-    bottom_right_rgb = pix16_off.toImage().pixelColor(200, 120)
-    assert 120 <= bottom_right_rgb.red() <= 136
-    assert pix16_on.toImage() != pix16_off.toImage()
-    # Bottom-right stays untouched when watermark is rendered in top_left
-    assert pix16_on.toImage().pixelColor(200, 120) == bottom_right_rgb
+    off16_img = pix16_off.toImage()
+    on16_img = pix16_on.toImage()
+    top_left_rgb = off16_img.pixelColor(10, 10)
+    assert 120 <= top_left_rgb.red() <= 136
+    assert on16_img != off16_img
+    assert on16_img.copy(0, 0, 110, 70) != off16_img.copy(0, 0, 110, 70)
+    assert on16_img.copy(110, 70, 110, 70) == off16_img.copy(110, 70, 110, 70)
     dlg.close()
 
 

@@ -190,7 +190,8 @@ def test_render_watermark_legible_on_dark_and_bright_corners(bg_val):
     assert marked.shape == canvas.shape
     assert marked.dtype == canvas.dtype
 
-    # Bottom-right corner must stay untouched under default top_left placement.
+    # Default top-left placement keeps both bottom-left author HUD and bottom-right action bar untouched.
+    np.testing.assert_array_equal(marked[260:, :200], original[260:, :200])
     np.testing.assert_array_equal(marked[260:, 340:], original[260:, 340:])
 
     # Top-left corner must show visible contrast on both pure black and pure white.
@@ -199,12 +200,11 @@ def test_render_watermark_legible_on_dark_and_bright_corners(bg_val):
     assert int(diff.max()) >= 80
     assert int((diff > 30).sum()) >= 150
 
-    # Explicit bottom_right placement still works when requested.
+    # Explicit bottom_right override still works when requested.
     marked_br = render_watermark(canvas, "Alice Macro", enabled=True, position="bottom_right")
     np.testing.assert_array_equal(marked_br[:100, :200], original[:100, :200])
-    br = marked_br[260:, 340:]
-    diff_br = np.abs(br.astype(np.int16) - bg_val)
-    assert int(diff_br.max()) >= 80
+    br_diff = np.abs(marked_br[260:, 340:].astype(np.int16) - bg_val)
+    assert int(br_diff.max()) >= 80
 
 
 def test_render_watermark_noop_when_disabled_or_empty():
@@ -222,12 +222,14 @@ def test_render_watermark_supports_uint16_grayscale_and_unicode():
     assert marked_gray.shape == gray.shape
     assert marked_gray.dtype == np.uint8
     assert np.any(marked_gray[:80, :180] != 220)
+    np.testing.assert_array_equal(marked_gray[160:, 140:], gray[160:, 140:])
 
     u16 = np.full((240, 320, 3), 50000, dtype=np.uint16)
     marked_u16 = render_watermark(u16, "OpenFocus Creator", enabled=True)
     assert marked_u16.shape == u16.shape
     assert marked_u16.dtype == np.uint16
     assert np.any(marked_u16[:80, :200] != 50000)
+    np.testing.assert_array_equal(marked_u16[160:, 120:], u16[160:, 120:])
 
 
 # ---------------------------------------------------------------------------
@@ -273,10 +275,13 @@ def test_prepare_gallery_upload_watermark_toggle_and_file_exif(tmp_path):
     arr = np.full((400, 600, 3), 240, dtype=np.uint8)
     Image.fromarray(arr).save(src, format="JPEG", exif=_sample_exif().tobytes(), quality=95)
 
+    # Embedded watermark is OFF by default so it never clashes with showcase HUD.
+    default_wm = prepare_gallery_upload(src, attribution="Studio X")
+    without_wm = prepare_gallery_upload(src, attribution="Studio X", watermark_enabled=False)
     with_wm = prepare_gallery_upload(src, attribution="Studio X", watermark_enabled=True)
-    without_wm = prepare_gallery_upload(src, attribution="Studio X")  # default OFF
 
-    assert without_wm.watermark_enabled is False
+    assert default_wm.watermark_enabled is False
+    assert default_wm.sha256 == without_wm.sha256
     assert with_wm.watermark_enabled is True
     assert with_wm.watermark_position == DEFAULT_WATERMARK_POSITION == "top_left"
     assert with_wm.exif["camera"] == "Sony ILCE-7RM5"
@@ -285,10 +290,12 @@ def test_prepare_gallery_upload_watermark_toggle_and_file_exif(tmp_path):
 
     dec_with = np.asarray(Image.open(io.BytesIO(with_wm.main_webp)).convert("RGB"))
     dec_without = np.asarray(Image.open(io.BytesIO(without_wm.main_webp)).convert("RGB"))
-    tl_diff = np.abs(dec_with[:100, :260].astype(np.int16) - dec_without[:100, :260].astype(np.int16))
-    assert int(tl_diff.max()) >= 50
+    tl_diff = np.abs(dec_with[:100, :250].astype(np.int16) - dec_without[:100, :250].astype(np.int16))
     br_diff = np.abs(dec_with[300:, 350:].astype(np.int16) - dec_without[300:, 350:].astype(np.int16))
+    bl_diff = np.abs(dec_with[300:, :250].astype(np.int16) - dec_without[300:, :250].astype(np.int16))
+    assert int(tl_diff.max()) >= 50
     assert int(br_diff.max()) <= 5
+    assert int(bl_diff.max()) <= 4
 
 
 def test_prepare_gallery_upload_enforces_main_size_budget_and_480px_thumb():

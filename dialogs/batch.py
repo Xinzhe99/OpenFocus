@@ -40,7 +40,6 @@ from ui.algorithm_combo import apply_method_availability, selected_item_enabled
 from locales import trans
 from utils.output_sharpen import DEFAULT_SHARPEN_STRENGTH, MAX_SHARPEN_STRENGTH
 from widgets.stepper import StepperSpinBox
-from widgets.flow_layout import FlowPanel
 from widgets.workspace import WorkspaceSplitter
 
 
@@ -115,6 +114,15 @@ class BatchProcessingDialog(QDialog):
         self._applied_thumbnail_paths = set()
         self._active_thumbnail_paths = ()
         self._thumbnail_done = 0
+        # Adaptive single-folder split runs off the GUI thread on
+        # AdaptiveSplitWorker; these guard against stale results and cache
+        # per-frame visual descriptors for instant mode switching.
+        self._adaptive_worker = None
+        self._adaptive_generation = 0
+        self._adaptive_busy = False
+        self._adaptive_progress = (0, 0)
+        self._adaptive_descriptor_cache = {}
+        self._last_split_method = None
 
         
         # Dark palette only in dark mode: hard-coding it showed a dark slab in
@@ -245,13 +253,22 @@ class BatchProcessingDialog(QDialog):
         split_method_layout = QHBoxLayout()
         split_method_layout.addWidget(QLabel(trans.t('batch_split_method')))
         self.split_method_combo = QComboBox()
-        self.split_method_combo.addItems([trans.t('batch_split_fixed'), trans.t('batch_split_time')])
+        self.split_method_combo.addItem(trans.t('batch_split_adaptive'), 'adaptive')
+        self.split_method_combo.addItem(trans.t('batch_split_fixed'), 'count')
+        self.split_method_combo.addItem(trans.t('batch_split_time'), 'time_threshold')
+        self.split_method_combo.setCurrentIndex(0)
         self.split_method_combo.currentIndexChanged.connect(self.on_split_method_changed)
-        split_method_layout.addWidget(self.split_method_combo)
-        split_method_layout.addStretch()
+        split_method_layout.addWidget(self.split_method_combo, 1)
         single_folder_layout.addLayout(split_method_layout)
 
-        param_layout = QHBoxLayout()
+        self.adaptive_hint_label = QLabel(trans.t('batch_adaptive_hint'))
+        self.adaptive_hint_label.setObjectName("mutedLabel")
+        self.adaptive_hint_label.setWordWrap(True)
+        single_folder_layout.addWidget(self.adaptive_hint_label)
+
+        self.param_row_widget = QWidget()
+        param_layout = QHBoxLayout(self.param_row_widget)
+        param_layout.setContentsMargins(0, 0, 0, 0)
         self.param_label = QLabel(trans.t('batch_images_per_stack'))
         param_layout.addWidget(self.param_label)
 
@@ -266,10 +283,11 @@ class BatchProcessingDialog(QDialog):
         self.param_unit_label = QLabel(trans.t('batch_unit_images'))
         param_layout.addWidget(self.param_unit_label)
         param_layout.addStretch()
-        single_folder_layout.addLayout(param_layout)
+        single_folder_layout.addWidget(self.param_row_widget)
 
         self.preview_label = QLabel(trans.t('batch_preview_default'))
         self.preview_label.setObjectName("mutedLabel")
+        self.preview_label.setWordWrap(True)
         single_folder_layout.addWidget(self.preview_label)
 
         self._stack_import_status_label = QLabel("")
@@ -287,6 +305,12 @@ class BatchProcessingDialog(QDialog):
         
         output_group = QWidget()
         output_layout = QVBoxLayout(output_group)
+        output_layout.setContentsMargins(10, 10, 10, 10)
+        output_layout.setSpacing(12)
+
+        format_card = QGroupBox(trans.t('batch_output_format'))
+        format_card_layout = QVBoxLayout(format_card)
+        format_card_layout.setSpacing(8)
 
         format_row = QHBoxLayout()
         format_row.addWidget(QLabel(trans.t('batch_format_label')))
@@ -313,48 +337,52 @@ class BatchProcessingDialog(QDialog):
         self.quality_layout.addStretch()
         format_row.addLayout(self.quality_layout)
         format_row.addStretch()
-        output_layout.addLayout(format_row)
+        format_card_layout.addLayout(format_row)
         self.depth_hint = QLabel(trans.t('export_depth_hint'))
+        self.depth_hint.setObjectName("mutedLabel")
         self.depth_hint.setWordWrap(True)
         self.depth_hint.hide()
-        output_layout.addWidget(self.depth_hint)
+        format_card_layout.addWidget(self.depth_hint)
         self.quality_label.setVisible(False)
         self.quality_slider.setVisible(False)
         self.quality_value_label.setVisible(False)
+        output_layout.addWidget(format_card)
 
-        output_layout.addWidget(_section_rule(trans.t('batch_output_location')))
+        location_card = QGroupBox(trans.t('batch_output_location'))
+        location_layout = QVBoxLayout(location_card)
+        location_layout.setSpacing(8)
 
         self.rb_subfolder = QRadioButton(trans.t('batch_out_subfolder'))
         self.rb_subfolder.setChecked(True)
         self.rb_subfolder.toggled.connect(self.on_output_option_changed)
-        output_layout.addWidget(self.rb_subfolder)
+        location_layout.addWidget(self.rb_subfolder)
 
         self.subfolder_controls = QWidget()
         subfolder_layout = QHBoxLayout(self.subfolder_controls)
-        subfolder_layout.setContentsMargins(0, 0, 0, 0)
+        subfolder_layout.setContentsMargins(20, 0, 0, 0)
         subfolder_layout.addWidget(QLabel(trans.t('batch_subfolder_name')))
         self.subfolder_name = QLineEdit("OpenFocus_Output")
         subfolder_layout.addWidget(self.subfolder_name)
-        output_layout.addWidget(self.subfolder_controls)
+        location_layout.addWidget(self.subfolder_controls)
 
         self.rb_same_folder = QRadioButton(trans.t('batch_out_same'))
         self.rb_same_folder.toggled.connect(self.on_output_option_changed)
-        output_layout.addWidget(self.rb_same_folder)
+        location_layout.addWidget(self.rb_same_folder)
 
         self.rb_custom_folder = QRadioButton(trans.t('batch_out_custom'))
         self.rb_custom_folder.toggled.connect(self.on_output_option_changed)
-        output_layout.addWidget(self.rb_custom_folder)
+        location_layout.addWidget(self.rb_custom_folder)
 
         self.custom_folder_controls = QWidget()
         custom_folder_layout = QHBoxLayout(self.custom_folder_controls)
-        custom_folder_layout.setContentsMargins(0, 0, 0, 0)
+        custom_folder_layout.setContentsMargins(20, 0, 0, 0)
         self.custom_folder_path = QLineEdit()
         custom_folder_layout.addWidget(self.custom_folder_path)
         browse_btn = QPushButton(trans.t('batch_btn_browse'))
         browse_btn.clicked.connect(self.browse_output_folder)
         self.browse_btn = browse_btn
         custom_folder_layout.addWidget(browse_btn)
-        output_layout.addWidget(self.custom_folder_controls)
+        location_layout.addWidget(self.custom_folder_controls)
         self.custom_folder_controls.hide()
 
         self._save_aligned_pref = False
@@ -362,7 +390,7 @@ class BatchProcessingDialog(QDialog):
         self.save_aligned_cb.setChecked(False)
         self.save_aligned_cb.setToolTip(trans.t('batch_save_aligned_hint'))
         self.save_aligned_cb.toggled.connect(self._remember_save_aligned)
-        output_layout.addWidget(self.save_aligned_cb)
+        location_layout.addWidget(self.save_aligned_cb)
         # Grouped fusion owns the temporary disk output and cannot also write
         # an aligned copy. The checkbox is unchecked and disabled in that
         # state; this line says why instead of leaving an inert control.
@@ -370,13 +398,17 @@ class BatchProcessingDialog(QDialog):
         self.save_aligned_note.setObjectName("mutedLabel")
         self.save_aligned_note.setWordWrap(True)
         self.save_aligned_note.hide()
-        output_layout.addWidget(self.save_aligned_note)
-
+        location_layout.addWidget(self.save_aligned_note)
+        output_layout.addWidget(location_card)
 
         self.options_group = QWidget()
         options_layout = QVBoxLayout(self.options_group)
-        options_layout.setSpacing(8)
+        options_layout.setContentsMargins(10, 10, 10, 10)
+        options_layout.setSpacing(10)
 
+        method_card = QGroupBox(trans.t('batch_section_method'))
+        method_card_layout = QVBoxLayout(method_card)
+        method_card_layout.setSpacing(10)
 
         method_row = QHBoxLayout()
         method_row.addWidget(QLabel(trans.t('group_fusion')))
@@ -392,14 +424,15 @@ class BatchProcessingDialog(QDialog):
             self.fusion_combo.setCurrentIndex(
                 self.fusion_combo.findData('none'))
         method_row.addWidget(self.fusion_combo, 1)
-        options_layout.addLayout(method_row)
+        method_card_layout.addLayout(method_row)
 
         align_row = QHBoxLayout()
         align_row.addWidget(QLabel(trans.t('group_registration')))
         self.align_combo = QComboBox()
         self._fill_method_combo(self.align_combo, registration_algorithms())
         align_row.addWidget(self.align_combo, 1)
-        options_layout.addLayout(align_row)
+        method_card_layout.addLayout(align_row)
+        options_layout.addWidget(method_card)
 
         # --- Parameters --------------------------------------------------
         self.params_rule = _section_rule(trans.t('batch_section_params'))
@@ -415,17 +448,15 @@ class BatchProcessingDialog(QDialog):
             self, hidden_parameters=('failure_policy',))
         options_layout.addWidget(self.fusion_parameter_panel)
         options_layout.addWidget(self.registration_parameter_panel)
-        advanced = QWidget()
-        advanced_layout = QVBoxLayout(advanced)
-        self.fusion_parameter_panel.valuesChanged.connect(self._remember_fusion_parameters)
-        self.registration_parameter_panel.valuesChanged.connect(self._remember_registration_parameters)
-        params = QGridLayout()
-        params.setColumnStretch(1, 1)
+
+        # Hidden legacy controls kept off-screen so internal settings APIs and
+        # existing callers remain backward-compatible without cluttering the UI.
+        self._hidden_legacy_controls = QWidget(self)
+        self._hidden_legacy_controls.hide()
+        legacy_layout = QVBoxLayout(self._hidden_legacy_controls)
 
         self.downscale_label = QLabel(trans.t('batch_downscale'))
         self.downscale_label.setToolTip(trans.t('batch_downscale_hint'))
-        params.addWidget(self.downscale_label, 4, 0)
-        scale_row = QHBoxLayout()
         self.downscale_slider = QSlider(Qt.Orientation.Horizontal)
         self.downscale_slider.setToolTip(trans.t('batch_downscale_hint'))
         self.downscale_slider.setRange(20, 100)
@@ -433,21 +464,16 @@ class BatchProcessingDialog(QDialog):
         self.downscale_slider.setPageStep(10)
         self.downscale_slider.setValue(100)
         self.downscale_value = QLabel("100%")
-        self.downscale_value.setMinimumWidth(46)
-        self.downscale_value.setAlignment(
-            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.downscale_slider.valueChanged.connect(
             lambda v: self.downscale_value.setText(f"{v}%"))
-        scale_row.addWidget(self.downscale_slider, 1)
-        scale_row.addWidget(self.downscale_value)
-        params.addLayout(scale_row, 4, 1)
-        options_layout.addLayout(params)
-
+        legacy_layout.addWidget(self.downscale_label)
+        legacy_layout.addWidget(self.downscale_slider)
+        legacy_layout.addWidget(self.downscale_value)
 
         self._grouping_pref = False
         self.chk_grouping = QCheckBox(trans.t('batch_group_enable'))
         self.chk_grouping.setToolTip(trans.t('batch_group_hint'))
-        advanced_layout.addWidget(self.chk_grouping)
+        legacy_layout.addWidget(self.chk_grouping)
         self.group_controls = QWidget()
         group_row = QHBoxLayout(self.group_controls)
         group_row.setContentsMargins(0, 0, 0, 0)
@@ -470,35 +496,64 @@ class BatchProcessingDialog(QDialog):
             lambda value: setattr(self, '_group_overlap_preference', value))
         group_row.addWidget(self.group_overlap_spin)
         group_row.addStretch()
-        advanced_layout.addWidget(self.group_controls)
+        legacy_layout.addWidget(self.group_controls)
         self.group_controls.hide()
         self.group_note = QLabel()
         self.group_note.setObjectName("mutedLabel")
         self.group_note.setWordWrap(True)
         self.group_note.hide()
-        advanced_layout.addWidget(self.group_note)
+        legacy_layout.addWidget(self.group_note)
         self.chk_grouping.toggled.connect(self._grouping_changed)
         self.group_size_spin.valueChanged.connect(self._group_size_changed)
 
-        toggles = FlowPanel(h_spacing=14, v_spacing=6)
-        advanced_layout.addWidget(toggles)
+        self.flat_field_group = QWidget()
+        flat_row = QHBoxLayout(self.flat_field_group)
+        flat_row.setContentsMargins(0, 0, 0, 0)
+        flat_label = QLabel(f"{trans.t('dust_from_file')} ({trans.t('development_label')})")
+        flat_label.setToolTip(trans.t('development_unavailable_hint'))
+        flat_row.addWidget(flat_label)
+        self.flat_field_group.setEnabled(False)
+        legacy_layout.addWidget(self.flat_field_group)
+
+        from ui.sensor_cleanup import SensorCleanupControls
+        self.sensor_cleanup = SensorCleanupControls('', False, show_scope=False)
+        legacy_layout.addWidget(self.sensor_cleanup)
+        self.sensor_cleanup.path.textChanged.connect(lambda: self.update_single_folder_preview())
+        self.finished.connect(lambda _result: self.sensor_cleanup.stop_inspection())
+
+        # --- Options tab: clean, logically grouped cards -----------------
+        advanced = QWidget()
+        advanced_layout = QVBoxLayout(advanced)
+        advanced_layout.setContentsMargins(10, 10, 10, 10)
+        advanced_layout.setSpacing(12)
+        self.fusion_parameter_panel.valuesChanged.connect(self._remember_fusion_parameters)
+        self.registration_parameter_panel.valuesChanged.connect(self._remember_registration_parameters)
+
+        order_card = QGroupBox(trans.t('batch_options_order_brightness'))
+        order_layout = QVBoxLayout(order_card)
+        order_layout.setSpacing(8)
 
         self.chk_reverse_order = QCheckBox(trans.t('chk_reverse_order'))
         self.chk_reverse_order.setToolTip(trans.t('chk_reverse_order_hint'))
-        toggles.add(self.chk_reverse_order)
+        order_layout.addWidget(self.chk_reverse_order)
 
         self.chk_exposure_match = QCheckBox(trans.t('chk_exposure_match'))
         self.chk_exposure_match.setChecked(True)
         self.chk_exposure_match.setToolTip(trans.t('chk_exposure_match_hint'))
-        toggles.add(self.chk_exposure_match)
+        order_layout.addWidget(self.chk_exposure_match)
 
         self.chk_base_correct = QCheckBox(trans.t('chk_base_correct'))
         self.chk_base_correct.setToolTip(trans.t('chk_base_correct_hint'))
-        toggles.add(self.chk_base_correct)
+        order_layout.addWidget(self.chk_base_correct)
+        advanced_layout.addWidget(order_card)
+
+        postprocess_card = QGroupBox(trans.t('batch_options_postprocess'))
+        postprocess_layout = QVBoxLayout(postprocess_card)
+        postprocess_layout.setSpacing(8)
 
         self.chk_sharpen_output = QCheckBox(trans.t('chk_sharpen_output'))
         self.chk_sharpen_output.setToolTip(trans.t('chk_sharpen_output_hint'))
-        toggles.add(self.chk_sharpen_output)
+        postprocess_layout.addWidget(self.chk_sharpen_output)
         self.sharpen_strength_spin = QSpinBox()
         self.sharpen_strength_spin.setRange(0, MAX_SHARPEN_STRENGTH)
         self.sharpen_strength_spin.setValue(DEFAULT_SHARPEN_STRENGTH)
@@ -512,25 +567,9 @@ class BatchProcessingDialog(QDialog):
         strength_row.addWidget(strength_label)
         strength_row.addWidget(self.sharpen_strength_spin)
         strength_row.addStretch()
-        advanced_layout.addWidget(self.sharpen_strength_row)
+        postprocess_layout.addWidget(self.sharpen_strength_row)
         self.chk_sharpen_output.toggled.connect(self._sync_sharpen_strength)
-
-        self.flat_field_group = QWidget()
-        flat_row = QHBoxLayout(self.flat_field_group)
-        flat_row.setContentsMargins(0, 0, 0, 0)
-        flat_label = QLabel(f"{trans.t('dust_from_file')} ({trans.t('development_label')})")
-        flat_label.setToolTip(trans.t('development_unavailable_hint'))
-        flat_row.addWidget(flat_label)
-        self.flat_field_group.setEnabled(False)
-        advanced_layout.addWidget(self.flat_field_group)
-
-        from ui.sensor_cleanup import SensorCleanupControls
-        self.sensor_cleanup = SensorCleanupControls(
-            getattr(self.parent_window, 'defect_mask_path', ''),
-            getattr(self.parent_window, 'sensor_denoise', False), show_scope=False)
-        advanced_layout.addWidget(self.sensor_cleanup)
-        self.sensor_cleanup.path.textChanged.connect(lambda: self.update_single_folder_preview())
-        self.finished.connect(lambda _result: self.sensor_cleanup.stop_inspection())
+        advanced_layout.addWidget(postprocess_card)
 
         last_dir = self._last_pick_dir()
         if last_dir:
@@ -584,8 +623,10 @@ class BatchProcessingDialog(QDialog):
         
         # 初始化质量滑块显示状态（确保对话框打开时滑块正确显示）
         self.on_format_changed(self.format_combo.currentText())
+        self._sync_split_method_controls()
 
         for _control in ("rb_multiple_folders", "rb_single_folder",
+                         "split_method_combo",
                          "btn_add_folder", "btn_add_single_folder",
                          "folder_list", "format_combo", "rb_subfolder",
                          "subfolder_name", "rb_same_folder",
@@ -917,22 +958,42 @@ class BatchProcessingDialog(QDialog):
             if self._import_busy and self._import_mode == 'stack':
                 stack_label.setText(trans.t('msg_loading_stack'))
                 stack_label.show()
+            elif self._adaptive_busy:
+                done, total = self._adaptive_progress
+                stack_label.setText(
+                    trans.t('batch_preview_adaptive_analyzing').format(done=done, total=total)
+                )
+                stack_label.show()
             else:
                 stack_label.clear()
                 stack_label.hide()
 
     def _set_import_busy(self, busy: bool) -> None:
         """Disable only actions that require a single-folder stack scan."""
-        stack_busy = bool(busy and self._import_mode == 'stack')
+        stack_import_busy = bool(busy and self._import_mode == 'stack')
+        stack_busy = bool(stack_import_busy or self._adaptive_busy)
         if hasattr(self, 'chk_grouping'):
             # Recompute rather than blanket-enable: an incompatible mode must
             # keep grouping disabled once the import finishes.
             self._sync_option_states()
-        for name in ("btn_start", "btn_add_single_folder"):
-            button = getattr(self, name, None)
-            if button is not None:
-                button.setEnabled(not stack_busy)
+        btn_start = getattr(self, "btn_start", None)
+        if btn_start is not None:
+            btn_start.setEnabled(not stack_busy)
+        btn_single = getattr(self, "btn_add_single_folder", None)
+        if btn_single is not None:
+            btn_single.setEnabled(not stack_import_busy)
         self._update_import_status_labels()
+
+    def _cancel_adaptive_split(self) -> None:
+        """Stop any live adaptive split preview worker and drop late signals."""
+        worker = self._adaptive_worker
+        self._adaptive_generation += 1
+        self._adaptive_worker = None
+        self._adaptive_busy = False
+        self._adaptive_progress = (0, 0)
+        if worker is not None:
+            worker.cancel()
+        self._set_import_busy(self._import_busy)
 
     def cancel_imports(self) -> None:
         """Ask the live import to stop and drop its result."""
@@ -947,7 +1008,7 @@ class BatchProcessingDialog(QDialog):
         self._applied_thumbnail_paths.clear()
         self._active_thumbnail_paths = ()
         self._thumbnail_done = 0
-        self._set_import_busy(False)
+        self._cancel_adaptive_split()
         if worker is not None:
             # The worker is tracked at module level, so it stays alive until
             # it really stops even if this dialog is being destroyed.
@@ -966,7 +1027,7 @@ class BatchProcessingDialog(QDialog):
         super().reject()
 
     def accept(self):
-        if self._import_busy and self._import_mode == 'stack':
+        if (self._import_busy and self._import_mode == 'stack') or self._adaptive_busy:
             from PyQt6.QtWidgets import QMessageBox
             QMessageBox.information(self, trans.t('batch_title'),
                                     trans.t('batch_import_in_progress'))
@@ -1124,21 +1185,39 @@ class BatchProcessingDialog(QDialog):
         # explained here instead of surfacing a modal only after Start.
         self._sync_option_states()
     
-    def on_split_method_changed(self, index):
+    def _current_split_method(self) -> str:
+        """Return the active single-folder split method id."""
+        data = self.split_method_combo.currentData()
+        if data in ('adaptive', 'count', 'time_threshold'):
+            return data
+        index = self.split_method_combo.currentIndex()
+        return ('adaptive', 'count', 'time_threshold')[min(max(index, 0), 2)]
+
+    def _sync_split_method_controls(self) -> None:
+        """Show only the controls relevant to the selected split method."""
+        method = self._current_split_method()
+        is_adaptive = (method == 'adaptive')
+        self.param_row_widget.setVisible(not is_adaptive)
+        self.adaptive_hint_label.setVisible(is_adaptive)
+        if method != self._last_split_method:
+            with QSignalBlocker(self.param_spinbox):
+                if method == 'count':
+                    self.param_label.setText(trans.t('batch_images_per_stack'))
+                    self.param_spinbox.setRange(2, 1000)
+                    self.param_spinbox.setValue(5)
+                    self.param_unit_label.setText(trans.t('batch_unit_images'))
+                elif method == 'time_threshold':
+                    self.param_label.setText(trans.t('batch_time_threshold'))
+                    self.param_spinbox.setRange(1, 3600)
+                    self.param_spinbox.setValue(5)
+                    self.param_unit_label.setText(trans.t('batch_unit_seconds'))
+            self._last_split_method = method
+
+    def on_split_method_changed(self, _index=None):
         """分割方式改变时的处理"""
-        if index == 0:
-            self.param_label.setText(trans.t('batch_images_per_stack'))
-            self.param_spinbox.setRange(2, 1000)
-            self.param_spinbox.setValue(5)
-            self.param_unit_label.setText(trans.t('batch_unit_images'))
-        else:
-            self.param_label.setText(trans.t('batch_time_threshold'))
-            self.param_spinbox.setRange(1, 3600)
-            self.param_spinbox.setValue(5)
-            self.param_unit_label.setText(trans.t('batch_unit_seconds'))
-        
+        self._sync_split_method_controls()
         self.update_single_folder_preview()
-    
+
     def on_format_changed(self, format_text):
         """格式改变时的处理 - 控制质量滑块显示"""
         is_jpg = format_text.upper() == "JPG"
@@ -1146,36 +1225,147 @@ class BatchProcessingDialog(QDialog):
         self.quality_slider.setVisible(is_jpg)
         self.quality_value_label.setVisible(is_jpg)
         self.depth_hint.setVisible(format_text.upper() in ("JPG", "BMP"))
-    
+
     def _effective_single_folder_entries(self):
         from utils.path_identity import same_path
         mask = self.sensor_cleanup.path.text().strip()
         return [entry for entry in self.single_folder_images_with_times
                 if not mask or not same_path(entry[0], mask)]
 
+    @staticmethod
+    def _adaptive_entry_key(entry) -> tuple:
+        path = entry[0] if len(entry) > 0 else ""
+        frame = entry[1] if len(entry) > 1 else None
+        export_name = entry[3] if len(entry) > 3 else path
+        page = getattr(frame, 'page', None)
+        return (os.path.normcase(os.path.normpath(str(path))), export_name, page, id(frame) if frame is not None else 0)
+
+    @staticmethod
+    def _format_adaptive_preview(total_images: int, stacks: list) -> str:
+        group_count = len(stacks)
+        if group_count <= 1:
+            return trans.t('batch_preview_fmt_adaptive').format(total_images, group_count)
+        sizes = [str(len(stack)) for stack in stacks]
+        if len(sizes) > 6:
+            summary = " / ".join(sizes[:5]) + " / …"
+        else:
+            summary = " / ".join(sizes)
+        return trans.t('batch_preview_fmt_adaptive_groups').format(total_images, group_count, summary)
+
+    def _active_adaptive_sender(self) -> bool:
+        worker = self.sender()
+        return (
+            worker is not None
+            and worker is self._adaptive_worker
+            and getattr(worker, 'adaptive_generation', None) == self._adaptive_generation
+        )
+
+    def _start_adaptive_split(self, entries: list) -> None:
+        from core.workers import AdaptiveSplitWorker
+
+        self._cancel_adaptive_split()
+        self._adaptive_generation += 1
+        worker = AdaptiveSplitWorker(
+            entries,
+            thread_count=self._runtime_settings.get('thread_count', 0),
+        )
+        worker.adaptive_generation = self._adaptive_generation
+        worker.adaptive_entries = list(entries)
+        self._adaptive_worker = worker
+        self._adaptive_busy = True
+        self._adaptive_progress = (0, len(entries))
+        self.single_folder_stacks = []
+        self.preview_label.setText(
+            trans.t('batch_preview_adaptive_analyzing').format(done=0, total=len(entries))
+        )
+        _track_import_worker(worker)
+        self._set_import_busy(self._import_busy)
+
+        worker.progress.connect(self._on_adaptive_progress)
+        worker.split_ready.connect(self._on_adaptive_split_ready)
+        worker.failed.connect(self._on_adaptive_split_failed)
+        worker.finished.connect(self._on_adaptive_split_finished)
+        worker.start()
+
+    def _on_adaptive_progress(self, done: int, total: int) -> None:
+        if not self._active_adaptive_sender():
+            return
+        self._adaptive_progress = (done, total)
+        self.preview_label.setText(
+            trans.t('batch_preview_adaptive_analyzing').format(done=done, total=total)
+        )
+        self._update_import_status_labels()
+
+    def _on_adaptive_split_ready(self, stacks, descriptors) -> None:
+        if not self._active_adaptive_sender():
+            return
+        worker = self._adaptive_worker
+        entries = getattr(worker, 'adaptive_entries', ())
+        if descriptors is not None and len(descriptors) == len(entries):
+            for entry, desc in zip(entries, descriptors):
+                self._adaptive_descriptor_cache[self._adaptive_entry_key(entry)] = desc
+        self.single_folder_stacks = list(stacks or [])
+        self.preview_label.setText(self._format_adaptive_preview(len(entries), self.single_folder_stacks))
+
+    def _on_adaptive_split_failed(self, _message: str) -> None:
+        if not self._active_adaptive_sender():
+            return
+        worker = self._adaptive_worker
+        entries = list(getattr(worker, 'adaptive_entries', ()))
+        self.single_folder_stacks = [entries] if entries else []
+        self.preview_label.setText(self._format_adaptive_preview(len(entries), self.single_folder_stacks))
+
+    def _on_adaptive_split_finished(self) -> None:
+        if not self._active_adaptive_sender():
+            return
+        self._adaptive_worker = None
+        self._adaptive_busy = False
+        self._adaptive_progress = (0, 0)
+        self._set_import_busy(self._import_busy)
+
     def update_single_folder_preview(self):
         """更新单文件夹预览"""
+        self._cancel_adaptive_split()
         if not self.single_folder_images_with_times:
             self.single_folder_stacks = []
             self.preview_label.setText(trans.t('batch_preview_no_folder'))
             return
         
-        split_method = self.split_method_combo.currentIndex()
-        param_value = (int(self.param_spinbox.value()) if split_method == 0
-                       else float(self.param_spinbox.value()))
-        
+        split_method = self._current_split_method()
         from core.image_loader import ImageStackLoader
         loader = ImageStackLoader()
         from utils.sorting import natural_sort_key
         entries = self._effective_single_folder_entries()
-        entries.sort(key=lambda item:
-            natural_sort_key(item[3] if len(item) > 3 else item[0]) if split_method == 0 else
-            (item[2] is None, item[2] or 0, natural_sort_key(item[3] if len(item) > 3 else item[0])))
+        if split_method == 'time_threshold':
+            entries.sort(key=lambda item: (
+                item[2] is None, item[2] or 0,
+                natural_sort_key(item[3] if len(item) > 3 else item[0]),
+            ))
+        else:
+            entries.sort(key=lambda item: natural_sort_key(item[3] if len(item) > 3 else item[0]))
 
-        if split_method == 0:
+        if split_method == 'adaptive':
+            if len(entries) <= 1:
+                self.single_folder_stacks = [entries] if entries else []
+                self.preview_label.setText(self._format_adaptive_preview(len(entries), self.single_folder_stacks))
+                return
+            keys = [self._adaptive_entry_key(entry) for entry in entries]
+            if all(key in self._adaptive_descriptor_cache for key in keys):
+                from core.adaptive_split import split_entries_adaptive
+                cached = [self._adaptive_descriptor_cache[key] for key in keys]
+                stacks, _descs, _sims = split_entries_adaptive(entries, descriptors=cached)
+                self.single_folder_stacks = stacks
+                self.preview_label.setText(self._format_adaptive_preview(len(entries), stacks))
+                return
+            self._start_adaptive_split(entries)
+            return
+
+        if split_method == 'count':
+            param_value = int(self.param_spinbox.value())
             stacks = loader.split_by_count(entries, param_value)
             self.preview_label.setText(trans.t('batch_preview_fmt_count').format(len(entries), len(stacks), param_value))
         else:
+            param_value = float(self.param_spinbox.value())
             stacks = loader.split_by_time_threshold(entries, param_value)
             self.preview_label.setText(trans.t('batch_preview_fmt_time').format(len(entries), len(stacks), param_value))
         self.single_folder_stacks = stacks
@@ -1205,6 +1395,7 @@ class BatchProcessingDialog(QDialog):
                 trans.t("msg_load_images_failed_text").format(message=message),
             )
             return
+        self._adaptive_descriptor_cache.clear()
         self.single_folder_images_with_times = entries
         self.single_folder_folder_path = folder_path
 
@@ -1227,10 +1418,11 @@ class BatchProcessingDialog(QDialog):
         if self.rb_multiple_folders.isChecked():
             return None, None
         
-        split_method = self.split_method_combo.currentIndex()
+        split_method = self._current_split_method()
+        if split_method == 'adaptive':
+            return 'adaptive', None
         param_value = self.param_spinbox.value()
-        
-        if split_method == 0:
+        if split_method == 'count':
             return 'count', int(param_value)
         return 'time_threshold', float(param_value)
     
@@ -1547,17 +1739,16 @@ class BatchProcessingDialog(QDialog):
     def preload_single_folder(self, folder_path: str, scale_factor: float = 1.0) -> None:
         """
         预加载单个文件夹（用于拖入场景）
-        自动切换到单文件夹模式、加载文件夹、设置默认划分参数
+        自动切换到单文件夹模式、加载文件夹、默认选择自适应（自动）分割
         """
         # 1. 切换到单文件夹模式
         self.rb_single_folder.setChecked(True)
         self.on_import_mode_changed()
 
-        # 2. 设置默认划分方式：Fixed Count, 5张/组
-        self.split_method_combo.setCurrentIndex(0)  # Fixed Count
-        self.param_spinbox.setValue(5)
-        self.param_unit_label.setText(trans.t('batch_unit_images'))
-        self.on_split_method_changed(0)
+        # 2. 默认使用自适应（自动）分割
+        adaptive_idx = self.split_method_combo.findData('adaptive')
+        self.split_method_combo.setCurrentIndex(adaptive_idx if adaptive_idx >= 0 else 0)
+        self._sync_split_method_controls()
 
         # 3. 加载文件夹并应用缩放（后台，结果到达后更新预览）
         self.load_scale_factor = scale_factor
@@ -1619,7 +1810,16 @@ class BatchProcessingDialog(QDialog):
             return
 
         if import_mode == 'single_folder':
-            self.update_single_folder_preview()
+            if self._adaptive_busy:
+                QMessageBox.information(self, trans.t('batch_title'),
+                                        trans.t('batch_import_in_progress'))
+                return
+            if split_method != 'adaptive' or not self.single_folder_stacks:
+                self.update_single_folder_preview()
+                if self._adaptive_busy:
+                    QMessageBox.information(self, trans.t('batch_title'),
+                                            trans.t('batch_import_in_progress'))
+                    return
             entries = self._effective_single_folder_entries()
             if not entries or not self.single_folder_stacks:
                 QMessageBox.warning(self, trans.t('msg_no_folder_title'), trans.t('msg_no_folder_text'))

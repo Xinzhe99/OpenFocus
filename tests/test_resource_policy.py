@@ -816,7 +816,7 @@ def test_raw_sensor_geometry_and_workspace(aspect, expected):
                             raw_height=4100, pixel_aspect=aspect)
     height, width = policy.raw_sensor_shape(sizes)
     assert (height, width) == expected
-    assert policy.raw_decode_bytes(width, height, 144_000_000, 100) == width * height * 64 + 144_000_200
+    assert policy.raw_decode_bytes(width, height, 144_000_000, 100) == width * height * 16 + 144_000_100
 
 
 @pytest.mark.parametrize('aspect', [0, -1, float('nan'), float('inf')])
