@@ -1,14 +1,18 @@
 """Self-contained single-file HTML5 interactive focus-stack animation exporter.
 
 Produces a standalone offline ``.html`` viewer with zero external CDN or network
-dependencies. Frames are embedded as base64 WebP or JPEG data URIs and driven by
-vanilla JavaScript with pointer drag scrubbing, mobile touch support, range
-slider, play/pause, FPS selector, ping-pong/loop playback, keyboard navigation,
-and optional fused-result comparison.
+dependencies. Frames are decoded, resized, and WebP/JPEG base64-encoded in
+parallel across CPU threads (preserving exact frame order and using fast IDCT
+scaled JPEG decoding for large ``SourceFrame`` inputs). The generated viewer
+uses a DPR-aware 60fps ``<canvas>`` stage with pointer/touch drag scrubbing,
+mouse-wheel focus stepping, subtle auto-fading HUD, range slider, play/pause,
+FPS selector, ping-pong/loop playback, keyboard navigation, and optional
+fused-result comparison.
 """
 from __future__ import annotations
 
 import base64
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 import html
 import io
@@ -19,6 +23,9 @@ from typing import Callable, Optional, Sequence
 
 import cv2
 import numpy as np
+
+
+_JPEG_EXTS = frozenset((".jpg", ".jpeg", ".jpe", ".jfif"))
 
 
 class HtmlAnimationExportCancelled(Exception):
@@ -71,16 +78,93 @@ class HtmlAnimationOptions:
         )
 
 
-def _to_bgr_uint8(frame) -> np.ndarray:
-    """Resolve a frame or ndarray into a contiguous 3-channel BGR uint8 array."""
-    from core.source_frames import resolve_frame
+def _try_fast_reduced_jpeg(frame, max_width: int) -> Optional[np.ndarray]:
+    """Decode an uncached large JPEG ``SourceFrame`` via libjpeg IDCT scaling.
 
-    img = resolve_frame(frame)
+    Preserves >= 1.25x oversampling above ``max_width`` so the subsequent
+    ``cv2.INTER_AREA`` resize matches full-resolution quality while avoiding
+    full 45MP decode and memory overhead. Returns ``None`` to fall back to the
+    standard ``resolve_frame`` path whenever any precondition is not met.
+    """
+    if max_width <= 0:
+        return None
+    from core.source_frames import SourceFrame
+
+    if not isinstance(frame, SourceFrame):
+        return None
+    if (
+        frame.transforms
+        or frame.linear_metadata is not None
+        or frame._rgb_tiff_offset is not None
+        or frame.scale != 1.0
+        or frame.dtype != np.uint8
+        or len(frame.shape) < 2
+    ):
+        return None
+    ext = os.path.splitext(frame.path)[1].lower()
+    if ext not in _JPEG_EXTS:
+        return None
+
+    frame.validate_source()
+    cached = frame.cached_pixels()
+    if cached is not None:
+        return cached
+
+    src_h, src_w = int(frame.shape[0]), int(frame.shape[1])
+    if src_w >= max_width * 10:
+        flag, factor = cv2.IMREAD_REDUCED_COLOR_8, 8
+    elif src_w >= max_width * 5:
+        flag, factor = cv2.IMREAD_REDUCED_COLOR_4, 4
+    elif src_w >= max_width * 2.5:
+        flag, factor = cv2.IMREAD_REDUCED_COLOR_2, 2
+    else:
+        return None
+
+    try:
+        raw = np.fromfile(frame.path, dtype=np.uint8)
+        if raw.size == 0:
+            return None
+        decoded = cv2.imdecode(raw, flag)
+    except Exception:
+        return None
+    if decoded is None or decoded.ndim < 2 or decoded.size == 0:
+        return None
+
+    exp_h = max(1, (src_h + factor - 1) // factor)
+    exp_w = max(1, (src_w + factor - 1) // factor)
+    dh, dw = decoded.shape[:2]
+    if abs(dh - exp_h) > 4 or abs(dw - exp_w) > 4:
+        return None
+    return decoded
+
+
+def _to_bgr_uint8(
+    frame,
+    *,
+    max_width: int = 0,
+    linear_dng_metadata=None,
+    should_cancel: Optional[Callable[[], bool]] = None,
+) -> np.ndarray:
+    """Resolve a frame or ndarray into a contiguous 3-channel BGR uint8 array."""
+    img = _try_fast_reduced_jpeg(frame, max_width)
+    if img is None:
+        from core.source_frames import resolve_frame
+
+        img = resolve_frame(frame, should_cancel=should_cancel)
     if img is None:
         raise ValueError("Frame image is None")
     arr = np.asarray(img)
     if arr.ndim < 2 or arr.size == 0:
         raise ValueError("Frame image must be a non-empty 2D or 3D array")
+    if (
+        linear_dng_metadata is not None
+        and arr.dtype == np.uint16
+        and arr.ndim == 3
+        and arr.shape[2] == 3
+    ):
+        from utils.linear_dng import develop_linear
+
+        arr = develop_linear(arr, linear_dng_metadata)
     if arr.dtype != np.uint8:
         from utils.image_utils import to_display_uint8
 
@@ -110,13 +194,24 @@ def encode_frame_data_uri(
     max_width: int = 1280,
     quality: int = 85,
     image_format: str = "webp",
+    linear_dng_metadata=None,
+    should_cancel: Optional[Callable[[], bool]] = None,
 ) -> tuple[str, int, int]:
     """Encode a single BGR/grayscale/16-bit frame into a base64 data URI.
 
     Returns ``(data_uri, width, height)``. Falls back to JPEG if WebP encoding
     is unavailable in the local OpenCV and Pillow builds.
     """
-    bgr = _resize_for_web(_to_bgr_uint8(frame), int(max_width))
+    max_w = int(max_width)
+    bgr = _resize_for_web(
+        _to_bgr_uint8(
+            frame,
+            max_width=max_w,
+            linear_dng_metadata=linear_dng_metadata,
+            should_cancel=should_cancel,
+        ),
+        max_w,
+    )
     h, w = bgr.shape[:2]
     q = max(1, min(100, int(quality)))
     fmt = "jpeg" if str(image_format).lower() in ("jpg", "jpeg") else "webp"
@@ -166,6 +261,13 @@ def _safe_json_for_script(obj) -> str:
     return json.dumps(obj, ensure_ascii=True, separators=(",", ":")).replace("</", "<\\/")
 
 
+def _default_html_workers(task_count: int, max_workers: Optional[int] = None) -> int:
+    if max_workers is not None:
+        return max(1, min(int(max_workers), task_count))
+    cpus = os.cpu_count() or 4
+    return max(1, min(16, cpus, task_count))
+
+
 def build_html_animation(
     frames: Sequence,
     *,
@@ -174,53 +276,105 @@ def build_html_animation(
     options: Optional[HtmlAnimationOptions] = None,
     progress_callback: Optional[Callable[[int, int], None]] = None,
     should_cancel: Optional[Callable[[], bool]] = None,
+    max_workers: Optional[int] = None,
+    linear_dng_metadata=None,
 ) -> str:
-    """Build a 100% self-contained single-file HTML5 focus-stack viewer string."""
+    """Build a 100% self-contained single-file HTML5 focus-stack viewer string.
+
+    Encodes frames concurrently via :class:`concurrent.futures.ThreadPoolExecutor`
+    while strictly preserving exact input frame order.
+    """
     frame_list = list(frames or ())
     if not frame_list:
         raise ValueError("At least one focus-stack frame is required for HTML export.")
 
+    if should_cancel is not None and should_cancel():
+        raise HtmlAnimationExportCancelled("cancelled")
+
     opts = (options or HtmlAnimationOptions()).normalized()
     include_fused = bool(opts.include_fused_frame and fused_image is not None)
-    total_steps = len(frame_list) + (1 if include_fused else 0)
+    n_frames = len(frame_list)
+    total_steps = n_frames + (1 if include_fused else 0)
 
-    encoded_frames = []
-    width = 0
-    height = 0
-
-    for idx, frame in enumerate(frame_list):
+    def _encode_one(frame):
         if should_cancel is not None and should_cancel():
             raise HtmlAnimationExportCancelled("cancelled")
-        uri, w, h = encode_frame_data_uri(
+        return encode_frame_data_uri(
             frame,
             max_width=opts.max_width,
             quality=opts.quality,
             image_format=opts.image_format,
+            linear_dng_metadata=linear_dng_metadata,
+            should_cancel=should_cancel,
         )
+
+    encoded_results: list[Optional[tuple[str, int, int]]] = [None] * n_frames
+    fused_result: Optional[tuple[str, int, int]] = None
+
+    workers = _default_html_workers(total_steps, max_workers=max_workers)
+    completed = 0
+
+    if workers <= 1:
+        for idx, frame in enumerate(frame_list):
+            if should_cancel is not None and should_cancel():
+                raise HtmlAnimationExportCancelled("cancelled")
+            encoded_results[idx] = _encode_one(frame)
+            completed += 1
+            if progress_callback is not None:
+                progress_callback(completed, total_steps)
+        if include_fused:
+            if should_cancel is not None and should_cancel():
+                raise HtmlAnimationExportCancelled("cancelled")
+            fused_result = _encode_one(fused_image)
+            completed += 1
+            if progress_callback is not None:
+                progress_callback(completed, total_steps)
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            future_map = {}
+            for idx, frame in enumerate(frame_list):
+                future_map[pool.submit(_encode_one, frame)] = idx
+            if include_fused:
+                future_map[pool.submit(_encode_one, fused_image)] = -1
+
+            try:
+                for fut in as_completed(future_map):
+                    if should_cancel is not None and should_cancel():
+                        raise HtmlAnimationExportCancelled("cancelled")
+                    slot = future_map[fut]
+                    res = fut.result()
+                    if slot < 0:
+                        fused_result = res
+                    else:
+                        encoded_results[slot] = res
+                    completed += 1
+                    if progress_callback is not None:
+                        progress_callback(completed, total_steps)
+                    if should_cancel is not None and should_cancel():
+                        raise HtmlAnimationExportCancelled("cancelled")
+            except Exception:
+                for fut in future_map:
+                    fut.cancel()
+                raise
+
+    if should_cancel is not None and should_cancel():
+        raise HtmlAnimationExportCancelled("cancelled")
+
+    encoded_frames = []
+    width, height = 0, 0
+    for idx, res in enumerate(encoded_results):
+        uri, w, h = res
         if idx == 0:
             width, height = w, h
-        label = ""
         if labels is not None and idx < len(labels) and labels[idx]:
             label = str(labels[idx])
         else:
             label = f"Plane {idx + 1}"
         encoded_frames.append({"src": uri, "label": label})
-        if progress_callback is not None:
-            progress_callback(idx + 1, total_steps)
 
     fused_payload = None
-    if include_fused:
-        if should_cancel is not None and should_cancel():
-            raise HtmlAnimationExportCancelled("cancelled")
-        fused_uri, _, _ = encode_frame_data_uri(
-            fused_image,
-            max_width=opts.max_width,
-            quality=opts.quality,
-            image_format=opts.image_format,
-        )
-        fused_payload = {"src": fused_uri, "label": "Fused Result"}
-        if progress_callback is not None:
-            progress_callback(total_steps, total_steps)
+    if include_fused and fused_result is not None:
+        fused_payload = {"src": fused_result[0], "label": "Fused Result"}
 
     safe_title = html.escape(opts.title)
     payload = {
@@ -252,7 +406,7 @@ def build_html_animation(
         '    <footer class="footer">'
         '<span>OpenFocus Interactive Focus Stack</span>'
         '<span class="sep">&middot;</span>'
-        '<span>Drag image, scrub slider, or use &larr; / &rarr; / Space</span>'
+        '<span>Drag, scroll wheel, scrub slider, or use &larr; / &rarr; / Space</span>'
         "</footer>\n"
         if opts.show_footer
         else ""
@@ -275,7 +429,8 @@ def build_html_animation(
       --accent: #4c8dff;
       --accent-soft: #16243d;
       --canvas: #0b0d10;
-      --badge-bg: rgba(15, 17, 21, 0.78);
+      --badge-bg: rgba(15, 17, 21, 0.76);
+      --shadow: 0 8px 28px rgba(0, 0, 0, 0.28);
     }}
     @media (prefers-color-scheme: light) {{
       html[data-theme="auto"] {{
@@ -289,6 +444,7 @@ def build_html_animation(
         --accent-soft: #eff6ff;
         --canvas: #edeff2;
         --badge-bg: rgba(255, 255, 255, 0.86);
+        --shadow: 0 8px 24px rgba(17, 24, 39, 0.08);
       }}
     }}
     html[data-theme="light"] {{
@@ -302,6 +458,7 @@ def build_html_animation(
       --accent-soft: #eff6ff;
       --canvas: #edeff2;
       --badge-bg: rgba(255, 255, 255, 0.86);
+      --shadow: 0 8px 24px rgba(17, 24, 39, 0.08);
     }}
     * {{ box-sizing: border-box; }}
     html, body {{
@@ -352,6 +509,7 @@ def build_html_animation(
       background: var(--canvas);
       border: 1px solid var(--border);
       border-radius: 12px;
+      box-shadow: var(--shadow);
       overflow: hidden;
       cursor: ew-resize;
       user-select: none;
@@ -359,14 +517,26 @@ def build_html_animation(
       touch-action: pan-y;
     }}
     .stage-wrap.dragging {{ cursor: grabbing; }}
-    .stage-img {{
+    .stage-canvas {{
       display: block;
       max-width: 100%;
-      max-height: 74vh;
+      max-height: 75vh;
       width: auto;
       height: auto;
-      object-fit: contain;
       pointer-events: none;
+    }}
+    .hud {{
+      transition: opacity 0.35s ease, transform 0.35s ease;
+    }}
+    .stage-wrap.hud-idle .badge {{
+      opacity: 0.22;
+    }}
+    .stage-wrap.hud-idle .hint-pill {{
+      opacity: 0;
+      transform: translateY(4px);
+    }}
+    .stage-wrap:hover .badge {{
+      opacity: 1;
     }}
     .badge {{
       position: absolute;
@@ -393,8 +563,9 @@ def build_html_animation(
       border-radius: 999px;
       padding: 4px 10px;
       font-size: 0.76rem;
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
       pointer-events: none;
-      transition: opacity 0.3s ease;
     }}
     .controls {{
       background: var(--surface);
@@ -474,8 +645,10 @@ def build_html_animation(
       padding-bottom: 4px;
     }}
     .sep {{ opacity: 0.5; }}
-    @media (max-width: 600px) {{
-      .app {{ padding: 10px; }}
+    @media (max-width: 640px) {{
+      .app {{ padding: 10px; gap: 8px; }}
+      .stage-wrap {{ min-height: 220px; border-radius: 10px; }}
+      .controls {{ padding: 10px 12px; border-radius: 10px; }}
       .btn, .select {{ padding: 6px 9px; font-size: 0.8rem; }}
       .hint-pill {{ display: none; }}
     }}
@@ -492,9 +665,9 @@ def build_html_animation(
     </header>
 
     <section id="stage" class="stage-wrap" aria-label="Interactive focus stack viewer">
-      <img id="viewerImg" class="stage-img" alt="Focus stack frame" draggable="false">
-      <div id="frameBadge" class="badge">1 / {len(encoded_frames)}</div>
-      <div id="dragHint" class="hint-pill">&larr; Drag horizontally to focus &rarr;</div>
+      <canvas id="viewerCanvas" class="stage-canvas" width="{max(1, width)}" height="{max(1, height)}" aria-label="Focus stack frame"></canvas>
+      <div id="frameBadge" class="badge hud">1 / {len(encoded_frames)}</div>
+      <div id="dragHint" class="hint-pill hud">&larr; Drag or scroll wheel to focus &rarr;</div>
     </section>
 
     <section class="controls" aria-label="Playback controls">
@@ -533,10 +706,14 @@ def build_html_animation(
     var direction = 1;
     var fps = Number(DATA.fps) || 10;
     var rafId = 0;
+    var paintRaf = 0;
     var lastTick = 0;
+    var hudTimer = 0;
+    var hintDismissed = false;
 
     var stage = document.getElementById("stage");
-    var img = document.getElementById("viewerImg");
+    var canvas = document.getElementById("viewerCanvas");
+    var ctx = canvas && canvas.getContext ? canvas.getContext("2d", {{ alpha: false }}) : null;
     var badge = document.getElementById("frameBadge");
     var counter = document.getElementById("frameCounter");
     var dragHint = document.getElementById("dragHint");
@@ -549,14 +726,78 @@ def build_html_animation(
     var btnTheme = document.getElementById("btnTheme");
     var fpsSelect = document.getElementById("fpsSelect");
 
-    var preloaded = frames.map(function(item) {{
+    var nativeW = Math.max(1, Number(DATA.width) || 1);
+    var nativeH = Math.max(1, Number(DATA.height) || 1);
+
+    function resizeCanvas() {{
+      if (!canvas) return;
+      var dpr = Math.min(2, window.devicePixelRatio || 1);
+      var rect = stage.getBoundingClientRect();
+      var availW = Math.max(1, rect.width || nativeW);
+      var availH = Math.max(1, Math.min(window.innerHeight * 0.75, rect.height || nativeH));
+      var scale = Math.min(availW / nativeW, availH / nativeH, 1.0);
+      var cssW = Math.max(1, Math.round(nativeW * scale));
+      var cssH = Math.max(1, Math.round(nativeH * scale));
+      canvas.style.width = cssW + "px";
+      canvas.style.height = cssH + "px";
+      var targetW = Math.min(nativeW, Math.max(1, Math.round(cssW * dpr)));
+      var targetH = Math.min(nativeH, Math.max(1, Math.round(cssH * dpr)));
+      if (canvas.width !== targetW || canvas.height !== targetH) {{
+        canvas.width = targetW;
+        canvas.height = targetH;
+      }}
+      schedulePaint();
+    }}
+
+    function wakeHud() {{
+      stage.classList.remove("hud-idle");
+      if (hudTimer) window.clearTimeout(hudTimer);
+      hudTimer = window.setTimeout(function() {{
+        stage.classList.add("hud-idle");
+      }}, 2400);
+    }}
+
+    var decodedImages = new Array(count);
+    var fusedImage = null;
+
+    function loadImage(src, onReady) {{
       var el = new Image();
-      el.src = item.src;
+      el.decoding = "async";
+      el.onload = function() {{ onReady(el); }};
+      el.src = src;
+      if (el.complete && el.naturalWidth > 0) {{
+        onReady(el);
+      }}
       return el;
-    }});
+    }}
+
+    for (var i = 0; i < count; i++) {{
+      (function(idx) {{
+        decodedImages[idx] = loadImage(frames[idx].src, function(el) {{
+          if (idx === currentIndex && !showingFused) schedulePaint();
+        }});
+      }})(i);
+    }}
     if (fused) {{
-      var fusedEl = new Image();
-      fusedEl.src = fused.src;
+      fusedImage = loadImage(fused.src, function() {{
+        if (showingFused) schedulePaint();
+      }});
+    }}
+
+    function drawCurrentFrame() {{
+      paintRaf = 0;
+      if (!ctx || count === 0) return;
+      var srcImg = (showingFused && fusedImage) ? fusedImage : decodedImages[currentIndex];
+      if (!srcImg || !srcImg.complete || srcImg.naturalWidth === 0) return;
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = "high";
+      ctx.drawImage(srcImg, 0, 0, canvas.width, canvas.height);
+    }}
+
+    function schedulePaint() {{
+      if (!paintRaf) {{
+        paintRaf = window.requestAnimationFrame(drawCurrentFrame);
+      }}
     }}
 
     function clampIndex(idx) {{
@@ -567,12 +808,10 @@ def build_html_animation(
     function render() {{
       if (count === 0) return;
       if (showingFused && fused) {{
-        img.src = fused.src;
         badge.textContent = fused.label || "Fused Result";
         counter.textContent = "Fused";
       }} else {{
         var item = frames[currentIndex];
-        img.src = item.src;
         var label = item.label ? (" \u00b7 " + item.label) : "";
         badge.textContent = (currentIndex + 1) + " / " + count + label;
         counter.textContent = (currentIndex + 1) + " / " + count;
@@ -582,11 +821,15 @@ def build_html_animation(
         btnFused.classList.toggle("active", showingFused);
         btnFused.setAttribute("aria-pressed", showingFused ? "true" : "false");
       }}
+      schedulePaint();
     }}
 
     function setIndex(idx) {{
       showingFused = false;
-      currentIndex = clampIndex(idx);
+      var next = clampIndex(idx);
+      if (next !== currentIndex || showingFused) {{
+        currentIndex = next;
+      }}
       render();
     }}
 
@@ -623,7 +866,7 @@ def build_html_animation(
       var interval = 1000 / Math.max(1, fps);
       if (!lastTick) lastTick = ts;
       if (ts - lastTick >= interval) {{
-        lastTick = ts;
+        lastTick = ts - ((ts - lastTick) % interval);
         advancePlayback();
       }}
       rafId = window.requestAnimationFrame(tick);
@@ -650,9 +893,9 @@ def build_html_animation(
       btnMode.classList.toggle("active", pingPong);
     }}
 
-    btnPlay.addEventListener("click", function() {{ setPlaying(!playing); }});
-    btnPrev.addEventListener("click", function() {{ setPlaying(false); stepFrame(-1); }});
-    btnNext.addEventListener("click", function() {{ setPlaying(false); stepFrame(1); }});
+    btnPlay.addEventListener("click", function() {{ wakeHud(); setPlaying(!playing); }});
+    btnPrev.addEventListener("click", function() {{ wakeHud(); setPlaying(false); stepFrame(-1); }});
+    btnNext.addEventListener("click", function() {{ wakeHud(); setPlaying(false); stepFrame(1); }});
     btnMode.addEventListener("click", function() {{
       pingPong = !pingPong;
       updateModeButton();
@@ -661,11 +904,13 @@ def build_html_animation(
       fps = Math.max(1, Math.min(60, Number(fpsSelect.value) || 10));
     }});
     scrubber.addEventListener("input", function() {{
+      wakeHud();
       setPlaying(false);
       setIndex(Number(scrubber.value));
     }});
     if (btnFused) {{
       btnFused.addEventListener("click", function() {{
+        wakeHud();
         setPlaying(false);
         showingFused = !showingFused;
         render();
@@ -678,56 +923,103 @@ def build_html_animation(
       root.setAttribute("data-theme", isLight ? "dark" : "light");
     }});
 
-    // Pointer & touch horizontal scrub
+    // Mouse-wheel focus scrubbing (Ctrl/Cmd preserves browser zoom)
+    var wheelAccum = 0;
+    stage.addEventListener("wheel", function(e) {{
+      if (count <= 1 || e.ctrlKey || e.metaKey) return;
+      e.preventDefault();
+      wakeHud();
+      setPlaying(false);
+      var dy = Math.abs(e.deltaY) >= Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
+      var threshold = e.deltaMode === 1 ? 1 : 28;
+      wheelAccum += dy;
+      var steps = Math.trunc(wheelAccum / threshold);
+      if (steps !== 0) {{
+        wheelAccum -= steps * threshold;
+        setIndex(currentIndex + (steps > 0 ? 1 : -1) * Math.min(Math.abs(steps), 4));
+      }}
+    }}, {{ passive: false }});
+
+    // Pointer & touch horizontal scrub with gesture axis lock
     var dragging = false;
     var dragStartX = 0;
+    var dragStartY = 0;
     var dragStartIndex = 0;
+    var touchAxis = null;
 
-    function beginDrag(clientX) {{
+    function beginDrag(clientX, clientY) {{
       if (count <= 1) return;
       dragging = true;
       dragStartX = clientX;
+      dragStartY = clientY || 0;
       dragStartIndex = currentIndex;
+      touchAxis = null;
       setPlaying(false);
       stage.classList.add("dragging");
-      if (dragHint) dragHint.style.opacity = "0";
+      wakeHud();
+      if (!hintDismissed && dragHint) {{
+        hintDismissed = true;
+        dragHint.style.opacity = "0";
+      }}
     }}
 
     function moveDrag(clientX) {{
       if (!dragging || count <= 1) return;
       var rect = stage.getBoundingClientRect();
-      var span = Math.max(120, rect.width * 0.75);
+      var span = Math.max(120, rect.width * 0.72);
       var dx = clientX - dragStartX;
       var deltaFrames = Math.round((dx / span) * (count - 1));
       setIndex(dragStartIndex + deltaFrames);
+      wakeHud();
     }}
 
     function endDrag() {{
       if (!dragging) return;
       dragging = false;
+      touchAxis = null;
       stage.classList.remove("dragging");
     }}
 
     stage.addEventListener("pointerdown", function(e) {{
+      if (e.pointerType === "touch") return;
       if (e.button !== 0 && e.pointerType === "mouse") return;
-      beginDrag(e.clientX);
+      beginDrag(e.clientX, e.clientY);
       if (stage.setPointerCapture) {{
         try {{ stage.setPointerCapture(e.pointerId); }} catch (_err) {{}}
       }}
     }});
     stage.addEventListener("pointermove", function(e) {{
-      if (dragging) moveDrag(e.clientX);
+      if (e.pointerType !== "touch") wakeHud();
+      if (dragging && e.pointerType !== "touch") moveDrag(e.clientX);
     }});
     stage.addEventListener("pointerup", endDrag);
     stage.addEventListener("pointercancel", endDrag);
 
     stage.addEventListener("touchstart", function(e) {{
-      if (e.touches && e.touches.length === 1) beginDrag(e.touches[0].clientX);
+      if (e.touches && e.touches.length === 1) {{
+        beginDrag(e.touches[0].clientX, e.touches[0].clientY);
+      }}
     }}, {{ passive: true }});
     stage.addEventListener("touchmove", function(e) {{
-      if (dragging && e.touches && e.touches.length === 1) moveDrag(e.touches[0].clientX);
-    }}, {{ passive: true }});
+      if (!dragging || !e.touches || e.touches.length !== 1) return;
+      var tx = e.touches[0].clientX;
+      var ty = e.touches[0].clientY;
+      if (touchAxis === null) {{
+        var adx = Math.abs(tx - dragStartX);
+        var ady = Math.abs(ty - dragStartY);
+        if (adx > 6 || ady > 6) {{
+          touchAxis = adx >= ady ? "x" : "y";
+        }}
+      }}
+      if (touchAxis === "x") {{
+        e.preventDefault();
+        moveDrag(tx);
+      }} else if (touchAxis === "y") {{
+        endDrag();
+      }}
+    }}, {{ passive: false }});
     stage.addEventListener("touchend", endDrag, {{ passive: true }});
+    stage.addEventListener("touchcancel", endDrag, {{ passive: true }});
 
     // Keyboard navigation
     window.addEventListener("keydown", function(e) {{
@@ -735,33 +1027,48 @@ def build_html_animation(
       if (tag === "select" || tag === "input" || tag === "textarea") return;
       if (e.key === "ArrowLeft") {{
         e.preventDefault();
+        wakeHud();
         setPlaying(false);
         stepFrame(-1);
       }} else if (e.key === "ArrowRight") {{
         e.preventDefault();
+        wakeHud();
         setPlaying(false);
         stepFrame(1);
       }} else if (e.key === " " || e.code === "Space") {{
         e.preventDefault();
+        wakeHud();
         setPlaying(!playing);
       }} else if (e.key === "Home") {{
         e.preventDefault();
+        wakeHud();
         setPlaying(false);
         setIndex(0);
       }} else if (e.key === "End") {{
         e.preventDefault();
+        wakeHud();
         setPlaying(false);
         setIndex(count - 1);
       }} else if ((e.key === "f" || e.key === "F") && fused) {{
         e.preventDefault();
+        wakeHud();
         setPlaying(false);
         showingFused = !showingFused;
         render();
       }}
     }});
 
+    window.addEventListener("resize", resizeCanvas);
+    if (window.ResizeObserver) {{
+      try {{
+        new window.ResizeObserver(resizeCanvas).observe(stage);
+      }} catch (_err) {{}}
+    }}
+
     updateModeButton();
+    resizeCanvas();
     render();
+    wakeHud();
     if (DATA.autoplay && count > 1) {{
       setPlaying(true);
     }}
@@ -781,6 +1088,8 @@ def export_html_animation(
     options: Optional[HtmlAnimationOptions] = None,
     progress_callback: Optional[Callable[[int, int], None]] = None,
     should_cancel: Optional[Callable[[], bool]] = None,
+    max_workers: Optional[int] = None,
+    linear_dng_metadata=None,
 ) -> str:
     """Export a self-contained single-file HTML5 focus-stack viewer to ``path``."""
     target = os.path.abspath(str(path))
@@ -795,6 +1104,8 @@ def export_html_animation(
         options=options,
         progress_callback=progress_callback,
         should_cancel=should_cancel,
+        max_workers=max_workers,
+        linear_dng_metadata=linear_dng_metadata,
     )
 
     if should_cancel is not None and should_cancel():

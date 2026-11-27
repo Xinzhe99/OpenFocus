@@ -218,27 +218,17 @@ class HtmlAnimationWorker(QThread):
             export_html_animation,
         )
         try:
-            metadata = self.linear_dng_metadata
-
-            def _prepare(frame):
-                img = resolve_frame(frame, should_cancel=self._cancelled.is_set)
-                if metadata is not None and img.dtype == 'uint16' and img.ndim == 3 and img.shape[2] == 3:
-                    from utils.linear_dng import develop_linear
-                    img = develop_linear(img, metadata)
-                return img
-
-            prepared_frames = [_prepare(f) for f in self.frames]
-            prepared_fused = _prepare(self.fused_image) if self.fused_image is not None else None
             written = export_html_animation(
                 self.path,
-                prepared_frames,
+                self.frames,
                 labels=self.labels,
-                fused_image=prepared_fused,
+                fused_image=self.fused_image,
                 options=self.options,
                 progress_callback=lambda i, n: self.progress.emit(i, n),
                 should_cancel=self._cancelled.is_set,
+                linear_dng_metadata=self.linear_dng_metadata,
             )
-            self.completed.emit(True, written, len(prepared_frames))
+            self.completed.emit(True, written, len(self.frames))
         except HtmlAnimationExportCancelled:
             self.completed.emit(False, 'CANCELLED', 0)
         except Exception as exc:

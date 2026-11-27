@@ -6,23 +6,40 @@ another program. This widget renders the same surface in the dialog: drag to
 orbit, wheel to zoom, switch render modes (Textured, Shaded Clay, Depth Color,
 Wireframe, Textured + Wireframe), and adjust multi-light studio parameters in
 real time without requiring an OpenGL context.
+
+Performance design:
+  * Caches :class:`PreparedHeightfield` geometry, surface normals, albedo, and
+    multi-light shaded vertex colors per ``(mesh_step, invert)`` so orbit
+    drags and zooms perform zero normal or shading recomputation.
+  * Adaptive interactive LOD lowers mesh density smoothly during mouse orbit,
+    wheel zoom, or slider sweeps (targeting 30-60+ FPS), then immediately
+    sharpens back to full selected detail when interaction ends.
 """
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import Optional
+import time
+from typing import Dict, Optional, Tuple
 
 import numpy as np
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QColor, QImage, QPainter
 from PyQt6.QtWidgets import QWidget
 
-from core.stereo_3d_export import LightingSettings, RENDER_MODES, render_heightfield
+from core.stereo_3d_export import (
+    LightingSettings,
+    PreparedHeightfield,
+    RENDER_MODES,
+    prepare_heightfield,
+    render_heightfield,
+)
 
 
 class DepthSurface(QWidget):
     """Software-rasterised 3D view of a height field with multi-light shading."""
+
+    _TARGET_INTERACTIVE_MS = 16.0  # 60 FPS target during drag/slider interaction
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -40,18 +57,32 @@ class DepthSurface(QWidget):
         self._drag = None
         self._base_zoom = 1.0
         self._dragging = False
+        self._interactive = False    # True during slider drags or wheel bursts
         self._mesh_step = 60         # 60% of the source; matches the dialog default
         self._render_mode = "textured"
         self._lighting = LightingSettings()
-        self._cache = None
+        self._cache = None           # (key, QImage, rgb_ndarray_ref)
+        self._prepared_cache: Dict[Tuple[int, bool], PreparedHeightfield] = {}
+        self._last_render_ms = 0.0
+        self._adaptive_lod_step: Optional[int] = None
+
+        self._refine_timer = QTimer(self)
+        self._refine_timer.setSingleShot(True)
+        self._refine_timer.setInterval(140)
+        self._refine_timer.timeout.connect(self._finish_interactive_refine)
 
     # ---------------------------------------------------------------- data
+    def _clear_prepared(self) -> None:
+        self._prepared_cache.clear()
+        self._adaptive_lod_step = None
+        self._cache = None
+
     def set_surface(self, height, texture=None, extent=None) -> None:
         """`height` is (h, w) in [0, 1]; `texture` is optional BGR uint8."""
         self._height = None if height is None else np.asarray(height, np.float32)
         self._texture = texture
         self._extent = extent
-        self._cache = None
+        self._clear_prepared()
         self.update()
 
     def set_colormap_lut(self, lut: Optional[np.ndarray]) -> None:
@@ -61,14 +92,18 @@ class DepthSurface(QWidget):
         self.update()
 
     def set_relief(self, relief: float) -> None:
-        self._relief = float(relief)
-        self._cache = None
-        self.update()
+        val = float(relief)
+        if val != self._relief:
+            self._relief = val
+            self._cache = None
+            self.update()
 
     def set_invert(self, invert: bool) -> None:
-        self._invert = bool(invert)
-        self._cache = None
-        self.update()
+        flag = bool(invert)
+        if flag != self._invert:
+            self._invert = flag
+            self._cache = None
+            self.update()
 
     def set_render_mode(self, mode: str) -> None:
         norm = str(mode or "textured").strip().lower()
@@ -107,12 +142,38 @@ class DepthSurface(QWidget):
     def set_ambient(self, ambient: float) -> None:
         self.set_lighting(replace(self._lighting, ambient=float(ambient)))
 
+    def set_interactive(self, active: bool) -> None:
+        """Enable or disable adaptive interactive LOD (e.g., while sliding controls).
+
+        When ``active`` transitions from ``True`` to ``False``, the settled
+        cache is invalidated and an immediate full-detail repaint is scheduled.
+        """
+        flag = bool(active)
+        if flag == self._interactive:
+            return
+        self._interactive = flag
+        if not flag:
+            self._refine_timer.stop()
+            self._cache = None
+            self.update()
+
+    def is_interactive(self) -> bool:
+        return bool(self._dragging or self._interactive)
+
+    def _finish_interactive_refine(self) -> None:
+        if self._interactive and not self._dragging:
+            self._interactive = False
+            self._cache = None
+            self.update()
+
     def camera_state(self) -> tuple[float, float, float]:
         """Return current ``(yaw, pitch, zoom)``."""
         return (float(self._yaw), float(self._pitch), float(self._zoom))
 
     def reset_view(self) -> None:
         self._yaw, self._pitch, self._zoom = -35.0, 45.0, 1.0
+        self._interactive = False
+        self._refine_timer.stop()
         self._cache = None
         self.update()
 
@@ -121,6 +182,7 @@ class DepthSurface(QWidget):
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag = event.position()
             self._dragging = True
+            self._refine_timer.stop()
 
     def mouseMoveEvent(self, event):  # noqa: N802 (Qt casing)
         if self._drag is None:
@@ -135,6 +197,8 @@ class DepthSurface(QWidget):
         self._drag = None
         if self._dragging:
             self._dragging = False
+            self._interactive = False
+            self._refine_timer.stop()
             self._cache = None      # rebuild once at full detail
             self.update()
 
@@ -148,7 +212,9 @@ class DepthSurface(QWidget):
         zoom = max(0.2, min(6.0, self._zoom * f))
         if zoom != self._zoom:
             self._zoom = zoom
+            self._interactive = True
             self._cache = None
+            self._refine_timer.start()
             self.update()
         event.accept()
 
@@ -181,14 +247,51 @@ class DepthSurface(QWidget):
     # ------------------------------------------------------------ rendering
     def set_detail(self, percent: int) -> None:
         """Sampling resolution as a percentage of the preview source (20-100)."""
-        self._mesh_step = max(20, min(100, int(percent)))
-        self._cache = None
-        self.update()
+        step = max(20, min(100, int(percent)))
+        if step != self._mesh_step:
+            self._mesh_step = step
+            self._adaptive_lod_step = None
+            self._cache = None
+            self.update()
+
+    def _interactive_mesh_step(self) -> int:
+        """Choose an adaptive mesh_step while interacting to keep 30-60+ FPS."""
+        base = max(20, min(self._mesh_step, max(20, self._mesh_step // 2)))
+        if self._adaptive_lod_step is not None:
+            return max(20, min(base, self._adaptive_lod_step))
+        if self._height is not None:
+            hh, ww = self._height.shape[:2]
+            pixels = hh * ww
+            # Cap interactive vertices near ~32k for instant 60 FPS orbiting.
+            if pixels > 0:
+                target_ratio = (32_000.0 / float(pixels)) ** 0.5
+                auto_step = max(20, min(base, int(round(target_ratio * 100.0 / 5.0) * 5)))
+                return auto_step
+        return base
+
+    def _get_prepared(self, mesh_step: int) -> Optional[PreparedHeightfield]:
+        if self._height is None:
+            return None
+        key = (int(mesh_step), bool(self._invert))
+        prep = self._prepared_cache.get(key)
+        if prep is None:
+            # Keep cache compact (full detail + interactive LOD + inverted variants).
+            if len(self._prepared_cache) >= 4:
+                self._prepared_cache.pop(next(iter(self._prepared_cache)))
+            prep = prepare_heightfield(
+                self._height,
+                mesh_step=mesh_step,
+                invert=self._invert,
+                extent=self._extent,
+            )
+            self._prepared_cache[key] = prep
+        return prep
 
     def _camera_key(self, background, accent, wireframe):
         # Quantise the camera so a drag reuses frames instead of rebuilding
         # geometry for every pixel of mouse movement.
         l = self._lighting
+        interactive = self.is_interactive()
         return (
             round(self._yaw, 1),
             round(self._pitch, 1),
@@ -200,7 +303,7 @@ class DepthSurface(QWidget):
             id(self._texture),
             id(self._colormap_lut),
             self._mesh_step,
-            self._dragging,
+            interactive,
             self._render_mode,
             round(l.key_azimuth, 1),
             round(l.key_elevation, 1),
@@ -220,21 +323,52 @@ class DepthSurface(QWidget):
         if cached is not None and cached[0] == key:
             return cached[1]
 
-        # Keep the selected resolution at rest; use fewer samples while the
-        # camera moves, then restore that same selection on release.
-        step = max(20, self._mesh_step // 2) if self._dragging else self._mesh_step
-        image = self._rasterise(background, accent, wireframe=wf, mesh_step=step)
-        # Remember only settled frames; a drag would otherwise evict the cache
-        # constantly with throwaway images.
-        if not self._dragging:
-            self._cache = (key, image)
+        interactive = self.is_interactive()
+        step = self._interactive_mesh_step() if interactive else self._mesh_step
+        t0 = time.perf_counter()
+        image, buf = self._rasterise_with_buf(
+            background,
+            accent,
+            wireframe=wf,
+            mesh_step=step,
+            fast_fill=interactive,
+        )
+        elapsed_ms = (time.perf_counter() - t0) * 1000.0
+        self._last_render_ms = elapsed_ms
+
+        if interactive:
+            # Adapt LOD down if a very high-resolution canvas slows below 60 FPS.
+            if elapsed_ms > self._TARGET_INTERACTIVE_MS * 1.4 and step > 20:
+                self._adaptive_lod_step = max(20, step - 5)
+        else:
+            self._cache = (key, image, buf)
         return image
 
     def _rasterise(self, background, accent, wireframe=None, mesh_step: int = None):
         """Forward-map heightfield pixels onto the canvas with multi-light shading."""
+        image, _buf = self._rasterise_with_buf(
+            background,
+            accent,
+            wireframe=wireframe,
+            mesh_step=mesh_step,
+            fast_fill=self.is_interactive(),
+        )
+        return image
+
+    def _rasterise_with_buf(
+        self,
+        background,
+        accent,
+        wireframe=None,
+        mesh_step: int = None,
+        fast_fill: bool = False,
+    ):
         w = max(1, self.width())
         h = max(1, self.height())
         step = self._mesh_step if mesh_step is None else int(mesh_step)
+        prep = self._get_prepared(step)
+        if prep is None:
+            return None, None
 
         bg_c = QColor(background)
         ac_c = QColor(accent)
@@ -259,13 +393,18 @@ class DepthSurface(QWidget):
             accent_rgb=(ac_c.red(), ac_c.green(), ac_c.blue()),
             wireframe_rgb=wf_rgb,
             colormap_lut=self._colormap_lut,
+            prepared=prep,
+            fast_fill=fast_fill,
         )
         if rgb is None:
-            return None
-        return QImage(
+            return None, None
+        img = QImage(
             rgb.data,
             w,
             h,
             3 * w,
             QImage.Format.Format_RGB888,
-        ).copy()
+        )
+        # Keep rgb alive for the lifetime of the returned QImage without copying pixels.
+        img._backing_buffer = rgb
+        return img, rgb

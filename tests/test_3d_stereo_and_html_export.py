@@ -457,3 +457,281 @@ def test_depth_dialog_upgraded_3d_controls_and_themes(qapp, tmp_path, monkeypatc
         win.deleteLater()
         qapp.processEvents()
 
+
+# ---------------------------------------------------------------------------
+# 5. Round-2 Optimization Verification: Parallel HTML5 Ordering, Cached Normals,
+#    Adaptive LOD Refine, Fast Vectorized Stereo & Parallel Turntable Parity
+# ---------------------------------------------------------------------------
+
+def test_html_animation_parallel_frame_ordering_and_canvas_ux(tmp_path):
+    """Parallel ThreadPoolExecutor encoding must preserve exact frame order & viewer UX."""
+    import json as _json
+
+    n_frames = 14
+    h, w = 96, 128
+    # Each frame has a distinct uniform RGB color so any reordering is immediately caught.
+    frames = []
+    labels = []
+    expected_b = []
+    for i in range(n_frames):
+        img = np.zeros((h, w, 3), dtype=np.uint8)
+        b_val = 20 + i * 16
+        g_val = 230 - i * 14
+        r_val = 40 + ((i * 37) % 190)
+        img[:, :] = (b_val, g_val, r_val)  # BGR
+        frames.append(img)
+        labels.append(f"Focus_{i:02d}")
+        expected_b.append(b_val)
+
+    opts = HtmlAnimationOptions(
+        max_width=128,
+        quality=95,
+        image_format="jpeg",
+        fps=15,
+        include_fused_frame=True,
+    )
+    progress_seen = []
+    html_parallel = build_html_animation(
+        frames,
+        labels=labels,
+        fused_image=frames[-1],
+        options=opts,
+        max_workers=6,
+        progress_callback=lambda done, total: progress_seen.append((done, total)),
+    )
+    html_serial = build_html_animation(
+        frames,
+        labels=labels,
+        fused_image=frames[-1],
+        options=opts,
+        max_workers=1,
+    )
+    # Monotonic progress reporting (1..total)
+    assert progress_seen == [(i, n_frames + 1) for i in range(1, n_frames + 2)]
+    assert html_parallel == html_serial
+
+    # Extract embedded JSON payload and verify exact frame order & decoded color parity
+    m = re.search(r"var DATA = (\{.*?\});\n", html_parallel)
+    assert m is not None
+    payload = _json.loads(m.group(1).replace("<\\/", "</"))
+    assert len(payload["frames"]) == n_frames
+    assert [f["label"] for f in payload["frames"]] == labels
+    assert payload["fused"] is not None
+
+    for idx, item in enumerate(payload["frames"]):
+        raw_bytes = base64.b64decode(item["src"].split(",", 1)[1])
+        pil_img = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
+        arr = np.asarray(pil_img)
+        # RGB blue channel corresponds to BGR[0]
+        mean_b = float(arr[:, :, 2].mean())
+        assert abs(mean_b - expected_b[idx]) < 4.0, f"frame {idx} out of order: got B={mean_b}, expected {expected_b[idx]}"
+
+    # Polished offline 60fps canvas viewer UX tokens & strict zero-network check
+    for token in (
+        'id="viewerCanvas"',
+        'addEventListener("wheel"',
+        "hud-idle",
+        "touchAxis",
+        "requestAnimationFrame",
+    ):
+        assert token in html_parallel, f"missing polished HTML viewer token: {token}"
+    assert "http://" not in html_parallel.lower()
+    assert "https://" not in html_parallel.lower()
+
+
+def test_cached_heightfield_normals_and_render_parity():
+    """Cached PreparedHeightfield normals and renders must match fresh computation exactly."""
+    from core.stereo_3d_export import compute_heightfield_normals, prepare_heightfield
+
+    height, texture = _synthetic_surface(120, 160)
+    prep = prepare_heightfield(height, mesh_step=60, invert=False, extent=(119, 159))
+
+    # Direct reference normal computation
+    z_smooth = cv2.GaussianBlur(prep.z, (0, 0), 1.0)
+    dz_dx = np.gradient(z_smooth, axis=1).reshape(-1)
+    dz_dy = np.gradient(z_smooth, axis=0).reshape(-1)
+    strength = 2.4 * 0.25 + 0.35
+    ref_nx = -dz_dx * strength
+    ref_ny = dz_dy * strength
+    ref_nz = np.ones_like(dz_dx)
+    inv_norm = 1.0 / np.sqrt(ref_nx * ref_nx + ref_ny * ref_ny + ref_nz * ref_nz)
+    ref_nx, ref_ny, ref_nz = ref_nx * inv_norm, ref_ny * inv_norm, ref_nz * inv_norm
+
+    nx, ny, nz = prep.normals(0.25)
+    np.testing.assert_allclose(nx, ref_nx, atol=1e-6)
+    np.testing.assert_allclose(ny, ref_ny, atol=1e-6)
+    np.testing.assert_allclose(nz, ref_nz, atol=1e-6)
+
+    # Calling normals() again for the same relief returns the exact cached arrays
+    nx2, ny2, nz2 = prep.normals(0.25)
+    assert nx2 is nx and ny2 is ny and nz2 is nz
+
+    # Standalone helper matches too
+    snx, sny, snz = compute_heightfield_normals(prep.z, 0.25)
+    np.testing.assert_allclose(snx, ref_nx, atol=1e-6)
+    np.testing.assert_allclose(sny, ref_ny, atol=1e-6)
+    np.testing.assert_allclose(snz, ref_nz, atol=1e-6)
+
+    # Render parity across all 5 render modes & multiple camera angles
+    light = LightingSettings(key_azimuth=120.0, key_elevation=40.0, key_intensity=1.0, fill_intensity=0.3, ambient=0.25)
+    for mode in RENDER_MODES:
+        cached_rgb = render_heightfield(
+            height, texture, 320, 240,
+            yaw=25.0, pitch=38.0, zoom=1.1, relief=0.25, mesh_step=60,
+            extent=(119, 159), render_mode=mode, lighting=light, prepared=prep,
+        )
+        fresh_rgb = render_heightfield(
+            height, texture, 320, 240,
+            yaw=25.0, pitch=38.0, zoom=1.1, relief=0.25, mesh_step=60,
+            extent=(119, 159), render_mode=mode, lighting=light, prepared=None,
+        )
+        np.testing.assert_array_equal(cached_rgb, fresh_rgb)
+
+
+def test_depth_surface_adaptive_lod_and_release_refine(qapp):
+    """Interactive drag/slider lowers LOD and reuses cached normals; release sharpens to full detail."""
+    from PyQt6.QtCore import QPointF, Qt
+    from PyQt6.QtGui import QMouseEvent
+    from widgets.depth_surface import DepthSurface
+
+    height, texture = _synthetic_surface(240, 320)
+    surf = DepthSurface()
+    surf.resize(480, 360)
+    surf.set_surface(height, texture, extent=(239, 319))
+    surf.set_detail(80)
+    surf.show()
+    qapp.processEvents()
+    try:
+        # Settled full-detail render populates full-step prepared cache
+        img_full = surf._render_cached("#12161b", "#4c8dff", "#4c8dff")
+        assert img_full is not None and not img_full.isNull()
+        assert (80, False) in surf._prepared_cache
+        full_prep = surf._prepared_cache[(80, False)]
+
+        # Mouse press + move enters interactive LOD with lower mesh_step
+        press = QMouseEvent(
+            QMouseEvent.Type.MouseButtonPress,
+            QPointF(100.0, 100.0),
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        surf.mousePressEvent(press)
+        assert surf.is_interactive()
+        lod_step = surf._interactive_mesh_step()
+        assert lod_step < 80
+
+        move1 = QMouseEvent(
+            QMouseEvent.Type.MouseMove,
+            QPointF(130.0, 110.0),
+            Qt.MouseButton.NoButton,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        surf.mouseMoveEvent(move1)
+        img_drag1 = surf._render_cached("#12161b", "#4c8dff", "#4c8dff")
+        assert img_drag1 is not None
+        assert (lod_step, False) in surf._prepared_cache
+        lod_prep = surf._prepared_cache[(lod_step, False)]
+        lod_normals_before = lod_prep._normals
+
+        # Second drag angle reuses the exact same cached normals without recomputation
+        move2 = QMouseEvent(
+            QMouseEvent.Type.MouseMove,
+            QPointF(165.0, 125.0),
+            Qt.MouseButton.NoButton,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        surf.mouseMoveEvent(move2)
+        img_drag2 = surf._render_cached("#12161b", "#4c8dff", "#4c8dff")
+        assert img_drag2 is not None
+        assert surf._prepared_cache[(lod_step, False)]._normals is lod_normals_before
+
+        # Mouse release exits interactive mode and immediately refines at full detail
+        release = QMouseEvent(
+            QMouseEvent.Type.MouseButtonRelease,
+            QPointF(165.0, 125.0),
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.NoButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        surf.mouseReleaseEvent(release)
+        assert not surf.is_interactive()
+        assert surf._cache is None
+        img_refined = surf._render_cached("#12161b", "#4c8dff", "#4c8dff")
+        assert img_refined is not None
+        assert surf._cache is not None
+        # Original full-detail PreparedHeightfield was kept cached across the drag
+        assert surf._prepared_cache[(80, False)] is full_prep
+
+        # Slider interactive hook toggles LOD and refines cleanly on release
+        surf.set_interactive(True)
+        assert surf.is_interactive()
+        surf.set_key_azimuth(180.0)
+        surf._render_cached("#12161b", "#4c8dff", "#4c8dff")
+        surf.set_interactive(False)
+        assert not surf.is_interactive()
+        assert surf._cache is None
+    finally:
+        surf.close()
+        surf.deleteLater()
+        qapp.processEvents()
+
+
+def test_fast_vectorized_stereo_large_multistriped_parity():
+    """Multi-striped parallel DIBR stereo synthesis (>=200k px) matches single-stripe occlusion."""
+    from core.stereo_3d_export import _warp_eye_stripe
+
+    h, w = 480, 560  # 268,800 px -> exercises multi-threaded striped path
+    depth, img = _synthetic_surface(h, w)
+    # Add sharp foreground bar to stress disocclusion & foreground-over-background occlusion
+    cx = w // 2
+    img[:, cx - 12:cx + 12] = (245, 250, 255)
+    depth[:, cx - 16:cx + 16] = 1.0
+
+    left_par, right_par = synthesize_stereo_views(img, depth, max_disparity_px=24.0, convergence=0.5)
+    assert left_par.shape == (h, w, 3) and right_par.shape == (h, w, 3)
+
+    # Compare against single-stripe reference on the exact same smoothed depth
+    d_smooth = np.ascontiguousarray(cv2.GaussianBlur(depth, (0, 0), 0.8), dtype=np.float32)
+    xs_f32 = np.arange(w, dtype=np.float32)[None, :]
+    xs_u64 = np.arange(w, dtype=np.uint64)[None, :]
+    xs_i32 = np.arange(w, dtype=np.int32)[None, :]
+    ref_left = _warp_eye_stripe(img, d_smooth, +0.5, 24.0, 0.5, xs_f32, xs_u64, xs_i32)
+    ref_right = _warp_eye_stripe(img, d_smooth, -0.5, 24.0, 0.5, xs_f32, xs_u64, xs_i32)
+    np.testing.assert_array_equal(left_par, ref_left)
+    np.testing.assert_array_equal(right_par, ref_right)
+
+    # Disparity shifts foreground right in left view and left in right view
+    left_bar = _weighted_center_x((left_par[:, :, 0] > 235).astype(np.uint8))
+    right_bar = _weighted_center_x((right_par[:, :, 0] > 235).astype(np.uint8))
+    assert left_bar > cx + 4.0
+    assert right_bar < cx - 4.0
+
+
+def test_parallel_turntable_matches_serial_order(tmp_path):
+    """Multi-threaded turntable GIF export produces frame-identical output to serial export."""
+    height, texture = _synthetic_surface(64, 80)
+    opts = TurntableOptions(
+        output_format="gif",
+        width=180,
+        height=135,
+        frame_count=10,
+        fps=12,
+        motion_mode="orbit_pitch",
+        render_mode="textured",
+    )
+    serial_path = tmp_path / "serial.gif"
+    parallel_path = tmp_path / "parallel.gif"
+    export_turntable_video(str(serial_path), height, texture, options=opts, max_workers=1)
+    export_turntable_video(str(parallel_path), height, texture, options=opts, max_workers=4)
+
+    with Image.open(serial_path) as g1, Image.open(parallel_path) as g2:
+        assert g1.n_frames == g2.n_frames == 10
+        for idx in range(10):
+            g1.seek(idx)
+            g2.seek(idx)
+            np.testing.assert_array_equal(np.asarray(g1.convert("RGB")), np.asarray(g2.convert("RGB")))
+
+

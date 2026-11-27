@@ -1003,6 +1003,8 @@ class DepthMapDialog(QDialog):
         self.detail_value.setMinimumWidth(34)
         self.detail_value.setAlignment(
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.detail_slider.sliderPressed.connect(lambda: self.surface.set_interactive(True))
+        self.detail_slider.sliderReleased.connect(lambda: self.surface.set_interactive(False))
         self.detail_slider.valueChanged.connect(
             lambda v: (self.detail_value.setText(f"{v / 100.0:.2f}x"),
                        self.surface.set_detail(v)))
@@ -1027,6 +1029,8 @@ class DepthMapDialog(QDialog):
             val_lbl = QLabel(fmt_fn(initial))
             val_lbl.setMinimumWidth(34)
             val_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            slider.sliderPressed.connect(lambda: self.surface.set_interactive(True))
+            slider.sliderReleased.connect(lambda: self.surface.set_interactive(False))
             slider.valueChanged.connect(lambda v: (val_lbl.setText(fmt_fn(v)), setter(v)))
             return slider, val_lbl
 
