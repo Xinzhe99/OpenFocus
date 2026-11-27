@@ -733,5 +733,3 @@ def test_parallel_turntable_matches_serial_order(tmp_path):
             g1.seek(idx)
             g2.seek(idx)
             np.testing.assert_array_equal(np.asarray(g1.convert("RGB")), np.asarray(g2.convert("RGB")))
-
-
