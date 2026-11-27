@@ -1985,6 +1985,26 @@ class ImageStackLoader:
 
         return stacks
 
+    def split_adaptive(
+        self,
+        images_with_times: list,
+        *,
+        descriptors=None,
+        thread_count: int = 0,
+        progress_callback=None,
+    ) -> list:
+        """Group consecutive frames into focus stacks using adaptive visual similarity."""
+        from core.adaptive_split import split_entries_adaptive
+
+        stacks, _descriptors, _similarities = split_entries_adaptive(
+            images_with_times,
+            descriptors=descriptors,
+            thread_count=thread_count,
+            should_cancel=self.should_cancel,
+            progress_callback=progress_callback,
+        )
+        return stacks
+
     def get_stack_info(
         self,
         stacks: List[List[Tuple[str, np.ndarray, Optional[float]]]]

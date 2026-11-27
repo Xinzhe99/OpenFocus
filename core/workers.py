@@ -1495,6 +1495,53 @@ class BatchImportWorker(QThread):
         return True
 
 
+class AdaptiveSplitWorker(QThread):
+    """Analyze a single folder's frames off the GUI thread to detect stack boundaries."""
+
+    progress = pyqtSignal(int, int)            # done, total
+    split_ready = pyqtSignal(object, object)   # stacks, descriptors
+    failed = pyqtSignal(str)
+
+    def __init__(self, entries, *, descriptors=None, thread_count: int = 0, parent=None):
+        super().__init__(parent)
+        configure_native_worker_stack(self)
+        self.entries = list(entries or [])
+        self.descriptors = descriptors
+        self.thread_count = thread_count
+        self.is_cancelled = False
+
+    def cancel(self):
+        self.is_cancelled = True
+
+    def run(self):
+        from core.adaptive_split import split_entries_adaptive
+
+        with log_operation("batch_adaptive_split", frame_count=len(self.entries),
+                           thread_count=self.thread_count) as operation:
+            try:
+                stacks, descriptors, _similarities = split_entries_adaptive(
+                    self.entries,
+                    descriptors=self.descriptors,
+                    thread_count=self.thread_count,
+                    should_cancel=lambda: self.is_cancelled,
+                    progress_callback=self._emit_progress,
+                )
+                if self.is_cancelled:
+                    operation.cancel()
+                    return
+                self.split_ready.emit(stacks, descriptors)
+            except InterruptedError:
+                operation.cancel()
+            except Exception as exc:  # noqa: BLE001 - surfaced by dialog
+                operation.fail()
+                if not self.is_cancelled:
+                    self.failed.emit(str(exc))
+
+    def _emit_progress(self, done: int, total: int) -> None:
+        if not self.is_cancelled:
+            self.progress.emit(done, total)
+
+
 class BatchWorker(QThread):
     """批处理工作线程"""
 
@@ -1747,7 +1794,9 @@ class BatchWorker(QThread):
         entries = [item for item in self.single_folder_images_with_times if keep(item)]
         if not entries:
             return [[]] if self.single_folder_images_with_times else []
-        if self.split_method == "count":
+        if self.split_method == "adaptive":
+            return self.image_loader.split_adaptive(entries, thread_count=self.thread_count)
+        elif self.split_method == "count":
             return self.image_loader.split_by_count(entries, self.split_param or 5)
         elif self.split_method == "time_threshold":
             return self.image_loader.split_by_time_threshold(entries, self.split_param or 5.0)
