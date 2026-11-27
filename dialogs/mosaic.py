@@ -25,6 +25,7 @@ from core.registration import RegistrationCancelled
 from core.resource_policy import heavy_job, require_memory
 from locales import trans
 from utils.image_utils import cv2_to_pixmap, imwrite_auto
+from utils.memory import InsufficientMemoryError
 from utils.settings_store import (get_last_dialog_dir, image_save_dir, image_save_filter,
                                   remember_image_save, set_last_dialog_dir)
 from utils.path_identity import same_path
@@ -867,7 +868,7 @@ class MosaicDialog(QDialog):
             cached = existing.get(id(frame.preview))
             pixmap = cached[1] if cached is not None and cached[0] is frame.preview else cv2_to_pixmap(frame.preview)
             if pixmap.isNull():
-                raise MemoryError('Could not create mosaic preview pixmap')
+                raise InsufficientMemoryError('Could not create mosaic preview pixmap')
             result.append(pixmap)
         return result
 
@@ -1133,7 +1134,7 @@ class MosaicDialog(QDialog):
                 return
             pixmap = cv2_to_pixmap(image)
             if pixmap.isNull():
-                raise MemoryError('Could not create mosaic preview pixmap')
+                raise InsufficientMemoryError('Could not create mosaic preview pixmap')
             self._plan, self._plan_revision = captured, revision
             self._show_placement()
             self._updating = True

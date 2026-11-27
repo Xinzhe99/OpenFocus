@@ -136,6 +136,7 @@ class GalleryScreensaverWindow(QWidget):
         self.close()
 
     def apply_theme(self, theme: str) -> None:
+        # Fullscreen screensaver always keeps the dark theatrical backdrop.
         p = palette("dark")
         bg = rgba(p["bg"], 0.72)
         self.lbl_exit_toast.setStyleSheet(
@@ -148,7 +149,7 @@ class GalleryScreensaverWindow(QWidget):
             f" font-size: {FONT['body']}pt;"
             f" font-weight: {WEIGHT['medium']}; }}"
         )
-        self.showcase.apply_theme(theme)
+        self.showcase.apply_theme("dark")
 
     @pyqtSlot()
     def retranslate(self) -> None:

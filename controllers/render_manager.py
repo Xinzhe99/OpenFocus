@@ -170,6 +170,7 @@ class RenderManager:
         # so the deferred render cannot be mislabeled or outlive cancellation.
         self._render_after_load: Optional[dict] = None
         self._pending_storage = None
+        self._active_queue_job: Optional[Any] = None
         app = QApplication.instance()
         if app is not None:
             app.aboutToQuit.connect(self.clear_prepared_cache)
@@ -315,24 +316,33 @@ class RenderManager:
         if report:
             self.performance_report = report
 
-    def _alignment_key(self, included, method=None):
+    def _alignment_key(self, included, method=None, *, queue_item=None):
         window = self.window
-        method = method or window.current_fusion_method()
-        getter = getattr(window, "brightness_option_for", None)
-        brightness = (bool(getter("exposure_match", method)) if callable(getter)
-                      else bool(getattr(window, "exposure_match", False)))
-        alignment = window.current_alignment_method()
-        parameters = window.registration_parameters_for(alignment)
+        if queue_item is not None:
+            method = queue_item.method
+            opts = queue_item.options or {}
+            brightness = bool(opts.get("exposure_match", False))
+            alignment = queue_item.align_method
+            parameters = deepcopy(queue_item.align_params or {})
+            reverse_order = bool(opts.get("reverse_order", False))
+        else:
+            method = method or window.current_fusion_method()
+            getter = getattr(window, "brightness_option_for", None)
+            brightness = (bool(getter("exposure_match", method)) if callable(getter)
+                          else bool(getattr(window, "exposure_match", False)))
+            alignment = window.current_alignment_method()
+            parameters = window.registration_parameters_for(alignment)
+            reverse_order = bool(getattr(window, "stack_reverse_order", False))
         from core.workers import _ordered_openfocus_registration
         reverse_registration = _ordered_openfocus_registration(
-            alignment, method, 'desc' if getattr(window, 'stack_reverse_order', False) else 'asc')
+            alignment, method, 'desc' if reverse_order else 'asc')
         # Checkbox edits advance source_revision to reject in-flight work.
         # The ordered inclusion below already identifies those edits for reuse.
         return (getattr(window, "source_content_revision", 0), tuple(included),
                 tuple(id(window.raw_images[i]) for i in included),
                 alignment_steps(alignment), tuple(sorted(parameters.items())),
                 getattr(window, "reg_downscale_width", None), brightness,
-                bool(getattr(window, "stack_reverse_order", False)),
+                reverse_order,
                 bool(getattr(window, "defect_mask_path", "") or getattr(window, "sensor_denoise", False)),
                 'reverse-registration-v1' if reverse_registration else None)
 
@@ -346,16 +356,28 @@ class RenderManager:
         return tuple(bytes(exifs[index]) if 0 <= index < len(exifs) else b""
                      for index in included)
 
-    def _processing_parameters(self, method):
+    def _processing_parameters(self, method, *, queue_item=None):
         window = self.window
         values = {key: getattr(window, key, None) for key in (
             "tile_enabled", "tile_block_size", "tile_overlap", "tile_threshold",
             "reg_downscale_width", "ai_batch_size", "stack_reverse_order", "use_gpu")}
-        values.update(window.fusion_parameters_for(method))
-        values["registration_parameters"] = window.registration_parameters_for(
-            window.current_alignment_method())
-        values["exposure_match"] = window.brightness_option_for("exposure_match", method)
-        values["base_correct"] = window.brightness_option_for("base_correct", method)
+        if queue_item is not None:
+            opts = queue_item.options or {}
+            values.update(deepcopy(queue_item.method_params or {}))
+            values["registration_parameters"] = deepcopy(queue_item.align_params or {})
+            values["exposure_match"] = bool(opts.get("exposure_match", False))
+            values["base_correct"] = bool(opts.get("base_correct", False))
+            values["stack_reverse_order"] = bool(opts.get("reverse_order", False))
+            values["sharpen_output"] = bool(opts.get("sharpen_output", False))
+            values["sharpen_strength"] = opts.get("sharpen_strength", DEFAULT_SHARPEN_STRENGTH)
+        else:
+            values.update(window.fusion_parameters_for(method))
+            values["registration_parameters"] = window.registration_parameters_for(
+                window.current_alignment_method())
+            values["exposure_match"] = window.brightness_option_for("exposure_match", method)
+            values["base_correct"] = window.brightness_option_for("base_correct", method)
+            values["sharpen_output"] = bool(getattr(window, "sharpen_output", False))
+            values["sharpen_strength"] = getattr(window, "sharpen_strength", DEFAULT_SHARPEN_STRENGTH)
         if method in ('openfocus_a', 'openfocus_b', 'openfocus_c'):
             values['tile_enabled'] = False
         elif method != 'none':
@@ -363,8 +385,6 @@ class RenderManager:
             values['tile_enabled'] = bool(values['tile_enabled'] and (
                 get_fusion(method).external_tiling_default
                 or values['tile_threshold'] != _DEFAULT_TILE_THRESHOLD))
-        values["sharpen_output"] = bool(getattr(window, "sharpen_output", False))
-        values["sharpen_strength"] = getattr(window, "sharpen_strength", DEFAULT_SHARPEN_STRENGTH)
         values["defect_mask_path"] = getattr(window, "defect_mask_path", "")
         values["sensor_denoise"] = bool(getattr(window, "sensor_denoise", False))
         values["base_frame"] = _base_frame(method, values["base_correct"])
@@ -717,6 +737,61 @@ class RenderManager:
         # Keep ownership until the GUI processes the queued result or error.
         return worker is not None and (getattr(self, '_render_active', False) or worker.isRunning())
 
+    def is_pipeline_busy(self) -> bool:
+        """True when a render, storage preflight, compare run, or context worker owns the pipeline."""
+        return bool(
+            getattr(self, "_render_pending", False)
+            or self._pending_storage is not None
+            or self._compare_mode
+            or getattr(self, "_substack_mode", False)
+            or self._render_after_load is not None
+            or getattr(self, "context_worker", None) is not None
+            or self._render_worker_active()
+        )
+
+    def start_queued_render(self, item) -> str:
+        """Execute a frozen RenderQueueItem without blocking parameter controls."""
+        status = self.start_render(
+            force_algorithm=item.method,
+            interactive=False,
+            confirmed=True,
+            queue_item=item,
+        )
+        return status
+
+    def cancel_queued_render(self, item=None) -> None:
+        """Cancel the currently running queued render job if active."""
+        if item is not None and self._active_queue_job is not item:
+            if (self._active_queue_job is None
+                    or getattr(self._active_queue_job, "job_id", None) != getattr(item, "job_id", None)):
+                return
+        context_worker = getattr(self, "context_worker", None)
+        if context_worker is not None and not getattr(context_worker, "is_cancelled", False):
+            context_worker.cancel()
+            self.refresh_action_labels()
+            self._show_progress_bar(trans.t('depth_cancelling'))
+            return
+        if self._render_worker_active() and not getattr(self.worker, "is_cancelled", False):
+            self._cancel_worker()
+            self.dismiss_live_preview()
+            self.refresh_action_labels()
+            self._show_progress_bar(trans.t('depth_cancelling'))
+            return
+        # No active worker to acknowledge cancellation: notify the queue directly.
+        active = self._active_queue_job
+        if active is not None:
+            self._active_queue_job = None
+            queue = getattr(self.window, "render_queue", None)
+            if queue is not None:
+                queue.notify_job_cancelled(active.job_id)
+
+    def _notify_queue_idle(self) -> None:
+        if self._compare_mode or getattr(self, "_substack_mode", False) or self._active_queue_job is not None:
+            return
+        queue = getattr(self.window, "render_queue", None)
+        if queue is not None and hasattr(queue, "notify_pipeline_idle"):
+            queue.notify_pipeline_idle()
+
     def _render_is_cancelling(self) -> bool:
         return bool(getattr(self, '_compare_cancelling', False)
                     or getattr(self, '_substack_cancelling', False)
@@ -851,6 +926,7 @@ class RenderManager:
         self._substack_results = []
         if was_active:
             self._restore_ui_controls()
+            self._notify_queue_idle()
 
     def cancel_substack_render(self) -> None:
         """Cancel an active or queued substack render cleanly."""
@@ -990,6 +1066,7 @@ class RenderManager:
         from PyQt6.QtWidgets import QWidget
         if isinstance(window, QWidget):
             QApplication.alert(window)
+        self._notify_queue_idle()
 
     def start_stack_outputs(
         self,
@@ -1243,7 +1320,7 @@ class RenderManager:
                      interactive: bool = True, confirmed: bool = False,
                      roi_choice: dict | None = None, _storage_assessment=_STORAGE_UNSET,
                      _cpu_confirmed: bool = False, _substack_range=None,
-                     _stack_outputs: dict | None = None):
+                     _stack_outputs: dict | None = None, queue_item=None):
         """Start a render and report why it did or did not start.
 
         ``interactive=False`` is the control-channel path: it never opens a
@@ -1277,13 +1354,15 @@ class RenderManager:
             self._start_render_inner(force_algorithm, interactive=interactive,
                                      confirmed=confirmed, roi_choice=roi_choice,
                                      storage_assessment=_storage_assessment, cpu_confirmed=_cpu_confirmed,
-                                     substack_range=_substack_range, stack_outputs=_stack_outputs)
+                                     substack_range=_substack_range, stack_outputs=_stack_outputs,
+                                     queue_item=queue_item)
         except Exception as exc:
             self.last_state = "error"
             self.last_error = str(exc)
             self.last_result = None
             self._render_context = None
             self._preview_mode = False
+            self._active_queue_job = None
             self._abort_compare_run()
             self._abort_substack_run()
             self._restore_ui_controls()
@@ -1297,7 +1376,7 @@ class RenderManager:
                             interactive: bool = True, confirmed: bool = False,
                             roi_choice: dict | None = None, storage_assessment=_STORAGE_UNSET,
                             cpu_confirmed: bool = False, substack_range=None,
-                            stack_outputs: dict | None = None) -> None:
+                            stack_outputs: dict | None = None, queue_item=None) -> None:
         window = self.window
         is_substack = substack_range is not None
         is_stack_outputs = stack_outputs is not None
@@ -1338,11 +1417,17 @@ class RenderManager:
                 getattr(window, "source_manager", None), "_load_worker", None) is not None else "cancelled"
             window.statusBar().showMessage(trans.t("msg_render_queue_cancelled"), 5000)
             return
-        reason = (
-            desktop_fusion_lock_reason(window, force_algorithm or window.current_fusion_method())
-            if is_stack_outputs and stack_outputs.get("alignment") == "none"
-            else self._render_lock_reason(force_algorithm)
-        )
+        if queue_item is not None:
+            reason = desktop_fusion_lock_reason(window, queue_item.method) or (
+                trans.t('experimental_locked_hint')
+                if alignment_is_locked(window, queue_item.align_method) else ''
+            )
+        elif is_stack_outputs and stack_outputs.get("alignment") == "none":
+            reason = desktop_fusion_lock_reason(
+                window, force_algorithm or window.current_fusion_method()
+            )
+        else:
+            reason = self._render_lock_reason(force_algorithm)
         if reason:
             self._start_status = 'unavailable'
             self._abort_compare_run()
@@ -1375,6 +1460,7 @@ class RenderManager:
 
         source_ref = window.raw_images
         source_revision = getattr(window, "source_revision", 0)
+        source_content_revision = getattr(window, "source_content_revision", 0)
         compare_token = self._compare_token
         substack_token = self._substack_token
         full_included_idx = None
@@ -1389,6 +1475,18 @@ class RenderManager:
             stack_images = list(full_images[substack_range.start:substack_range.end])
             stack_filenames = list(full_filenames[substack_range.start:substack_range.end])
             included_idx = list(full_included_idx[substack_range.start:substack_range.end])
+        elif queue_item is not None and queue_item.frame_indices is not None:
+            raw_list = list(window.raw_images or [])
+            all_names = list(window.image_filenames or [])
+            if any(i < 0 or i >= len(raw_list) for i in queue_item.frame_indices):
+                self._start_status = "no_frames"
+                return
+            included_idx = list(queue_item.frame_indices)
+            stack_images = [raw_list[i] for i in included_idx]
+            stack_filenames = [
+                all_names[i] if i < len(all_names) else f"frame_{i + 1}"
+                for i in included_idx
+            ]
         else:
             stack_images, stack_filenames, included_idx = window.effective_stack()
         if len(stack_images) < 2:
@@ -1441,13 +1539,20 @@ class RenderManager:
             self._restore_ui_controls()
             return
 
-        fusion_method = window.current_fusion_method()
-        method = force_algorithm or fusion_method
-        alignment_method = stack_outputs["alignment"] if is_stack_outputs else window.current_alignment_method()
-        registration_parameters = window.registration_parameters_for(alignment_method)
+        if queue_item is not None:
+            fusion_method = queue_item.method
+            method = queue_item.method
+            alignment_method = queue_item.align_method
+            registration_parameters = deepcopy(queue_item.align_params or {})
+            need_fusion = method != "none"
+        else:
+            fusion_method = window.current_fusion_method()
+            method = force_algorithm or fusion_method
+            alignment_method = stack_outputs["alignment"] if is_stack_outputs else window.current_alignment_method()
+            registration_parameters = window.registration_parameters_for(alignment_method)
+            need_fusion = force_algorithm is not None or method != "none"
         requested_steps = alignment_steps(alignment_method)
         collect_report = bool(getattr(window, 'collect_alignment_report', False) and requested_steps and not is_stack_outputs)
-        need_fusion = force_algorithm is not None or method != "none"
         if is_stack_outputs:
             alignment_key = None
             reusable = False
@@ -1467,18 +1572,20 @@ class RenderManager:
                     window.aligned_images[substack_range.start:substack_range.end]
                 )
         else:
-            alignment_key = self._alignment_key(included_idx, method)
+            alignment_key = self._alignment_key(included_idx, method, queue_item=queue_item)
             reusable = bool(window.is_images_aligned
                             and getattr(window, "aligned_images", None)
                             and len(window.aligned_images) == len(stack_images)
                             and getattr(window, "alignment_request_key", None) == alignment_key
                             and not cleanup)
         preview = getattr(window, 'chk_quick_preview', None)
+        queue_preview = bool((queue_item.options or {}).get("preview", False)) if queue_item is not None else False
+        preview_requested = queue_preview if queue_item is not None else (preview is not None and preview.isChecked())
         publish_cached_alignment = (
             not need_fusion and requested_steps and reusable and not collect_report
             and not is_substack and not is_stack_outputs
             and not getattr(window, 'roi_mode_active', False)
-            and not (preview is not None and preview.isChecked()))
+            and not preview_requested)
 
         # One storage assessment per render start, before any UI is locked.
         storage_override = None
@@ -1486,8 +1593,9 @@ class RenderManager:
         assessment = None
         if not publish_cached_alignment and not is_substack and not is_stack_outputs:
             if (storage_assessment is _STORAGE_UNSET and force_algorithm is None
+                    and queue_item is None
                     and not getattr(window, 'roi_mode_active', False)
-                    and not (preview is not None and preview.isChecked())
+                    and not preview_requested
                     and automatic_preflight_may_block()):
                 self._begin_storage_preflight(stack_images, force_algorithm, interactive, confirmed, roi_choice,
                                               cpu_confirmed)
@@ -1517,7 +1625,15 @@ class RenderManager:
                 self._abort_compare_run()
                 return
 
-        if force_algorithm:
+        if queue_item is not None:
+            # Queued background render: keep method, alignment, parameters, and
+            # render settings unlocked so the user can prepare additional jobs
+            # or inspect existing outputs while this job runs.
+            if getattr(window, 'btn_render', None) is not None:
+                window.btn_render.setEnabled(True)
+                window.btn_render.setText(trans.t('btn_cancel_render'))
+            self._set_compare_button("disabled")
+        elif force_algorithm:
             # Compare-all mode drives the next renders programmatically; the
             # Render button stays disabled (the Compare button is the cancel
             # affordance) and everything else stays locked until the queue
@@ -1531,19 +1647,20 @@ class RenderManager:
         # Preparation stays on this event-loop turn; modal choices below can
         # still dispatch cancellation or a source replacement.
 
-        for name in ("fusion_parameter_panel", "registration_parameter_panel",
-                     "combo_fusion", "combo_align", "btn_reset"):
-            widget = getattr(window, name, None)
-            if widget is not None:
-                widget.setEnabled(False)
-        if not getattr(self, '_compare_mode', False):
-            # A single render owns the pipeline; Compare-all cannot start
-            # until it ends, so do not leave an enabled silent no-op.
-            self._set_compare_button("disabled")
-        # Every control that changes the input to the running result must stay
-        # locked until completion, cancellation or failure restores it. A
-        # mid-run change used to discard the finished render as stale.
-        self._set_render_settings_enabled(False)
+        if queue_item is None:
+            for name in ("fusion_parameter_panel", "registration_parameter_panel",
+                         "combo_fusion", "combo_align", "btn_reset"):
+                widget = getattr(window, name, None)
+                if widget is not None:
+                    widget.setEnabled(False)
+            if not getattr(self, '_compare_mode', False):
+                # A single render owns the pipeline; Compare-all cannot start
+                # until it ends, so do not leave an enabled silent no-op.
+                self._set_compare_button("disabled")
+            # Every control that changes the input to the running result must stay
+            # locked until completion, cancellation or failure restores it. A
+            # mid-run change used to discard the finished render as stale.
+            self._set_render_settings_enabled(False)
 
         def _brightness(win, option, method):
             """Per-method brightness option (duck-typed hosts may not have it)."""
@@ -1554,7 +1671,7 @@ class RenderManager:
                 "exposure_match") else bool(
                     getattr(win, "base_frame_correct", False))
 
-        if force_algorithm is None and fusion_method != "none" and get_fusion(fusion_method).neural \
+        if (queue_item is not None or force_algorithm is None) and method != "none" and get_fusion(method).neural \
                 and not is_ai_fusion_available():
             if interactive:
                 show_warning_box(
@@ -1642,8 +1759,7 @@ class RenderManager:
         # is downscaled and none survives.
         compare = bool(getattr(self, '_compare_mode', False))
         self._preview_mode = bool(
-            preview_downscale is not None
-            and preview_downscale.isChecked()
+            preview_requested
             and not use_roi_aligned_images
             and not compare
             and not is_substack
@@ -1734,7 +1850,7 @@ class RenderManager:
             effective_is_aligned = reusable
             effective_last_alignment_options = window.last_alignment_options if reusable else None
         if disk_cache_request is not None:
-            parameters = self._processing_parameters(force_algorithm or fusion_method)
+            parameters = self._processing_parameters(method, queue_item=queue_item)
             disk_cache_request["identity"] = {
                 "source_revision": alignment_key[0],
                 "included": list(included_idx),
@@ -1751,9 +1867,17 @@ class RenderManager:
             revision = getattr(window, "source_revision", 0)
             disk_cache_request["is_current"] = lambda: (
                 window.raw_images is source_ref
-                and getattr(window, "source_revision", 0) == revision)
+                and (queue_item is not None
+                     or getattr(window, "source_revision", 0) == revision))
 
-        fusion_parameters = window.fusion_parameters_for(method)
+        if queue_item is not None:
+            from core.algorithms import resolve_fusion_parameters
+            fusion_parameters = (
+                resolve_fusion_parameters(method, queue_item.method_params or {})
+                if method != "none" else {}
+            )
+        else:
+            fusion_parameters = window.fusion_parameters_for(method)
         # Reusable aligned descriptors are what the fusion stage actually reads.
         estimate_frames = effective_aligned_images if effective_is_aligned else source_images
         memory_estimate = None
@@ -1779,8 +1903,11 @@ class RenderManager:
         expected_included = full_included_idx if is_substack else included_idx
         if (not is_stack_outputs and (
                 window.raw_images is not source_ref
-                or getattr(window, "source_revision", 0) != source_revision
-                or window.included_indices() != expected_included
+                or (queue_item is None and (
+                    getattr(window, "source_revision", 0) != source_revision
+                    or window.included_indices() != expected_included))
+                or (queue_item is not None
+                    and getattr(window, "source_content_revision", 0) != source_content_revision)
                 or getattr(getattr(window, "source_manager", None), "_load_worker", None) is not None)):
             self._start_status = "stack_changed"
             self._abort_compare_run()
@@ -1827,7 +1954,8 @@ class RenderManager:
                          if roi_rect is not None else None),
             "roi_mode": roi_mode,
             "roi_base_index": roi_base_index,
-            "algorithm": force_algorithm or fusion_method,
+            "algorithm": method,
+            "queue_job_id": queue_item.job_id if queue_item is not None else None,
             "memory_estimate": memory_estimate,
             "aligned": bool(effective_is_aligned),
             "registration_reuse": ('roi' if use_roi_aligned_images and effective_is_aligned
@@ -1840,6 +1968,7 @@ class RenderManager:
             "filenames": list(stack_filenames),
             "included": list(included_idx),
             "source_revision": getattr(window, "source_revision", 0),
+            "source_content_revision": source_content_revision,
             "alignment_key": alignment_key,
             "disk_alignment_options": disk_alignment_options,
             "full_filenames": list(window.image_filenames),
@@ -1861,7 +1990,7 @@ class RenderManager:
                 (getattr(window, "image_icc_profiles", ()) or ())[i]
                 if i < len(getattr(window, "image_icc_profiles", ()) or ()) else b""
                 for i in included_idx)),
-            "parameters": self._processing_parameters(force_algorithm or fusion_method),
+            "parameters": self._processing_parameters(method, queue_item=queue_item),
             "substack": is_substack,
             "substack_range": substack_range,
             "full_included": list(full_included_idx) if is_substack else None,
@@ -1897,6 +2026,7 @@ class RenderManager:
         self.last_result = None
         self._control_progress = None
         self.last_state = "running"
+        self._active_queue_job = queue_item
         self._render_context['started_at'] = monotonic()
         self._render_interactive = interactive
         if publish_cached_alignment:
@@ -1925,7 +2055,7 @@ class RenderManager:
             and descriptor and descriptor.streaming_sources
             and (native_preparation or (
                 descriptor.neural and getattr(window, 'tile_enabled', None) is not False
-                and not (descriptor.sort_frames and getattr(window, 'stack_reverse_order', False))))
+                and not (descriptor.sort_frames and processing["stack_reverse_order"])))
             and not self._preview_mode and roi_rect is None and not use_roi_aligned_images
             and not collect_report and not cleanup
             and all(isinstance(frame, SourceFrame) and
@@ -1944,14 +2074,15 @@ class RenderManager:
         prepared_cache = self._prepared_cache if retain_preparation else None
         self._render_context['preparation_key'] = preparation_key if retain_preparation else None
         live_preview = (
-            interactive and not compare and not is_substack and not is_stack_outputs and need_fusion
+            interactive and not compare and not is_substack and not is_stack_outputs
+            and queue_item is None and need_fusion
             and method in ('openfocus_a', 'openfocus_b', 'openfocus_c')
             and not self._preview_mode and roi_rect is None and not use_roi_aligned_images
             and getattr(window, 'live_preview_page', None) is not None
             and not window.wipe_active and not getattr(window, 'roi_mode_active', False))
         if live_preview:
             self._render_context['live_source_rows'] = tuple(
-                reversed(included_idx) if getattr(window, 'stack_reverse_order', False)
+                reversed(included_idx) if processing["stack_reverse_order"]
                 else included_idx)
         worker_cls = globals().get('RenderProcessWorker')
         if worker_cls is None:
@@ -1961,7 +2092,7 @@ class RenderManager:
             effective_aligned_images,
             effective_is_aligned,
             effective_last_alignment_options,
-            algorithm=(force_algorithm or fusion_method) if need_fusion else None,
+            algorithm=method if need_fusion else None,
             alignment=effective_alignment,
             fusion_parameters=fusion_parameters,
             registration_parameters=registration_parameters if effective_alignment != "none" else {},
@@ -1978,12 +2109,9 @@ class RenderManager:
             roi_mode=roi_mode,
             roi_base_index=roi_base_index,
             use_gpu=getattr(window, "use_gpu", True),
-            base_frame=_base_frame(force_algorithm or fusion_method,
-                                   _brightness(window, "base_correct", force_algorithm or fusion_method)),
-            sort_mode="asc" if is_stack_outputs else (
-                "desc" if getattr(window, "stack_reverse_order", False) else "asc"
-            ),
-            exposure_match=_brightness(window, "exposure_match", force_algorithm or fusion_method),
+            base_frame=processing["base_frame"],
+            sort_mode="asc" if is_stack_outputs else processing["sort_mode"],
+            exposure_match=processing["exposure_match"],
             sharpen_output=processing["sharpen_output"],
             sharpen_strength=processing["sharpen_strength"],
             defect_mask_path="" if is_stack_outputs else getattr(window, "defect_mask_path", ""),
@@ -2095,6 +2223,16 @@ class RenderManager:
         if context.get("stack_outputs"):
             return False
         window = self.window
+        if context.get("queue_job_id"):
+            # Queued jobs carry their own frozen method, parameter, option,
+            # and frame-index snapshots, so live UI edits for the next job
+            # must not invalidate an in-flight background job. Only a load,
+            # clear, or destructive stack transform invalidates it.
+            return bool(
+                window.raw_images is not context.get("source_ref")
+                or getattr(window, "source_content_revision", 0) != context.get("source_content_revision", 0)
+                or list(window.image_filenames or []) != context.get("full_filenames", context["filenames"])
+            )
         if context.get("substack"):
             full_included = context.get("full_included")
             return (
@@ -2164,12 +2302,20 @@ class RenderManager:
             self._abort_compare_run()
             self._abort_substack_run()
             self._render_context = None
+            discarded_queue_job = self._active_queue_job
+            self._active_queue_job = None
             self._hide_progress_bar()
             self._dispose_worker()
             self._restore_ui_controls()
             gallery = getattr(window, "gallery_controller", None)
             if gallery is not None:
                 gallery.on_render_ended()
+            if discarded_queue_job is not None:
+                queue = getattr(window, "render_queue", None)
+                if queue is not None:
+                    queue.notify_job_failed(discarded_queue_job.job_id, message)
+            else:
+                self._notify_queue_idle()
             return
         if getattr(self, '_render_progress_stage', None) != 'publish':
             self.on_render_stage('publish')
@@ -2363,7 +2509,8 @@ class RenderManager:
 
                 import logging
                 logging.getLogger("openfocus").info(
-                    "render finished (preview=%s, method fusion, %.1fs)", preview, fusion_time)
+                    "render finished (preview=%s, method fusion, align %.1fs, fuse %.1fs)",
+                    preview, alignment_time, fusion_time)
             else:
                 if effective_registration:
                     result_info = {
@@ -2473,7 +2620,7 @@ class RenderManager:
             if preview:
                 info_lines.append(trans.t("info_preview_quality"))
             if effective_registration and reuse:
-                info_lines.append(trans.t("info_align_time").format(0.0))
+                info_lines.append(trans.t("info_align_time").format(alignment_time))
             elif effective_registration:
                 alignment_method = (context or {}).get("alignment_method") or window.current_alignment_method()
                 align_method_str = trans.t(get_registration(alignment_method).label_key)
@@ -2569,6 +2716,8 @@ class RenderManager:
                 )
 
         finally:
+            finished_queue_job = self._active_queue_job
+            self._active_queue_job = None
             self._dispose_worker()
             if not compare and not substack:
                 self._restore_ui_controls()
@@ -2586,7 +2735,35 @@ class RenderManager:
                     )
                 else:
                     gallery.on_render_ended()
-            if compare:
+            if finished_queue_job is not None:
+                queue = getattr(window, "render_queue", None)
+                if queue is not None:
+                    if self.last_state == 'done':
+                        result_index = None
+                        result_name = ""
+                        result_output_id = ""
+                        if not preview and getattr(window, "output_list", None) is not None and window.output_list.count() > 0:
+                            result_index = 0
+                            first_item = window.output_list.item(0)
+                            if first_item is not None:
+                                result_name = first_item.text()
+                            record_for_row = getattr(getattr(window, "output_manager", None), "record_for_row", None)
+                            record = record_for_row(0) if callable(record_for_row) else None
+                            if record is not None:
+                                result_name = getattr(record, "label", "") or result_name
+                                result_output_id = getattr(record, "output_id", "") or ""
+                        queue.notify_job_completed(
+                            finished_queue_job.job_id,
+                            result_index=result_index,
+                            result_name=result_name,
+                            result_output_id=result_output_id,
+                        )
+                    else:
+                        queue.notify_job_failed(
+                            finished_queue_job.job_id,
+                            self.last_error or trans.t("msg_proc_error"),
+                        )
+            elif compare:
                 if self._compare_queue:
                     # Keep controls locked and chain the next method. The
                     # timer is tracked so cancelling the run can stop it —
@@ -2606,6 +2783,8 @@ class RenderManager:
                     self._queue_next_substack()
                 else:
                     self._finish_substack_run()
+            else:
+                self._notify_queue_idle()
 
     def _render_context_kwargs(self, context, compare, registration_performed):
         ctx = context or {}
@@ -2795,6 +2974,14 @@ class RenderManager:
         gallery = getattr(self.window, "gallery_controller", None)
         if gallery is not None:
             gallery.on_render_progress(0, 0, text)
+        if self._active_queue_job is not None:
+            queue = getattr(self.window, "render_queue", None)
+            if queue is not None:
+                queue.notify_job_progress(
+                    self._active_queue_job.job_id,
+                    self._active_queue_job.progress,
+                    text,
+                )
 
     def on_render_progress(self, done: int, total: int) -> None:
         """Surface completed preparation frames or fusion tiles with an ETA."""
@@ -2836,6 +3023,10 @@ class RenderManager:
             gallery = getattr(self.window, "gallery_controller", None)
             if gallery is not None and hasattr(gallery, "on_render_progress"):
                 gallery.on_render_progress(done, total, text)
+            if self._active_queue_job is not None:
+                queue = getattr(self.window, "render_queue", None)
+                if queue is not None:
+                    queue.notify_job_progress(self._active_queue_job.job_id, pct, text)
 
     def _finish_compare_run(self) -> None:
         """End a comparison run: unlock the UI and report skipped methods."""
@@ -2860,6 +3051,7 @@ class RenderManager:
                              trans.t("msg_compare_skipped").format(
                                  done=done, total=self._compare_total),
                              details, QMessageBox.Icon.Warning)
+        self._notify_queue_idle()
 
     def on_render_error(self, error_message: str) -> None:
         self.dismiss_live_preview()
@@ -2892,6 +3084,8 @@ class RenderManager:
         # must not leave the controller in preview mode.
         self._preview_mode = False
         self._render_context = None
+        failed_queue_job = self._active_queue_job
+        self._active_queue_job = None
         self._dispose_worker()
 
         if (getattr(self, '_compare_mode', False)
@@ -2960,6 +3154,12 @@ class RenderManager:
             self.last_error = None
             self._hide_progress_bar()
             window.statusBar().showMessage(trans.t('msg_render_cancelled'), 4000)
+            if failed_queue_job is not None:
+                queue = getattr(window, "render_queue", None)
+                if queue is not None:
+                    queue.notify_job_cancelled(failed_queue_job.job_id)
+            else:
+                self._notify_queue_idle()
             return
         self.last_error = str(error_message)
         self.last_state = "error"
@@ -2968,6 +3168,14 @@ class RenderManager:
 
         import logging
         logging.getLogger("openfocus").error("render failed: %s", error_message)
+
+        if failed_queue_job is not None:
+            detail = _failed_alignment_detail(*self.alignment_diagnostics) or str(error_message)
+            window.statusBar().showMessage(f"{trans.t('msg_error')}: {detail}", 8000)
+            queue = getattr(window, "render_queue", None)
+            if queue is not None:
+                queue.notify_job_failed(failed_queue_job.job_id, detail)
+            return
 
         if getattr(self, "_render_interactive", True):
             # Source names belong in the local dialog, outside error logging and reporting.
@@ -2979,4 +3187,5 @@ class RenderManager:
                 error_message,
                 QMessageBox.Icon.Critical,
             )
+        self._notify_queue_idle()
 
