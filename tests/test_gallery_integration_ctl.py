@@ -154,6 +154,21 @@ def integrated_window(qapp, monkeypatch, tmp_path):
     monkeypatch.setattr(recovery, "_base_dir", lambda: str(tmp_path / "recovery"))
     monkeypatch.setenv("OPENFOCUS_CONTROL_FILE", str(tmp_path / "control.json"))
 
+    # Community is gated OFF by default; opt in via Developer Options for Community integration flows.
+    from core import developer_options as dev_opts
+    dev_opts.save_developer_grant(
+        dev_opts.DeveloperGrant(
+            key_prefix="ofdev_test...",
+            label="Integration Fixture",
+            features=[dev_opts.FEATURE_COMMUNITY],
+            verified_at="2026-11-27T00:00:00Z",
+            server_validated=True,
+        ),
+        settings=settings,
+    )
+    dev_opts.set_developer_feature_enabled(dev_opts.FEATURE_COMMUNITY, True, settings=settings)
+    monkeypatch.setattr(dev_opts, "revalidate_saved_developer_grant", lambda **_k: None)
+
     # Keep startup remote fetches offline-safe inside tests.
     monkeypatch.setattr(GalleryStateStore, "refresh_config", lambda self, **k: False)
     monkeypatch.setattr(GalleryStateStore, "refresh_feed", lambda self, **k: False)

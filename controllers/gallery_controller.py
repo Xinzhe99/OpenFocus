@@ -37,6 +37,7 @@ from PyQt6.QtCore import QObject, QPoint, Qt, QUrl, pyqtSignal
 from PyQt6.QtGui import QAction, QDesktopServices, QImage, QPixmap
 from PyQt6.QtWidgets import QMenu, QPushButton
 
+from core.developer_options import is_community_enabled
 from core.gallery_cache import (
     DEFAULT_CACHE_MAX_BYTES,
     GalleryDiskCache,
@@ -480,9 +481,54 @@ class GalleryController(QObject):
         ):
             safe_disconnect(sig, slot)
 
+    def is_community_enabled(self) -> bool:
+        """True strictly when Developer Options has unlocked and enabled Community."""
+        return is_community_enabled()
+
+    def set_community_enabled(self, enabled: bool, *, start_remote: bool = True) -> None:
+        """Apply live Community enable/disable transitions cleanly."""
+        if self._closed:
+            return
+        if not enabled:
+            self.state_store.stop_polling()
+            self._started = False
+            self._opened_for_fusion = False
+            self._fusion_progress = None
+            self.show_result_canvas()
+            if is_qobject_alive(self._screensaver):
+                try:
+                    self._screensaver.exit_screensaver()
+                except Exception:
+                    pass
+            for attr in ("_hub_dialog", "_account_dialog", "_upload_prompt_dialog"):
+                dlg = getattr(self, attr, None)
+                setattr(self, attr, None)
+                if is_qobject_alive(dlg):
+                    try:
+                        dlg.reject()
+                        dlg.deleteLater()
+                    except Exception:
+                        pass
+            for dlg in list(self._honor_dialogs):
+                if is_qobject_alive(dlg):
+                    try:
+                        dlg.reject()
+                        dlg.deleteLater()
+                    except Exception:
+                        pass
+            self._honor_dialogs.clear()
+            if is_qobject_alive(self._reveal_button):
+                self._reveal_button.hide()
+            self.update_unread_indicators(0)
+            return
+
+        self.update_unread_indicators()
+        if not self._started:
+            self.start(fetch_remote=start_remote)
+
     def start(self, *, fetch_remote: bool = True) -> None:
         """Initialize account state and begin low-frequency sync without opening Showcase."""
-        if self._closed or self._started:
+        if self._closed or self._started or not self.is_community_enabled():
             return
         self._started = True
         self._active_account_key = _account_identity(getattr(self.window, "_account_client", None))
@@ -532,7 +578,7 @@ class GalleryController(QObject):
             self._retire_account_dialogs()
         self._shown_honor_card_ids.clear()
         self.state_store.clear_account_state()
-        if owner is not None and self.state_store.gallery_enabled and not self._fusion_busy:
+        if owner is not None and self.is_community_enabled() and self.state_store.gallery_enabled and not self._fusion_busy:
             self.state_store.refresh_account_silently()
 
     def _retire_account_dialogs(self) -> None:
@@ -614,7 +660,7 @@ class GalleryController(QObject):
 
     def show_gallery_showcase(self, *, force: bool = False, for_fusion: bool = False) -> bool:
         """Open the standalone OpenFocus Gallery Showcase window."""
-        if self._closed or not self.state_store.gallery_enabled:
+        if self._closed or not self.is_community_enabled() or not self.state_store.gallery_enabled:
             return False
         if not force and (
             getattr(self.window, "wipe_active", False)
@@ -653,6 +699,9 @@ class GalleryController(QObject):
         menu.setObjectName("result_canvas_context_menu")
         menu.setProperty("controlId", "result_canvas_context_menu")
 
+        if not self.is_community_enabled():
+            return menu
+
         enabled = self.state_store.gallery_enabled
 
         upload_action = QAction(trans.t("menu_upload_to_gallery"), menu)
@@ -667,7 +716,7 @@ class GalleryController(QObject):
 
     def show_result_context_menu(self, pos: QPoint) -> Optional[QMenu]:
         """Show the right-click menu on ``lbl_result_img``."""
-        if self._closed or not self.state_store.gallery_enabled:
+        if self._closed or not self.is_community_enabled() or not self.state_store.gallery_enabled:
             return None
         lbl_result = getattr(self.window, "lbl_result_img", None)
         if lbl_result is None or getattr(lbl_result, "roi_mode", False):
@@ -713,6 +762,8 @@ class GalleryController(QObject):
 
     def on_render_started(self, *, show_fusion: bool = True) -> None:
         """Pause remote Gallery work and show status for desktop fusion."""
+        if not self.is_community_enabled():
+            return
         self.set_fusion_busy(True)
         if not show_fusion:
             return
@@ -723,7 +774,7 @@ class GalleryController(QObject):
             self.show_gallery_showcase(for_fusion=True)
 
     def on_render_progress(self, done: int, total: int, text: str = "") -> None:
-        if self._closed or self._fusion_progress is None:
+        if self._closed or not self.is_community_enabled() or self._fusion_progress is None:
             return
         self._fusion_progress = (done, total, text)
         if self.is_showing_showcase():
@@ -771,7 +822,7 @@ class GalleryController(QObject):
             self._showcase_window.hide_fusion_bar()
         self._opened_for_fusion = False
         self._fusion_progress = None
-        if self._closed or not self.state_store.gallery_enabled:
+        if self._closed or not self.is_community_enabled() or not self.state_store.gallery_enabled:
             return None
         if fusion_result is None or is_preview or is_compare or is_batch or not interactive:
             return None
@@ -822,11 +873,14 @@ class GalleryController(QObject):
 
         NEVER applies a red dot to the top-level Gallery menu.
         """
-        count = (
-            self.state_store.unread_notifications_count
-            if unread_count is None
-            else max(0, int(unread_count))
-        )
+        if not self.is_community_enabled():
+            count = 0
+        else:
+            count = (
+                self.state_store.unread_notifications_count
+                if unread_count is None
+                else max(0, int(unread_count))
+            )
         ui_objs = getattr(self.window, "ui_objs", None) or {}
 
         account_menu = ui_objs.get("menu_account")
@@ -855,7 +909,7 @@ class GalleryController(QObject):
 
     def open_account_center(self, initial_tab: int = 0) -> Optional[Any]:
         """Open the Account Center dialog (tab 0: My Account, tab 1: Message Box)."""
-        if self._closed:
+        if self._closed or not self.is_community_enabled():
             return None
         from dialogs.account_center import AccountCenterDialog
 
@@ -927,7 +981,7 @@ class GalleryController(QObject):
         prefill_openfocus_badge: bool = False,
     ) -> Optional[Any]:
         """Open the 4-Tab Gallery Hub dialog with silent refresh."""
-        if self._closed:
+        if self._closed or not self.is_community_enabled():
             return None
         from dialogs.gallery_hub import GalleryHubDialog
 
@@ -999,7 +1053,7 @@ class GalleryController(QObject):
         exif: Optional[Mapping[str, str]] = None,
     ) -> Optional[Any]:
         """Open Gallery Hub directly on the Publish tab prefilled with a fused image."""
-        if self._closed or image is None:
+        if self._closed or not self.is_community_enabled() or image is None:
             return None
         resolved_exif = dict(exif) if exif is not None else self._current_result_exif()
         dlg = self.open_gallery_hub(initial_tab=2)
@@ -1036,7 +1090,7 @@ class GalleryController(QObject):
 
     def open_screensaver(self) -> Optional[GalleryScreensaverWindow]:
         """Launch the Fullscreen Always-on-Top Gallery Screensaver."""
-        if self._closed or not self.state_store.gallery_enabled:
+        if self._closed or not self.is_community_enabled() or not self.state_store.gallery_enabled:
             return None
         from widgets.gallery_screensaver import GalleryScreensaverWindow
 
@@ -1075,8 +1129,10 @@ class GalleryController(QObject):
 
     # ----------------------------------------------------- downloads & reveals
 
-    def open_downloads_folder(self) -> Path:
+    def open_downloads_folder(self) -> Optional[Path]:
         """Open the local Gallery download directory via the OS file manager."""
+        if self._closed or not self.is_community_enabled():
+            return None
         folder = resolve_gallery_download_dir(settings=get_settings(), create=True)
         if self._folder_opener is not None:
             self._folder_opener(str(folder))
@@ -1099,13 +1155,13 @@ class GalleryController(QObject):
 
     def download_work(self, work_id: str) -> bool:
         """Download a showcase work locally as JPEG (WebP -> JPG) off the UI thread."""
-        if self._closed or not work_id:
+        if self._closed or not self.is_community_enabled() or not work_id:
             return False
         work = self._find_work(work_id)
         return work is not None and self._download_selected_work(work)
 
     def _download_selected_work(self, work) -> bool:
-        if self._closed:
+        if self._closed or not self.is_community_enabled():
             return False
         if isinstance(work, Mapping):
             work = GalleryWork.from_dict(work)
@@ -1231,7 +1287,7 @@ class GalleryController(QObject):
             self._screensaver.set_works(works, start_index=max(0, self._screensaver.showcase.current_index))
 
     def _on_honor_cards_pending(self, cards: list) -> None:
-        if self._closed or not cards:
+        if self._closed or not self.is_community_enabled() or not cards:
             return
         from dialogs.gallery_hub import HonorCardDialog
 
@@ -1594,7 +1650,13 @@ class GalleryController(QObject):
 
     def _fetch_work_comments(self, work_id: str) -> bool:
         """Fetch comments for *work_id* (requesting localized translation in auto mode)."""
-        if self._closed or self._fusion_busy or not work_id or not self.state_store.can_remote_fetch():
+        if (
+            self._closed
+            or self._fusion_busy
+            or not work_id
+            or not self.is_community_enabled()
+            or not self.state_store.can_remote_fetch()
+        ):
             return False
         work = self._find_work(work_id)
         if work is not None and getattr(work, "is_builtin_fallback", False):
@@ -1654,7 +1716,12 @@ class GalleryController(QObject):
     # --------------------------------------------------------- media prefetch
 
     def _prefetch_work_image(self, work_id: str) -> bool:
-        if self._closed or self._fusion_busy or not self.state_store.can_remote_fetch():
+        if (
+            self._closed
+            or self._fusion_busy
+            or not self.is_community_enabled()
+            or not self.state_store.can_remote_fetch()
+        ):
             return False
         work = self._find_work(work_id)
         if work is None:
