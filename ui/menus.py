@@ -228,6 +228,13 @@ def setup_menus(window: QMainWindow) -> None:
     input_stack_menu.addAction(save_input_mtiff_action)
     window.ui_objs['action_save_mtiff_input'] = save_input_mtiff_action
 
+    export_html_action = QAction(trans.t('action_export_html_animation'), window)
+    export_html_action.setProperty("trans_key", 'action_export_html_animation')
+    export_html_action.triggered.connect(
+        lambda: window.export_manager.export_html_animation())
+    file_menu.addAction(export_html_action)
+    window.ui_objs['action_export_html_animation'] = export_html_action
+
     file_menu.addSeparator()
 
     clear_action = QAction(trans.t('action_clear_stack'), window)

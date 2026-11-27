@@ -749,6 +749,7 @@ _WATCH_TEMPLATES_PACKS_CACHE = None
 _LIVE_PREVIEW_PACKS_CACHE = None
 _SUBSTACK_PACKS_CACHE = None
 _RENDER_QUEUE_PACKS_CACHE = None
+_EXPORT_3D_PACKS_CACHE = None
 
 
 def _gallery_pack(code: str):
@@ -817,6 +818,17 @@ def _render_queue_pack(code: str):
     return _RENDER_QUEUE_PACKS_CACHE.get(code)
 
 
+def _export_3d_pack(code: str):
+    global _EXPORT_3D_PACKS_CACHE
+    if _EXPORT_3D_PACKS_CACHE is None:
+        try:
+            from .export_3d_i18n import EXPORT_3D_TRANSLATIONS
+            _EXPORT_3D_PACKS_CACHE = EXPORT_3D_TRANSLATIONS
+        except Exception:
+            _EXPORT_3D_PACKS_CACHE = {}
+    return _EXPORT_3D_PACKS_CACHE.get(code)
+
+
 def _apply_pack_overlays(code: str, table: dict) -> dict:
     """Apply runtime overrides to a loaded pack without touching other packs."""
     title = _MANUAL_TITLES.get(code)
@@ -870,6 +882,9 @@ def _apply_pack_overlays(code: str, table: dict) -> dict:
     pro_exports = _pro_exports_pack(code)
     if pro_exports:
         table.update(pro_exports)
+    export_3d = _export_3d_pack(code)
+    if export_3d:
+        table.update(export_3d)
     return table
 
 

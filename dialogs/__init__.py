@@ -30,6 +30,7 @@ _LAZY_EXPORTS = {
     'FolderImportDialog': 'batch',
     'ROIRenderOptionsDialog': 'roi',
     'RenderSubstacksDialog': 'render_substacks',
+    'HtmlAnimationDialog': 'html_animation',
 }
 
 
