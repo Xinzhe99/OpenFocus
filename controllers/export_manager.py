@@ -22,6 +22,7 @@ from locales import trans
 _LAZY_IMPORTS = {
     'GifSaverWorker': ('core.workers', 'GifSaverWorker'),
     'DurationDialog': ('dialogs', 'DurationDialog'),
+    'HtmlAnimationDialog': ('dialogs.html_animation', 'HtmlAnimationDialog'),
 }
 
 
@@ -193,6 +194,60 @@ class LayeredTiffWorker(QThread):
             self.completed.emit(True, os.fsdecode(self.path))
 
 
+class HtmlAnimationWorker(QThread):
+    progress = pyqtSignal(int, int)
+    completed = pyqtSignal(bool, str, int)
+
+    def __init__(self, path, frames, labels, fused_image, options, linear_dng_metadata=None):
+        super().__init__()
+        configure_native_worker_stack(self)
+        self.path = path
+        self.frames = tuple(frames)
+        self.labels = tuple(labels) if labels is not None else ()
+        self.fused_image = fused_image
+        self.options = options
+        self.linear_dng_metadata = linear_dng_metadata
+        self._cancelled = threading.Event()
+
+    def cancel(self):
+        self._cancelled.set()
+
+    def run(self):
+        from core.html_animation_export import (
+            HtmlAnimationExportCancelled,
+            export_html_animation,
+        )
+        try:
+            metadata = self.linear_dng_metadata
+
+            def _prepare(frame):
+                img = resolve_frame(frame, should_cancel=self._cancelled.is_set)
+                if metadata is not None and img.dtype == 'uint16' and img.ndim == 3 and img.shape[2] == 3:
+                    from utils.linear_dng import develop_linear
+                    img = develop_linear(img, metadata)
+                return img
+
+            prepared_frames = [_prepare(f) for f in self.frames]
+            prepared_fused = _prepare(self.fused_image) if self.fused_image is not None else None
+            written = export_html_animation(
+                self.path,
+                prepared_frames,
+                labels=self.labels,
+                fused_image=prepared_fused,
+                options=self.options,
+                progress_callback=lambda i, n: self.progress.emit(i, n),
+                should_cancel=self._cancelled.is_set,
+            )
+            self.completed.emit(True, written, len(prepared_frames))
+        except HtmlAnimationExportCancelled:
+            self.completed.emit(False, 'CANCELLED', 0)
+        except Exception as exc:
+            if self._cancelled.is_set():
+                self.completed.emit(False, 'CANCELLED', 0)
+            else:
+                self.completed.emit(False, str(exc) or type(exc).__name__, 0)
+
+
 def _window_unavailable(window: Any) -> bool:
     """True when the host window is torn down or closing."""
     return window_unavailable(window)
@@ -208,6 +263,8 @@ class ExportManager:
         self.layered_worker: Optional[LayeredTiffWorker] = None
         self.layered_progress_dialog: Optional[QProgressDialog] = None
         self._layered_record = None
+        self.html_anim_worker: Optional[HtmlAnimationWorker] = None
+        self.html_anim_progress_dialog: Optional[Any] = None
 
     def normalize_export_path(self, file_path: str,
                               fallback_extension: str = DEFAULT_EXPORT_EXTENSION,
@@ -1038,6 +1095,130 @@ class ExportManager:
             show_warning_box(window, trans.t('msg_no_images_title'), trans.t('msg_no_images_save_stack_text'))
             return
         self._save_frames_as(window.raw_images, window.image_filenames, 'input')
+
+    def export_html_animation(self) -> None:
+        """Export a self-contained single-file HTML5 interactive focus-stack viewer."""
+        window = self.window
+        if self.html_anim_worker is not None:
+            return
+        reg_frames = list(getattr(window, 'registration_results', ()) or ())
+        raw_frames = list(getattr(window, 'raw_images', ()) or ())
+        if not reg_frames and not raw_frames:
+            show_warning_box(
+                window,
+                trans.t('action_export_html_animation'),
+                trans.t('html_anim_no_frames'),
+            )
+            return
+
+        selected_out = self.selected_output()
+        fused_img = selected_out[0] if selected_out is not None else getattr(window, 'fusion_result', None)
+        folder_name = os.path.basename(getattr(window, 'current_folder_path', '') or '').strip()
+        default_title = folder_name or "OpenFocus Interactive Focus Stack"
+
+        dlg = _resolve_lazy('HtmlAnimationDialog')(
+            window,
+            has_registered=bool(reg_frames),
+            has_input=bool(raw_frames),
+            has_fused=fused_img is not None,
+            default_title=default_title,
+        )
+        if not dlg.exec():
+            return
+
+        options = dlg.options()
+        source_choice = dlg.selected_source()
+        if source_choice == 'registered' and reg_frames:
+            frames = tuple(reg_frames)
+            names = tuple(getattr(window, 'registration_filenames', getattr(window, 'image_filenames', ())) or ())
+            record = self._registered_record()
+        else:
+            frames = tuple(raw_frames if raw_frames else reg_frames)
+            names = tuple(getattr(window, 'image_filenames', ()) or ())
+            record = None
+
+        default_filename = self.generate_default_filename() + "_interactive.html"
+        from utils.settings_store import image_save_default, remember_image_save
+        file_path, _ = FileDialog.getSaveFileName(
+            window,
+            trans.t('action_export_html_animation'),
+            image_save_default(default_filename),
+            "Interactive HTML (*.html);;All Files (*)",
+        )
+        if not file_path or self.html_anim_worker is not None or _window_unavailable(window):
+            return
+        if os.path.splitext(file_path)[1].lower() not in ('.html', '.htm'):
+            file_path = os.path.splitext(file_path)[0] + '.html'
+        remember_image_save(file_path)
+
+        try:
+            self._safe_export_path(
+                file_path, record.source_paths if record is not None else ())
+        except ValueError as exc:
+            show_error_box(window, trans.t('msg_save_failed_title'), trans.t('msg_save_failed_text'), str(exc))
+            return
+
+        metadata = (getattr(record, 'linear_dng_metadata', None) if record is not None
+                    else getattr(window, 'linear_dng_metadata', None))
+
+        from utils.frame_pixels import _PixelProgress
+        self.html_anim_progress_dialog = _PixelProgress(
+            window, trans.t('html_anim_exporting'), cancellable=True)
+        self.html_anim_progress_dialog.setWindowTitle(trans.t('action_export_html_animation'))
+        self.html_anim_progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        self.html_anim_progress_dialog.canceled.connect(self._cancel_html_animation)
+        self.html_anim_progress_dialog.show()
+
+        self.html_anim_worker = HtmlAnimationWorker(
+            file_path,
+            frames,
+            names,
+            fused_img if options.include_fused_frame else None,
+            options,
+            linear_dng_metadata=metadata,
+        )
+        self.html_anim_worker.completed.connect(self._on_html_animation_saved)
+        self.html_anim_worker.finished.connect(self._html_animation_thread_finished)
+        self.html_anim_worker.start()
+
+    def _cancel_html_animation(self):
+        if self.html_anim_worker is not None:
+            self.html_anim_worker.cancel()
+        if self.html_anim_progress_dialog is not None:
+            self.html_anim_progress_dialog.mark_cancelling()
+
+    def _html_animation_thread_finished(self):
+        worker = self.html_anim_worker
+        self.html_anim_worker = None
+        if worker is not None:
+            worker.deleteLater()
+
+    def _on_html_animation_saved(self, success: bool, message: str, count: int) -> None:
+        window = self.window
+        dialog, self.html_anim_progress_dialog = self.html_anim_progress_dialog, None
+        if is_qobject_alive(dialog):
+            dialog.finish()
+            dialog.deleteLater()
+        if _window_unavailable(window):
+            return
+        if message == 'CANCELLED':
+            window.statusBar().showMessage(trans.t('compare_cancelled'), 8000)
+            return
+        if success:
+            _show_saved_box_with_open_folder(
+                window,
+                trans.t('msg_success'),
+                trans.t('html_anim_saved_text'),
+                trans.t('html_anim_saved_info').format(count=count, path=message),
+                message if os.path.exists(str(message or '')) else "",
+            )
+        else:
+            show_error_box(
+                window,
+                trans.t('msg_save_failed_title'),
+                trans.t('msg_save_failed_text'),
+                message,
+            )
 
 
 def _show_saved_box_with_open_folder(window, title: str, text: str, info: str,

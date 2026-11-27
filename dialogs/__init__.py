@@ -29,6 +29,7 @@ _LAZY_EXPORTS = {
     'BatchProcessingDialog': 'batch',
     'FolderImportDialog': 'batch',
     'ROIRenderOptionsDialog': 'roi',
+    'HtmlAnimationDialog': 'html_animation',
 }
 
 
