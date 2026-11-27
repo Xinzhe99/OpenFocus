@@ -324,6 +324,7 @@ class MultiFocusFusion:
         self.prepared_cache = None
         self.ecc_warp_device = None
         self.registration_warp_devices = {}
+        self.deferred_alignment_seconds = 0.0
         self.retain_preparation = False
         # 资源偏好（'balanced' | 'responsive' | 'maximum'）：只影响并发、
         # 预取和预算，不改变任何输出几何或数值路径。
@@ -667,7 +668,8 @@ class MultiFocusFusion:
         """Fuse under one cancellable lease, including preparation and publication."""
         # A focus callback receives the merger's 2D positions and their scale.
         from core.resource_policy import heavy_job
-        from core.registration import RegistrationCancelled, deferred_ecc_warp_accelerator
+        from core.registration import (RegistrationCancelled, deferred_alignment_timer,
+                                       deferred_ecc_warp_accelerator)
         from core.frame_storage import scratch_directory
         from utils.logging_setup import log_operation, image_result_details
         from contextlib import nullcontext
@@ -685,14 +687,19 @@ class MultiFocusFusion:
             self._fallback_reasons = ()
             self.ecc_warp_device = None
             self.registration_warp_devices = {}
+            self.deferred_alignment_seconds = 0.0
             try:
                 # Every method resolves deferred frames here, in whole images or tiles.
-                with deferred_ecc_warp_accelerator(self.use_gpu) as warp:
+                with deferred_alignment_timer() as align_timer, deferred_ecc_warp_accelerator(self.use_gpu) as warp:
                     result = self._fuse_under_lease(
                         input_source, img_resize, should_cancel, progress_callback, ecc_warp=warp, **kwargs)
             except RegistrationCancelled:
                 operation.cancel()
                 raise
+            self.deferred_alignment_seconds = align_timer.elapsed
+            if align_timer.warps:
+                _profile().set('deferred_alignment', seconds=round(align_timer.elapsed, 6),
+                               warps=align_timer.warps)
             if warp is not None and warp.gpu_warps:
                 self.ecc_warp_device = ('CPU / ' if warp.cpu_warps else '') + warp.device_name
                 self.registration_warp_devices = warp.devices_by_method

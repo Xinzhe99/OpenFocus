@@ -85,6 +85,86 @@ _warp_threads_lock = threading.Lock()
 _deferred_warp_threads = ContextVar('deferred_warp_threads', default=None)
 _deferred_ecc_gpu = ContextVar('deferred_ecc_gpu', default=None)
 
+_deferred_alignment_timers_lock = threading.Lock()
+_deferred_alignment_timers = []
+
+
+class DeferredAlignmentTimer:
+    """Measure wall-clock time spent inside deferred alignment warps.
+
+    Uses active-depth reference counting so concurrent producer threads and
+    nested warp stages accumulate the wall-clock union of warp intervals
+    without double-counting or exceeding the enclosing stage's elapsed time.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._active = 0
+        self._started = 0.0
+        self._elapsed = 0.0
+        self._warps = 0
+
+    def _enter(self):
+        with self._lock:
+            if self._active == 0:
+                self._started = time.monotonic()
+            self._active += 1
+            self._warps += 1
+
+    def _exit(self):
+        with self._lock:
+            self._active -= 1
+            if self._active == 0:
+                self._elapsed += max(0.0, time.monotonic() - self._started)
+
+    @property
+    def elapsed(self) -> float:
+        with self._lock:
+            if self._active > 0:
+                return self._elapsed + max(0.0, time.monotonic() - self._started)
+            return self._elapsed
+
+    @property
+    def warps(self) -> int:
+        with self._lock:
+            return self._warps
+
+
+@contextmanager
+def deferred_alignment_timer():
+    """Observe wall-clock time spent applying deferred alignment transforms."""
+    timer = DeferredAlignmentTimer()
+    with _deferred_alignment_timers_lock:
+        _deferred_alignment_timers.append(timer)
+    try:
+        yield timer
+    finally:
+        with _deferred_alignment_timers_lock:
+            try:
+                _deferred_alignment_timers.remove(timer)
+            except ValueError:
+                pass
+
+
+@contextmanager
+def measure_deferred_alignment():
+    """Attribute this block's wall-clock span to all active alignment timers."""
+    if not _deferred_alignment_timers:
+        yield
+        return
+    with _deferred_alignment_timers_lock:
+        timers = tuple(_deferred_alignment_timers)
+    if not timers:
+        yield
+        return
+    for timer in timers:
+        timer._enter()
+    try:
+        yield
+    finally:
+        for timer in timers:
+            timer._exit()
+
 
 @contextmanager
 def deferred_warp_threads(threads):
@@ -829,14 +909,16 @@ class PerspectiveWarp:
         return warped
 
     def __call__(self, image):
-        self.source.validate_pixels(image, self.should_cancel)
-        return self._apply_to_image(image)
+        with measure_deferred_alignment():
+            self.source.validate_pixels(image, self.should_cancel)
+            return self._apply_to_image(image)
 
     def call_with_source(self, source_frame, image, *, should_cancel=None):
         """Validate against the original source descriptor before applying the warp."""
         cancel_fn = _merge_cancel_callbacks(self.should_cancel, should_cancel)
-        self.source.validate_pixels(image, cancel_fn, source=source_frame)
-        return self._apply_to_image(image, should_cancel=cancel_fn)
+        with measure_deferred_alignment():
+            self.source.validate_pixels(image, cancel_fn, source=source_frame)
+            return self._apply_to_image(image, should_cancel=cancel_fn)
 
     def _call_mapped_jpeg(self, source_frame, image, *, should_cancel=None):
         """Warp packed BGR pixels into an owned mapping with bounded CPU workspace."""
@@ -844,27 +926,28 @@ class PerspectiveWarp:
         from core.resource_policy import ResourceLimitError, require_memory
 
         cancel_fn = _merge_cancel_callbacks(self.should_cancel, should_cancel)
-        integer_crop = self._is_integer_crop(image.shape, image.dtype)
-        required = 128 * 1024 + (0 if integer_crop else _perspective_cpu_tile_bytes(self.dsize))
-        try:
-            require_memory(required)
-        except ResourceLimitError:
-            from core.source_frames import SOURCE_CACHE
+        with measure_deferred_alignment():
+            integer_crop = self._is_integer_crop(image.shape, image.dtype)
+            required = 128 * 1024 + (0 if integer_crop else _perspective_cpu_tile_bytes(self.dsize))
+            try:
+                require_memory(required)
+            except ResourceLimitError:
+                from core.source_frames import SOURCE_CACHE
 
-            SOURCE_CACHE.clear()
-            gc.collect()
-            require_memory(required)
-        with frame_region(image) as pixels:
-            self.source.validate_pixels(pixels, cancel_fn, source=source_frame)
-            output = create_frame(_perspective_output_shape(image.shape, self.dsize), image.dtype)
-            # Close the written view before the root mapping enters the staged stack.
-            with frame_region(output, write=True, writeback=True) as destination:
-                _check_cancel(cancel_fn)
-                warped = self._apply_to_image(pixels, should_cancel=cancel_fn, destination=destination)
-                if warped is not destination:
-                    np.copyto(destination, warped)
-        _check_cancel(cancel_fn)
-        return output
+                SOURCE_CACHE.clear()
+                gc.collect()
+                require_memory(required)
+            with frame_region(image) as pixels:
+                self.source.validate_pixels(pixels, cancel_fn, source=source_frame)
+                output = create_frame(_perspective_output_shape(image.shape, self.dsize), image.dtype)
+                # Close the written view before the root mapping enters the staged stack.
+                with frame_region(output, write=True, writeback=True) as destination:
+                    _check_cancel(cancel_fn)
+                    warped = self._apply_to_image(pixels, should_cancel=cancel_fn, destination=destination)
+                    if warped is not destination:
+                        np.copyto(destination, warped)
+            _check_cancel(cancel_fn)
+            return output
 
     def _full_warp_crop(self, image, x, y, width, height, channels, should_cancel):
         from core import _alignment_kernels
@@ -890,10 +973,7 @@ class PerspectiveWarp:
     def warp_region(self, source_or_image, x, y, width, height, *,
                     channels=None, should_cancel=None):
         """Compute one destination rectangle bit-identical to full warp[y:y+h, x:x+w]."""
-        from core import _alignment_kernels as _native_kernels
-        from core.openfocus_alignment import _is_bgr_rev, _run_row_bands, _validate_direct_rgb_source
-        from core.resource_policy import require_memory
-        from core.source_frames import _read_direct_rgb_tiff_region, is_direct_rgb_tiff, resolve_frame
+        from core.source_frames import is_direct_rgb_tiff, resolve_frame
 
         cancel_fn = _merge_cancel_callbacks(self.should_cancel, should_cancel)
         _check_cancel(cancel_fn)
@@ -903,13 +983,27 @@ class PerspectiveWarp:
 
         direct_tiff = is_direct_rgb_tiff(source_or_image)
         image = None
+        if not direct_tiff:
+            image = (source_or_image if isinstance(source_or_image, np.ndarray)
+                     else resolve_frame(source_or_image, should_cancel=cancel_fn))
+        with measure_deferred_alignment():
+            return self._warp_region_resolved(
+                source_or_image, image, direct_tiff, x, y, width, height,
+                channels=channels, cancel_fn=cancel_fn,
+            )
+
+    def _warp_region_resolved(self, source_or_image, image, direct_tiff, x, y, width, height, *,
+                              channels=None, cancel_fn=None):
+        from core import _alignment_kernels as _native_kernels
+        from core.openfocus_alignment import _is_bgr_rev, _run_row_bands, _validate_direct_rgb_source
+        from core.resource_policy import require_memory
+        from core.source_frames import _read_direct_rgb_tiff_region, resolve_frame
+
         if direct_tiff:
             _validate_direct_rgb_source(self.source, source_or_image, cancel_fn)
         elif isinstance(source_or_image, np.ndarray):
-            image = source_or_image
             self.source.validate_pixels(image, cancel_fn)
         else:
-            image = resolve_frame(source_or_image, should_cancel=cancel_fn)
             self.source.validate_pixels(image, cancel_fn, source=source_or_image)
 
         src_shape = tuple(source_or_image.shape)
