@@ -1268,12 +1268,15 @@ class DepthMapDialog(QDialog):
         close_btn.clicked.connect(self.reject)
         self.btn_save_indices = QPushButton(trans.t("depth_save_indices"))
         self.btn_save_render = QPushButton(trans.t("depth_save_render"))
+        self.btn_save_contrast = QPushButton(trans.t("action_export_contrast_map"))
+        self.btn_save_contrast.clicked.connect(self._save_contrast_map)
         for button in (self.btn_save_indices, self.btn_save_render):
             button.setToolTip(trans.t("depth_products_hint"))
         self.btn_save_indices.clicked.connect(lambda: self._export_product(False))
         self.btn_save_render.clicked.connect(lambda: self._export_product(True))
         for button in (self.btn_save_color, self.btn_save_raw, self.btn_save_indices,
-                       self.btn_save_render, self.btn_save_physical, self.btn_save_3d):
+                       self.btn_save_render, self.btn_save_contrast,
+                       self.btn_save_physical, self.btn_save_3d):
             exports.addRow(button)
         for button in (self.compute_btn, self.cancel_btn, close_btn):
             btns.add(button)
@@ -1416,6 +1419,11 @@ class DepthMapDialog(QDialog):
         context = self._map_context if self._index01 is not None else self._source_context()
         return context.pixel_size_um if context is not None else self._current_pixel_size
 
+
+    def _save_contrast_map(self):
+        exporter = getattr(self.window_main, "export_manager", None)
+        if exporter is not None and hasattr(exporter, "export_contrast_map_dialog"):
+            exporter.export_contrast_map_dialog()
 
     def _save_physical(self):
         if not self._require_current_map():
