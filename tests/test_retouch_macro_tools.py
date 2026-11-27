@@ -409,23 +409,218 @@ def test_gui_tool_specific_sidebar_visibility_and_shortcuts(qapp, monkeypatch):
         assert dlg._handle_key(key_f9)
         assert dlg.doc.frame_index == 2
         assert "3 / 3" in dlg._notice
+        _wait_for_source(qapp, dlg)
+        dlg.result_canvas.flash_hud("")
 
         # Toggle Depth/Source Map overlay on and wait for worker completion
         before_display = dlg._result_display.copy()
+        before_canvas = dlg.result_canvas.grab().toImage()
         dlg.chk_depth_map.setChecked(True)
         for _ in range(300):
-            if dlg._depth_overlay_bgr is not None:
+            if dlg._depth_overlay_pixmap is not None:
                 break
             QTest.qWait(10)
         assert dlg._depth_overlay_bgr is not None
-        assert not np.array_equal(dlg._result_display, before_display)
-        # Toggle off restores clean display
+        assert dlg._depth_overlay_qimage is not None
+        assert dlg._depth_overlay_pixmap is not None
+        # Overlay composites directly in paintEvent without mutating _result_display
+        np.testing.assert_array_equal(dlg._result_display, before_display)
+        with_depth_canvas = dlg.result_canvas.grab().toImage()
+        assert with_depth_canvas != before_canvas
+        # Toggle off restores identical clean canvas render
         dlg.chk_depth_map.setChecked(False)
         qapp.processEvents()
-        np.testing.assert_array_equal(dlg._result_display, before_display)
+        after_canvas = dlg.result_canvas.grab().toImage()
+        assert after_canvas == before_canvas
     finally:
         dlg._allow_close = True
         dlg.close()
+
+
+def test_dual_circle_clone_cursor_bounds_and_live_tracking(qapp):
+    base = np.full((120, 140, 3), 90, dtype=np.uint8)
+    base[20:40, 20:40] = (40, 180, 220)
+    dlg = _open_dialog(qapp, [base.copy()], base)
+    try:
+        dlg._set_tool("clone")
+        dlg.doc.set_brush(diameter=40, hardness=0.5, opacity=1.0)
+        dlg._pick_clone_origin(30, 30)
+        dlg.set_cursor(80, 70)
+
+        # Dual-circle dirty rect must cover both cursor circle and source-point circle
+        rect = dlg.result_canvas.cursor_rect()
+        src_center = dlg.result_canvas.image_to_widget(30, 30)
+        cur_center = dlg.result_canvas.image_to_widget(80, 70)
+        assert rect.contains(src_center.toPoint())
+        assert rect.contains(cur_center.toPoint())
+
+        # During an active Area clone stroke, source reticle tracks delta in real time
+        assert dlg.begin_stroke(80, 70)
+        dlg.set_cursor(95, 82)
+        live = dlg.live_clone_source_point()
+        assert live is not None
+        assert abs(live[0] - 45.0) < 1e-3 and abs(live[1] - 42.0) < 1e-3
+        dlg.end_stroke()
+
+        # In Pattern mode, source reticle remains fixed at pattern center during stroke
+        dlg._set_clone_mode("pattern")
+        assert dlg.begin_stroke(80, 70)
+        dlg.set_cursor(105, 90)
+        live_pat = dlg.live_clone_source_point()
+        assert live_pat == dlg.doc.clone_origin
+        dlg.end_stroke()
+    finally:
+        dlg._allow_close = True
+        dlg.close()
+
+
+def test_live_color_tolerance_swatch_hover_and_stroke_lock(qapp):
+    base = np.full((80, 80, 3), (30, 120, 210), dtype=np.uint8)
+    base[:, 40:] = (200, 60, 40)
+    source = np.full((80, 80, 3), 150, dtype=np.uint8)
+    dlg = _open_dialog(qapp, [source], base)
+    try:
+        # Tolerance off -> swatch inactive / unset
+        assert dlg.color_tolerance_swatch.rgb is None
+        dlg.num_color_tolerance.setValue(30)
+        dlg._on_color_tolerance_changed(30)
+
+        # Hovering left half updates live preview swatch to RGB(210, 120, 30)
+        dlg.set_cursor(20, 40)
+        assert dlg.color_tolerance_swatch.rgb == (210, 120, 30)
+        assert not dlg.color_tolerance_swatch.locked
+
+        # Starting a stroke locks the swatch to the stroke anchor color even as cursor moves
+        assert dlg.begin_stroke(20, 40)
+        assert dlg.color_tolerance_swatch.locked
+        assert dlg.color_tolerance_swatch.rgb == (210, 120, 30)
+        dlg.set_cursor(60, 40)
+        assert dlg.color_tolerance_swatch.locked
+        assert dlg.color_tolerance_swatch.rgb == (210, 120, 30)
+
+        # Ending the stroke unlocks swatch and resumes live cursor sampling
+        dlg.end_stroke()
+        assert not dlg.color_tolerance_swatch.locked
+        assert dlg.color_tolerance_swatch.rgb == (40, 60, 200)
+    finally:
+        dlg._allow_close = True
+        dlg.close()
+
+
+def test_f9_hud_pill_and_non_focus_stealing_jump(qapp, monkeypatch):
+    h, w = 64, 96
+    frames = [
+        np.full((h, w, 3), (40, 60, 200), dtype=np.uint8),
+        np.full((h, w, 3), (50, 200, 70), dtype=np.uint8),
+        np.full((h, w, 3), (210, 80, 50), dtype=np.uint8),
+    ]
+    result = np.zeros((h, w, 3), dtype=np.uint8)
+    result[:, :32] = frames[0][:, :32]
+    result[:, 32:64] = frames[1][:, 32:64]
+    result[:, 64:] = frames[2][:, 64:]
+    dlg = _open_dialog(qapp, frames, result)
+    monkeypatch.setattr(dlg, "_canvas_focused", lambda: True)
+    try:
+        dlg.result_canvas.setFocus()
+        qapp.processEvents()
+        dlg.set_cursor(80, 32)
+        key_f9 = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_F9, Qt.KeyboardModifier.NoModifier)
+        assert dlg._handle_key(key_f9)
+        qapp.processEvents()
+        assert dlg.doc.frame_index == 2
+        assert dlg.frame_list.currentRow() == 2
+        assert dlg.result_canvas._hud_text == trans.t("retouch_f9_hud_pill").format(i=3, n=3)
+        assert dlg.result_canvas._hud_opacity == 1.0
+        assert not dlg.result_canvas.hud_rect().isEmpty()
+        assert dlg._f9_flash_row == 2
+        assert dlg.focusWidget() is not dlg.frame_list
+        pix = dlg.result_canvas.grab()
+        assert not pix.isNull()
+    finally:
+        dlg._allow_close = True
+        dlg.close()
+
+
+def test_depth_overlay_cached_pixmap_no_full_redraw_on_toggle(qapp, monkeypatch):
+    frames = [
+        np.full((64, 80, 3), 60, dtype=np.uint8),
+        np.full((64, 80, 3), 180, dtype=np.uint8),
+    ]
+    result = np.full((64, 80, 3), 120, dtype=np.uint8)
+    index01 = np.linspace(0.0, 1.0, 80, dtype=np.float32)[None, :].repeat(64, axis=0)
+    rendered = {
+        "index": index01,
+        "valid_rect": (0, 0, 80, 64),
+        "reverse_order": False,
+        "parameters": {},
+        "frame_count": 2,
+        "method": "openfocus_b",
+        "roi_rect": None,
+    }
+    dlg = _open_dialog(qapp, frames, result, rendered_depth=rendered)
+    try:
+        # Toggling the Depth/Source Map must NEVER call _refresh_result_display
+        monkeypatch.setattr(
+            dlg, "_refresh_result_display",
+            lambda: (_ for _ in ()).throw(AssertionError("Full display refresh on depth toggle")),
+        )
+        dlg.chk_depth_map.setChecked(True)
+        qapp.processEvents()
+        first_pix = dlg._depth_overlay_pixmap
+        assert first_pix is not None
+        # Pan/zoom/cursor move reuses exact same cached QPixmap without re-colormapping
+        dlg.pan_by(10.0, 5.0)
+        dlg.set_cursor(40, 32)
+        dlg.result_canvas.grab()
+        assert dlg._depth_overlay_pixmap is first_pix
+        dlg.chk_depth_map.setChecked(False)
+        qapp.processEvents()
+        dlg.chk_depth_map.setChecked(True)
+        qapp.processEvents()
+        assert dlg._depth_overlay_pixmap is first_pix
+    finally:
+        dlg._allow_close = True
+        dlg.close()
+
+
+def test_45mp_16bit_macro_dab_latency_under_4ms():
+    """Verify 45MP 16-bit retouching stays well below the 4ms/dab 120Hz+ budget."""
+    rng = np.random.default_rng(19)
+    tile = rng.integers(8000, 56000, (128, 128, 3), dtype=np.uint16)
+    base = np.tile(tile, (43, 64, 1))[:5464, :8192].copy()
+    source = (base // 2 + 12000).astype(np.uint16)
+    doc = RetouchDocument(base, _context([source], base))
+    doc.set_brush(diameter=128, hardness=0.5, opacity=0.85)
+    doc.set_color_tolerance(30)
+    doc.set_brush_auto_brightness(True)
+    doc.set_source_offset(4, -3)
+
+    # Warmup
+    assert doc.begin_stroke(4000, 2700)
+    doc.stroke_to(4016, 2700)
+    doc.cancel_stroke()
+
+    assert doc.begin_stroke(4000, 2700)
+    times = []
+    for i in range(1, 16):
+        t0 = time.perf_counter()
+        doc.stroke_to(4000 + i * 16, 2700)
+        times.append((time.perf_counter() - t0) * 1000.0)
+    doc.cancel_stroke()
+    assert float(np.mean(times)) < 4.0
+
+    # Clone Pattern on 45MP 16-bit
+    doc.set_tool("clone")
+    doc.set_clone_mode("pattern")
+    doc.set_clone_origin(3600, 2500)
+    assert doc.begin_stroke(4000, 2700)
+    clone_times = []
+    for i in range(1, 16):
+        t0 = time.perf_counter()
+        doc.stroke_to(4000 + i * 16, 2700)
+        clone_times.append((time.perf_counter() - t0) * 1000.0)
+    doc.cancel_stroke()
+    assert float(np.mean(clone_times)) < 4.0
 
 
 @pytest.mark.parametrize("theme", ["light", "dark", "gray"])
