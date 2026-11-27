@@ -449,6 +449,8 @@ class RightPanelComponents:
     config_scroll: QScrollArea
     btn_reset: QPushButton
     btn_render: QPushButton
+    btn_enqueue: QPushButton
+    btn_render_queue: QPushButton
     btn_compare: QPushButton
     btn_render_settings: QPushButton
     chk_quick_preview: QCheckBox
@@ -609,17 +611,31 @@ def create_right_panel() -> RightPanelComponents:
     btn_reset.setObjectName("secondaryButton")
     btn_render = ElidingButton(trans.t('btn_render'))
     btn_render.setObjectName("primaryButton")
+    btn_enqueue = ElidingButton(trans.t('btn_enqueue'))
+    btn_enqueue.setObjectName("secondaryButton")
+    btn_enqueue.setToolTip(
+        f"{trans.t('btn_enqueue')}\n{trans.t('btn_enqueue_hint')}")
+    btn_render_queue = ElidingButton(trans.t('btn_render_queue'))
+    btn_render_queue.setObjectName("secondaryButton")
+    btn_render_queue.setToolTip(
+        f"{trans.t('btn_render_queue')}\n{trans.t('btn_render_queue_hint')}")
     btn_render_settings = ElidingButton(trans.t('render_settings_title'))
     btn_render_settings.setObjectName("secondaryButton")
     btn_compare = ElidingButton(trans.t('btn_compare_all'))
     btn_compare.setObjectName("secondaryButton")
     btn_compare.setToolTip(
         f"{trans.t('btn_compare_all')}\n{trans.t('btn_compare_all_hint')}")
-    for _btn in (btn_reset, btn_render, btn_render_settings, btn_compare):
+    for _btn in (btn_reset, btn_render, btn_enqueue, btn_render_queue,
+                 btn_render_settings, btn_compare):
         _btn.setSizePolicy(QSizePolicy.Policy.Ignored,
                            QSizePolicy.Policy.Fixed)
 
     config_layout.addWidget(btn_render)
+    queue_bar = QHBoxLayout()
+    queue_bar.setSpacing(8)
+    queue_bar.addWidget(btn_enqueue, 1)
+    queue_bar.addWidget(btn_render_queue, 1)
+    config_layout.addLayout(queue_bar)
     secondary_bar = QHBoxLayout()
     secondary_bar.setSpacing(8)
     secondary_bar.addWidget(btn_reset, 1)
@@ -738,6 +754,7 @@ def create_right_panel() -> RightPanelComponents:
     # Stable identifiers for agents, independent of QSS object names.
     for _control in ("combo_fusion", "combo_align", "fusion_parameter_panel",
                      "registration_parameter_panel", "btn_reset", "btn_render",
+                     "btn_enqueue", "btn_render_queue",
                      "btn_render_settings", "btn_compare", "chk_quick_preview", "chk_reverse_order",
                      "chk_exposure_match", "chk_base_correct", "chk_sharpen_output", "file_list",
                      "output_list"):
@@ -751,6 +768,8 @@ def create_right_panel() -> RightPanelComponents:
         config_scroll=config_scroll,
         btn_reset=btn_reset,
         btn_render=btn_render,
+        btn_enqueue=btn_enqueue,
+        btn_render_queue=btn_render_queue,
         btn_compare=btn_compare,
         btn_render_settings=btn_render_settings,
         chk_quick_preview=chk_quick_preview,
@@ -830,6 +849,10 @@ def bind_right_panel(window, components: RightPanelComponents) -> None:
     # force_algorithm parameter, forcing need_fusion=True; drop the bool.
     components.btn_render.clicked.connect(
         lambda: window.render_manager.start_render())
+    components.btn_enqueue.clicked.connect(
+        lambda: getattr(window, 'enqueue_render_job', lambda: None)())
+    components.btn_render_queue.clicked.connect(
+        lambda: getattr(window, 'show_render_queue_dialog', lambda: None)())
     components.btn_reset.clicked.connect(window.reset_to_default)
     def _show_render_settings():
         from dialogs.render_settings import RenderSettingsDialog

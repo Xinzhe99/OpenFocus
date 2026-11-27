@@ -114,6 +114,7 @@ class SourceManager(QObject):
         return (getattr(self, "_load_worker", None) is not None
                 or getattr(render, "worker", None) is not None
                 or bool(getattr(render, "_compare_mode", False))
+                or bool(getattr(render, "_substack_mode", False))
                 or getattr(window, "roi_alignment_worker", None) is not None
                 or getattr(batch, "_worker", None) is not None
                 or getattr(batch, "_thread", None) is not None)
@@ -122,6 +123,7 @@ class SourceManager(QObject):
         render = getattr(self.window, "render_manager", None)
         return (getattr(render, "worker", None) is not None
                 or getattr(render, "_pending_storage", None) is not None
+                or bool(getattr(render, "_substack_mode", False))
                 or (getattr(render, "_compare_mode", False)
                     and getattr(render, "_render_after_load", None) is None))
 
@@ -1502,21 +1504,24 @@ class SourceManager(QObject):
         return {row for item in window.file_list.selectedItems()
                 if 0 <= (row := window.file_list.row(item)) < count}
 
-    def show_source_context_menu(self, position: QPoint) -> None:
+    def _build_source_context_menu(self, rows: set[int]) -> QMenu:
         window = self.window
         view = window.file_list
-        target = view.itemAt(position)
-        if target is None:
-            return
-        if not target.isSelected():
-            view.setCurrentItem(target, QItemSelectionModel.SelectionFlag.ClearAndSelect)
-        rows = self._selected_source_rows()
-        if not rows:
-            return
         excluded = getattr(window, "excluded_frames", set())
         menu = QMenu(view)
         menu.setToolTipsVisible(True)
-        menu.addAction(self._review_action)
+        if self._review_action is not None:
+            menu.addAction(self._review_action)
+        substack_action = menu.addAction(trans.t("action_render_substacks"))
+        substack_action.setToolTip(trans.t("action_render_substacks_hint"))
+        try:
+            active_count = len(window.included_indices())
+        except Exception:
+            active_count = len(getattr(window, "raw_images", ()) or ())
+        substack_action.setEnabled(active_count >= 4 and not self._render_blocks_load())
+        substack_action.triggered.connect(
+            lambda: getattr(window, "show_render_substacks_dialog", lambda *_a, **_k: None)()
+        )
         menu.addSeparator()
 
         include_action = menu.addAction(trans.t("source_include_selected"))
@@ -1529,9 +1534,24 @@ class SourceManager(QObject):
             self._selected_source_rows(), included=False))
         menu.addSeparator()
         menu.addAction(trans.t("action_delete"), self.delete_selected_source_images)
+        return menu
 
-        menu.exec(view.viewport().mapToGlobal(position))
-        menu.deleteLater()
+    def show_source_context_menu(self, position: QPoint) -> None:
+        window = self.window
+        view = window.file_list
+        target = view.itemAt(position)
+        if target is None:
+            return
+        if not target.isSelected():
+            view.setCurrentItem(target, QItemSelectionModel.SelectionFlag.ClearAndSelect)
+        rows = self._selected_source_rows()
+        if not rows:
+            return
+        menu = self._build_source_context_menu(rows)
+        try:
+            menu.exec(view.viewport().mapToGlobal(position))
+        finally:
+            menu.deleteLater()
 
     def delete_source_image(self, item: QListWidgetItem) -> None:
         window = self.window
@@ -1699,6 +1719,9 @@ class SourceManager(QObject):
         window.transform_manager.reset_roi_selection()
         self._refresh_source_count()
         self.decorate_source_items()
+        sync_substack = getattr(window, "_sync_substack_actions", None)
+        if callable(sync_substack):
+            sync_substack()
         # Inclusion changes the processing revision but leaves the source
         # frames in place. Replace any preview request invalidated by it.
         if getattr(window, '_source_preview_workers', None):

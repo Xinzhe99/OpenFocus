@@ -14,6 +14,19 @@ import os
 import sys
 
 
+class InsufficientMemoryError(MemoryError):
+    """OpenFocus declined work, or could not create an object, for lack of memory.
+
+    Raise this where the application itself reports a memory limit; do not
+    raise MemoryError directly. Python 3.10 clears a plain MemoryError before
+    hiding it from the garbage collector. When such an exception is the last
+    owner of its traceback, and releasing the frames runs Python code that
+    starts a collection (stored frames have such finalizers), the exception
+    is freed twice and the interpreter crashes. A subclass is released like
+    any other exception, and handlers for MemoryError catch it unchanged.
+    """
+
+
 def _windows_memory_status():
     """Return one Win32 physical and commit-memory reading."""
     import ctypes
