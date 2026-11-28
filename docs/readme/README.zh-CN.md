@@ -302,8 +302,8 @@ openfocus -i ./stack_folder -o ./result/fused.tif --auto-background auto --save-
     <th align="center">微信公众号</th>
   </tr>
   <tr>
-    <td align="center" valign="top"><img src="../../assets/readme/wechat-group.png" alt="OpenFocus 微信交流群二维码" width="260"></td>
-    <td align="center" valign="top"><img src="../../assets/readme/wechat-official-account.jpg" alt="OpenFocus 微信公众号二维码" width="260"></td>
+    <td align="center" valign="top"><img src="https://account.openfocus.top/v1/qr/wechat-group" alt="OpenFocus 微信交流群二维码" width="260"></td>
+    <td align="center" valign="top"><img src="https://account.openfocus.top/v1/qr/wechat-official-account" alt="OpenFocus 微信公众号二维码" width="260"></td>
   </tr>
 </table>
 
@@ -315,8 +315,8 @@ openfocus -i ./stack_folder -o ./result/fused.tif --auto-background auto --save-
     <th align="center">PayPal · 海外</th>
   </tr>
   <tr>
-    <td align="center" valign="top"><img src="../../assets/readme/alipay-coffee.jpg" alt="通过支付宝支持 OpenFocus 的二维码" width="260"></td>
-    <td align="center" valign="top"><a href="https://paypal.me/XinZEN0602"><img src="../../assets/readme/paypal-coffee.png" alt="中心带 PayPal 标志的二维码；扫码或点击，通过 PayPal 支持 OpenFocus" width="260"></a><br><a href="https://paypal.me/XinZEN0602">扫码或点击，通过 PayPal 捐赠</a></td>
+    <td align="center" valign="top"><img src="https://account.openfocus.top/v1/qr/alipay" alt="通过支付宝支持 OpenFocus 的二维码" width="260"></td>
+    <td align="center" valign="top"><a href="https://paypal.me/XinZEN0602"><img src="https://account.openfocus.top/v1/qr/paypal" alt="中心带 PayPal 标志的二维码；扫码或点击，通过 PayPal 支持 OpenFocus" width="260"></a><br><a href="https://paypal.me/XinZEN0602">扫码或点击，通过 PayPal 捐赠</a></td>
   </tr>
 </table>
 
