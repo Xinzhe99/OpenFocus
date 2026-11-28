@@ -633,6 +633,7 @@ class RightPanelComponents:
     btn_method_help: Optional[QPushButton] = None
     btn_reg_help: Optional[QPushButton] = None
     btn_context_help: Optional[ContextHelpBeacon] = None
+    context_help_host: Optional[QWidget] = None
     btn_render_more: Optional[IconActionButton] = None
     lbl_reg_align_area: QLabel = None
     btn_reg_align_area: QPushButton = None
@@ -707,12 +708,15 @@ def create_right_panel() -> RightPanelComponents:
     config_layout.setSpacing(6)
 
     # Top-right interactive help beacon: click to pick, drag '?' onto any target, or hold H.
-    beacon_row = QHBoxLayout()
+    # Placed in a hideable wrapper row so the main window can dock the beacon in the menu bar
+    # corner while retaining a clean fallback when a native OS menu bar is active.
+    context_help_host = QWidget(config_widget)
+    beacon_row = QHBoxLayout(context_help_host)
     beacon_row.setContentsMargins(0, 0, 0, 0)
     beacon_row.addStretch(1)
-    btn_context_help = ContextHelpBeacon(config_widget)
+    btn_context_help = ContextHelpBeacon(context_help_host)
     beacon_row.addWidget(btn_context_help)
-    config_layout.addLayout(beacon_row)
+    config_layout.addWidget(context_help_host)
 
     method_group = QGroupBox(trans.t('group_fusion'))
     method_layout = QVBoxLayout(method_group)
@@ -1027,6 +1031,7 @@ def create_right_panel() -> RightPanelComponents:
         lbl_status_gpu=lbl_status_gpu,
         lbl_status_memory=lbl_status_memory,
         btn_context_help=btn_context_help,
+        context_help_host=context_help_host,
         btn_render_more=btn_render_more,
         lbl_reg_align_area=lbl_reg_align_area,
         btn_reg_align_area=btn_reg_align_area,
