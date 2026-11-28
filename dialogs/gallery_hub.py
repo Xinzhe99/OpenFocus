@@ -18,7 +18,7 @@ import urllib.request
 import uuid
 from typing import Any, Callable, Mapping, Sequence
 
-from PyQt6.QtCore import QEvent, QObject, QRectF, QSize, Qt, pyqtSignal
+from PyQt6.QtCore import QEvent, QObject, QRectF, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import (
     QColor,
     QFont,
@@ -55,11 +55,14 @@ from PyQt6.QtWidgets import (
 )
 
 from core.gallery_media import (
+    DEFAULT_WATERMARK_POSITION,
+    WATERMARK_POSITIONS,
     extract_exif_summary,
     filter_public_exif,
     format_exif_summary,
     prepare_gallery_upload,
 )
+from core.gallery_state import BoostPackage, DEFAULT_BOOST_PACKAGES
 from locales import trans
 from locales.gallery_i18n import (
     AI_TAG_KEYS,
@@ -78,13 +81,18 @@ from locales.gallery_i18n import (
     translate_report_reason,
     translate_tag,
 )
-from utils.design_tokens import RADIUS, SPACE, palette
+from utils.design_tokens import RADIUS, SPACE, palette, rgba
 from utils.file_dialogs import FileDialog
 from utils.frame_pixels import block_signals, is_qobject_alive, safe_disconnect
-from utils.gallery_client import _extract_upload_target, call_get_comments, call_post_comment
+from utils.gallery_client import (
+    _accepted_kwargs,
+    _extract_upload_target,
+    call_get_comments,
+    call_post_comment,
+)
 
 MAX_BATCH_UPLOAD = 10
-DEFAULT_UPLOAD_COST_POINTS = 100
+DEFAULT_UPLOAD_COST_POINTS = 0
 DEFAULT_COMMENT_MAX_CHARS = 500
 MEDIA_TIMEOUT_SEC = 5.0
 MAX_MEDIA_BYTES = 8 * 1024 * 1024
@@ -346,6 +354,9 @@ class _DialogTaskRunner(QObject):
         self._seq = 0
         self._inflight = 0
         self._shutdown = False
+        self._executor: ThreadPoolExecutor | None = ThreadPoolExecutor(
+            max_workers=4, thread_name_prefix="gallery-dlg"
+        )
         self._latest_by_key: dict[str, int] = {}
         self._callbacks: dict[int, tuple[str | None, Any, Any, Any, Any]] = {}
         self._task_done.connect(self._handle_done, Qt.ConnectionType.QueuedConnection)
@@ -359,6 +370,10 @@ class _DialogTaskRunner(QObject):
             self._shutdown = True
             self._callbacks.clear()
             self._latest_by_key.clear()
+            executor = self._executor
+            self._executor = None
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)
 
     @property
     def is_busy(self) -> bool:
@@ -392,7 +407,7 @@ class _DialogTaskRunner(QObject):
         on_progress: Callable[[Any], None] | None = None,
     ) -> int:
         with self._lock:
-            if self._shutdown:
+            if self._shutdown or self._executor is None:
                 return -1
             self._seq += 1
             req_id = self._seq
@@ -400,6 +415,7 @@ class _DialogTaskRunner(QObject):
             if key is not None:
                 self._latest_by_key[key] = req_id
             self._callbacks[req_id] = (key, on_success, on_error, on_finally, on_progress)
+            executor = self._executor
         if self._bind_operation is not None:
             fn = self._bind_operation(fn)
 
@@ -429,8 +445,13 @@ class _DialogTaskRunner(QObject):
                     self._inflight = max(0, self._inflight - 1)
                     self._callbacks.pop(req_id, None)
 
-        thread = threading.Thread(target=_worker, daemon=True)
-        thread.start()
+        try:
+            executor.submit(_worker)
+        except RuntimeError:
+            with self._lock:
+                self._inflight = max(0, self._inflight - 1)
+                self._callbacks.pop(req_id, None)
+            return -1
         return req_id
 
     def _handle_progress(self, req_id: int, payload: Any) -> None:
@@ -683,15 +704,18 @@ format_exif_line = format_exif_summary
 def _draw_watermark_on_qimage(
     image: QImage,
     attribution: str,
-    enabled: bool = True,
+    enabled: bool = False,
+    *,
+    position: str = DEFAULT_WATERMARK_POSITION,
 ) -> QImage:
-    """Thread-safe bottom-right ``© <attribution>`` watermark renderer on QImage."""
+    """Thread-safe ``© <attribution>`` watermark renderer on QImage (default top-left)."""
     if image.isNull():
         return image
     clean_text = (attribution or "").strip()
     if not enabled or not clean_text:
         return QImage(image)
 
+    pos = position if position in WATERMARK_POSITIONS else DEFAULT_WATERMARK_POSITION
     result = image.convertToFormat(QImage.Format.Format_ARGB32_Premultiplied)
     label = clean_text if clean_text.startswith("©") else f"© {clean_text}"
 
@@ -713,8 +737,18 @@ def _draw_watermark_on_qimage(
 
     box_w = min(result.width() - margin * 2, text_rect.width() + pad_x * 2)
     box_h = text_rect.height() + pad_y * 2
-    x = max(margin, result.width() - box_w - margin)
-    y = max(margin, result.height() - box_h - margin)
+    if pos == "top_left":
+        x = min(max(0, result.width() - box_w), margin)
+        y = min(max(0, result.height() - box_h), margin)
+    elif pos == "top_right":
+        x = max(margin, result.width() - box_w - margin)
+        y = min(max(0, result.height() - box_h), margin)
+    elif pos == "bottom_left":
+        x = min(max(0, result.width() - box_w), margin)
+        y = max(margin, result.height() - box_h - margin)
+    else:
+        x = max(margin, result.width() - box_w - margin)
+        y = max(margin, result.height() - box_h - margin)
     box_rect = QRectF(float(x), float(y), float(box_w), float(box_h))
 
     pill = QPainterPath()
@@ -736,9 +770,11 @@ def _draw_watermark_on_qimage(
 def render_watermark_preview(
     source: Any,
     attribution: str,
-    enabled: bool = True,
+    enabled: bool = False,
+    *,
+    position: str = DEFAULT_WATERMARK_POSITION,
 ) -> QPixmap:
-    """Render a crisp bottom-right ``© <attribution>`` watermark onto a QPixmap.
+    """Render a crisp ``© <attribution>`` watermark onto a QPixmap (default top-left).
 
     Supports ``QPixmap``, ``QImage``, 8-bit & 16-bit numpy arrays, bytes, or
     image paths. Returns a clean unmodified image if ``enabled`` is ``False``
@@ -752,7 +788,7 @@ def render_watermark_preview(
         img = _image_from_any(source)
         if img.isNull():
             return QPixmap()
-    rendered = _draw_watermark_on_qimage(img, attribution, enabled=enabled)
+    rendered = _draw_watermark_on_qimage(img, attribution, enabled=enabled, position=position)
     return QPixmap.fromImage(rendered)
 
 
@@ -760,7 +796,8 @@ def _encode_webp_pair(
     source: Any,
     *,
     attribution: str = "",
-    watermark_enabled: bool = True,
+    watermark_enabled: bool = False,
+    watermark_position: str = DEFAULT_WATERMARK_POSITION,
     media_helper: Any = None,
 ) -> tuple[bytes, bytes, dict[str, Any]]:
     """Prepare ``(thumb_webp, full_webp, meta)`` off the GUI thread."""
@@ -776,14 +813,16 @@ def _encode_webp_pair(
             raise ValueError("invalid_media")
         from PIL import Image
 
-        rgba = qimg.convertToFormat(QImage.Format.Format_RGBA8888)
-        raw = rgba.constBits().asarray(rgba.sizeInBytes())
-        upload_source = Image.frombytes("RGBA", (rgba.width(), rgba.height()), bytes(raw)).convert("RGB")
-    prepared = prepare_fn(
-        upload_source,
-        attribution=attribution,
-        watermark_enabled=watermark_enabled,
-    )
+        rgba_img = qimg.convertToFormat(QImage.Format.Format_RGBA8888)
+        raw = rgba_img.constBits().asarray(rgba_img.sizeInBytes())
+        upload_source = Image.frombytes("RGBA", (rgba_img.width(), rgba_img.height()), bytes(raw)).convert("RGB")
+    prep_kwargs: dict[str, Any] = {
+        "attribution": attribution,
+        "watermark_enabled": watermark_enabled,
+    }
+    accepted_extra = _accepted_kwargs(prepare_fn, {"watermark_position": watermark_position})
+    prep_kwargs.update(accepted_extra)
+    prepared = prepare_fn(upload_source, **prep_kwargs)
     return (
         bytes(_get(prepared, "thumb_webp", b"")),
         bytes(_get(prepared, "main_webp", b"") or _get(prepared, "full_webp", b"")),
@@ -802,15 +841,326 @@ def _extract_upload_urls(inspect_resp: Mapping[str, Any]) -> tuple[str, dict[str
     return full_url, full_headers, thumb_url, thumb_headers
 
 
+def _normalize_boost_packages(raw_packages: Any) -> list[BoostPackage]:
+    if not isinstance(raw_packages, (list, tuple)):
+        return list(DEFAULT_BOOST_PACKAGES)
+    parsed: list[BoostPackage] = []
+    for item in raw_packages:
+        if isinstance(item, BoostPackage):
+            if item.package_id and item.impressions > 0 and item.points >= 0:
+                parsed.append(item)
+        elif isinstance(item, Mapping):
+            pkg = BoostPackage.from_dict(item)
+            if pkg.package_id and pkg.impressions > 0 and pkg.points >= 0:
+                parsed.append(pkg)
+    return parsed if parsed else list(DEFAULT_BOOST_PACKAGES)
+
+
+class _RoundedCoverButton(QPushButton):
+    """Photo-first rounded cover button with smooth aspect-fill clipping for discovery cards."""
+
+    def __init__(
+        self,
+        title: str,
+        *,
+        theme: str = "dark",
+        aspect_ratio: float | None = None,
+        source_badge: str | None = None,
+        openfocus_badge: bool = False,
+        parent: QWidget | None = None,
+    ):
+        super().__init__("", parent)
+        self._title = title
+        self._theme = theme
+        self._pixmap = QPixmap()
+        self._source_badge = source_badge if source_badge in ("ad", "following") else None
+        self._openfocus_badge = bool(openfocus_badge)
+        self._hovered = False
+        self._radius = float(RADIUS["md"] + 2)
+        self.setFlat(True)
+        self.setAutoDefault(False)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setFixedHeight(self._height_for_aspect(aspect_ratio))
+
+    @staticmethod
+    def _height_for_aspect(ratio: float | None) -> int:
+        # Balanced photo-first card height in the 3-column grid (avoids ragged row gaps)
+        return 210
+
+    def set_theme(self, theme: str) -> None:
+        self._theme = theme
+        self.update()
+
+    def set_cover_pixmap(self, pix: QPixmap) -> None:
+        if pix.isNull():
+            return
+        self._pixmap = pix
+        if pix.height() > 0:
+            self.setFixedHeight(self._height_for_aspect(pix.width() / float(pix.height())))
+        self.update()
+
+    def enterEvent(self, event: QEvent) -> None:
+        self._hovered = True
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event: QEvent) -> None:
+        self._hovered = False
+        self.update()
+        super().leaveEvent(event)
+
+    def paintEvent(self, _event: Any) -> None:
+        c = palette(self._theme)
+        rect = QRectF(0.0, 0.0, float(self.width()), float(self.height()))
+        if rect.width() <= 1 or rect.height() <= 1:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+
+        clip = QPainterPath()
+        clip.addRoundedRect(rect, self._radius, self._radius)
+        painter.setClipPath(clip)
+
+        if not self._pixmap.isNull():
+            src_w = self._pixmap.width()
+            src_h = self._pixmap.height()
+            if src_w > 0 and src_h > 0:
+                scale = max(rect.width() / src_w, rect.height() / src_h)
+                draw_w = src_w * scale
+                draw_h = src_h * scale
+                dx = (rect.width() - draw_w) * 0.5
+                dy = (rect.height() - draw_h) * 0.5
+                painter.drawPixmap(
+                    QRectF(dx, dy, draw_w, draw_h),
+                    self._pixmap,
+                    QRectF(0.0, 0.0, float(src_w), float(src_h)),
+                )
+            if self._hovered:
+                painter.fillRect(rect, QColor(255, 255, 255, 18))
+        else:
+            painter.fillRect(rect, QColor(c["surfaceSunken"]))
+            painter.setPen(QColor(c["textFaint"]))
+            font = painter.font()
+            font.setPointSize(9)
+            painter.setFont(font)
+            painter.drawText(
+                rect.adjusted(12, 12, -12, -12),
+                Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap,
+                self._title,
+            )
+
+        # Subtle floating badges only when relevant
+        if self._source_badge:
+            badge_txt = t_gallery(f"gallery_source_{self._source_badge}")
+            bfont = painter.font()
+            bfont.setPointSize(8)
+            bfont.setWeight(QFont.Weight.DemiBold)
+            painter.setFont(bfont)
+            fm = QFontMetrics(bfont)
+            bw = fm.horizontalAdvance(badge_txt) + 14
+            bh = fm.height() + 6
+            brect = QRectF(8.0, 8.0, float(bw), float(bh))
+            bpath = QPainterPath()
+            bpath.addRoundedRect(brect, bh * 0.5, bh * 0.5)
+            painter.fillPath(bpath, QColor(17, 24, 39, 172))
+            painter.setPen(QColor(255, 255, 255, 238))
+            painter.drawText(brect, Qt.AlignmentFlag.AlignCenter, badge_txt)
+
+        if self._openfocus_badge:
+            dot_size = 20.0
+            drect = QRectF(rect.width() - dot_size - 8.0, 8.0, dot_size, dot_size)
+            dpath = QPainterPath()
+            dpath.addEllipse(drect)
+            painter.fillPath(dpath, QColor(17, 24, 39, 156))
+            painter.setPen(QColor(255, 255, 255, 240))
+            dfont = painter.font()
+            dfont.setPointSize(8)
+            dfont.setWeight(QFont.Weight.Bold)
+            painter.setFont(dfont)
+            painter.drawText(drect, Qt.AlignmentFlag.AlignCenter, "◆")
+
+        # Hairline inner border for crisp edge separation on white/dark photos
+        painter.setClipping(False)
+        border_col = QColor(c["borderStrong"] if self._hovered else c["border"])
+        border_col.setAlpha(155 if self._hovered else 90)
+        painter.setPen(border_col)
+        painter.drawRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), self._radius, self._radius)
+        painter.end()
+
+
+class _AuthorAvatarDot(QLabel):
+    """Compact circular initial avatar for Xiaohongshu-style card footer rows."""
+
+    def __init__(self, author_name: str, *, theme: str = "dark", parent: QWidget | None = None):
+        super().__init__(parent)
+        self._initial = (author_name.strip()[:1] or "O").upper()
+        self._theme = theme
+        self.setFixedSize(20, 20)
+
+    def set_theme(self, theme: str) -> None:
+        self._theme = theme
+        self.update()
+
+    def paintEvent(self, _event: Any) -> None:
+        c = palette(self._theme)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        rect = QRectF(0.5, 0.5, self.width() - 1.0, self.height() - 1.0)
+        painter.setBrush(QColor(c["accentSoft"]))
+        painter.setPen(QColor(c["border"]))
+        painter.drawEllipse(rect)
+        painter.setPen(QColor(c["accentSoftText"]))
+        font = painter.font()
+        font.setPointSize(8)
+        font.setWeight(QFont.Weight.DemiBold)
+        painter.setFont(font)
+        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, self._initial)
+        painter.end()
+
+
 def _dialog_stylesheet(theme: str = "dark") -> str:
     c = palette(theme)
     r = RADIUS
     return f"""
-        QDialog {{ background: {c['bg']}; color: {c['text']}; }}
+        QDialog {{
+            background: {c['bg']};
+            color: {c['text']};
+        }}
+        QWidget {{
+            color: {c['text']};
+        }}
+        QScrollArea {{
+            background: transparent;
+            border: none;
+        }}
+        QScrollArea > QWidget > QWidget {{
+            background: transparent;
+        }}
+        QTabWidget::pane {{
+            border: none;
+            background: {c['bg']};
+        }}
+        QFrame#hubNavRail {{
+            background: {c['surface']};
+            border-right: 1px solid {c['border']};
+        }}
+        QFrame#hubNavDivider {{
+            background: {c['border']};
+            max-height: 1px;
+        }}
+        QFrame#hubPointsCard {{
+            background: {c['surfaceSunken']};
+            border: 1px solid {c['border']};
+            border-radius: {r['md']}px;
+        }}
+        QLabel#hubBrandTitle {{
+            font-size: 13pt;
+            font-weight: 700;
+            color: {c['text']};
+        }}
+        QLabel#hubBrandSubtitle {{
+            font-size: 8.5pt;
+            color: {c['textMuted']};
+        }}
+        QPushButton[navItem="true"] {{
+            background: transparent;
+            color: {c['textMuted']};
+            border: none;
+            border-radius: {r['md']}px;
+            padding: 9px 12px;
+            text-align: left;
+            font-size: 10pt;
+            font-weight: 500;
+        }}
+        QPushButton[navItem="true"]:hover {{
+            background: {c['surfaceHover']};
+            color: {c['text']};
+        }}
+        QPushButton[navItem="true"]:checked {{
+            background: {c['accentSoft']};
+            color: {c['accentSoftText']};
+            font-weight: 700;
+        }}
+        QLineEdit#squareSearchInput {{
+            background: {c['surface']};
+            color: {c['text']};
+            border: 1px solid {c['border']};
+            border-radius: {r['pill']}px;
+            padding: 6px 14px;
+            min-height: 20px;
+            selection-background-color: {c['accent']};
+            selection-color: {c['textOnAccent']};
+        }}
+        QLineEdit#squareSearchInput:focus {{
+            border-color: {c['borderFocus']};
+        }}
+        QLineEdit, QPlainTextEdit, QComboBox, QListWidget {{
+            background: {c['controlBg']};
+            color: {c['text']};
+            border: 1px solid {c['border']};
+            border-radius: {r['sm']}px;
+            padding: 4px 8px;
+        }}
+        QLineEdit:focus, QPlainTextEdit:focus, QComboBox:focus {{
+            border-color: {c['borderFocus']};
+        }}
+        QComboBox::drop-down {{
+            border: none;
+            width: 20px;
+        }}
+        QListWidget::item {{
+            padding: 6px 8px;
+            border-radius: {r['xs']}px;
+        }}
+        QListWidget::item:selected {{
+            background: {c['accentSoft']};
+            color: {c['accentSoftText']};
+        }}
         QFrame#galleryCard, QFrame#honorCardFrame {{
             background: {c['surface']};
             border: 1px solid {c['border']};
             border-radius: {r['md']}px;
+        }}
+        QFrame#discoveryCard {{
+            background: {c['surface']};
+            border: 1px solid {c['border']};
+            border-radius: {r['lg']}px;
+        }}
+        QFrame#discoveryCard:hover {{
+            border-color: {c['borderStrong']};
+        }}
+        QLabel#cardTitleLabel {{
+            color: {c['text']};
+            font-weight: 600;
+            font-size: 9.5pt;
+        }}
+        QPushButton[cardAuthor="true"] {{
+            background: transparent;
+            border: none;
+            color: {c['textMuted']};
+            text-align: left;
+            padding: 0px;
+            font-size: 8.5pt;
+        }}
+        QPushButton[cardAuthor="true"]:hover {{
+            color: {c['text']};
+        }}
+        QPushButton[likeChip="true"] {{
+            background: transparent;
+            border: none;
+            color: {c['textMuted']};
+            padding: 2px 4px;
+            font-size: 9pt;
+            font-weight: 500;
+        }}
+        QPushButton[likeChip="true"]:hover {{
+            color: {c['danger']};
+        }}
+        QPushButton[likeChip="true"][liked="true"] {{
+            color: {c['danger']};
+            font-weight: 600;
         }}
         QLabel#mutedLabel {{ color: {c['textMuted']}; }}
         QLabel#warningBanner {{
@@ -820,14 +1170,23 @@ def _dialog_stylesheet(theme: str = "dark") -> str:
             border-radius: {r['sm']}px;
             padding: 6px 10px;
         }}
+        QLabel#freeBadge {{
+            background: {c['successSoft']};
+            color: {c['success']};
+            border: 1px solid {c['success']};
+            border-radius: {r['xs']}px;
+            padding: 2px 7px;
+            font-size: 8.5pt;
+            font-weight: 600;
+        }}
         QLabel#badgeOpenFocus {{
             background: {c['accentSoft']};
             color: {c['accentSoftText']};
             border: 1px solid {c['accent']};
             border-radius: {r['xs']}px;
-            padding: 1px 5px;
+            padding: 2px 6px;
             font-size: 8pt;
-            font-weight: 500;
+            font-weight: 600;
         }}
         QLabel#badgeSource {{
             background: {c['surfaceHover']};
@@ -835,10 +1194,10 @@ def _dialog_stylesheet(theme: str = "dark") -> str:
             border-radius: {r['xs']}px;
             padding: 2px 6px;
         }}
-        QFrame#publishCostCard {{
-            background: {c['surfaceHover']};
+        QFrame#publishCostCard, QFrame#publishBoostCard {{
+            background: {c['surface']};
             border: 1px solid {c['border']};
-            border-radius: {r['sm']}px;
+            border-radius: {r['md']}px;
         }}
         QLabel#publishBalanceTitle {{
             font-weight: 600;
@@ -848,30 +1207,138 @@ def _dialog_stylesheet(theme: str = "dark") -> str:
             color: {c['warning']};
             font-weight: 600;
         }}
-        QPushButton[chip="true"] {{
+        QPushButton {{
             background: {c['surface']};
             color: {c['text']};
             border: 1px solid {c['border']};
-            border-radius: 12px;
-            padding: 4px 10px;
+            border-radius: {r['sm']}px;
+            padding: 5px 12px;
+        }}
+        QPushButton:hover {{
+            background: {c['surfaceHover']};
+            border-color: {c['borderStrong']};
+        }}
+        QPushButton:disabled {{
+            background: {c['controlDisabled']};
+            color: {c['textFaint']};
+            border-color: {c['border']};
+        }}
+        QPushButton[flat="true"] {{
+            background: transparent;
+            border: none;
+            color: {c['link']};
+            padding: 3px 6px;
+        }}
+        QPushButton[flat="true"]:hover {{
+            background: {c['surfaceHover']};
+        }}
+        QPushButton[cardAuthor="true"] {{
+            background: transparent;
+            border: none;
+            color: {c['textMuted']};
+            text-align: left;
+            padding: 0px;
+            font-size: 8.5pt;
+        }}
+        QPushButton[cardAuthor="true"]:hover {{
+            background: transparent;
+            color: {c['text']};
+        }}
+        QPushButton[likeChip="true"] {{
+            background: transparent;
+            border: none;
+            color: {c['textMuted']};
+            padding: 2px 4px;
+            font-size: 9pt;
+            font-weight: 500;
+        }}
+        QPushButton[likeChip="true"]:hover {{
+            background: transparent;
+            color: {c['danger']};
+        }}
+        QPushButton[likeChip="true"][liked="true"] {{
+            color: {c['danger']};
+            font-weight: 600;
+        }}
+        QPushButton[chip="true"] {{
+            background: {c['surface']};
+            color: {c['textMuted']};
+            border: 1px solid {c['border']};
+            border-radius: {r['pill']}px;
+            padding: 4px 13px;
+            min-height: 18px;
+            font-size: 9pt;
+            font-weight: 500;
+        }}
+        QPushButton[chip="true"]:hover {{
+            background: {c['surfaceHover']};
+            color: {c['text']};
         }}
         QPushButton[chip="true"]:checked {{
-            background: {c['accent']};
-            color: {c['textOnAccent']};
-            border-color: {c['accent']};
+            background: {c['text']};
+            color: {c['surface']};
+            border-color: {c['text']};
+            font-weight: 600;
+        }}
+        QPushButton[boostTier="true"] {{
+            background: {c['surfaceSunken']};
+            color: {c['text']};
+            border: 1px solid {c['border']};
+            border-radius: {r['sm']}px;
+            padding: 7px 11px;
+            font-weight: 500;
+        }}
+        QPushButton[boostTier="true"]:hover {{
+            background: {c['surfaceHover']};
+            border-color: {c['borderStrong']};
+        }}
+        QPushButton[boostTier="true"]:checked {{
+            background: {c['accentSoft']};
+            color: {c['accentSoftText']};
+            border: 1.5px solid {c['accent']};
+            font-weight: 700;
         }}
         QPushButton[primary="true"] {{
             background: {c['accent']};
             color: {c['textOnAccent']};
             border: none;
             border-radius: {r['sm']}px;
-            padding: 6px 14px;
+            padding: 7px 16px;
             font-weight: 600;
         }}
         QPushButton[primary="true"]:hover {{ background: {c['accentHover']}; }}
+        QPushButton[primary="true"]:pressed {{ background: {c['accentPressed']}; }}
         QPushButton[primary="true"]:disabled {{
             background: {c['controlDisabled']};
             color: {c['textFaint']};
+        }}
+        QScrollBar:vertical {{
+            background: transparent;
+            width: 8px;
+            margin: 2px 0;
+        }}
+        QScrollBar::handle:vertical {{
+            background: {rgba(c['textMuted'], 0.30)};
+            border-radius: 4px;
+            min-height: 28px;
+        }}
+        QScrollBar::handle:vertical:hover {{
+            background: {rgba(c['textMuted'], 0.50)};
+        }}
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical,
+        QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
+            width: 0px;
+            height: 0px;
+        }}
+        QScrollBar:horizontal {{
+            background: transparent;
+            height: 6px;
+            margin: 0 2px;
+        }}
+        QScrollBar::handle:horizontal {{
+            background: {rgba(c['textMuted'], 0.25)};
+            border-radius: 3px;
+            min-width: 24px;
         }}
     """
 
@@ -892,6 +1359,7 @@ class PublishQueueItem:
     work_id: str = ""
     upload_id: str = ""
     idempotency_key: str = ""
+    preview_base_qimage: QImage | None = field(default=None, repr=False, compare=False)
 
 
 class GalleryAgreementDialog(QDialog):
@@ -989,11 +1457,14 @@ class UploadPromptDialog(QDialog):
         theme: str = "dark",
     ):
         super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         _set_cid(self, "upload_prompt_dialog", object_name="uploadPromptDialog")
         self.setWindowTitle(t_gallery("gallery_upload_prompt_title"))
         self.setMinimumWidth(400)
         self.setStyleSheet(_dialog_stylesheet(theme))
         self.wants_upload = False
+        self._runner = _DialogTaskRunner(self, None)
+        self._preview_source: Any = preview_source
 
         root = QVBoxLayout(self)
         root.setContentsMargins(SPACE["lg"], SPACE["md"], SPACE["lg"], SPACE["md"])
@@ -1004,14 +1475,40 @@ class UploadPromptDialog(QDialog):
         heading.setWordWrap(True)
         root.addWidget(heading)
 
+        self.preview_label: QLabel | None = None
         if preview_source is not None:
-            pix = _pixmap_from_any(preview_source, size=QSize(340, 200))
-            if not pix.isNull():
-                preview = QLabel()
-                _set_cid(preview, "upload_prompt_preview")
-                preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                preview.setPixmap(pix)
+            preview = QLabel()
+            _set_cid(preview, "upload_prompt_preview")
+            preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.preview_label = preview
+            if isinstance(preview_source, QPixmap):
+                pix = _pixmap_from_any(preview_source, size=QSize(340, 200))
+                if not pix.isNull():
+                    preview.setPixmap(pix)
+                    root.addWidget(preview)
+                else:
+                    preview.hide()
+                self._preview_source = None
+            else:
+                preview.hide()
                 root.addWidget(preview)
+                src_ref = preview_source
+
+                def _decode_preview() -> QImage:
+                    return _image_from_any(src_ref, size=QSize(340, 200))
+
+                def _apply_preview(img: Any) -> None:
+                    self._preview_source = None
+                    if isinstance(img, QImage) and not img.isNull() and is_qobject_alive(preview):
+                        preview.setPixmap(QPixmap.fromImage(img))
+                        preview.show()
+
+                self._runner.submit(
+                    _decode_preview,
+                    key="upload_prompt_preview",
+                    on_success=_apply_preview,
+                    on_error=lambda _exc: setattr(self, "_preview_source", None),
+                )
 
         body = QLabel(t_gallery("gallery_upload_prompt_body"))
         body.setWordWrap(True)
@@ -1032,6 +1529,21 @@ class UploadPromptDialog(QDialog):
         buttons.addWidget(self.dismiss_btn)
         buttons.addWidget(self.upload_btn)
         root.addLayout(buttons)
+
+    def wait_for_idle(self, timeout: float = 5.0) -> bool:
+        return self._runner.wait_for_idle(timeout)
+
+    def _shutdown_dialog(self) -> None:
+        self._preview_source = None
+        self._runner.shutdown()
+
+    def done(self, result: int) -> None:
+        self._shutdown_dialog()
+        super().done(result)
+
+    def closeEvent(self, event: QEvent) -> None:
+        self._shutdown_dialog()
+        super().closeEvent(event)
 
     def _on_upload_clicked(self) -> None:
         self.wants_upload = True
@@ -1210,6 +1722,7 @@ class AuthorShowcaseDialog(QDialog):
         theme: str = "dark",
     ):
         super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         _set_cid(self, "author_showcase_dialog", object_name="authorShowcaseDialog")
         self.author_id = str(author_id)
         self.author_name = author_name or t_gallery("gallery_author_label")
@@ -1303,6 +1816,10 @@ class AuthorShowcaseDialog(QDialog):
     def _shutdown_dialog(self) -> None:
         self._runner.shutdown()
         self._media_loader.shutdown()
+
+    def apply_theme(self, theme: str) -> None:
+        self._theme = theme
+        self.setStyleSheet(_dialog_stylesheet(theme))
 
     def done(self, result: int) -> None:
         self._shutdown_dialog()
@@ -1494,32 +2011,285 @@ class AuthorShowcaseDialog(QDialog):
             self._works_grid.addWidget(card, idx // 2, idx % 2)
 
 
-class WorkDetailDialog(QDialog):
-    """Detailed view of a single gallery work with async likes, comments/replies, download & report."""
+class BoostWorkDialog(QDialog):
+    """Lightweight dialog to purchase optional fusion-showcase exposure impressions."""
 
-    author_clicked = pyqtSignal(str, str)
-    download_requested = pyqtSignal(object)
-    like_changed = pyqtSignal(str, bool, int)
+    boost_completed = pyqtSignal(str, int, object)  # (work_id, impressions_remaining, new_balance)
+    account_center_requested = pyqtSignal()
 
     def __init__(
         self,
         work: Any,
         *,
         client: Any = None,
+        state_store: Any = None,
+        packages: Sequence[Any] | None = None,
+        points_balance: int | None = None,
+        parent: QWidget | None = None,
+        theme: str = "dark",
+    ):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        _set_cid(self, "boost_work_dialog", object_name="boostWorkDialog")
+        self.work = work
+        self.work_id = _work_id(work)
+        self._client = client
+        self._state_store = state_store
+        self._theme = theme
+        self._packages = _normalize_boost_packages(packages)
+        self._points_balance = points_balance
+        self._remaining = int(_get(work, "showcase_impressions_remaining", 0) or 0)
+        self._selected_package: BoostPackage = next(
+            (pkg for pkg in self._packages if pkg.recommended),
+            self._packages[0],
+        )
+        self._submitting = False
+        self._runner = _DialogTaskRunner(self, client)
+
+        self.setWindowTitle(t_gallery("gallery_boost_dialog_title"))
+        self.setMinimumWidth(460)
+        self.setStyleSheet(_dialog_stylesheet(theme))
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(SPACE["lg"], SPACE["lg"], SPACE["lg"], SPACE["md"])
+        root.setSpacing(SPACE["sm"])
+
+        heading = QLabel(t_gallery("gallery_boost_dialog_title"))
+        heading.setStyleSheet("font-size: 13pt; font-weight: 700;")
+        root.addWidget(heading)
+
+        subtitle = QLabel(
+            t_gallery("gallery_boost_dialog_subtitle", title=_work_title(work))
+        )
+        subtitle.setObjectName("mutedLabel")
+        subtitle.setWordWrap(True)
+        root.addWidget(subtitle)
+
+        meta_row = QHBoxLayout()
+        self.balance_label = QLabel("")
+        _set_cid(self.balance_label, "boost_dialog_balance_label", object_name="badgeOpenFocus")
+        meta_row.addWidget(self.balance_label)
+
+        self.remaining_label = QLabel("")
+        _set_cid(self.remaining_label, "boost_dialog_remaining_label", object_name="badgeSource")
+        meta_row.addWidget(self.remaining_label)
+        meta_row.addStretch()
+
+        self.top_up_btn = QPushButton(t_gallery("gallery_hub_top_up_btn"))
+        _set_cid(self.top_up_btn, "boost_dialog_top_up_btn")
+        self.top_up_btn.setFlat(True)
+        self.top_up_btn.setAutoDefault(False)
+        self.top_up_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.top_up_btn.clicked.connect(self.account_center_requested.emit)
+        meta_row.addWidget(self.top_up_btn)
+        root.addLayout(meta_row)
+
+        tiers_row = QHBoxLayout()
+        tiers_row.setSpacing(SPACE["sm"])
+        self.tier_buttons: dict[str, QPushButton] = {}
+        for pkg in self._packages:
+            label = pkg.label or t_gallery(
+                "gallery_boost_tier_label",
+                impressions=pkg.impressions,
+                points=pkg.points,
+            )
+            if pkg.recommended:
+                label = f"★ {label}"
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.setChecked(pkg.package_id == self._selected_package.package_id)
+            btn.setProperty("boostTier", True)
+            btn.setAutoDefault(False)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            _set_cid(btn, f"gallery_boost_tier_{pkg.package_id}")
+            btn.clicked.connect(lambda _=False, p=pkg: self.select_package(p))
+            tiers_row.addWidget(btn, 1)
+            self.tier_buttons[pkg.package_id] = btn
+        root.addLayout(tiers_row)
+
+        self.insufficient_label = QLabel(t_gallery("gallery_publish_insufficient_points"))
+        _set_cid(self.insufficient_label, "boost_dialog_insufficient_label", object_name="publishCostWarn")
+        self.insufficient_label.setWordWrap(True)
+        self.insufficient_label.setVisible(False)
+        root.addWidget(self.insufficient_label)
+
+        self.status_label = QLabel("")
+        _set_cid(self.status_label, "boost_dialog_status_label", object_name="mutedLabel")
+        self.status_label.setWordWrap(True)
+        root.addWidget(self.status_label)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        self.cancel_btn = QPushButton(t_gallery("gallery_btn_cancel"))
+        _set_cid(self.cancel_btn, "btn_boost_cancel")
+        self.cancel_btn.setAutoDefault(False)
+        self.cancel_btn.clicked.connect(self.reject)
+        buttons.addWidget(self.cancel_btn)
+
+        self.confirm_btn = QPushButton()
+        self.confirm_btn.setProperty("primary", True)
+        self.confirm_btn.setAutoDefault(False)
+        _set_cid(self.confirm_btn, "btn_boost_confirm")
+        self.confirm_btn.clicked.connect(self._submit_boost)
+        buttons.addWidget(self.confirm_btn)
+        root.addLayout(buttons)
+
+        self._refresh_ui()
+
+    @property
+    def selected_package(self) -> BoostPackage:
+        return self._selected_package
+
+    def apply_theme(self, theme: str) -> None:
+        self._theme = theme
+        self.setStyleSheet(_dialog_stylesheet(theme))
+
+    def wait_for_idle(self, timeout: float = 5.0) -> bool:
+        return self._runner.wait_for_idle(timeout)
+
+    def _shutdown_dialog(self) -> None:
+        self._runner.shutdown()
+
+    def done(self, result: int) -> None:
+        self._shutdown_dialog()
+        super().done(result)
+
+    def closeEvent(self, event: QEvent) -> None:
+        self._shutdown_dialog()
+        super().closeEvent(event)
+
+    def select_package(self, pkg: BoostPackage) -> None:
+        self._selected_package = pkg
+        for pid, btn in self.tier_buttons.items():
+            btn.setChecked(pid == pkg.package_id)
+        self._refresh_ui()
+
+    def _refresh_ui(self) -> None:
+        bal = self._points_balance
+        self.balance_label.setText(
+            t_gallery("gallery_hub_points_badge", points=bal if bal is not None else "—")
+        )
+        if self._remaining > 0:
+            self.remaining_label.setText(t_gallery("gallery_boost_remaining", count=self._remaining))
+            self.remaining_label.setVisible(True)
+        else:
+            self.remaining_label.setVisible(False)
+        self.confirm_btn.setText(
+            t_gallery("gallery_boost_confirm", points=self._selected_package.points)
+        )
+        insufficient = bal is not None and bal < self._selected_package.points
+        self.insufficient_label.setVisible(insufficient)
+        self.confirm_btn.setEnabled((not self._submitting) and (not insufficient))
+
+    def _submit_boost(self) -> None:
+        if self._submitting:
+            return
+        pkg = self._selected_package
+        if self._client is None or not hasattr(self._client, "boost_work"):
+            self.status_label.setText(t_gallery("gallery_boost_unavailable"))
+            return
+
+        self._submitting = True
+        self._refresh_ui()
+
+        def _call() -> Any:
+            return self._client.boost_work(
+                self.work_id,
+                package_id=pkg.package_id,
+                impressions=pkg.impressions,
+                points=pkg.points,
+            )
+
+        def _on_success(resp: Any) -> None:
+            new_rem = int(
+                _get(resp, "showcase_impressions_remaining", self._remaining + pkg.impressions)
+                or (self._remaining + pkg.impressions)
+            )
+            new_bal = _get(resp, "points_balance", None)
+            if new_bal is None and self._points_balance is not None:
+                new_bal = max(0, self._points_balance - pkg.points)
+            self._remaining = new_rem
+            if new_bal is not None:
+                self._points_balance = int(new_bal)
+            if self._state_store is not None:
+                updater = getattr(self._state_store, "apply_work_boost_local", None)
+                if callable(updater):
+                    updater(
+                        self.work_id,
+                        showcase_impressions_remaining=new_rem,
+                        impressions_added=pkg.impressions,
+                        points_balance=self._points_balance,
+                    )
+                refresh = getattr(self._state_store, "refresh_account_after_points_change", None)
+                if callable(refresh):
+                    refresh()
+            self.status_label.setText(
+                t_gallery("gallery_boost_success", impressions=pkg.impressions)
+            )
+            self.boost_completed.emit(self.work_id, new_rem, self._points_balance)
+            self._refresh_ui()
+
+        def _on_error(exc: Exception) -> None:
+            code = _error_code_from_exc(exc)
+            if code in ("boost_unavailable", "not_found"):
+                self.status_label.setText(t_gallery("gallery_boost_unavailable"))
+            else:
+                self.status_label.setText(translate_error(code))
+
+        def _on_finally() -> None:
+            self._submitting = False
+            if is_qobject_alive(self):
+                self._refresh_ui()
+
+        self._runner.submit(
+            _call,
+            key="boost_work",
+            on_success=_on_success,
+            on_error=_on_error,
+            on_finally=_on_finally,
+        )
+
+
+class WorkDetailDialog(QDialog):
+    """Detailed view of a single gallery work with async likes, follow, comments/replies, download, boost & report."""
+
+    author_clicked = pyqtSignal(str, str)
+    download_requested = pyqtSignal(object)
+    like_changed = pyqtSignal(str, bool, int)
+    work_boosted = pyqtSignal(str, int, object)
+    account_center_requested = pyqtSignal()
+
+    def __init__(
+        self,
+        work: Any,
+        *,
+        client: Any = None,
+        state_store: Any = None,
         media_fetcher: Callable[[str], bytes] | None = None,
+        current_user_id: str = "",
+        points_balance: int | None = None,
+        boost_packages: Sequence[Any] | None = None,
         parent: QWidget | None = None,
         theme: str = "dark",
         translation_mode: str | None = None,
     ):
         super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         _set_cid(self, "gallery_work_detail_dialog", object_name="galleryWorkDetailDialog")
         self.work = work
         self.work_id = _work_id(work)
         self._client = client
+        self._state_store = state_store
+        self._current_user_id = str(current_user_id or "").strip()
+        self._points_balance = points_balance
+        self._boost_packages = _normalize_boost_packages(boost_packages)
         self._theme = theme
         self._liked = _work_liked(work)
         self._likes_count = int(
             _get(work, "likes_count", 0) or _get(work, "like_count", 0) or 0
+        )
+        self._following = bool(
+            _get(work, "viewer_following", False) or _get(work, "author_followed_by_me", False)
         )
         self._reply_parent_id: str | None = None
         self._comments = list(_get(work, "comments", None) or ())
@@ -1534,7 +2304,7 @@ class WorkDetailDialog(QDialog):
         self._media_loader = _BoundedMediaLoader(self, fetcher=media_fetcher)
 
         self.setWindowTitle(t_gallery("gallery_work_detail_title"))
-        self.resize(740, 620)
+        self.resize(760, 640)
         self.setStyleSheet(_dialog_stylesheet(theme))
 
         root = QVBoxLayout(self)
@@ -1543,12 +2313,12 @@ class WorkDetailDialog(QDialog):
 
         self.preview_label = QLabel(_work_title(work))
         self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview_label.setMinimumHeight(200)
+        self.preview_label.setMinimumHeight(210)
         root.addWidget(self.preview_label)
         self._media_loader.load_for_work(
             work,
             prefer_full=True,
-            size=QSize(680, 280),
+            size=QSize(700, 300),
             on_ready=self.preview_label.setPixmap,
         )
 
@@ -1558,13 +2328,26 @@ class WorkDetailDialog(QDialog):
         info_row.addWidget(title_lbl)
 
         author_id, author_name, _author_badges = _work_author(work)
+        self._author_id = author_id
         self.author_btn = QPushButton(author_name)
         _set_cid(self.author_btn, "work_detail_author_btn")
         self.author_btn.setFlat(True)
+        self.author_btn.setAutoDefault(False)
+        self.author_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.author_btn.clicked.connect(
             lambda: self.author_clicked.emit(author_id, author_name)
         )
         info_row.addWidget(self.author_btn)
+
+        self.follow_btn = QPushButton()
+        _set_cid(self.follow_btn, "work_detail_follow_btn")
+        self.follow_btn.setAutoDefault(False)
+        self.follow_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.follow_btn.clicked.connect(self._toggle_follow)
+        is_owner = bool(self._current_user_id and author_id and self._current_user_id == author_id)
+        self.follow_btn.setVisible(bool(author_id) and not is_owner)
+        self._refresh_follow_btn()
+        info_row.addWidget(self.follow_btn)
 
         badge_text = t_gallery("gallery_badge_openfocus")
         if bool(_get(work, "openfocus_badge", False)):
@@ -1593,6 +2376,7 @@ class WorkDetailDialog(QDialog):
         actions = QHBoxLayout()
         self.like_btn = QPushButton()
         _set_cid(self.like_btn, "work_detail_like_btn")
+        self.like_btn.setAutoDefault(False)
         self.like_btn.clicked.connect(self._toggle_like)
         self._refresh_like_btn()
         actions.addWidget(self.like_btn)
@@ -1600,6 +2384,7 @@ class WorkDetailDialog(QDialog):
         allow_dl = bool(_get(work, "allow_download", True))
         self.download_btn = QPushButton(t_gallery("gallery_btn_download"))
         _set_cid(self.download_btn, "work_detail_download_btn")
+        self.download_btn.setAutoDefault(False)
         self.download_btn.setEnabled(allow_dl)
         self.download_btn.setVisible(allow_dl)
         if not allow_dl:
@@ -1607,8 +2392,17 @@ class WorkDetailDialog(QDialog):
         self.download_btn.clicked.connect(self._on_download)
         actions.addWidget(self.download_btn)
 
+        self.boost_btn = QPushButton(t_gallery("gallery_boost_btn"))
+        _set_cid(self.boost_btn, "work_detail_boost_btn")
+        self.boost_btn.setAutoDefault(False)
+        self.boost_btn.setProperty("primary", True)
+        self.boost_btn.setVisible(is_owner)
+        self.boost_btn.clicked.connect(self._open_boost_dialog)
+        actions.addWidget(self.boost_btn)
+
         self.report_btn = QPushButton(t_gallery("gallery_btn_report"))
         _set_cid(self.report_btn, "work_detail_report_btn")
+        self.report_btn.setAutoDefault(False)
         self.report_btn.clicked.connect(self._on_report)
         actions.addWidget(self.report_btn)
         actions.addStretch()
@@ -1629,10 +2423,12 @@ class WorkDetailDialog(QDialog):
         _set_cid(self.comment_input, "work_detail_comment_input")
         self.comment_input.setMaxLength(DEFAULT_COMMENT_MAX_CHARS)
         self.comment_input.setPlaceholderText(t_gallery("gallery_comment_placeholder"))
+        self.comment_input.returnPressed.connect(self._submit_comment)
         composer.addWidget(self.comment_input, 1)
 
         self.send_comment_btn = QPushButton(t_gallery("gallery_send_comment"))
         self.send_comment_btn.setProperty("primary", True)
+        self.send_comment_btn.setAutoDefault(False)
         _set_cid(self.send_comment_btn, "work_detail_send_comment_btn")
         self.send_comment_btn.clicked.connect(self._submit_comment)
         composer.addWidget(self.send_comment_btn)
@@ -1642,6 +2438,7 @@ class WorkDetailDialog(QDialog):
         close_row.addStretch()
         close_btn = QPushButton(t_gallery("gallery_btn_close"))
         _set_cid(close_btn, "btn_work_detail_close")
+        close_btn.setAutoDefault(False)
         close_btn.clicked.connect(self.accept)
         close_row.addWidget(close_btn)
         root.addLayout(close_row)
@@ -1654,6 +2451,64 @@ class WorkDetailDialog(QDialog):
         safe_disconnect(trans.languageChanged, self._on_language_changed)
         self._runner.shutdown()
         self._media_loader.shutdown()
+
+    def apply_theme(self, theme: str) -> None:
+        self._theme = theme
+        self.setStyleSheet(_dialog_stylesheet(theme))
+        for dlg in self.findChildren(BoostWorkDialog):
+            if is_qobject_alive(dlg):
+                dlg.apply_theme(theme)
+
+    def _refresh_follow_btn(self) -> None:
+        self.follow_btn.setText(
+            t_gallery("gallery_author_following" if self._following else "gallery_author_follow")
+        )
+
+    def _toggle_follow(self) -> None:
+        if not self._author_id:
+            return
+        prev = self._following
+        target = not prev
+        self._following = target
+        self._refresh_follow_btn()
+        if self._client is None:
+            return
+
+        def _call() -> None:
+            if target and hasattr(self._client, "follow_user"):
+                self._client.follow_user(self._author_id)
+            elif not target and hasattr(self._client, "unfollow_user"):
+                self._client.unfollow_user(self._author_id)
+
+        def _on_error(exc: Exception) -> None:
+            self._following = prev
+            self._refresh_follow_btn()
+            self.status_label.setText(translate_error(_error_code_from_exc(exc)))
+
+        self._runner.submit(_call, key="work_detail_follow", on_error=_on_error)
+
+    def _open_boost_dialog(self) -> BoostWorkDialog:
+        dlg = BoostWorkDialog(
+            self.work,
+            client=self._client,
+            state_store=self._state_store,
+            packages=self._boost_packages,
+            points_balance=self._points_balance,
+            parent=self,
+            theme=self._theme,
+        )
+        dlg.account_center_requested.connect(self.account_center_requested.emit)
+        dlg.boost_completed.connect(self._on_work_boosted)
+        dlg.show()
+        return dlg
+
+    def _on_work_boosted(self, work_id: str, new_remaining: int, new_balance: Any) -> None:
+        if new_balance is not None:
+            self._points_balance = int(new_balance)
+        if isinstance(self.work, dict):
+            self.work["showcase_impressions_remaining"] = new_remaining
+        self.status_label.setText(t_gallery("gallery_boost_remaining", count=new_remaining))
+        self.work_boosted.emit(work_id, new_remaining, new_balance)
 
     def done(self, result: int) -> None:
         self._shutdown_dialog()
@@ -1802,11 +2657,7 @@ class WorkDetailDialog(QDialog):
                     mode=translation_mode,
                     target_lang=target_lang,
                 )
-                rendered = (
-                    f"{display_content} \U0001f310"
-                    if is_translated
-                    else (display_content or content)
-                )
+                rendered = display_content or content
                 is_reply = bool(
                     force_reply
                     or _get(comment, "parent_id", None)
@@ -1844,6 +2695,8 @@ class WorkDetailDialog(QDialog):
         self.comment_input.setFocus()
 
     def _submit_comment(self) -> None:
+        if not self.send_comment_btn.isEnabled():
+            return
         text = self.comment_input.text().strip()
         if not text:
             return
@@ -1857,7 +2710,17 @@ class WorkDetailDialog(QDialog):
         }
 
         def _finish(created: Any) -> None:
-            self._comments.append(created if created is not None else fallback_comment)
+            comment_obj = (
+                _get(created, "comment", created)
+                if isinstance(created, Mapping)
+                else created
+            )
+            if comment_obj is None or (
+                isinstance(comment_obj, Mapping)
+                and not str(_get(comment_obj, "content", "") or "").strip()
+            ):
+                comment_obj = fallback_comment
+            self._comments.append(comment_obj)
             self._reply_parent_id = None
             self.comment_input.clear()
             self.comment_input.setPlaceholderText(t_gallery("gallery_comment_placeholder"))
@@ -1877,6 +2740,7 @@ class WorkDetailDialog(QDialog):
                 client_lang=current_ui_language(),
             )
 
+        self.send_comment_btn.setEnabled(False)
         self._runner.submit(
             _post,
             key="work_post_comment",
@@ -1884,25 +2748,30 @@ class WorkDetailDialog(QDialog):
             on_error=lambda exc: self.status_label.setText(
                 translate_error(_error_code_from_exc(exc))
             ),
+            on_finally=lambda: (
+                self.send_comment_btn.setEnabled(True)
+                if is_qobject_alive(self.send_comment_btn)
+                else None
+            ),
         )
 
 
 class GalleryHubDialog(QDialog):
-    """Standalone OpenFocus Gallery window with 4 tabs (100% non-blocking GUI).
+    """Standalone OpenFocus Community Square & Gallery Hub (100% non-blocking GUI).
 
-    Tabs:
-      0. Square / Gallery (grid browser, AI tag chips, sort, next_cursor pagination)
+    Modern Xiaohongshu-style discovery shell with left navigation rail + 4 tabs:
+      0. Discover / Community Square (search, category chips, rounded-card feed, pagination)
       1. Leaderboard (UTC 7d/1m/6m/1y/3y/5y ranking & reward tier info)
-      2. Publish Work (10-image batch cap, live 8/16-bit watermark preview, per-row
-         EXIF preservation + collapsible manual EXIF, agreement default checked,
-         off-thread media prep & terms acceptance, safe idempotent confirm retry)
-      3. My Showcase (own works, stats, inline Allow Download toggle with rollback, delete)
+      2. Publish Work (free 0-pt community publish, optional paid fusion-showcase boost,
+         10-image batch cap, top-left watermark default OFF, per-row EXIF preservation)
+      3. My Showcase (own works, stats, boost exposure, inline Allow Download toggle, delete)
     """
 
     download_work_requested = pyqtSignal(object)
     work_published = pyqtSignal(object)
     publication_finished = pyqtSignal()
     account_center_requested = pyqtSignal()
+    downloads_folder_requested = pyqtSignal()
 
     def __init__(
         self,
@@ -1934,6 +2803,7 @@ class GalleryHubDialog(QDialog):
 
         self._active_tag: str | None = None
         self._active_sort: str = "latest"
+        self._active_search: str = ""
         self._active_period: str = "7d"
         self._square_works: list[Any] = []
         self._square_next_cursor: str | None = None
@@ -1943,36 +2813,41 @@ class GalleryHubDialog(QDialog):
         self._publish_queue: list[PublishQueueItem] = []
         self._publishing = False
         self._cached_profile: Any = {}
+        self._selected_publish_boost: BoostPackage | None = None
         self._watermark_preview_has_overlay = False
         self._watermark_preview_rendered_text = ""
+        self._watermark_debounce_timer = QTimer(self)
+        self._watermark_debounce_timer.setSingleShot(True)
+        self._watermark_debounce_timer.setInterval(100)
+        self._watermark_debounce_timer.timeout.connect(self._update_watermark_preview)
+
+        self._search_debounce_timer = QTimer(self)
+        self._search_debounce_timer.setSingleShot(True)
+        self._search_debounce_timer.setInterval(200)
+        self._search_debounce_timer.timeout.connect(self._apply_search_query)
 
         self.setWindowTitle(t_gallery("gallery_hub_title"))
-        self.resize(980, 680)
+        self.resize(1080, 720)
         self.setStyleSheet(_dialog_stylesheet(theme))
 
-        root = QVBoxLayout(self)
-        root.setContentsMargins(SPACE["md"], SPACE["md"], SPACE["md"], SPACE["md"])
-        root.setSpacing(SPACE["sm"])
+        root = QHBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        self._nav_rail = self._build_nav_rail()
+        root.addWidget(self._nav_rail)
+
+        content_host = QWidget()
+        content_lay = QVBoxLayout(content_host)
+        content_lay.setContentsMargins(SPACE["md"], SPACE["md"], SPACE["md"], SPACE["md"])
+        content_lay.setSpacing(0)
 
         self.tabs = QTabWidget()
         _set_cid(self.tabs, "gallery_hub_tabs", object_name="galleryHubTabs")
-        corner = QWidget()
-        corner_lay = QHBoxLayout(corner)
-        corner_lay.setContentsMargins(0, 0, SPACE["xs"], 0)
-        corner_lay.setSpacing(SPACE["xs"])
-        self.hub_points_badge = QLabel("")
-        _set_cid(self.hub_points_badge, "gallery_hub_points_badge", object_name="badgeOpenFocus")
-        self.hub_points_badge.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        self.hub_top_up_btn = QPushButton()
-        _set_cid(self.hub_top_up_btn, "gallery_hub_top_up_btn")
-        self.hub_top_up_btn.setFlat(True)
-        self.hub_top_up_btn.setAutoDefault(False)
-        self.hub_top_up_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.hub_top_up_btn.clicked.connect(self.account_center_requested.emit)
-        corner_lay.addWidget(self.hub_points_badge)
-        corner_lay.addWidget(self.hub_top_up_btn)
-        self.tabs.setCornerWidget(corner, Qt.Corner.TopRightCorner)
-        root.addWidget(self.tabs, 1)
+        self.tabs.setDocumentMode(True)
+        self.tabs.tabBar().hide()
+        content_lay.addWidget(self.tabs, 1)
+        root.addWidget(content_host, 1)
 
         self._square_tab = self._build_square_tab()
         self._leaderboard_tab = self._build_leaderboard_tab()
@@ -1999,16 +2874,121 @@ class GalleryHubDialog(QDialog):
 
         if 0 <= initial_tab < self.tabs.count():
             self.tabs.setCurrentIndex(initial_tab)
+        self._sync_nav_selection(self.tabs.currentIndex())
+
+    def _build_nav_rail(self) -> QFrame:
+        rail = QFrame()
+        _set_cid(rail, "gallery_hub_nav_rail", object_name="hubNavRail")
+        rail.setFixedWidth(212)
+        lay = QVBoxLayout(rail)
+        lay.setContentsMargins(SPACE["md"], SPACE["lg"], SPACE["md"], SPACE["md"])
+        lay.setSpacing(SPACE["xs"])
+
+        brand_title = QLabel("OpenFocus")
+        brand_title.setObjectName("hubBrandTitle")
+        lay.addWidget(brand_title)
+
+        self._nav_subtitle = QLabel(t_gallery("gallery_tab_square"))
+        self._nav_subtitle.setObjectName("hubBrandSubtitle")
+        lay.addWidget(self._nav_subtitle)
+        lay.addSpacing(SPACE["md"])
+
+        self.nav_buttons: dict[int, QPushButton] = {}
+        nav_specs = (
+            (0, "gallery_nav_square", "✦", "gallery_nav_discover"),
+            (2, "gallery_nav_publish", "＋", "gallery_tab_publish"),
+            (1, "gallery_nav_leaderboard", "★", "gallery_tab_leaderboard"),
+            (3, "gallery_nav_my_showcase", "◈", "gallery_tab_my_showcase"),
+        )
+        for tab_idx, cid, glyph, i18n_key in nav_specs:
+            btn = QPushButton(f" {glyph}   {t_gallery(i18n_key)}")
+            btn.setCheckable(True)
+            btn.setAutoDefault(False)
+            btn.setProperty("navItem", True)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            _set_cid(btn, cid)
+            btn.clicked.connect(lambda _=False, idx=tab_idx: self.tabs.setCurrentIndex(idx))
+            lay.addWidget(btn)
+            self.nav_buttons[tab_idx] = btn
+
+        lay.addSpacing(SPACE["sm"])
+        divider = QFrame()
+        divider.setObjectName("hubNavDivider")
+        divider.setFrameShape(QFrame.Shape.HLine)
+        lay.addWidget(divider)
+        lay.addSpacing(SPACE["sm"])
+
+        self.nav_downloads_btn = QPushButton(f" ↓   {t_gallery('gallery_nav_downloads')}")
+        self.nav_downloads_btn.setAutoDefault(False)
+        self.nav_downloads_btn.setProperty("navItem", True)
+        self.nav_downloads_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        _set_cid(self.nav_downloads_btn, "gallery_nav_downloads")
+        self.nav_downloads_btn.clicked.connect(self.downloads_folder_requested.emit)
+        lay.addWidget(self.nav_downloads_btn)
+
+        self.nav_account_btn = QPushButton(f" ○   {t_gallery('gallery_nav_account')}")
+        self.nav_account_btn.setAutoDefault(False)
+        self.nav_account_btn.setProperty("navItem", True)
+        self.nav_account_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        _set_cid(self.nav_account_btn, "gallery_nav_account")
+        self.nav_account_btn.clicked.connect(self.account_center_requested.emit)
+        lay.addWidget(self.nav_account_btn)
+
+        lay.addStretch(1)
+
+        points_card = QFrame()
+        points_card.setObjectName("hubPointsCard")
+        card_lay = QVBoxLayout(points_card)
+        card_lay.setContentsMargins(SPACE["sm"], SPACE["sm"], SPACE["sm"], SPACE["sm"])
+        card_lay.setSpacing(SPACE["xs"])
+
+        self.hub_points_badge = QLabel("")
+        _set_cid(self.hub_points_badge, "gallery_hub_points_badge", object_name="badgeOpenFocus")
+        self.hub_points_badge.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.hub_points_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        card_lay.addWidget(self.hub_points_badge)
+
+        self.hub_top_up_btn = QPushButton()
+        _set_cid(self.hub_top_up_btn, "gallery_hub_top_up_btn")
+        self.hub_top_up_btn.setFlat(True)
+        self.hub_top_up_btn.setAutoDefault(False)
+        self.hub_top_up_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.hub_top_up_btn.clicked.connect(self.account_center_requested.emit)
+        card_lay.addWidget(self.hub_top_up_btn)
+
+        lay.addWidget(points_card)
+        return rail
+
+    def _sync_nav_selection(self, index: int) -> None:
+        for tab_idx, btn in self.nav_buttons.items():
+            btn.setChecked(tab_idx == index)
 
     @property
     def is_publishing(self) -> bool:
         return self._publishing
 
     def _shutdown_dialog(self) -> None:
+        self._watermark_debounce_timer.stop()
+        self._search_debounce_timer.stop()
         safe_disconnect(trans.languageChanged, self._retranslate_billing)
         self._disconnect_state_store()
         self._runner.shutdown()
         self._media_loader.shutdown()
+
+    def apply_theme(self, theme: str) -> None:
+        self._theme = theme
+        self.setStyleSheet(_dialog_stylesheet(theme))
+        for cover in self.findChildren(_RoundedCoverButton):
+            if is_qobject_alive(cover):
+                cover.set_theme(theme)
+        for avatar in self.findChildren(_AuthorAvatarDot):
+            if is_qobject_alive(avatar):
+                avatar.set_theme(theme)
+        for child in self.findChildren((WorkDetailDialog, AuthorShowcaseDialog, BoostWorkDialog)):
+            if is_qobject_alive(child):
+                child.apply_theme(theme)
+        if not self._publish_queue:
+            self._update_watermark_preview()
 
     def closeEvent(self, event: QEvent) -> None:
         if self._publishing:
@@ -2049,8 +3029,18 @@ class GalleryHubDialog(QDialog):
 
     def _on_store_config_changed(self, cfg: Any) -> None:
         if cfg is not None:
+            self._rebuild_publish_boost_tiers()
             self._refresh_points_summary()
             self.lb_reward_banner.setText(self._leaderboard_reward_text(self._active_period))
+
+    def _get_boost_packages(self) -> list[BoostPackage]:
+        cfg = self._get_config()
+        raw = _get(cfg, "boost_packages", None)
+        return _normalize_boost_packages(raw)
+
+    def _on_tab_changed(self, index: int) -> None:
+        self._sync_nav_selection(index)
+        self._refresh_current_tab()
 
     def showEvent(self, event: QEvent) -> None:
         super().showEvent(event)
@@ -2073,9 +3063,6 @@ class GalleryHubDialog(QDialog):
                 key="hub_get_me",
                 on_success=self._on_store_profile_changed,
             )
-        self._refresh_current_tab()
-
-    def _on_tab_changed(self, _index: int) -> None:
         self._refresh_current_tab()
 
     def _refresh_current_tab(self) -> None:
@@ -2115,11 +3102,20 @@ class GalleryHubDialog(QDialog):
         tab = QWidget()
         _set_cid(tab, "gallery_tab_square", object_name="galleryTabSquare")
         layout = QVBoxLayout(tab)
-        layout.setContentsMargins(SPACE["sm"], SPACE["sm"], SPACE["sm"], SPACE["sm"])
+        layout.setContentsMargins(SPACE["xs"], 0, SPACE["xs"], 0)
         layout.setSpacing(SPACE["sm"])
 
         top_row = QHBoxLayout()
-        top_row.addWidget(QLabel(t_gallery("gallery_sort_label")))
+        top_row.setSpacing(SPACE["sm"])
+
+        self.search_input = QLineEdit()
+        _set_cid(self.search_input, "gallery_square_search_input", object_name="squareSearchInput")
+        self.search_input.setClearButtonEnabled(True)
+        self.search_input.setPlaceholderText(t_gallery("gallery_search_placeholder"))
+        self.search_input.textChanged.connect(self._schedule_search_query)
+        self.search_input.returnPressed.connect(self._apply_search_query)
+        top_row.addWidget(self.search_input, 1)
+
         self.sort_combo = QComboBox()
         _set_cid(self.sort_combo, "gallery_sort_combo")
         self.sort_combo.addItem(t_gallery("gallery_sort_latest"), "latest")
@@ -2127,30 +3123,33 @@ class GalleryHubDialog(QDialog):
         self.sort_combo.addItem(t_gallery("gallery_sort_recommended"), "recommended")
         self.sort_combo.currentIndexChanged.connect(self._on_sort_changed)
         top_row.addWidget(self.sort_combo)
-        top_row.addStretch()
 
         self.square_refresh_btn = QPushButton(t_gallery("gallery_btn_refresh"))
         _set_cid(self.square_refresh_btn, "gallery_square_refresh")
+        self.square_refresh_btn.setAutoDefault(False)
+        self.square_refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.square_refresh_btn.clicked.connect(self.refresh_square)
         top_row.addWidget(self.square_refresh_btn)
         layout.addLayout(top_row)
 
         chip_scroll = QScrollArea()
         chip_scroll.setWidgetResizable(True)
-        chip_scroll.setFixedHeight(46)
+        chip_scroll.setFixedHeight(42)
         chip_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         chip_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         chip_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         chip_host = QWidget()
         chip_row = QHBoxLayout(chip_host)
-        chip_row.setContentsMargins(0, 0, 0, 0)
-        chip_row.setSpacing(SPACE["xs"])
+        chip_row.setContentsMargins(0, 2, 0, 2)
+        chip_row.setSpacing(SPACE["sm"])
 
         self.tag_chips: dict[str | None, QPushButton] = {}
         all_btn = QPushButton(t_gallery("gallery_filter_all"))
         all_btn.setCheckable(True)
         all_btn.setChecked(True)
+        all_btn.setAutoDefault(False)
         all_btn.setProperty("chip", True)
+        all_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         _set_cid(all_btn, "gallery_tag_chip_all")
         all_btn.clicked.connect(lambda: self.select_tag_filter(None))
         chip_row.addWidget(all_btn)
@@ -2159,7 +3158,9 @@ class GalleryHubDialog(QDialog):
         for tag_key in AI_TAG_KEYS:
             btn = QPushButton(translate_tag(tag_key))
             btn.setCheckable(True)
+            btn.setAutoDefault(False)
             btn.setProperty("chip", True)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
             _set_cid(btn, f"gallery_tag_chip_{tag_key}")
             btn.clicked.connect(lambda _=False, tk=tag_key: self.select_tag_filter(tk))
             chip_row.addWidget(btn)
@@ -2175,17 +3176,48 @@ class GalleryHubDialog(QDialog):
         self._square_grid_host = QWidget()
         _set_cid(self._square_grid_host, "gallery_square_grid")
         self._square_grid = QGridLayout(self._square_grid_host)
-        self._square_grid.setSpacing(SPACE["md"])
+        self._square_grid.setContentsMargins(0, SPACE["xs"], SPACE["xs"], SPACE["md"])
+        self._square_grid.setHorizontalSpacing(SPACE["md"])
+        self._square_grid.setVerticalSpacing(SPACE["md"])
+        for col in range(3):
+            self._square_grid.setColumnStretch(col, 1)
         self.square_scroll.setWidget(self._square_grid_host)
         layout.addWidget(self.square_scroll, 1)
 
         self.load_more_btn = QPushButton(t_gallery("gallery_load_more"))
         _set_cid(self.load_more_btn, "gallery_square_load_more")
+        self.load_more_btn.setAutoDefault(False)
+        self.load_more_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.load_more_btn.setVisible(False)
         self.load_more_btn.clicked.connect(self.load_more_square)
         layout.addWidget(self.load_more_btn)
 
         return tab
+
+    def _schedule_search_query(self, _text: str) -> None:
+        self._search_debounce_timer.start()
+
+    def _apply_search_query(self) -> None:
+        self._search_debounce_timer.stop()
+        query = self.search_input.text().strip() if hasattr(self, "search_input") else ""
+        if query == self._active_search:
+            return
+        self._active_search = query
+        if self._client is not None and hasattr(self._client, "get_feed"):
+            self.refresh_square()
+        else:
+            self._render_square_grid()
+
+    def _matches_search(self, work: Any) -> bool:
+        q = self._active_search.casefold()
+        if not q:
+            return True
+        title = _work_title(work).casefold()
+        _, author_name, _ = _work_author(work)
+        tags_text = " ".join(
+            f"{tk} {translate_tag(tk)}" for tk in _work_tags(work)
+        ).casefold()
+        return q in title or q in author_name.casefold() or q in tags_text
 
     def select_tag_filter(self, tag_key: str | None) -> None:
         self._active_tag = tag_key
@@ -2197,15 +3229,27 @@ class GalleryHubDialog(QDialog):
         self._active_sort = str(self.sort_combo.currentData() or "latest")
         self.refresh_square()
 
+    def _call_get_feed(self, *, cursor: str | None = None) -> Any:
+        fn = self._client.get_feed
+        base_kwargs: dict[str, Any] = {
+            "tag": self._active_tag,
+            "sort": self._active_sort,
+            "source": "square",
+        }
+        if cursor is not None:
+            base_kwargs["cursor"] = cursor
+        if self._active_search:
+            extra = _accepted_kwargs(fn, {"q": self._active_search})
+            base_kwargs.update(extra)
+        return fn(**base_kwargs)
+
     def refresh_square(self) -> None:
         if self._client is None or not hasattr(self._client, "get_feed"):
             self.set_square_works(self._square_works)
             return
-        tag = self._active_tag
-        sort = self._active_sort
 
         def _fetch() -> Any:
-            return self._client.get_feed(tag=tag, sort=sort, source="square")
+            return self._call_get_feed()
 
         def _apply(resp: Any) -> None:
             items = _get(resp, "items", resp) if isinstance(resp, Mapping) else resp
@@ -2225,24 +3269,36 @@ class GalleryHubDialog(QDialog):
         cursor = self._square_next_cursor
         if not cursor or self._client is None or not hasattr(self._client, "get_feed"):
             return
-        tag = self._active_tag
-        sort = self._active_sort
         self.load_more_btn.setEnabled(False)
 
         def _fetch() -> Any:
-            return self._client.get_feed(cursor=cursor, tag=tag, sort=sort, source="square")
+            return self._call_get_feed(cursor=cursor)
 
         def _apply(resp: Any) -> None:
             items = _get(resp, "items", resp) if isinstance(resp, Mapping) else resp
             next_cur = _get(resp, "next_cursor", None) if isinstance(resp, Mapping) else None
             self._square_next_cursor = str(next_cur) if next_cur else None
+            incoming = list(items or ())
+            if not self._square_works:
+                self.set_square_works(incoming)
+                return
             existing_ids = {_work_id(w) for w in self._square_works if _work_id(w)}
-            merged = list(self._square_works)
-            for work in (items or ()):
+            to_append: list[Any] = []
+            for work in incoming:
                 wid = _work_id(work)
                 if not wid or wid not in existing_ids:
-                    merged.append(work)
-            self.set_square_works(merged)
+                    if wid:
+                        existing_ids.add(wid)
+                    to_append.append(work)
+            visible_before = sum(1 for w in self._square_works if self._matches_search(w))
+            self._square_works.extend(to_append)
+            visible_append = [w for w in to_append if self._matches_search(w)]
+            columns = 3
+            for offset, work in enumerate(visible_append):
+                idx = visible_before + offset
+                card = self._build_work_card(work)
+                self._square_grid.addWidget(card, idx // columns, idx % columns, Qt.AlignmentFlag.AlignTop)
+            self.load_more_btn.setVisible(bool(self._square_next_cursor))
 
         self._runner.submit(
             _fetch,
@@ -2253,11 +3309,14 @@ class GalleryHubDialog(QDialog):
 
     def set_square_works(self, works: Sequence[Any]) -> None:
         self._square_works = list(works)
-        _clear_layout(self._square_grid)
+        self._render_square_grid()
 
+    def _render_square_grid(self) -> None:
+        _clear_layout(self._square_grid)
         self.load_more_btn.setVisible(bool(self._square_next_cursor))
 
-        if not self._square_works:
+        visible = [w for w in self._square_works if self._matches_search(w)]
+        if not visible:
             empty = QLabel(t_gallery("gallery_empty_square"))
             empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
             empty.setObjectName("mutedLabel")
@@ -2265,77 +3324,124 @@ class GalleryHubDialog(QDialog):
             return
 
         columns = 3
-        for idx, work in enumerate(self._square_works):
+        for idx, work in enumerate(visible):
             card = self._build_work_card(work)
-            self._square_grid.addWidget(card, idx // columns, idx % columns)
+            self._square_grid.addWidget(card, idx // columns, idx % columns, Qt.AlignmentFlag.AlignTop)
 
     def _build_work_card(self, work: Any) -> QFrame:
         wid = _work_id(work)
         card = QFrame()
-        _set_cid(card, f"gallery_work_card_{wid}", object_name="galleryCard")
+        _set_cid(card, f"gallery_work_card_{wid}", object_name="discoveryCard")
+        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         lay = QVBoxLayout(card)
-        lay.setContentsMargins(SPACE["sm"], SPACE["sm"], SPACE["sm"], SPACE["sm"])
+        lay.setContentsMargins(0, 0, 0, SPACE["sm"])
         lay.setSpacing(SPACE["xs"])
 
-        badge_row = QHBoxLayout()
-        if bool(_get(work, "openfocus_badge", False)):
-            of_badge = QLabel(t_gallery("gallery_badge_openfocus"))
-            of_badge.setObjectName("badgeOpenFocus")
-            of_badge.setToolTip(t_gallery("gallery_publish_openfocus_badge"))
-            of_badge.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-            badge_row.addWidget(of_badge)
-        source_badge = _get(work, "source_badge", None)
-        if source_badge in ("ad", "following"):
-            sb = QLabel(t_gallery(f"gallery_source_{source_badge}"))
-            sb.setObjectName("badgeSource")
-            badge_row.addWidget(sb)
-        badge_row.addStretch()
-        lay.addLayout(badge_row)
-
-        thumb_btn = QPushButton(_work_title(work))
+        w_px = int(_get(work, "width", 0) or 0)
+        h_px = int(_get(work, "height", 0) or 0)
+        ratio = (w_px / float(h_px)) if (w_px > 0 and h_px > 0) else None
+        thumb_btn = _RoundedCoverButton(
+            _work_title(work),
+            theme=self._theme,
+            aspect_ratio=ratio,
+            source_badge=_get(work, "source_badge", None),
+            openfocus_badge=bool(_get(work, "openfocus_badge", False)),
+        )
         _set_cid(thumb_btn, f"gallery_work_thumb_{wid}")
-        thumb_btn.setFlat(True)
-        thumb_btn.setMinimumHeight(130)
         thumb_btn.clicked.connect(lambda _=False, w=work: self.open_work_detail(w))
         lay.addWidget(thumb_btn)
 
-        def _apply_icon(pix: QPixmap, btn: QPushButton = thumb_btn) -> None:
+        def _apply_cover(pix: QPixmap, btn: _RoundedCoverButton = thumb_btn) -> None:
             if is_qobject_alive(btn):
-                btn.setText("")
-                btn.setIconSize(pix.size())
-                btn.setIcon(QIcon(pix))
+                btn.set_cover_pixmap(pix)
 
-        self._media_loader.load_for_work(work, size=QSize(260, 140), on_ready=_apply_icon)
+        self._media_loader.load_for_work(work, size=QSize(340, 340), on_ready=_apply_cover)
+
+        body = QVBoxLayout()
+        body.setContentsMargins(SPACE["sm"] + 2, SPACE["xs"], SPACE["sm"] + 2, 0)
+        body.setSpacing(6)
 
         title_lbl = QLabel(_work_title(work))
-        title_lbl.setStyleSheet("font-weight: 600;")
-        lay.addWidget(title_lbl)
+        title_lbl.setObjectName("cardTitleLabel")
+        title_lbl.setWordWrap(True)
+        title_lbl.setMaximumHeight(42)
+        title_lbl.setCursor(Qt.CursorShape.PointingHandCursor)
+        title_lbl.mousePressEvent = lambda _ev, w=work: self.open_work_detail(w)
+        body.addWidget(title_lbl)
+
+        footer = QHBoxLayout()
+        footer.setContentsMargins(0, 0, 0, 0)
+        footer.setSpacing(6)
 
         author_id, author_name, _badges = _work_author(work)
+        avatar = _AuthorAvatarDot(author_name, theme=self._theme)
+        footer.addWidget(avatar)
+
         author_btn = QPushButton(author_name)
         author_btn.setFlat(True)
-        author_btn.setStyleSheet("text-align: left; padding: 0;")
+        author_btn.setAutoDefault(False)
+        author_btn.setProperty("cardAuthor", True)
+        author_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        author_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         author_btn.clicked.connect(
             lambda _=False, aid=author_id, aname=author_name: self.open_author_showcase(
                 aid, aname
             )
         )
-        lay.addWidget(author_btn)
+        footer.addWidget(author_btn, 1)
 
-        likes = int(_get(work, "likes_count", 0) or _get(work, "like_count", 0) or 0)
-        comments = int(_get(work, "comments_count", 0) or _get(work, "comment_count", 0) or 0)
-        downloads = int(_get(work, "downloads_count", 0) or _get(work, "download_count", 0) or 0)
-        stats = QLabel(
-            t_gallery(
-                "gallery_my_works_stats",
-                likes=likes,
-                comments=comments,
-                downloads=downloads,
-            )
-        )
-        stats.setObjectName("mutedLabel")
-        lay.addWidget(stats)
+        liked_state = [_work_liked(work)]
+        likes_count = [int(_get(work, "likes_count", 0) or _get(work, "like_count", 0) or 0)]
+        like_btn = QPushButton()
+        _set_cid(like_btn, f"gallery_work_like_{wid}")
+        like_btn.setAutoDefault(False)
+        like_btn.setProperty("likeChip", True)
+        like_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        like_btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
 
+        def _paint_like() -> None:
+            glyph = "♥" if liked_state[0] else "♡"
+            like_btn.setText(f"{glyph} {likes_count[0]}")
+            like_btn.setProperty("liked", liked_state[0])
+            like_btn.style().unpolish(like_btn)
+            like_btn.style().polish(like_btn)
+
+        def _toggle_card_like() -> None:
+            prev_liked = liked_state[0]
+            prev_cnt = likes_count[0]
+            next_liked = not prev_liked
+            liked_state[0] = next_liked
+            likes_count[0] = max(0, prev_cnt + (1 if next_liked else -1))
+            if isinstance(work, dict):
+                work["viewer_liked"] = next_liked
+                work["likes_count"] = likes_count[0]
+            _paint_like()
+            if self._client is None:
+                return
+
+            def _call() -> None:
+                if next_liked and hasattr(self._client, "like_work"):
+                    self._client.like_work(wid)
+                elif not next_liked and hasattr(self._client, "unlike_work"):
+                    self._client.unlike_work(wid)
+
+            def _rollback(_exc: Exception) -> None:
+                liked_state[0] = prev_liked
+                likes_count[0] = prev_cnt
+                if isinstance(work, dict):
+                    work["viewer_liked"] = prev_liked
+                    work["likes_count"] = prev_cnt
+                if is_qobject_alive(like_btn):
+                    _paint_like()
+
+            self._runner.submit(_call, key=f"card_like_{wid}", on_error=_rollback)
+
+        _paint_like()
+        like_btn.clicked.connect(_toggle_card_like)
+        footer.addWidget(like_btn)
+
+        body.addLayout(footer)
+        lay.addLayout(body)
         return card
 
     def set_danmaku_translation_mode(self, mode: str) -> None:
@@ -2348,13 +3454,19 @@ class GalleryHubDialog(QDialog):
         dlg = WorkDetailDialog(
             work,
             client=self._client,
+            state_store=self._state_store,
             media_fetcher=self._media_fetcher,
+            current_user_id=self._current_user_id(),
+            points_balance=self._current_points_balance(),
+            boost_packages=self._get_boost_packages(),
             parent=self,
             theme=self._theme,
             translation_mode=self._danmaku_translation_mode,
         )
         dlg.author_clicked.connect(self.open_author_showcase)
         dlg.download_requested.connect(self.download_work_requested.emit)
+        dlg.account_center_requested.connect(self.account_center_requested.emit)
+        dlg.work_boosted.connect(self._on_work_boosted_from_dialog)
         dlg.show()
         return dlg
 
@@ -2365,10 +3477,17 @@ class GalleryHubDialog(QDialog):
                 if _work_id(work) == work_id:
                     return self.open_work_detail(work)
         if self._client is not None and hasattr(self._client, "get_work"):
+            def _open_loaded(resp: Any) -> None:
+                if resp is None:
+                    return
+                work = _get(resp, "work", resp) if isinstance(resp, Mapping) else resp
+                if work is not None:
+                    self.open_work_detail(work)
+
             self._runner.submit(
                 lambda: self._client.get_work(work_id),
                 key="open_work_by_id",
-                on_success=lambda work: self.open_work_detail(work) if work is not None else None,
+                on_success=_open_loaded,
             )
         return None
 
@@ -2577,7 +3696,7 @@ class GalleryHubDialog(QDialog):
             t_gallery("gallery_publish_watermark_enable")
         )
         _set_cid(self.watermark_enabled_check, "gallery_publish_watermark_check")
-        self.watermark_enabled_check.setChecked(True)
+        self.watermark_enabled_check.setChecked(False)
         self.watermark_enabled_check.toggled.connect(self._update_watermark_preview)
         right_col.addWidget(self.watermark_enabled_check)
 
@@ -2589,7 +3708,7 @@ class GalleryHubDialog(QDialog):
         )
         if self._current_nickname():
             self.watermark_text_edit.setText(self._current_nickname())
-        self.watermark_text_edit.textChanged.connect(self._update_watermark_preview)
+        self.watermark_text_edit.textChanged.connect(self._schedule_watermark_preview)
         wm_row.addWidget(self.watermark_text_edit, 1)
 
         self.use_nickname_btn = QPushButton(t_gallery("gallery_publish_use_nickname"))
@@ -2669,12 +3788,21 @@ class GalleryHubDialog(QDialog):
         cost_card = QFrame()
         cost_card.setObjectName("publishCostCard")
         cost_lay = QVBoxLayout(cost_card)
-        cost_lay.setContentsMargins(SPACE["sm"], SPACE["xs"], SPACE["sm"], SPACE["xs"])
-        cost_lay.setSpacing(2)
+        cost_lay.setContentsMargins(SPACE["sm"], SPACE["sm"], SPACE["sm"], SPACE["sm"])
+        cost_lay.setSpacing(4)
+
+        cost_hdr = QHBoxLayout()
         self.publish_balance_label = QLabel("")
         _set_cid(self.publish_balance_label, "gallery_publish_balance_label", object_name="publishBalanceTitle")
         self.publish_balance_label.setWordWrap(True)
-        cost_lay.addWidget(self.publish_balance_label)
+        cost_hdr.addWidget(self.publish_balance_label, 1)
+
+        self.publish_free_badge = QLabel(t_gallery("gallery_publish_free_badge"))
+        _set_cid(self.publish_free_badge, "gallery_publish_free_badge", object_name="freeBadge")
+        self.publish_free_badge.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        cost_hdr.addWidget(self.publish_free_badge)
+        cost_lay.addLayout(cost_hdr)
+
         self.cost_hint_label = QLabel("")
         _set_cid(self.cost_hint_label, "gallery_publish_cost_hint", object_name="mutedLabel")
         self.cost_hint_label.setWordWrap(True)
@@ -2685,6 +3813,33 @@ class GalleryHubDialog(QDialog):
         self.insufficient_points_label.hide()
         cost_lay.addWidget(self.insufficient_points_label)
         right_col.addWidget(cost_card)
+
+        boost_card = QFrame()
+        boost_card.setObjectName("publishBoostCard")
+        boost_lay = QVBoxLayout(boost_card)
+        boost_lay.setContentsMargins(SPACE["sm"], SPACE["sm"], SPACE["sm"], SPACE["sm"])
+        boost_lay.setSpacing(SPACE["xs"])
+
+        self.boost_enable_check = QCheckBox(t_gallery("gallery_publish_boost_enable"))
+        _set_cid(self.boost_enable_check, "gallery_publish_boost_check")
+        self.boost_enable_check.setChecked(False)
+        self.boost_enable_check.toggled.connect(self._on_publish_boost_toggled)
+        boost_lay.addWidget(self.boost_enable_check)
+
+        self.boost_hint_label = QLabel(t_gallery("gallery_publish_boost_hint"))
+        self.boost_hint_label.setObjectName("mutedLabel")
+        self.boost_hint_label.setWordWrap(True)
+        boost_lay.addWidget(self.boost_hint_label)
+
+        self._publish_boost_tiers_host = QWidget()
+        self._publish_boost_tiers_layout = QHBoxLayout(self._publish_boost_tiers_host)
+        self._publish_boost_tiers_layout.setContentsMargins(0, SPACE["xs"], 0, 0)
+        self._publish_boost_tiers_layout.setSpacing(SPACE["xs"])
+        self._publish_boost_tiers_host.setVisible(False)
+        self.publish_boost_tier_buttons: dict[str, QPushButton] = {}
+        boost_lay.addWidget(self._publish_boost_tiers_host)
+        right_col.addWidget(boost_card)
+        self._rebuild_publish_boost_tiers()
 
         self.publish_feedback_label = QLabel("")
         _set_cid(self.publish_feedback_label, "gallery_publish_feedback")
@@ -2741,6 +3896,67 @@ class GalleryHubDialog(QDialog):
         if paths:
             self.add_publish_files(paths)
 
+    def open_publish_with_image(
+        self,
+        image_or_path: Any,
+        *,
+        title: str = "",
+        exif: Mapping[str, str] | None = None,
+        openfocus_badge: bool = True,
+        switch_to_tab: bool = True,
+    ) -> None:
+        """Public alias to open Publish prefilled with an image."""
+        self.prefill_fused_image(
+            image_or_path,
+            title=title,
+            exif=exif,
+            openfocus_badge=openfocus_badge,
+            switch_to_tab=switch_to_tab,
+        )
+
+    def _rebuild_publish_boost_tiers(self) -> None:
+        if not hasattr(self, "_publish_boost_tiers_layout"):
+            return
+        _clear_layout(self._publish_boost_tiers_layout)
+        self.publish_boost_tier_buttons = {}
+        packages = self._get_boost_packages()
+        prev_id = self._selected_publish_boost.package_id if self._selected_publish_boost else ""
+        matched = next((p for p in packages if p.package_id == prev_id), None)
+        if matched is None:
+            matched = next((p for p in packages if p.recommended), packages[0])
+        self._selected_publish_boost = matched
+        for pkg in packages:
+            lbl = pkg.label or t_gallery(
+                "gallery_boost_tier_label",
+                impressions=pkg.impressions,
+                points=pkg.points,
+            )
+            btn = QPushButton(lbl)
+            btn.setCheckable(True)
+            btn.setChecked(pkg.package_id == matched.package_id)
+            btn.setAutoDefault(False)
+            btn.setProperty("boostTier", True)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            _set_cid(btn, f"gallery_publish_boost_tier_{pkg.package_id}")
+            btn.clicked.connect(lambda _=False, p=pkg: self.select_publish_boost_package(p))
+            self._publish_boost_tiers_layout.addWidget(btn, 1)
+            self.publish_boost_tier_buttons[pkg.package_id] = btn
+
+    def _on_publish_boost_toggled(self, checked: bool) -> None:
+        self._publish_boost_tiers_host.setVisible(checked)
+        self._refresh_points_summary()
+
+    def select_publish_boost_package(self, pkg: BoostPackage) -> None:
+        self._selected_publish_boost = pkg
+        for pid, btn in self.publish_boost_tier_buttons.items():
+            btn.setChecked(pid == pkg.package_id)
+        self._refresh_points_summary()
+
+    def active_publish_boost_package(self) -> BoostPackage | None:
+        if hasattr(self, "boost_enable_check") and self.boost_enable_check.isChecked():
+            return self._selected_publish_boost
+        return None
+
     def prefill_fused_image(
         self,
         image_or_path: Any,
@@ -2782,21 +3998,26 @@ class GalleryHubDialog(QDialog):
         capped = len(source_list) > remaining
         accepted = source_list[:remaining]
 
+        has_explicit_exif = bool(exif)
+        new_items: list[PublishQueueItem] = []
         for idx, src in enumerate(accepted):
             if isinstance(src, (str, os.PathLike)):
                 label = os.path.basename(os.fspath(src)) or f"image_{len(self._publish_queue) + 1}"
             else:
                 label = title or f"OpenFocus_fused_{len(self._publish_queue) + idx + 1}.webp"
-            extracted = dict(exif) if exif else _extract_exif_dict(src, self._media_helper)
-            self._publish_queue.append(
-                PublishQueueItem(
-                    source=src,
-                    label=label,
-                    title=title,
-                    exif=extracted,
-                    openfocus_badge=openfocus_badge,
-                )
+            base_qimg: QImage | None = None
+            if isinstance(src, QPixmap):
+                base_qimg = _image_from_any(src, size=QSize(360, 240))
+            item = PublishQueueItem(
+                source=src,
+                label=label,
+                title=title,
+                exif=dict(exif) if has_explicit_exif else {},
+                openfocus_badge=openfocus_badge,
+                preview_base_qimage=base_qimg,
             )
+            self._publish_queue.append(item)
+            new_items.append(item)
 
         if capped:
             self.batch_warning_label.setText(
@@ -2810,8 +4031,49 @@ class GalleryHubDialog(QDialog):
         if self._publish_queue and self.publish_queue_list.currentRow() < 0:
             self.publish_queue_list.setCurrentRow(0)
             self._on_publish_selection_changed(0)
-        self._update_watermark_preview()
+        else:
+            self._update_watermark_preview()
         self._update_publish_button_state()
+
+        for item in new_items:
+            if item.preview_base_qimage is not None and (has_explicit_exif or isinstance(item.source, QPixmap)):
+                if not has_explicit_exif:
+                    item.exif = _extract_exif_dict(item.source, self._media_helper)
+                continue
+            src_ref = item.source
+            need_preview = item.preview_base_qimage is None
+            need_exif = not has_explicit_exif
+
+            def _prep_item(
+                s: Any = src_ref,
+                want_img: bool = need_preview,
+                want_exif: bool = need_exif,
+            ) -> tuple[QImage | None, dict[str, str]]:
+                img = _image_from_any(s, size=QSize(360, 240)) if want_img else None
+                ex = _extract_exif_dict(s, self._media_helper) if want_exif else {}
+                return img, ex
+
+            def _on_prepped(
+                res: tuple[QImage | None, dict[str, str]],
+                q_item: PublishQueueItem = item,
+            ) -> None:
+                img, ex = res
+                if img is not None:
+                    q_item.preview_base_qimage = img
+                if ex and not q_item.exif:
+                    q_item.exif = ex
+                try:
+                    row_idx = self._publish_queue.index(q_item)
+                except ValueError:
+                    return
+                cur_row = self.publish_queue_list.currentRow()
+                if cur_row < 0 and self._publish_queue:
+                    cur_row = 0
+                if cur_row == row_idx:
+                    self._on_publish_selection_changed(row_idx)
+
+            self._runner.submit(_prep_item, on_success=_on_prepped)
+
         return len(accepted)
 
     def clear_publish_queue(self) -> None:
@@ -2888,9 +4150,15 @@ class GalleryHubDialog(QDialog):
     def _fill_watermark_with_nickname(self) -> None:
         nickname = self._current_nickname()
         if nickname:
-            self.watermark_text_edit.setText(nickname)
+            with block_signals(self.watermark_text_edit):
+                self.watermark_text_edit.setText(nickname)
+            self._update_watermark_preview()
+
+    def _schedule_watermark_preview(self) -> None:
+        self._watermark_debounce_timer.start()
 
     def _update_watermark_preview(self) -> None:
+        self._watermark_debounce_timer.stop()
         enabled = self.watermark_enabled_check.isChecked()
         self.watermark_text_edit.setEnabled(enabled)
         self.use_nickname_btn.setEnabled(enabled)
@@ -2899,23 +4167,33 @@ class GalleryHubDialog(QDialog):
         if row < 0 and self._publish_queue:
             row = 0
 
+        base_img: QImage | None = None
         if 0 <= row < len(self._publish_queue):
-            pix = _pixmap_from_any(
-                self._publish_queue[row].source,
-                size=QSize(360, 240),
-            )
+            item = self._publish_queue[row]
+            base_img = item.preview_base_qimage
+            if base_img is None and isinstance(item.source, QPixmap):
+                base_img = _image_from_any(item.source, size=QSize(360, 240))
+                item.preview_base_qimage = base_img
         else:
-            pix = QPixmap(320, 200)
-            pix.fill(QColor(palette(self._theme)["canvas"]))
+            canvas_img = QImage(320, 200, QImage.Format.Format_ARGB32_Premultiplied)
+            canvas_img.fill(QColor(palette(self._theme)["canvas"]))
+            base_img = canvas_img
 
         attribution = self.watermark_text_edit.text().strip()
-        if pix.isNull():
+        if base_img is None or base_img.isNull():
             self._watermark_preview_has_overlay = False
             self._watermark_preview_rendered_text = ""
             self.watermark_preview_label.setText(t_gallery("gallery_publish_preview_empty"))
             return
 
-        rendered = render_watermark_preview(pix, attribution, enabled=enabled)
+        rendered = QPixmap.fromImage(
+            _draw_watermark_on_qimage(
+                base_img,
+                attribution,
+                enabled=enabled,
+                position=DEFAULT_WATERMARK_POSITION,
+            )
+        )
         self._watermark_preview_has_overlay = bool(enabled and attribution)
         self._watermark_preview_rendered_text = (
             (attribution if attribution.startswith("©") else f"© {attribution}")
@@ -2938,7 +4216,10 @@ class GalleryHubDialog(QDialog):
         return None
 
     def _upload_cost_points(self) -> int:
-        raw = _get(self._get_config(), "upload_cost_points", DEFAULT_UPLOAD_COST_POINTS)
+        cfg = self._get_config()
+        raw = _get(cfg, "upload_cost_points", None)
+        if raw is None:
+            raw = _get(cfg, "publish_cost", DEFAULT_UPLOAD_COST_POINTS)
         try:
             return max(0, int(raw if raw is not None else DEFAULT_UPLOAD_COST_POINTS))
         except (TypeError, ValueError):
@@ -2947,11 +4228,22 @@ class GalleryHubDialog(QDialog):
     def _retranslate_billing(self) -> None:
         self.hub_top_up_btn.setText(t_gallery("gallery_hub_top_up_btn"))
         self.insufficient_points_label.setText(t_gallery("gallery_publish_insufficient_points"))
+        if hasattr(self, "publish_free_badge"):
+            self.publish_free_badge.setText(t_gallery("gallery_publish_free_badge"))
+        if hasattr(self, "boost_enable_check"):
+            self.boost_enable_check.setText(t_gallery("gallery_publish_boost_enable"))
+        if hasattr(self, "boost_hint_label"):
+            self.boost_hint_label.setText(t_gallery("gallery_publish_boost_hint"))
+        self._rebuild_publish_boost_tiers()
         self._refresh_points_summary()
 
     def _refresh_points_summary(self) -> None:
         balance = self._current_points_balance()
         unit_cost = self._upload_cost_points()
+        boost_pkg = self.active_publish_boost_package()
+        boost_cost = int(boost_pkg.points) if boost_pkg is not None else 0
+        effective_unit = unit_cost + boost_cost
+
         if hasattr(self, "hub_points_badge"):
             has_session = getattr(self._client, "has_session", None)
             if balance is not None or (callable(has_session) and has_session()):
@@ -2959,30 +4251,46 @@ class GalleryHubDialog(QDialog):
             else:
                 text = t_gallery("gallery_hub_points_signed_out")
             self.hub_points_badge.setText(text)
+        if hasattr(self, "publish_free_badge"):
+            self.publish_free_badge.setVisible(unit_cost == 0 and boost_cost == 0)
         if hasattr(self, "publish_balance_label"):
-            self.publish_balance_label.setText(
-                t_gallery(
-                    "gallery_publish_cost_summary",
-                    balance=balance if balance is not None else "\u2014",
-                    cost=unit_cost,
+            bal_disp = balance if balance is not None else "\u2014"
+            if unit_cost == 0 and boost_cost == 0:
+                self.publish_balance_label.setText(
+                    t_gallery("gallery_publish_free_balance_summary", balance=bal_disp)
                 )
-            )
+            elif unit_cost == 0 and boost_cost > 0:
+                self.publish_balance_label.setText(
+                    t_gallery("gallery_boost_cost_summary", balance=bal_disp, cost=boost_cost)
+                )
+            else:
+                self.publish_balance_label.setText(
+                    t_gallery("gallery_publish_cost_summary", balance=bal_disp, cost=effective_unit)
+                )
         pending_count = sum(item.stage in ("pending", "inspecting", "uploading", "confirming")
                             for item in self._publish_queue)
         if hasattr(self, "cost_hint_label"):
             if pending_count > 0:
-                total = pending_count * unit_cost
-                self.cost_hint_label.setText(
-                    t_gallery("gallery_publish_batch_estimate", count=pending_count, total=total)
-                )
+                total = pending_count * effective_unit
+                if total == 0:
+                    self.cost_hint_label.setText(
+                        t_gallery("gallery_publish_free_batch_summary", count=pending_count)
+                    )
+                else:
+                    self.cost_hint_label.setText(
+                        t_gallery("gallery_publish_batch_estimate", count=pending_count, total=total)
+                    )
             else:
-                self.cost_hint_label.setText(
-                    t_gallery("gallery_publish_cost_hint", cost=unit_cost)
-                )
+                if effective_unit == 0:
+                    self.cost_hint_label.setText(t_gallery("gallery_publish_free_hint"))
+                else:
+                    self.cost_hint_label.setText(
+                        t_gallery("gallery_publish_cost_hint", cost=effective_unit)
+                    )
         if hasattr(self, "insufficient_points_label"):
-            total = pending_count * unit_cost
+            total = pending_count * effective_unit
             self.insufficient_points_label.setVisible(
-                pending_count > 0 and balance is not None and balance < total
+                pending_count > 0 and total > 0 and balance is not None and balance < total
             )
 
     def _update_publish_button_state(self) -> None:
@@ -3031,6 +4339,7 @@ class GalleryHubDialog(QDialog):
         allow_download = self.allow_download_check.isChecked()
         openfocus_badge = self.openfocus_badge_check.isChecked()
         default_title = self.publish_title_edit.text().strip()
+        boost_package = self.active_publish_boost_package()
 
         # Snapshot per-row job inputs on GUI thread before spawning worker thread
         jobs: list[tuple[int, PublishQueueItem, str, dict[str, str], bool]] = []
@@ -3076,6 +4385,7 @@ class GalleryHubDialog(QDialog):
                     watermark_enabled=watermark_enabled,
                     allow_download=allow_download,
                     openfocus_badge=item_badge,
+                    boost_package=boost_package,
                     ensure_terms=_ensure_terms_accepted,
                     emit_progress=emit_progress,
                 )
@@ -3140,6 +4450,7 @@ class GalleryHubDialog(QDialog):
         watermark_enabled: bool,
         allow_download: bool,
         openfocus_badge: bool,
+        boost_package: BoostPackage | None = None,
         ensure_terms: Callable[[], str],
         emit_progress: Callable[[Any], None],
     ) -> Any:
@@ -3218,8 +4529,13 @@ class GalleryHubDialog(QDialog):
             "allow_download": allow_download,
             "openfocus_badge": openfocus_badge,
             "watermark_enabled": watermark_enabled,
+            "watermark_position": DEFAULT_WATERMARK_POSITION,
             "terms_version": terms_version,
         }
+        if boost_package is not None:
+            meta["boost_package_id"] = boost_package.package_id
+            meta["boost_impressions"] = boost_package.impressions
+            meta["boost_points"] = boost_package.points
         # Prefer explicit 3-stage API (PR #264 GalleryClient) so confirm retry reuses upload_id
         has_3stage = (
             hasattr(client, "inspect_upload")
@@ -3249,7 +4565,8 @@ class GalleryHubDialog(QDialog):
                 return None
 
             _emit("confirming", t_gallery("gallery_publish_status_confirming"), None)
-            return self._do_confirm_step(client, upload_id, idem_key, _emit)
+            confirmed = self._do_confirm_step(client, upload_id, idem_key, _emit, boost_package=boost_package)
+            return confirmed
 
         # Fallback for clients exposing only upload_work_atomic
         if not hasattr(client, "upload_work_atomic"):
@@ -3268,7 +4585,11 @@ class GalleryHubDialog(QDialog):
             result = client.upload_work_atomic(
                 thumb_webp, full_webp, meta, on_stage=_on_stage, idempotency_key=idem_key,
             )
-            _emit("done", t_gallery("gallery_publish_status_done"), True, _work_id(result))
+            work_id = _work_id(_get(result, "work", result))
+            final_msg = self._apply_optional_post_publish_boost(
+                client, work_id, result, boost_package, idem_key
+            )
+            _emit("done", final_msg, True, work_id)
             return result
         except Exception as exc:
             err_stage = str(getattr(exc, "stage", "") or current_stage)
@@ -3286,6 +4607,37 @@ class GalleryHubDialog(QDialog):
             self._emit_pre_confirm_failure(exc, _emit)
             return None
 
+    @staticmethod
+    def _apply_optional_post_publish_boost(
+        client: Any,
+        work_id: str,
+        confirm_result: Any,
+        boost_package: BoostPackage | None,
+        idem_key: str,
+    ) -> str:
+        """Apply optional paid fusion-showcase boost after free community publish."""
+        done_msg = t_gallery("gallery_publish_status_done")
+        if boost_package is None or not work_id:
+            return done_msg
+        if bool(_get(confirm_result, "boost_applied", False)):
+            return f"{done_msg} · {t_gallery('gallery_boost_success', impressions=boost_package.impressions)}"
+        if not hasattr(client, "boost_work"):
+            return f"{done_msg} · {t_gallery('gallery_boost_unavailable')}"
+        try:
+            client.boost_work(
+                work_id,
+                package_id=boost_package.package_id,
+                impressions=boost_package.impressions,
+                points=boost_package.points,
+                idempotency_key=f"{idem_key}:boost",
+            )
+            return f"{done_msg} · {t_gallery('gallery_boost_success', impressions=boost_package.impressions)}"
+        except Exception as exc:
+            code = _error_code_from_exc(exc)
+            if code in ("boost_unavailable", "not_found"):
+                return f"{done_msg} · {t_gallery('gallery_boost_unavailable')}"
+            return f"{done_msg} ({translate_error(code)})"
+
     def _do_confirm_step(
         self,
         client: Any,
@@ -3294,11 +4646,15 @@ class GalleryHubDialog(QDialog):
         emit_fn: Callable[..., None],
         *,
         previous_outcome_unknown: bool = False,
+        boost_package: BoostPackage | None = None,
     ) -> Any:
         try:
             result = client.confirm_upload(upload_id, idempotency_key=idem_key)
             work_id = _work_id(_get(result, "work", result))
-            emit_fn("done", t_gallery("gallery_publish_status_done"), True, work_id)
+            final_msg = self._apply_optional_post_publish_boost(
+                client, work_id, result, boost_package, idem_key
+            )
+            emit_fn("done", final_msg, True, work_id)
             return result
         except Exception as exc:
             if previous_outcome_unknown or _is_ambiguous_confirm_error(exc):
@@ -3428,6 +4784,13 @@ class GalleryHubDialog(QDialog):
             )
             stats.setObjectName("mutedLabel")
             info.addWidget(stats)
+
+            rem_views = int(_get(work, "showcase_impressions_remaining", 0) or 0)
+            if rem_views > 0:
+                boost_badge = QLabel(t_gallery("gallery_boost_remaining", count=rem_views))
+                _set_cid(boost_badge, f"gallery_my_work_boost_badge_{wid}", object_name="badgeOpenFocus")
+                boost_badge.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+                info.addWidget(boost_badge)
             row.addLayout(info, 1)
 
             allow_cb = QCheckBox(t_gallery("gallery_publish_allow_download"))
@@ -3439,8 +4802,17 @@ class GalleryHubDialog(QDialog):
             self._my_work_checkboxes[wid] = allow_cb
             row.addWidget(allow_cb)
 
+            boost_btn = QPushButton(t_gallery("gallery_boost_btn"))
+            _set_cid(boost_btn, f"gallery_my_work_boost_{wid}")
+            boost_btn.setProperty("primary", True)
+            boost_btn.setAutoDefault(False)
+            boost_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            boost_btn.clicked.connect(lambda _=False, w=work: self.open_boost_dialog(w))
+            row.addWidget(boost_btn)
+
             del_btn = QPushButton(t_gallery("gallery_my_works_delete"))
             _set_cid(del_btn, f"gallery_my_work_delete_{wid}")
+            del_btn.setAutoDefault(False)
             del_btn.clicked.connect(
                 lambda _=False, w=work: self._confirm_delete_my_work(w)
             )
@@ -3448,6 +4820,36 @@ class GalleryHubDialog(QDialog):
             self._my_showcase_layout.addWidget(row_card)
 
         self._my_showcase_layout.addStretch()
+
+    def open_boost_dialog(self, work: Any) -> BoostWorkDialog:
+        """Open the optional Fusion-Showcase Exposure Boost dialog for a published work."""
+        dlg = BoostWorkDialog(
+            work,
+            client=self._client,
+            state_store=self._state_store,
+            packages=self._get_boost_packages(),
+            points_balance=self._current_points_balance(),
+            parent=self,
+            theme=self._theme,
+        )
+        dlg.account_center_requested.connect(self.account_center_requested.emit)
+        dlg.boost_completed.connect(self._on_work_boosted_from_dialog)
+        dlg.show()
+        return dlg
+
+    def _on_work_boosted_from_dialog(self, work_id: str, new_remaining: int, new_balance: Any) -> None:
+        if new_balance is not None and isinstance(self._cached_profile, dict):
+            self._cached_profile["points_balance"] = int(new_balance)
+        changed = False
+        for work in self._my_works:
+            if _work_id(work) == work_id:
+                if isinstance(work, dict):
+                    work["showcase_impressions_remaining"] = new_remaining
+                changed = True
+        if changed:
+            self.set_my_works(self._my_works)
+        self.my_showcase_status.setText(t_gallery("gallery_boost_remaining", count=new_remaining))
+        self._refresh_points_summary()
 
     def _on_toggle_my_work_download(self, work_id: str, allow_download: bool) -> None:
         prev_state = not allow_download

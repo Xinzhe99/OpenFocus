@@ -244,6 +244,7 @@ def test_settings_preserve_supported_tile_and_registration_ranges(settings_windo
 
 def test_settings_pages_expose_translated_controls_and_privacy_defaults(settings_window):
     from PyQt6.QtWidgets import QTabWidget
+    from core import developer_options as dev_opts
     from dialogs.advanced_settings import AdvancedSettingsDialog
     from locales import trans
 
@@ -257,19 +258,20 @@ def test_settings_pages_expose_translated_controls_and_privacy_defaults(settings
         ('advanced_tab_registration', [dialog.spin_reg_width, dialog.registration_options_disclosure]),
         ('advanced_tab_other', [dialog.chk_restore, dialog.chk_ask_scale,
                                 dialog.chk_auto_update, dialog.chk_include_beta]),
-        ('gallery_settings_tab', [dialog.chk_danmaku_enabled, dialog.combo_danmaku_position,
-                                  dialog.spin_danmaku_font_size, dialog.spin_danmaku_opacity,
-                                  dialog.combo_danmaku_density, dialog.gallery_download_dir,
-                                  dialog.gallery_cache_dir, dialog.spin_gallery_cache_limit,
-                                  dialog.btn_clear_gallery_cache]),
+        ('developer_options_tab', [dialog.edit_dev_key, dialog.btn_dev_key_toggle,
+                                   dialog.btn_dev_verify, dialog.btn_dev_lock,
+                                   dialog.chk_dev_community]),
     )
     dialog.show()
     try:
+        # Community/Gallery tab is strictly hidden by default unless unlocked & enabled.
         assert tabs.count() == len(pages) and tabs.currentIndex() == 0
         assert tabs.property('controlId') == 'advanced_settings_tabs'
         assert dialog.chk_usage.isChecked() and dialog.chk_auto_error_reports.isChecked()
         assert dialog.chk_usage.text() == trans.t('usage_enabled')
         assert dialog.chk_auto_error_reports.text() == trans.t('report_auto_setting')
+        assert not dialog.chk_dev_community.isEnabled()
+        assert not dialog.chk_dev_community.isChecked()
         for index, (key, controls) in enumerate(pages):
             assert tabs.tabText(index) == trans.t(key)
             tabs.setCurrentIndex(index)
@@ -279,12 +281,45 @@ def test_settings_pages_expose_translated_controls_and_privacy_defaults(settings
         assert dialog.sensor_cleanup.isHidden() and dialog.openfocus_registration_panel.isHidden()
         keys = {key for key, _ in pages} | {'advanced_privacy', 'advanced_working_storage',
                                               'advanced_tile_memory_status', 'advanced_tile_manual',
-                                              'advanced_tile_neural_status'}
+                                              'advanced_tile_neural_status', 'gallery_settings_tab'}
         for code in trans.PACK_ORDER:
             assert all(trans.translations[code].get(key) for key in keys)
     finally:
         dialog.reject()
         dialog.deleteLater()
+
+    # When Community is unlocked and enabled via Developer Options, gallery_settings_tab appears.
+    dev_opts.save_developer_grant(
+        dev_opts.DeveloperGrant(
+            key_prefix="ofdev_test...",
+            label="Test",
+            features=[dev_opts.FEATURE_COMMUNITY],
+            verified_at="2026-11-27T00:00:00Z",
+            server_validated=True,
+        )
+    )
+    dev_opts.set_developer_feature_enabled(dev_opts.FEATURE_COMMUNITY, True)
+    unlocked_dialog = AdvancedSettingsDialog(settings_window)
+    unlocked_tabs = unlocked_dialog.findChild(QTabWidget)
+    unlocked_dialog.show()
+    try:
+        assert unlocked_tabs.count() == 6
+        assert unlocked_tabs.tabText(4) == trans.t('gallery_settings_tab')
+        assert unlocked_tabs.tabText(5) == trans.t('developer_options_tab')
+        unlocked_tabs.setCurrentIndex(4)
+        gallery_controls = [
+            unlocked_dialog.chk_danmaku_enabled, unlocked_dialog.combo_danmaku_position,
+            unlocked_dialog.spin_danmaku_font_size, unlocked_dialog.spin_danmaku_opacity,
+            unlocked_dialog.combo_danmaku_density, unlocked_dialog.gallery_download_dir,
+            unlocked_dialog.gallery_cache_dir, unlocked_dialog.spin_gallery_cache_limit,
+            unlocked_dialog.btn_clear_gallery_cache,
+        ]
+        assert all(control.isVisible() for control in gallery_controls)
+        assert all(unlocked_tabs.currentWidget().isAncestorOf(control) for control in gallery_controls)
+    finally:
+        unlocked_dialog.reject()
+        unlocked_dialog.deleteLater()
+        dev_opts.clear_developer_grant()
 
 
 def test_registration_page_fits_collapsed_and_expanded_controls(qapp, settings_window):

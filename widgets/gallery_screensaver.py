@@ -60,6 +60,7 @@ class GalleryScreensaverWindow(QWidget):
             blur_cache=blur_cache,
             danmaku_settings=danmaku_settings,
             clock=clock,
+            auto_retranslate=False,
         )
         # Clicking fullscreen button inside fullscreen exits screensaver cleanly
         self.showcase.fullscreen_requested.connect(self.exit_screensaver)
@@ -89,7 +90,6 @@ class GalleryScreensaverWindow(QWidget):
 
         self.apply_theme("dark")
         self.retranslate()
-        trans.languageChanged.connect(self.retranslate)
 
     # ------------------------------------------------------------ public API
 
@@ -136,6 +136,7 @@ class GalleryScreensaverWindow(QWidget):
         self.close()
 
     def apply_theme(self, theme: str) -> None:
+        # Fullscreen screensaver always keeps the dark theatrical backdrop.
         p = palette("dark")
         bg = rgba(p["bg"], 0.72)
         self.lbl_exit_toast.setStyleSheet(
@@ -148,7 +149,7 @@ class GalleryScreensaverWindow(QWidget):
             f" font-size: {FONT['body']}pt;"
             f" font-weight: {WEIGHT['medium']}; }}"
         )
-        self.showcase.apply_theme(theme)
+        self.showcase.apply_theme("dark")
 
     @pyqtSlot()
     def retranslate(self) -> None:

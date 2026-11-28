@@ -330,12 +330,22 @@ class LabelManager:
             result.append(label)
         return result
 
+    def _exif_meta_for(self, target: str, index: int, output_id=None) -> dict:
+        from utils import watermark
+        wanted = normalize_target(target)
+        wm_target = "source" if wanted == "input" else wanted
+        record = self._output_record(output_id) if wanted == "output" else self._selected_output()
+        return watermark.context_exif_meta(
+            self.window, target=wm_target, record=record, frame_index=index
+        )
+
     def _draw_for(self, image, target: str, index: int, output_id=None, source_shape=None,
                   source_rect=None):
         """Resolve identity and numbering once for every display/export path."""
         wanted = normalize_target(target)
         index = 0 if wanted == "output" else index
         drawn, error = image, ""
+        exif_meta = None
         for label in self.applicable_labels(wanted, index, output_id):
             config = label.config
             adder = LabelAdder()
@@ -356,6 +366,11 @@ class LabelManager:
             elif source_shape is not None and source_shape[:2] != image.shape[:2]:
                 from utils.frame_pixels import preview_label_config
                 adder.config = preview_label_config(adder.config, source_shape, image.shape)
+            if exif_meta is None:
+                from core.exif_macros import has_exif_macros
+                if has_exif_macros(adder.config.format) or has_exif_macros(adder.config.text):
+                    exif_meta = self._exif_meta_for(wanted, index, output_id)
+            adder.exif_meta = exif_meta
             drawn = adder.add_label_to_image(drawn, index)
             error = error or adder.last_error
         self._draw_errors[wanted] = error
@@ -386,8 +401,10 @@ class LabelManager:
             image = scalebar.burn(image, scale_cfg)
         if watermark_cfg:
             from utils import watermark
+            wm_meta = watermark.context_exif_meta(self.window, target="source", frame_index=index)
             image = watermark.burn(image, watermark_cfg,
-                                   canvas_size=(source_shape[1], source_shape[0]))
+                                   canvas_size=(source_shape[1], source_shape[0]),
+                                   exif_meta=wm_meta, value=index + 1)
         return cv2_to_pixmap(image)
 
     def apply_labels_to_registered_image(self, image, index: int):
@@ -456,9 +473,11 @@ class LabelManager:
             from utils import watermark
             canvas = (watermark_canvas if watermark_canvas is not None
                       else source_shape)
+            wm_meta = self._exif_meta_for(wanted, index, output_id)
             result = watermark.burn(
                 result, watermark_cfg,
-                canvas_size=(canvas[1], canvas[0]))
+                canvas_size=(canvas[1], canvas[0]),
+                exif_meta=wm_meta, value=index + 1)
         if transparent and (labels_enabled or scale_cfg or watermark_cfg):
             from utils.image_utils import composite_transparent_for_display
             result = composite_transparent_for_display(result)
@@ -481,8 +500,9 @@ class LabelManager:
         dialog.setWindowTitle(trans.t('label_manage_title'))
 
         from ui.styles import CURRENT_THEME
+        from widgets.exif_macro_bar import macro_chip_bar_stylesheet
         theme = palette(CURRENT_THEME)
-        dialog.setStyleSheet(get_add_label_dialog_style(CURRENT_THEME) + f"""
+        dialog.setStyleSheet(get_add_label_dialog_style(CURRENT_THEME) + macro_chip_bar_stylesheet(CURRENT_THEME) + f"""
             QFrame#labelPreviewCanvas {{
                 background: {theme['canvas']};
                 border: 1px solid {theme['border']};
@@ -617,6 +637,11 @@ class LabelManager:
         self.format_edit.setToolTip(trans.t('label_format_hint'))
         self.format_edit.setPlaceholderText(trans.t('label_editor_text'))
         text_form.addRow(trans.t('label_editor_text'), self.format_edit)
+        from widgets.exif_macro_bar import ExifMacroChipBar, create_macro_preview_label
+        self.macro_bar = ExifMacroChipBar(self.format_edit, theme=CURRENT_THEME, parent=dialog)
+        text_form.addRow(self.macro_bar)
+        self.macro_preview_label = create_macro_preview_label(dialog)
+        text_form.addRow(self.macro_preview_label)
         insert_button = QPushButton(trans.t('label_insert_value'))
         insert_button.setToolTip(trans.t('label_format_hint'))
         insert_button.clicked.connect(self._insert_frame_number)
@@ -1403,9 +1428,24 @@ class LabelManager:
         elif self.preview.substituted_font:
             status = trans.t('label_font_substituted').format(name=self.preview.substituted_font)
         else:
-            status = trans.t('label_preview_hint').format(
-                n=build_label_text(config["format"], "",
-                                   config["starting_value"] + index * config["interval"]))
+            exif_meta = self._exif_meta_for(config["target"], index, config.get("output_id") or None)
+            if getattr(self, "macro_bar", None) is not None:
+                self.macro_bar.update_sample_meta(exif_meta)
+            resolved_text = build_label_text(
+                config["format"], "",
+                config["starting_value"] + index * config["interval"],
+                exif_meta=exif_meta,
+            )
+            if getattr(self, "macro_preview_label", None) is not None:
+                from core.exif_macros import has_exif_macros
+                if has_exif_macros(config["format"]):
+                    self.macro_preview_label.setText(
+                        trans.t("exif_macro_preview_label").format(text=resolved_text or "—")
+                    )
+                    self.macro_preview_label.show()
+                else:
+                    self.macro_preview_label.hide()
+            status = trans.t('label_preview_hint').format(n=resolved_text)
         self._set_preview_caption(self.preview_status, status)
 
     def _update_apply_button(self, label: Label, error: str) -> None:
@@ -1553,6 +1593,8 @@ class LabelManager:
         self._font_family_binding = None
         self.target_stack_combo: Optional[QComboBox] = None
         self.format_edit: Optional[QLineEdit] = None
+        self.macro_bar = None
+        self.macro_preview_label = None
         self.starting_value_spin: Optional[QSpinBox] = None
         self.interval_spin: Optional[QSpinBox] = None
         self.x_location_spin: Optional[QSpinBox] = None

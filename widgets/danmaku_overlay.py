@@ -6,11 +6,13 @@ as danmaku and are reserved for the expandable comment/reply drawer.
 """
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import dataclass
+import math
 import time
 from typing import Any, Callable, Mapping, Sequence
 
-from PyQt6.QtCore import QPoint, QPointF, QRect, QRectF, Qt, QTimer, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QEvent, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import (
     QColor,
     QFont,
@@ -20,6 +22,8 @@ from PyQt6.QtGui import (
     QPainter,
     QPainterPath,
     QPaintEvent,
+    QPen,
+    QPixmap,
 )
 from PyQt6.QtWidgets import (
     QBoxLayout,
@@ -46,7 +50,9 @@ from locales.gallery_i18n import (
     t_gallery,
     translate_report_reason,
 )
+from utils.community_icons import community_icon, community_icon_color, draw_community_icon
 from utils.design_tokens import FONT, RADIUS, SPACE, WEIGHT, palette, rgba
+from utils.frame_pixels import is_qobject_alive
 
 
 DANMAKU_POSITIONS: tuple[str, ...] = ("top", "middle", "bottom", "full")
@@ -211,6 +217,7 @@ class DanmakuItem:
     track: int = 0
     paused: bool = False
     hovered: bool = False
+    is_own: bool = False
     feedback_text: str = ""
     feedback_alpha: float = 0.0
 
@@ -222,9 +229,8 @@ class DanmakuItem:
         return resolve_comment_translation(self, mode=mode, target_lang=target_lang)
 
     def bullet_text(self, mode: str = "auto", target_lang: str | None = None) -> tuple[str, bool]:
-        """Return floating bullet label with a subtle globe marker when translated."""
-        text, is_translated = self.resolved_text(mode=mode, target_lang=target_lang)
-        return (f"{text} \U0001f310" if is_translated else text, is_translated)
+        """Return the localized floating bullet text without language badges."""
+        return self.resolved_text(mode=mode, target_lang=target_lang)
 
     @classmethod
     def from_comment(cls, comment: Any, default_work_id: str = "") -> "DanmakuItem":
@@ -293,9 +299,10 @@ class DanmakuActionPopover(QFrame):
         self.lbl_preview.setObjectName("danmakuPopoverPreview")
         self.lbl_preview.setWordWrap(False)
         self.lbl_preview.setMaximumWidth(220)
-        self.btn_close = QPushButton("\u2715", self)
+        self.btn_close = QPushButton("", self)
         self.btn_close.setObjectName("danmakuPopoverClose")
         self.btn_close.setFixedSize(20, 20)
+        self.btn_close.setIconSize(QSize(11, 11))
         self.btn_close.setFlat(True)
         self.btn_close.setCursor(Qt.CursorShape.PointingHandCursor)
         header.addWidget(self.lbl_preview, 1)
@@ -377,10 +384,23 @@ class DanmakuActionPopover(QFrame):
     def current_item(self) -> DanmakuItem | None:
         return self._item
 
+    def _sync_popover_icons(self) -> None:
+        item = self._item
+        vote = item.viewer_vote if item else 0
+        self.btn_close.setIcon(
+            community_icon("close", community_icon_color(self._theme, "muted"), size=12, stroke_width=1.5)
+        )
+        up_color = community_icon_color(self._theme, "on_accent" if vote == 1 else "primary")
+        down_color = community_icon_color(self._theme, "on_accent" if vote == -1 else "primary")
+        self.btn_upvote.setIcon(community_icon("arrow_up", up_color, size=12, stroke_width=1.5))
+        self.btn_upvote.setIconSize(QSize(12, 12))
+        self.btn_downvote.setIcon(community_icon("arrow_down", down_color, size=12, stroke_width=1.5))
+        self.btn_downvote.setIconSize(QSize(12, 12))
+
     def apply_theme(self, theme: str) -> None:
         self._theme = theme
-        p = palette("dark")
-        bg = rgba(p["surface"], 0.94)
+        p = palette(theme)
+        bg = rgba(p["surface"], 0.96 if theme == "light" else 0.94)
         border = p["borderStrong"]
         accent = p["accent"]
         danger = p["danger"]
@@ -413,6 +433,7 @@ class DanmakuActionPopover(QFrame):
             f" border: none; color: {p['textMuted']}; padding: 0; }}"
             f" QPushButton#danmakuPopoverClose:hover {{ color: {p['text']}; }}"
         )
+        self._sync_popover_icons()
 
     def retranslate(self) -> None:
         self.btn_close.setToolTip(gallery_tr("gallery_close"))
@@ -463,10 +484,11 @@ class DanmakuActionPopover(QFrame):
         self.btn_downvote.setEnabled(actionable)
         self.btn_report.setEnabled(actionable)
         self.report_panel.setEnabled(actionable)
-        self.btn_upvote.setText(f"\u25b2 {up}")
-        self.btn_downvote.setText(f"\u25bc {down}")
+        self.btn_upvote.setText(f"{up}")
+        self.btn_downvote.setText(f"{down}")
         self.btn_upvote.setChecked(vote == 1)
         self.btn_downvote.setChecked(vote == -1)
+        self._sync_popover_icons()
 
     def _fit_at_anchor(self) -> None:
         margin = SPACE["sm"]
@@ -716,8 +738,8 @@ class DanmakuComposerBar(QFrame):
 
     def apply_theme(self, theme: str) -> None:
         self._theme = theme
-        p = palette("dark")
-        bg = rgba(p["surface"], 0.92)
+        p = palette(theme)
+        bg = rgba(p["surface"], 0.96 if theme == "light" else 0.92)
         self.setStyleSheet(
             f"QFrame#gallery_danmaku_composer {{"
             f" background-color: {bg};"
@@ -804,19 +826,38 @@ class DanmakuOverlay(QWidget):
         settings: DanmakuSettings | None = None,
         clock: Callable[[], float] | None = None,
         controls_parent: QWidget | None = None,
+        auto_retranslate: bool = True,
     ) -> None:
         super().__init__(parent)
         self._settings = (settings or DanmakuSettings()).normalized()
-        self._clock: Callable[[], float] = clock or time.monotonic
+        self._clock: Callable[[], float] = clock or time.perf_counter
         self._work_id: str = ""
         self._active: list[DanmakuItem] = []
         self._queue: list[DanmakuItem] = []
         self._comments: list[DanmakuItem] = []
         self._paused: bool = False
+        self._fusion_busy: bool = False
         self._spawn_accum: float = 0.0
         self._last_tick: float | None = None
         self._hovered_id: str | None = None
+        self._hovered_action: str | None = None
+        self._last_cursor_pointing: bool = False
         self._popover_item_id: str | None = None
+        self._toast_text: str = ""
+        self._toast_remaining: float = 0.0
+        self._toast_duration: float = 2.2
+        self._toast_box_w: float = 0.0
+        self._toast_box_h: float = 30.0
+        self._pixmap_cache: OrderedDict[tuple[str, str, int, float, float, bool], QPixmap] = OrderedDict()
+        self._prev_dirty_rect: QRect = QRect()
+        self._pending_initial_spawn: bool = False
+        self._top_safe_margin: float = 14.0
+        self._watched_window: QWidget | None = None
+        self._ui_lang: str = current_ui_language()
+        self._theme: str = "dark"
+        dark_p = palette(self._theme)
+        self._accent_color: QColor = QColor(dark_p["accent"])
+        self._danger_color: QColor = QColor(dark_p["danger"])
 
         self.setObjectName("gallery_danmaku_overlay")
         self.setProperty("controlId", "gallery_danmaku_overlay")
@@ -836,10 +877,17 @@ class DanmakuOverlay(QWidget):
         self.composer.comments_drawer_requested.connect(self.comments_drawer_requested.emit)
 
         self._anim_timer = QTimer(self)
-        self._anim_timer.setInterval(33)
+        self._anim_timer.setTimerType(Qt.TimerType.CoarseTimer)
+        self._anim_timer.setInterval(16)
         self._anim_timer.timeout.connect(self._on_tick)
 
-        trans.languageChanged.connect(self.retranslate)
+        self._spawn_wake_timer = QTimer(self)
+        self._spawn_wake_timer.setSingleShot(True)
+        self._spawn_wake_timer.setTimerType(Qt.TimerType.CoarseTimer)
+        self._spawn_wake_timer.timeout.connect(self._on_spawn_wake)
+
+        if auto_retranslate:
+            trans.languageChanged.connect(self.retranslate)
 
     # ------------------------------------------------------------------ state
 
@@ -855,17 +903,23 @@ class DanmakuOverlay(QWidget):
     def queued_comments(self) -> list[DanmakuItem]:
         return list(self._queue)
 
+    def _invalidate_pixmap_cache(self) -> None:
+        self._pixmap_cache.clear()
+
     def _rebuild_bullets(self) -> None:
         self.popover.dismiss()
         self._active.clear()
         self._queue.clear()
         self._hovered_id = None
+        self._hovered_action = None
         self._popover_item_id = None
+        self._invalidate_pixmap_cache()
         self._spawn_accum = 0.0
         self.setToolTip("")
         QToolTip.hideText()
 
         target_lang = current_ui_language()
+        self._ui_lang = target_lang
         mode = self._settings.translation_mode
         for item in self._comments:
             item.paused = False
@@ -877,19 +931,31 @@ class DanmakuOverlay(QWidget):
             self._queue.append(item)
 
         if self._settings.enabled:
-            self._spawn_initial_batch()
+            if self._has_valid_spawn_geometry():
+                self._pending_initial_spawn = False
+                self._spawn_initial_batch()
+            else:
+                self._pending_initial_spawn = bool(self._queue)
+        else:
+            self._pending_initial_spawn = False
 
     def set_settings(self, settings: DanmakuSettings) -> None:
-        old_mode = self._settings.translation_mode
+        old = self._settings
         self._settings = settings.normalized()
-        if self._settings.translation_mode != old_mode and self._comments:
+        if (
+            self._settings.font_size != old.font_size
+            or self._settings.opacity != old.opacity
+            or self._settings.translation_mode != old.translation_mode
+        ):
+            self._invalidate_pixmap_cache()
+        if self._settings.translation_mode != old.translation_mode and self._comments:
             self._rebuild_bullets()
         else:
             for item in self._active:
                 self._measure_item(item)
             self._recompute_tracks()
         self._sync_timer()
-        self.update()
+        self._request_repaint()
 
     def set_enabled(self, enabled: bool) -> None:
         self.set_settings(
@@ -905,6 +971,14 @@ class DanmakuOverlay(QWidget):
 
     def set_paused(self, paused: bool) -> None:
         self._paused = bool(paused)
+        self._sync_timer()
+
+    def set_fusion_busy(self, busy: bool) -> None:
+        flag = bool(busy)
+        if flag == self._fusion_busy:
+            return
+        self._fusion_busy = flag
+        self._anim_timer.setInterval(33 if flag else 16)
         self._sync_timer()
 
     def set_limits(self, *, max_chars: int | None = None, cooldown_sec: int | None = None) -> None:
@@ -926,33 +1000,71 @@ class DanmakuOverlay(QWidget):
         self._position_composer()
         self._rebuild_bullets()
         self._sync_timer()
-        self.update()
+        self._request_repaint()
 
-    def add_comment(self, comment: Any, *, immediate: bool = True) -> DanmakuItem | None:
+    def add_comment(
+        self,
+        comment: Any,
+        *,
+        immediate: bool = True,
+        is_own: bool = False,
+    ) -> DanmakuItem | None:
         """Add one top-level danmaku comment. Replies are strictly ignored."""
         item = self._floating_item(comment)
         if item is None:
             return None
+        item.is_own = bool(is_own)
         self._comments.append(item)
-        if not should_display_comment_for_mode(item, self._settings.translation_mode, current_ui_language()):
+        if not should_display_comment_for_mode(item, self._settings.translation_mode, self._ui_lang):
             return None
-        if not (immediate and self._settings.enabled and self._spawn_item(item)):
+        if not (
+            immediate
+            and self._settings.enabled
+            and self._has_valid_spawn_geometry()
+            and self._spawn_item(item, start_inside=bool(is_own), force=bool(is_own))
+        ):
             self._queue.append(item)
+            if immediate and self._settings.enabled and not self._has_valid_spawn_geometry():
+                self._pending_initial_spawn = True
         self._sync_timer()
-        self.update()
+        self._request_repaint()
         return item
+
+    def show_toast(self, message: str, duration_sec: float = 2.2) -> None:
+        """Display a brief non-blocking confirmation toast above the showcase HUD."""
+        text = str(message or "").strip()
+        if not text:
+            return
+        self._toast_text = text
+        self._toast_duration = max(0.6, float(duration_sec))
+        self._toast_remaining = self._toast_duration
+        font = QFont(self.font())
+        font.setPixelSize(13)
+        font.setWeight(QFont.Weight.Medium)
+        metrics = QFontMetricsF(font)
+        self._toast_box_w = max(88.0, metrics.horizontalAdvance(text) + 46.0)
+        self._toast_box_h = 30.0
+        self._sync_timer()
+        self._request_repaint()
 
     def clear(self) -> None:
         self.popover.dismiss()
         self._active.clear()
         self._queue.clear()
         self._comments.clear()
+        self._pending_initial_spawn = False
         self._hovered_id = None
+        self._hovered_action = None
+        self._last_cursor_pointing = False
         self._popover_item_id = None
+        self._toast_text = ""
+        self._toast_remaining = 0.0
+        self._toast_box_w = 0.0
+        self._invalidate_pixmap_cache()
         self.setToolTip("")
         QToolTip.hideText()
         self._sync_timer()
-        self.update()
+        self._request_repaint()
 
     def open_composer(self) -> None:
         self.composer.open_composer()
@@ -965,27 +1077,38 @@ class DanmakuOverlay(QWidget):
         return self.composer.is_open()
 
     def apply_theme(self, theme: str) -> None:
+        self._theme = theme if theme in ("light", "dark", "gray") else "dark"
+        p = palette(self._theme)
+        self._accent_color = QColor(p["accent"])
+        self._danger_color = QColor(p["danger"])
+        self._invalidate_pixmap_cache()
         self.popover.apply_theme(theme)
         self.composer.apply_theme(theme)
+        self._request_repaint()
 
     @pyqtSlot()
     def retranslate(self) -> None:
+        self._ui_lang = current_ui_language()
         self.popover.retranslate()
         self.composer.retranslate()
         self._position_composer()
+        self._invalidate_pixmap_cache()
         if self._settings.translation_mode == "same_language" and self._comments:
             self._rebuild_bullets()
             self._sync_timer()
         else:
             self.popover.dismiss()
             self._hovered_id = None
+            self._hovered_action = None
+            self._last_cursor_pointing = False
+            self.setCursor(Qt.CursorShape.ArrowCursor)
             self.setToolTip("")
             QToolTip.hideText()
             for item in self._active:
                 item.hovered = False
                 self._measure_item(item)
             self._recompute_tracks()
-        self.update()
+        self._request_repaint()
 
     # --------------------------------------------------------------- geometry
 
@@ -1003,9 +1126,19 @@ class DanmakuOverlay(QWidget):
         item.width = max(48.0, metrics.horizontalAdvance(display_text) + pad_x)
         item.height = max(24.0, metrics.height() + pad_y)
 
+    def set_top_safe_margin(self, margin: float) -> None:
+        """Reserve top vertical inset so danmaku lanes stay clear of floating chrome."""
+        val = max(14.0, float(margin))
+        if abs(val - self._top_safe_margin) < 0.5:
+            return
+        self._top_safe_margin = val
+        self._recompute_tracks()
+        self._request_repaint(full=True)
+
     def _zone_bounds(self, row_height: float) -> tuple[float, float]:
-        top_margin = 14.0
         bottom_hud_reserve = 88.0
+        max_top = max(14.0, float(self.height()) - bottom_hud_reserve - row_height)
+        top_margin = min(self._top_safe_margin, max_top)
         usable = max(0.0, self.height() - top_margin - bottom_hud_reserve)
         pos = self._settings.position
         if pos == "top":
@@ -1029,22 +1162,39 @@ class DanmakuOverlay(QWidget):
         step = (span - row_height) / (lane_count - 1) if lane_count > 1 else 0.0
         return y0, step, lane_count
 
-    def _spawn_item(self, item: DanmakuItem, *, start_inside: bool = False) -> bool:
+    def _has_valid_spawn_geometry(self) -> bool:
+        if self.width() <= 0 or self.height() <= 0:
+            return False
+        if self.parentWidget() is not None and not self.isVisible() and self.width() <= 100:
+            return False
+        return True
+
+    def _spawn_item(self, item: DanmakuItem, *, start_inside: bool = False, force: bool = False) -> bool:
         self._measure_item(item)
         y0, step, lane_count = self._lane_geometry(item.height)
         occupied = {active.track for active in self._active}
         track = next((i for i in range(lane_count) if i not in occupied), None)
         if track is None:
-            return False
+            if not force:
+                return False
+            if lane_count <= 0:
+                track = 0
+            else:
+                track = min(
+                    range(lane_count),
+                    key=lambda idx: max((b.x + b.width for b in self._active if b.track == idx), default=-9999.0),
+                )
 
         _, _, base_speed = _DENSITY_PARAMS[self._settings.density]
         item.track = track
         item.y = y0 + track * step
-        if start_inside:
+        if item.is_own and start_inside:
+            item.x = max(16.0, float(self.width()) - item.width - 28.0)
+        elif start_inside:
             item.x = max(16.0, self.width() - item.width * 0.65 - track * 72.0)
         else:
             item.x = self.width() + 16.0
-        display_text, _ = item.bullet_text(self._settings.translation_mode, current_ui_language())
+        display_text, _ = item.bullet_text(self._settings.translation_mode, self._ui_lang)
         item.speed = base_speed + min(30.0, len(display_text) * 0.5)
         self._active.append(item)
         return True
@@ -1078,14 +1228,68 @@ class DanmakuOverlay(QWidget):
         y = max(SPACE["sm"], self.height() - h - 64)
         self.composer.setGeometry(x, y, w, h)
 
+    def _is_window_minimized(self) -> bool:
+        win = self.window()
+        if win is None:
+            return False
+        return bool(win.isMinimized() or (win.windowState() & Qt.WindowState.WindowMinimized))
+
+    def _attach_window_filter(self) -> None:
+        if not is_qobject_alive(self):
+            return
+        win = self.window()
+        if win is self._watched_window:
+            return
+        if self._watched_window is not None and is_qobject_alive(self._watched_window):
+            try:
+                self._watched_window.removeEventFilter(self)
+            except RuntimeError:
+                pass
+        self._watched_window = win
+        if win is not None and win is not self and is_qobject_alive(win):
+            win.installEventFilter(self)
+
+    def eventFilter(self, obj: Any, event: Any) -> bool:
+        if event is None or not is_qobject_alive(self):
+            return False
+        try:
+            if (
+                obj is self._watched_window
+                and event.type() == QEvent.Type.WindowStateChange
+            ):
+                self._sync_timer()
+            return super().eventFilter(obj, event)
+        except RuntimeError:
+            return False
+
+    def changeEvent(self, event: Any) -> None:
+        super().changeEvent(event)
+        if event is not None and event.type() in (
+            QEvent.Type.WindowStateChange,
+            QEvent.Type.ParentChange,
+        ):
+            self._attach_window_filter()
+            self._sync_timer()
+
     def resizeEvent(self, event: Any) -> None:
         super().resizeEvent(event)
         self.popover.dismiss()
-        self._recompute_tracks()
+        if self._pending_initial_spawn and self._settings.enabled and self._has_valid_spawn_geometry():
+            self._pending_initial_spawn = False
+            self._spawn_initial_batch()
+        else:
+            self._recompute_tracks()
         self._position_composer()
+        self._sync_timer()
+        self._request_repaint(full=True)
 
     def showEvent(self, event: Any) -> None:
         super().showEvent(event)
+        self._attach_window_filter()
+        if self._pending_initial_spawn and self._settings.enabled and self.width() > 0 and self.height() > 0:
+            self._pending_initial_spawn = False
+            self._spawn_initial_batch()
+            self._request_repaint()
         self._sync_timer()
 
     def hideEvent(self, event: Any) -> None:
@@ -1095,41 +1299,123 @@ class DanmakuOverlay(QWidget):
 
     # -------------------------------------------------------------- animation
 
+    def _toast_rect(self) -> QRectF:
+        if self._toast_remaining <= 0.0 or not self._toast_text:
+            return QRectF()
+        w = self._toast_box_w if self._toast_box_w > 0.0 else 120.0
+        h = self._toast_box_h
+        x = max(8.0, (self.width() - w) / 2.0)
+        y = max(12.0, self.height() - h - 72.0)
+        return QRectF(x, y, w, h)
+
+    def _item_dirty_rect(self, item: DanmakuItem) -> QRectF:
+        if item.hovered or item.paused:
+            r = self._expanded_item_rect(item)
+        else:
+            r = item.rect()
+        if item.feedback_text and item.feedback_alpha > 0.0:
+            r = r.united(QRectF(r.right() + 4.0, r.top() - 4.0, 52.0, r.height()))
+        return r.adjusted(-4.0, -4.0, 4.0, 4.0)
+
+    def _current_dirty_rect(self) -> QRect:
+        total = QRectF()
+        if self._settings.enabled:
+            for item in self._active:
+                total = total.united(self._item_dirty_rect(item))
+        tr = self._toast_rect()
+        if not tr.isEmpty():
+            total = total.united(tr.adjusted(-4.0, -4.0, 4.0, 4.0))
+        if total.isEmpty():
+            return QRect()
+        return total.toAlignedRect().intersected(self.rect())
+
+    def _request_repaint(self, extra_rect: QRect | None = None, *, full: bool = False) -> None:
+        if full:
+            self._prev_dirty_rect = QRect()
+            self.update()
+            return
+        cur = self._current_dirty_rect()
+        dirty = self._prev_dirty_rect.united(cur) if not self._prev_dirty_rect.isEmpty() else cur
+        if extra_rect is not None and not extra_rect.isEmpty():
+            dirty = dirty.united(extra_rect)
+        self._prev_dirty_rect = cur
+        dirty = dirty.intersected(self.rect())
+        if not dirty.isEmpty():
+            self.update(dirty)
+
     def _sync_timer(self) -> None:
-        should_run = (
-            self.isVisible()
-            and self._settings.enabled
-            and not self._paused
-            and bool(self._active or self._queue)
-        )
-        if should_run:
+        can_run = self.isVisible() and not self._is_window_minimized()
+        has_toast = self._toast_remaining > 0.0
+        bullets_on = self._settings.enabled and not self._paused
+        has_active = bullets_on and bool(self._active)
+        has_queued = bullets_on and bool(self._queue)
+        if can_run and (has_toast or has_active):
+            self._spawn_wake_timer.stop()
             if not self._anim_timer.isActive():
                 self._last_tick = self._clock()
                 self._anim_timer.start()
-        else:
+        elif can_run and not has_toast and not has_active and has_queued:
             if self._anim_timer.isActive():
                 self._anim_timer.stop()
             self._last_tick = None
+            _, spawn_interval, _ = _DENSITY_PARAMS[self._settings.density]
+            wait_ms = max(16, int(round(max(0.0, spawn_interval - self._spawn_accum) * 1000)))
+            if not self._spawn_wake_timer.isActive():
+                self._spawn_wake_timer.start(wait_ms)
+        else:
+            if self._anim_timer.isActive():
+                self._anim_timer.stop()
+            self._spawn_wake_timer.stop()
+            self._last_tick = None
+
+    def _on_spawn_wake(self) -> None:
+        if not self.isVisible() or self._is_window_minimized():
+            return
+        if not self._settings.enabled or self._paused or not self._queue:
+            self._sync_timer()
+            return
+        self._spawn_accum = 0.0
+        if self._spawn_item(self._queue[0]):
+            self._queue.pop(0)
+            self._request_repaint()
+        self._sync_timer()
 
     def _on_tick(self) -> None:
         now = self._clock()
-        dt = 0.033 if self._last_tick is None else max(0.0, min(0.2, now - self._last_tick))
+        dt = 0.016 if self._last_tick is None else max(0.0, min(0.05, now - self._last_tick))
         self._last_tick = now
         self.step_animation(dt)
 
     def step_animation(self, dt_sec: float) -> None:
-        """Advance active floating bullets deterministically by *dt_sec*."""
-        if not self._settings.enabled or self._paused or dt_sec <= 0.0:
+        """Advance active floating bullets and toast lifetime by *dt_sec*."""
+        if dt_sec <= 0.0:
+            return
+
+        dirty_change = False
+        toast_active = self._toast_remaining > 0.0
+        if toast_active:
+            dirty_change = True
+            self._toast_remaining = max(0.0, self._toast_remaining - dt_sec)
+            if self._toast_remaining <= 0.0:
+                self._toast_text = ""
+                self._toast_box_w = 0.0
+
+        if not self._settings.enabled or self._paused:
+            if toast_active:
+                self._sync_timer()
+                self._request_repaint()
             return
 
         remaining: list[DanmakuItem] = []
         for item in self._active:
             if not item.paused and not item.hovered:
                 item.x -= item.speed * dt_sec
+                dirty_change = True
             if item.feedback_alpha > 0.0:
                 item.feedback_alpha = max(0.0, item.feedback_alpha - dt_sec * 1.4)
                 if item.feedback_alpha <= 0.0:
                     item.feedback_text = ""
+                dirty_change = True
             if item.x + item.width < -12.0:
                 if item.comment_id == self._popover_item_id:
                     self.popover.dismiss()
@@ -1137,6 +1423,7 @@ class DanmakuOverlay(QWidget):
                 item.paused = False
                 item.hovered = False
                 self._queue.append(item)
+                dirty_change = True
             else:
                 remaining.append(item)
         self._active = remaining
@@ -1147,13 +1434,60 @@ class DanmakuOverlay(QWidget):
             self._spawn_accum = 0.0
             if self._spawn_item(self._queue[0]):
                 self._queue.pop(0)
+                dirty_change = True
 
-        self.update()
+        self._sync_timer()
+        if dirty_change:
+            self._request_repaint()
 
     # ------------------------------------------------------------ interaction
 
+    def _expanded_layout(self, item: DanmakuItem) -> tuple[QRectF, float, dict[str, QRectF]]:
+        """Compute the hovered/pinned pill rectangle, divider X, and inline button rects."""
+        base_w = item.width
+        h = item.height
+        up_w = 38.0 if item.upvotes > 0 else 24.0
+        btn_w = 24.0
+        gap = 2.0
+        divider_gap = 6.0
+        right_pad = 8.0
+        bar_w = divider_gap + up_w + gap + btn_w + gap + btn_w + gap + btn_w + right_pad
+        total_w = base_w + bar_w
+        view_w = float(self.width())
+        left = max(8.0, min(item.x, max(8.0, view_w - total_w - 8.0))) if view_w > 0 else item.x
+        expanded_rect = QRectF(left, item.y, total_w, h)
+        div_x = left + base_w
+        btn_h = max(18.0, h - 6.0)
+        by = item.y + (h - btn_h) / 2.0
+        r_up = QRectF(div_x + divider_gap, by, up_w, btn_h)
+        r_down = QRectF(r_up.right() + gap, by, btn_w, btn_h)
+        r_comment = QRectF(r_down.right() + gap, by, btn_w, btn_h)
+        r_report = QRectF(r_comment.right() + gap, by, btn_w, btn_h)
+        return expanded_rect, div_x, {
+            "upvote": r_up,
+            "downvote": r_down,
+            "comment": r_comment,
+            "report": r_report,
+        }
+
+    def _expanded_item_rect(self, item: DanmakuItem) -> QRectF:
+        return self._expanded_layout(item)[0]
+
+    def _inline_action_rects(self, item: DanmakuItem) -> dict[str, QRectF]:
+        return self._expanded_layout(item)[2]
+
+    def _action_at(self, item: DanmakuItem, pos: QPoint | QPointF) -> str | None:
+        pt = QPointF(pos)
+        for key, rect in self._inline_action_rects(item).items():
+            if rect.contains(pt):
+                return key
+        return None
+
     def bullet_at(self, pos: QPoint | QPointF) -> DanmakuItem | None:
         pt = QPointF(pos)
+        for item in reversed(self._active):
+            if (item.hovered or item.paused) and self._expanded_item_rect(item).adjusted(0.0, -2.0, 0.0, 2.0).contains(pt):
+                return item
         for item in reversed(self._active):
             if item.rect().contains(pt):
                 return item
@@ -1186,7 +1520,7 @@ class DanmakuOverlay(QWidget):
         )
         if not was_open:
             self.popover_opened.emit()
-        self.update()
+        self._request_repaint()
         return True
 
     def apply_vote(self, comment_id: str, vote: int) -> DanmakuItem | None:
@@ -1214,7 +1548,7 @@ class DanmakuOverlay(QWidget):
         target.viewer_vote = vote
         if self.popover.current_item is target:
             self.popover.refresh_counts()
-        self.update()
+        self._request_repaint(self._item_dirty_rect(target).toAlignedRect())
         return target
 
     def confirm_vote(self, comment_id: str, vote: int, upvotes: int, downvotes: int) -> None:
@@ -1227,6 +1561,7 @@ class DanmakuOverlay(QWidget):
         target.downvotes = downvotes
         if self.popover.current_item is target:
             self.popover.refresh_counts()
+        self._request_repaint(self._item_dirty_rect(target).toAlignedRect())
 
     def _find_item(self, comment_id: str) -> DanmakuItem | None:
         for item in self._comments:
@@ -1252,13 +1587,25 @@ class DanmakuOverlay(QWidget):
             item.feedback_text = gallery_tr("gallery_danmaku_reported")
             item.feedback_alpha = 1.0
         self.comment_reported.emit(comment_id, reason_key)
-        self.update()
+        self._request_repaint()
 
     @pyqtSlot()
     def _on_popover_closed(self) -> None:
         self._release_popover_pin()
         self.popover_closed.emit()
-        self.update()
+        self._request_repaint()
+
+    def _inline_tooltip(self, item: DanmakuItem, action: str | None) -> str:
+        if action == "upvote":
+            return gallery_tr("gallery_danmaku_upvote")
+        if action == "downvote":
+            return gallery_tr("gallery_danmaku_downvote")
+        if action == "comment":
+            return gallery_tr("gallery_btn_comment")
+        if action == "report":
+            return gallery_tr("gallery_danmaku_report")
+        _, is_translated = item.resolved_text(self._settings.translation_mode, self._ui_lang)
+        return original_comment_tooltip(item.content) if is_translated else ""
 
     def mouseMoveEvent(self, event: QMouseEvent | None) -> None:
         if event is None or not self._settings.enabled:
@@ -1266,44 +1613,43 @@ class DanmakuOverlay(QWidget):
             return
         hit = self.bullet_at(event.position())
         hit_id = hit.comment_id if hit is not None else None
-        changed = hit_id != self._hovered_id
-        for item in self._active:
-            item.hovered = item.comment_id == hit_id
-        self._hovered_id = hit_id
-        self.setCursor(
-            Qt.CursorShape.PointingHandCursor if hit is not None else Qt.CursorShape.ArrowCursor
-        )
-        if hit is not None:
-            _, is_translated = hit.resolved_text(self._settings.translation_mode, current_ui_language())
-            if is_translated:
-                tip = original_comment_tooltip(hit.content)
-                self.setToolTip(tip)
-                if changed:
-                    QToolTip.showText(event.globalPosition().toPoint(), tip, self)
-            else:
-                self.setToolTip("")
-                if changed:
-                    QToolTip.hideText()
-        else:
-            self.setToolTip("")
-            if changed:
-                QToolTip.hideText()
+        action = self._action_at(hit, event.position()) if hit is not None else None
+        changed = (hit_id != self._hovered_id) or (action != self._hovered_action)
         if changed:
-            self.update()
+            for item in self._active:
+                item.hovered = item.comment_id == hit_id
+            self._hovered_id = hit_id
+            self._hovered_action = action
+            want_pointing = hit is not None
+            if want_pointing != self._last_cursor_pointing:
+                self._last_cursor_pointing = want_pointing
+                self.setCursor(
+                    Qt.CursorShape.PointingHandCursor
+                    if want_pointing
+                    else Qt.CursorShape.ArrowCursor
+                )
+            tip = self._inline_tooltip(hit, action) if hit is not None else ""
+            if tip != self.toolTip():
+                self.setToolTip(tip)
+            QToolTip.hideText()
+            self._request_repaint()
         super().mouseMoveEvent(event)
 
     def leaveEvent(self, event: Any) -> None:
-        changed = False
+        changed = self._hovered_id is not None or self._hovered_action is not None
         for item in self._active:
             if item.hovered:
                 item.hovered = False
                 changed = True
-        self._hovered_id = None
-        self.setToolTip("")
-        QToolTip.hideText()
-        self.setCursor(Qt.CursorShape.ArrowCursor)
-        if changed:
-            self.update()
+        if changed or self._last_cursor_pointing:
+            self._hovered_id = None
+            self._hovered_action = None
+            self._last_cursor_pointing = False
+            if self.toolTip():
+                self.setToolTip("")
+            QToolTip.hideText()
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+            self._request_repaint()
         super().leaveEvent(event)
 
     def mousePressEvent(self, event: QMouseEvent | None) -> None:
@@ -1313,6 +1659,24 @@ class DanmakuOverlay(QWidget):
         if event.button() == Qt.MouseButton.LeftButton:
             hit = self.bullet_at(event.position())
             if hit is not None:
+                action = self._action_at(hit, event.position()) if (hit.hovered or hit.paused) else None
+                if action in ("upvote", "downvote"):
+                    if is_actionable_comment_id(hit.comment_id):
+                        direction = 1 if action == "upvote" else -1
+                        new_vote = 0 if hit.viewer_vote == direction else direction
+                        self._on_popover_vote(hit.comment_id, new_vote)
+                    event.accept()
+                    return
+                if action == "comment":
+                    self.comments_drawer_requested.emit()
+                    event.accept()
+                    return
+                if action == "report":
+                    if is_actionable_comment_id(hit.comment_id) and self.open_popover_for(hit):
+                        if self.popover.report_panel.isHidden():
+                            self.popover._toggle_report_panel()
+                    event.accept()
+                    return
                 self.open_popover_for(hit)
                 event.accept()
                 return
@@ -1324,60 +1688,259 @@ class DanmakuOverlay(QWidget):
 
     # --------------------------------------------------------------- painting
 
+    def _bullet_pixmap(self, item: DanmakuItem, display_text: str, dpr: float) -> QPixmap:
+        """Rasterize an unfocused danmaku pill into a DPR-scaled QPixmap for crisp sub-pixel motion."""
+        rounded_alpha = round(self._settings.opacity, 3)
+        rounded_dpr = round(max(1.0, dpr), 2)
+        cache_key = (
+            item.comment_id,
+            display_text,
+            self._settings.font_size,
+            rounded_alpha,
+            rounded_dpr,
+            item.is_own,
+            self._theme,
+        )
+        cached = self._pixmap_cache.get(cache_key)
+        if cached is not None:
+            self._pixmap_cache.move_to_end(cache_key)
+            return cached
+
+        while len(self._pixmap_cache) >= 128:
+            self._pixmap_cache.popitem(last=False)
+
+        pw = max(1, int(math.ceil(item.width * rounded_dpr)))
+        ph = max(1, int(math.ceil(item.height * rounded_dpr)))
+        pm = QPixmap(pw, ph)
+        pm.fill(Qt.GlobalColor.transparent)
+        pm.setDevicePixelRatio(rounded_dpr)
+
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+        p.setFont(self._font())
+
+        local_rect = QRectF(0.0, 0.0, item.width, item.height)
+        is_light = self._theme == "light"
+        if is_light:
+            pill_alpha = min(1.0, max(0.55, self._settings.opacity * (0.90 if item.is_own else 0.80)))
+            pill_fill = QColor(255, 255, 255, int(pill_alpha * 255))
+            border_color = QColor(self._accent_color if item.is_own else palette("light")["borderStrong"])
+            border_color.setAlpha(int(min(1.0, self._settings.opacity) * (220 if item.is_own else 190)))
+            text_color = QColor(17, 24, 39, int(min(1.0, self._settings.opacity * 0.98) * 255))
+        else:
+            pill_alpha = min(1.0, self._settings.opacity * (0.62 if item.is_own else 0.45))
+            pill_fill = QColor(15, 17, 21, int(pill_alpha * 255))
+            border_color = QColor(self._accent_color) if item.is_own else None
+            if border_color is not None:
+                border_color.setAlpha(int(min(1.0, self._settings.opacity) * 210))
+            text_color = QColor(255, 255, 255, int(min(1.0, self._settings.opacity * 0.96) * 255))
+
+        path = QPainterPath()
+        radius = min(local_rect.height() / 2.0, float(RADIUS["pill"]))
+        path.addRoundedRect(local_rect, radius, radius)
+
+        p.fillPath(path, pill_fill)
+        if border_color is not None:
+            p.setPen(QPen(border_color, 1.2 if item.is_own else 1.0))
+            p.drawPath(path)
+        if not is_light:
+            p.setPen(QColor(0, 0, 0, int(min(1.0, self._settings.opacity * 0.96) * 180)))
+            p.drawText(local_rect.translated(1.0, 1.0), Qt.AlignmentFlag.AlignCenter, display_text)
+        p.setPen(text_color)
+        p.drawText(local_rect, Qt.AlignmentFlag.AlignCenter, display_text)
+        p.end()
+
+        self._pixmap_cache[cache_key] = pm
+        return pm
+
+    def _paint_inline_actions(
+        self,
+        painter: QPainter,
+        item: DanmakuItem,
+        div_x: float,
+        action_rects: dict[str, QRectF],
+        base_alpha: float,
+        accent_color: QColor,
+        danger_color: QColor,
+    ) -> None:
+        """Render divider and crisp inline upvote, downvote, comment, and report icons."""
+        actionable = is_actionable_comment_id(item.comment_id)
+        is_light = self._theme == "light"
+        mid_top = item.y + 5.0
+        mid_bottom = item.y + item.height - 5.0
+        div_color = QColor(17, 24, 39, 55) if is_light else QColor(255, 255, 255, 65)
+        painter.setPen(QPen(div_color, 1.0))
+        painter.drawLine(QPointF(div_x, mid_top), QPointF(div_x, mid_bottom))
+
+        icon_font = QFont(self.font())
+        icon_font.setPixelSize(max(11, int(self._settings.font_size * 0.72)))
+        icon_font.setWeight(QFont.Weight.DemiBold)
+        painter.setFont(icon_font)
+
+        muted = (
+            QColor(55, 65, 81, 225 if actionable else 115)
+            if is_light
+            else QColor(225, 230, 238, 220 if actionable else 110)
+        )
+        default_hover_fg = QColor(17, 24, 39, 250) if is_light else QColor(255, 255, 255, 245)
+        default_hover_bg = QColor(17, 24, 39) if is_light else QColor(255, 255, 255)
+        for key, r in action_rects.items():
+            is_hovered = item.hovered and self._hovered_action == key
+            is_active = (key == "upvote" and item.viewer_vote == 1) or (
+                key == "downvote" and item.viewer_vote == -1
+            )
+            if is_hovered or is_active:
+                pill_bg = QColor(
+                    accent_color if (key == "upvote" and is_active)
+                    else danger_color if (key == "downvote" and is_active)
+                    else default_hover_bg
+                )
+                pill_bg.setAlpha(185 if is_active else (28 if is_light else 38))
+                btn_path = QPainterPath()
+                btn_path.addRoundedRect(r, r.height() / 2.0, r.height() / 2.0)
+                painter.fillPath(btn_path, pill_bg)
+
+            fg = (
+                QColor(255, 255, 255) if is_active
+                else QColor(accent_color) if (key == "upvote" and is_hovered)
+                else QColor(danger_color) if (key in ("downvote", "report") and is_hovered)
+                else default_hover_fg if is_hovered
+                else muted
+            )
+            fg.setAlpha(int(min(1.0, base_alpha + 0.15) * fg.alpha()))
+            painter.setPen(fg)
+
+            if key == "upvote":
+                if item.upvotes > 0:
+                    metrics = QFontMetricsF(icon_font)
+                    count_str = str(item.upvotes)
+                    count_w = metrics.horizontalAdvance(count_str)
+                    icon_size = 11.0
+                    gap = 3.0
+                    total_w = icon_size + gap + count_w
+                    start_x = r.center().x() - total_w / 2.0
+                    icon_rect = QRectF(start_x, r.center().y() - icon_size / 2.0, icon_size, icon_size)
+                    draw_community_icon(painter, "arrow_up", icon_rect, fg, stroke_width=1.45)
+                    txt_rect = QRectF(start_x + icon_size + gap, r.top(), count_w + 2.0, r.height())
+                    painter.drawText(txt_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, count_str)
+                else:
+                    icon_rect = QRectF(r.center().x() - 6.0, r.center().y() - 6.0, 12.0, 12.0)
+                    draw_community_icon(painter, "arrow_up", icon_rect, fg, stroke_width=1.45)
+            elif key == "downvote":
+                icon_rect = QRectF(r.center().x() - 6.0, r.center().y() - 6.0, 12.0, 12.0)
+                draw_community_icon(painter, "arrow_down", icon_rect, fg, stroke_width=1.45)
+            elif key == "comment":
+                icon_rect = QRectF(r.center().x() - 6.5, r.center().y() - 6.5, 13.0, 13.0)
+                draw_community_icon(painter, "comment", icon_rect, fg, stroke_width=1.4)
+            elif key == "report":
+                icon_rect = QRectF(r.center().x() - 6.0, r.center().y() - 6.0, 12.0, 12.0)
+                draw_community_icon(painter, "flag", icon_rect, fg, stroke_width=1.4)
+
+    def _paint_toast(self, painter: QPainter, accent_color: QColor) -> None:
+        if self._toast_remaining <= 0.0 or not self._toast_text:
+            return
+        is_light = self._theme == "light"
+        alpha = min(1.0, self._toast_remaining / 0.45) if self._toast_remaining < 0.45 else 1.0
+        font = QFont(self.font())
+        font.setPixelSize(13)
+        font.setWeight(QFont.Weight.Medium)
+        painter.setFont(font)
+        toast_rect = self._toast_rect()
+        toast_path = QPainterPath()
+        toast_path.addRoundedRect(toast_rect, toast_rect.height() / 2.0, toast_rect.height() / 2.0)
+        bg_fill = QColor(255, 255, 255, int(alpha * 242)) if is_light else QColor(15, 17, 21, int(alpha * 225))
+        painter.fillPath(toast_path, bg_fill)
+        border = QColor(accent_color)
+        border.setAlpha(int(alpha * 210))
+        painter.setPen(QPen(border, 1.0))
+        painter.drawPath(toast_path)
+
+        fg = QColor(17, 24, 39, int(alpha * 250)) if is_light else QColor(255, 255, 255, int(alpha * 250))
+        check_rect = QRectF(toast_rect.left() + 12.0, toast_rect.center().y() - 6.5, 13.0, 13.0)
+        draw_community_icon(painter, "check", check_rect, QColor(accent_color.red(), accent_color.green(), accent_color.blue(), int(alpha * 250)), stroke_width=1.7)
+        text_rect = QRectF(check_rect.right() + 6.0, toast_rect.top(), max(20.0, toast_rect.width() - 36.0), toast_rect.height())
+        painter.setPen(fg)
+        painter.drawText(text_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, self._toast_text)
+
     def paintEvent(self, _event: QPaintEvent | None) -> None:
-        if not self._settings.enabled or not self._active:
+        has_bullets = self._settings.enabled and bool(self._active)
+        has_toast = self._toast_remaining > 0.0 and bool(self._toast_text)
+        if not has_bullets and not has_toast:
             return
 
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
-        painter.setFont(self._font())
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
 
+        base_font = self._font()
         base_alpha = self._settings.opacity
-        accent_color = QColor(palette("dark")["accent"])
+        accent_color = self._accent_color
+        danger_color = self._danger_color
         mode = self._settings.translation_mode
-        target_lang = current_ui_language()
+        target_lang = self._ui_lang
+        dpr = float(self.devicePixelRatioF() or 1.0)
 
-        for item in self._active:
-            rect = item.rect()
-            if rect.right() < 0 or rect.left() > self.width():
-                continue
+        focused_items: list[DanmakuItem] = []
+        if has_bullets:
+            for item in self._active:
+                rect = item.rect()
+                is_focus = item.hovered or item.paused
+                if not is_focus and (rect.right() < 0 or rect.left() > self.width()):
+                    continue
+                if is_focus:
+                    focused_items.append(item)
+                    continue
 
-            display_text, _ = item.bullet_text(mode, target_lang)
-            is_focus = item.hovered or item.paused
-            pill_alpha = min(1.0, base_alpha * (0.72 if is_focus else 0.45))
-            text_alpha = min(1.0, base_alpha * (1.0 if is_focus else 0.96))
+                display_text, _ = item.bullet_text(mode, target_lang)
+                pm = self._bullet_pixmap(item, display_text, dpr)
+                painter.drawPixmap(QPointF(item.x, item.y), pm)
+                if item.feedback_text and item.feedback_alpha > 0.0:
+                    painter.setFont(base_font)
+                    fb_color = QColor(accent_color)
+                    fb_color.setAlpha(int(item.feedback_alpha * 255))
+                    painter.setPen(fb_color)
+                    fb_rect = QRectF(rect.right() + 4.0, rect.top() - 4.0, 48.0, rect.height())
+                    painter.drawText(fb_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, item.feedback_text)
 
-            path = QPainterPath()
-            radius = min(rect.height() / 2.0, float(RADIUS["pill"]))
-            path.addRoundedRect(rect, radius, radius)
+            for item in focused_items:
+                display_text, _ = item.bullet_text(mode, target_lang)
+                exp_rect, div_x, action_rects = self._expanded_layout(item)
+                is_light = self._theme == "light"
+                pill_alpha = min(1.0, max(0.75, base_alpha * 0.92)) if is_light else min(1.0, base_alpha * 0.84)
+                text_alpha = min(1.0, base_alpha)
 
-            bg = QColor(15, 17, 21, int(pill_alpha * 255))
-            painter.fillPath(path, bg)
-            if is_focus:
+                path = QPainterPath()
+                radius = min(exp_rect.height() / 2.0, float(RADIUS["pill"]))
+                path.addRoundedRect(exp_rect, radius, radius)
+                pill_fill = QColor(255, 255, 255, int(pill_alpha * 255)) if is_light else QColor(15, 17, 21, int(pill_alpha * 255))
+                painter.fillPath(path, pill_fill)
                 pen_color = QColor(accent_color)
                 pen_color.setAlpha(int(min(1.0, base_alpha) * 220))
                 painter.setPen(pen_color)
                 painter.drawPath(path)
 
-            # Subtle shadow for legibility on bright photographs
-            shadow = QColor(0, 0, 0, int(text_alpha * 180))
-            painter.setPen(shadow)
-            painter.drawText(
-                rect.translated(1.0, 1.0),
-                Qt.AlignmentFlag.AlignCenter,
-                display_text,
-            )
+                text_rect = QRectF(exp_rect.left(), exp_rect.top(), item.width, exp_rect.height())
+                painter.setFont(base_font)
+                if not is_light:
+                    painter.setPen(QColor(0, 0, 0, int(text_alpha * 180)))
+                    painter.drawText(text_rect.translated(1.0, 1.0), Qt.AlignmentFlag.AlignCenter, display_text)
+                text_fg = QColor(17, 24, 39, int(text_alpha * 255)) if is_light else QColor(255, 255, 255, int(text_alpha * 255))
+                painter.setPen(text_fg)
+                painter.drawText(text_rect, Qt.AlignmentFlag.AlignCenter, display_text)
 
-            fg = QColor(255, 255, 255, int(text_alpha * 255))
-            painter.setPen(fg)
-            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, display_text)
+                self._paint_inline_actions(
+                    painter, item, div_x, action_rects, base_alpha, accent_color, danger_color
+                )
 
-            if item.feedback_text and item.feedback_alpha > 0.0:
-                fb_color = QColor(accent_color)
-                fb_color.setAlpha(int(item.feedback_alpha * 255))
-                painter.setPen(fb_color)
-                fb_rect = QRectF(rect.right() + 4.0, rect.top() - 4.0, 48.0, rect.height())
-                painter.drawText(fb_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, item.feedback_text)
+                if item.feedback_text and item.feedback_alpha > 0.0:
+                    painter.setFont(base_font)
+                    fb_color = QColor(accent_color)
+                    fb_color.setAlpha(int(item.feedback_alpha * 255))
+                    painter.setPen(fb_color)
+                    fb_rect = QRectF(exp_rect.right() + 4.0, exp_rect.top() - 4.0, 48.0, exp_rect.height())
+                    painter.drawText(fb_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, item.feedback_text)
 
+        self._paint_toast(painter, accent_color)
         painter.end()

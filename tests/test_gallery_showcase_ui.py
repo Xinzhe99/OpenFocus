@@ -142,17 +142,23 @@ def test_static_blur_cache_reused_across_repaints_and_zero_black_bars(qapp):
     assert left_pixel.blue() > 80
     assert left_pixel.blue() > left_pixel.red()
 
-    # Resize to a new size computes once for the new (work_id, size)
+    # Resize to a new size reuses the cached blurred proxy (O(1) resize, zero recompute)
     showcase.resize(800, 450)
     qapp.processEvents()
-    assert cache.compute_count == 2
+    assert cache.compute_count == 1
 
-    # Resizing back hits the existing static blur cache without recomputing
-    hits_before = cache.cache_hits
+    # Resizing back or rendering the same work in a second showcase hits StaticBlurBackgroundCache
     showcase.resize(640, 360)
     qapp.processEvents()
-    assert cache.compute_count == 2
+    assert cache.compute_count == 1
+    hits_before = cache.cache_hits
+    showcase2 = GalleryShowcaseWidget(blur_cache=cache)
+    showcase2.resize(640, 360)
+    showcase2.set_works([works[0]])
+    qapp.processEvents()
+    assert cache.compute_count == 1
     assert cache.cache_hits > hits_before
+    showcase2.deleteLater()
 
     # Replacing the pixmap at another size must also invalidate the previous backdrop.
     showcase.resize(800, 450)
@@ -837,29 +843,243 @@ def test_standalone_showcase_window_fusion_bar_and_return_flow(qapp):
     from widgets.gallery_showcase import GalleryShowcaseWindow
 
     win = GalleryShowcaseWindow()
-    win.set_works([ShowcaseWork(id="w1", title="Beetle", pixmap=_make_pixmap(100, 80, QColor(40, 80, 120)))])
+    assert bool(win.windowFlags() & Qt.WindowType.FramelessWindowHint)
+    w1 = ShowcaseWork(id="w1", title="Beetle", pixmap=_make_pixmap(100, 80, QColor(40, 80, 120)))
+    w2 = ShowcaseWork(id="w2", title="Spider", pixmap=_make_pixmap(100, 80, QColor(80, 120, 40)))
+    win.set_works([w1, w2])
     assert win.fusion_bar.isVisible() is False
+    assert not hasattr(win, "chk_auto_show")
 
-    toggled = []
     returned = []
-    win.auto_show_toggled.connect(toggled.append)
     win.return_to_workspace_requested.connect(lambda: returned.append(True))
 
     win.show()
     qapp.processEvents()
+    assert win.showcase.btn_prev_slide.isVisible() is True
+    assert win.showcase.btn_next_slide.isVisible() is True
+    assert win.showcase.current_work.id == "w1"
+    win.showcase.btn_next_slide.click()
+    assert win.showcase.current_work.id == "w2"
+    win.showcase.btn_prev_slide.click()
+    assert win.showcase.current_work.id == "w1"
+
     win.set_fusion_in_progress("Fusing 2/4", done=2, total=4)
     assert win.fusion_bar.isVisible() is True
+    assert win.btn_return.isVisible() is True
+    assert win.lbl_fusion_status.isVisible() is False
+    assert win.fusion_progress.isVisible() is False
     assert win.fusion_progress.maximum() == 4
     assert win.fusion_progress.value() == 2
     assert "2/4" in win.lbl_fusion_status.text()
 
     win.set_fusion_completed()
+    assert win.lbl_fusion_status.isVisible() is False
+    assert win.fusion_progress.isVisible() is False
     assert win.fusion_progress.value() == 1
-
-    win.chk_auto_show.setChecked(False)
-    assert toggled == [False]
 
     win.btn_return.click()
     assert returned == [True]
     assert win.isVisible() is False
     win.deleteLater()
+
+
+def test_foreground_scaled_cache_slide_lru_eviction_and_drawer_upvote_toggle(qapp, tmp_path):
+    from widgets.gallery_showcase import CommentReplyDrawer, GalleryShowcaseWindow
+
+    # 1. Pre-scaled foreground cache & slide pixmap LRU eviction (keep current +- 2)
+    slides = []
+    for idx in range(7):
+        img_file = tmp_path / f"slide_{idx}.png"
+        _make_pixmap(200, 120, QColor(20 + idx * 25, 90, 180)).save(str(img_file))
+        slides.append(ShowcaseWork(id=f"s{idx}", local_path=str(img_file)))
+
+    showcase = GalleryShowcaseWidget()
+    showcase.resize(480, 300)
+    showcase.set_works(slides, start_index=0)
+    for idx in range(7):
+        slides[idx].load_local_pixmap()
+    showcase.show_slide(0)
+    # Slides outside circular radius 2 from index 0 (indices 3 and 4) are evicted while local_path stays
+    assert slides[0].pixmap is not None
+    assert slides[1].pixmap is not None
+    assert slides[6].pixmap is not None
+    assert slides[3].pixmap is None and slides[3].local_path
+    assert slides[4].pixmap is None and slides[4].local_path
+
+    # Foreground scaled pixmap cached across repaints
+    showcase.grab()
+    fg_key_1 = showcase._cached_fg_key
+    fg_pm_1 = showcase._cached_fg_pixmap
+    assert fg_pm_1 is not None and not fg_pm_1.isNull()
+    showcase.repaint()
+    assert showcase._cached_fg_key == fg_key_1
+    assert showcase._cached_fg_pixmap is fg_pm_1
+    showcase.deleteLater()
+
+    # 2. CommentReplyDrawer upvote toggles 1 <-> 0 and sets checked state
+    drawer = CommentReplyDrawer()
+    votes: list[tuple[str, int]] = []
+    drawer.comment_voted.connect(lambda cid, v: votes.append((cid, v)))
+    drawer.set_comments([
+        {"id": "c-unvoted", "author_nickname": "A", "content": "One", "upvotes": 2, "viewer_vote": 0},
+        {"id": "c-voted", "author_nickname": "B", "content": "Two", "upvotes": 5, "viewer_vote": 1},
+    ])
+    up_btns = drawer.findChildren(QPushButton, "btn_comment_upvote")
+    assert len(up_btns) == 2
+    assert all(not b.icon().isNull() for b in up_btns)
+    assert up_btns[0].isCheckable() and not up_btns[0].isChecked()
+    assert up_btns[1].isCheckable() and up_btns[1].isChecked()
+    up_btns[0].click()
+    up_btns[1].click()
+    assert votes == [("c-unvoted", 1), ("c-voted", 0)]
+    drawer.deleteLater()
+
+    # 3. GalleryShowcaseWindow polish guard + 6px edge resize cursor/fallback
+    win = GalleryShowcaseWindow()
+    win.resize(700, 480)
+    unpolish_calls = []
+    orig_unpolish = win.btn_return.style().unpolish
+    win.btn_return.style().unpolish = lambda w: (unpolish_calls.append(w), orig_unpolish(w))  # type: ignore[method-assign]
+    win.set_fusion_in_progress("1/3", done=1, total=3)
+    count_after_first = len(unpolish_calls)
+    win.set_fusion_in_progress("2/3", done=2, total=3)
+    assert len(unpolish_calls) == count_after_first
+    win.set_fusion_completed()
+    assert len(unpolish_calls) == count_after_first + 1
+    assert win._resize_edges_at(QPoint(2, 2)) == (Qt.Edge.LeftEdge | Qt.Edge.TopEdge)
+    assert win._resize_edges_at(QPoint(698, 240)) == Qt.Edge.RightEdge
+    assert win._resize_edges_at(QPoint(350, 240)) == Qt.Edge(0)
+    win.deleteLater()
+
+
+def test_comment_drawer_clears_empty_label_and_avoids_window_controls_overlap(qapp):
+    from PyQt6.QtWidgets import QLabel
+    from widgets.gallery_showcase import GalleryShowcaseWindow
+
+    win = GalleryShowcaseWindow()
+    win.resize(800, 500)
+    win.show()
+    qapp.processEvents()
+
+    win.showcase.comment_drawer.set_comments(
+        [{"id": "c1", "author_nickname": "Alex", "content": "hi", "upvotes": 1, "viewer_vote": 0}]
+    )
+    assert win.showcase.comment_drawer.list_container.findChildren(QLabel, "commentEmpty") == []
+
+    win.showcase.open_comment_drawer()
+    win.showcase._layout_overlays()
+    qapp.processEvents()
+    assert win.showcase.comment_drawer.geometry().top() > win.window_controls.geometry().bottom()
+    win.close()
+    win.deleteLater()
+    qapp.processEvents()
+
+
+def test_minimalist_line_icons_and_light_dark_theme_consistency(qapp):
+    from PyQt6.QtGui import QColor
+    from utils.design_tokens import palette, rgba
+    from widgets.gallery_screensaver import GalleryScreensaverWindow
+    from widgets.gallery_showcase import GalleryShowcaseWindow
+
+    win = GalleryShowcaseWindow()
+    win.resize(900, 560)
+    works = [
+        {
+            "id": "w-1",
+            "title": "Macro Study",
+            "author_id": "a1",
+            "author_nickname": "OpenFocus",
+            "allow_download": True,
+            "like_count": 14,
+            "comment_count": 3,
+            "pixmap": _make_pixmap(400, 300, QColor("#2a4d69")),
+            "comments": [
+                {
+                    "id": "c1",
+                    "author_nickname": "Alex",
+                    "content": "Clean focus plane!",
+                    "upvotes": 2,
+                    "downvotes": 0,
+                    "viewer_vote": 0,
+                }
+            ],
+        },
+        {
+            "id": "w-2",
+            "title": "Second Study",
+            "author_id": "a2",
+            "author_nickname": "Studio",
+            "allow_download": True,
+            "like_count": 5,
+            "comment_count": 0,
+            "pixmap": _make_pixmap(400, 300, QColor("#6b4f3b")),
+            "comments": [],
+        },
+    ]
+    win.set_works(works)
+    win.set_fusion_in_progress("1/4", done=1, total=4)
+    win.show()
+    qapp.processEvents()
+
+    # No duplicate fusion status/progress strip; top danmaku stays below window_controls
+    assert win.lbl_fusion_status.isVisible() is False
+    assert win.fusion_progress.isVisible() is False
+    assert win.btn_return.isVisible() is True
+    bullets = win.showcase.danmaku_overlay.active_bullets
+    assert bullets
+    assert all(b.y > win.window_controls.geometry().bottom() for b in bullets)
+
+    # All HUD buttons, window controls, and nav arrows use crisp QIcons with no emoji text
+    for btn in (
+        win.showcase.btn_like,
+        win.showcase.btn_comment,
+        win.showcase.btn_download,
+        win.showcase.btn_fullscreen,
+        win.showcase.btn_report,
+        win.showcase.btn_prev_slide,
+        win.showcase.btn_next_slide,
+        win.btn_win_min,
+        win.btn_win_max,
+        win.btn_win_close,
+    ):
+        assert not btn.icon().isNull()
+
+    assert "\U0001f4ac" not in win.showcase.btn_comment.text()
+    assert "\u2b07" not in win.showcase.btn_download.text()
+    assert "\u26f6" not in win.showcase.btn_fullscreen.text()
+    assert "\u2691" not in win.showcase.btn_report.text()
+    assert "\u2661" not in win.showcase.btn_like.text()
+    assert "14" in win.showcase.btn_like.text()
+    assert "3" in win.showcase.btn_comment.text()
+
+    # Applying Light theme updates Showcase, Danmaku overlay, Drawer, and Frame coherently
+    win.apply_theme("light")
+    light_p = palette("light")
+    assert win._theme == "light"
+    assert win.showcase._theme == "light"
+    assert win.showcase.danmaku_overlay._theme == "light"
+    assert win.showcase.danmaku_overlay.popover._theme == "light"
+    assert win.showcase.danmaku_overlay.composer._theme == "light"
+    assert win.showcase.comment_drawer._theme == "light"
+    assert light_p["canvas"] in win.styleSheet()
+    assert light_p["text"] in win.showcase.styleSheet()
+    assert rgba(light_p["surface"], 0.96) in win.showcase.comment_drawer.styleSheet()
+    assert light_p["text"] in win.showcase.comment_drawer.styleSheet()
+    assert win.showcase.grab() is not None
+
+    # Switching back to Dark theme updates everything cleanly
+    win.apply_theme("dark")
+    dark_p = palette("dark")
+    assert dark_p["canvas"] in win.styleSheet()
+    assert win.showcase.danmaku_overlay._theme == "dark"
+    assert win.showcase.grab() is not None
+
+    # Screensaver deliberately stays dark even when app theme is light
+    screensaver = GalleryScreensaverWindow()
+    screensaver.apply_theme("light")
+    assert screensaver.showcase._theme == "dark"
+    screensaver.deleteLater()
+
+    win.close()
+    win.deleteLater()
+    qapp.processEvents()

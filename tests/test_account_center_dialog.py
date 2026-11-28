@@ -396,6 +396,15 @@ def test_activity_showcase_links_and_message_box_structured_i18n(qapp):
     dlg.show()
     assert dlg.wait_for_idle()
 
+    # Lazy Activity: opening Account tab must NOT eagerly load Following/Followers
+    assert dlg._following == []
+    assert dlg._followers == []
+
+    # Visit Activity tab & subtabs on demand
+    dlg.tabs.setCurrentIndex(4)
+    dlg.activity_tabs.setCurrentIndex(0)
+    assert dlg.wait_for_idle()
+
     # Click actual My Likes work link, Following link, and Followers link buttons
     like_open_btn = next(
         b for b in dlg._likes_host.findChildren(QPushButton)
@@ -404,11 +413,16 @@ def test_activity_showcase_links_and_message_box_structured_i18n(qapp):
     like_open_btn.click()
     assert jumped_works[-1] == "w-like-1"
 
+    dlg.activity_tabs.setCurrentIndex(2)
+    assert dlg.wait_for_idle()
     following_btn = next(
         b for b in dlg._following_host.findChildren(QPushButton)
         if b.property("controlId") == "account_following_open_u-a"
     )
     following_btn.click()
+
+    dlg.activity_tabs.setCurrentIndex(3)
+    assert dlg.wait_for_idle()
     followers_btn = next(
         b for b in dlg._followers_host.findChildren(QPushButton)
         if b.property("controlId") == "account_followers_open_u-b"
@@ -519,8 +533,109 @@ def test_account_center_translated_layouts_render_cleanly(qapp, lang):
         dlg.show()
         qapp.processEvents()
         assert dlg.width() > 0 and dlg.height() > 0
+        assert dlg.tabs.count() == 5
         for idx in range(dlg.tabs.count()):
             assert dlg.tabs.tabText(idx).strip()
+        assert "lemon squeezy" not in dlg.recharge_hint_label.text().lower()
+        assert "creem" in dlg.recharge_hint_label.text().lower()
         dlg.close()
     finally:
         trans.set_language(prev_lang)
+
+
+def test_dict_badges_after_nickname_save_and_server_dynamic_interests(qapp):
+    client = FakeAccountClient()
+    store = FakeStateStore()
+    dlg = AccountCenterDialog(client=client, state_store=store, initial_tab=1)
+    assert dlg.tabs.currentIndex() == 1
+
+    # Simulate PATCH /api/v1/gallery/profile returning raw server badge dicts
+    dlg.apply_profile(
+        {
+            "user_id": "u_admin",
+            "nickname": "AdminUser",
+            "points_balance": 600,
+            "badges": [
+                {"badge_key": "pioneer_creator", "period_key": "", "work_id": "w1", "awarded_at": 1795693860},
+                {"badge_key": "pro_supporter", "period_key": ""},
+            ],
+            "interests": ["fungi", "amber_fossil"],
+        }
+    )
+    badge_text = dlg.badges_label.text()
+    assert not dlg.badges_label.isHidden()
+    assert "{" not in badge_text and "badge_key" not in badge_text
+    assert "Pioneer Creator" in badge_text
+    assert "Pro Supporter" in badge_text
+
+    # Simulate server /api/v1/config updating interest_keys dynamically without a client upgrade
+    dlg._on_store_config_changed(
+        {
+            "payment_region": "cn",
+            "interest_keys": [
+                "insect",
+                "fungi",
+                {"key": "amber_fossil", "labels": {"zh": "琥珀化石", "en": "Amber Fossil"}},
+            ],
+        }
+    )
+    assert set(dlg.interest_chips.keys()) == {"insect", "fungi", "amber_fossil"}
+    assert dlg.interest_chips["amber_fossil"].text() == "Amber Fossil"
+    assert dlg.interest_chips["fungi"].isChecked() is True
+    assert dlg.interest_chips["amber_fossil"].isChecked() is True
+    assert dlg.interest_chips["insect"].isChecked() is False
+    dlg.tabs.setCurrentIndex(0)
+    dlg.show()
+    qapp.processEvents()
+    assert dlg.badges_label.isVisible() is True
+    assert dlg.recharge_group.objectName() == "accountSectionCard"
+    assert dlg.recharge_group.property("controlId") == "account_recharge_group"
+    assert dlg.redeem_group.objectName() == "accountSectionCard"
+    assert dlg.redeem_group.property("controlId") == "account_redeem_group"
+    dlg.close()
+
+
+def test_account_center_preserves_unsaved_edits_non_work_read_sync_and_theme(qapp):
+    class SyncStore(FakeStateStore):
+        def __init__(self):
+            super().__init__()
+            self.local_read_calls: list[tuple[Any, bool]] = []
+
+        def mark_notifications_read_local(self, *, ids=None, all=False):
+            self.local_read_calls.append((list(ids) if ids is not None else None, bool(all)))
+
+    store = SyncStore()
+    client = FakeAccountClient()
+    dlg = AccountCenterDialog(client=client, state_store=store)
+    dlg.show()
+    assert dlg.wait_for_idle()
+
+    # Unsaved nickname & interest edits survive background apply_profile polls
+    dlg.nickname_input.setText("DraftNick")
+    dlg.nickname_input.setModified(True)
+    extra_key = next(k for k in dlg.interest_chips if k != "insects" and not dlg.interest_chips[k].isChecked())
+    dlg.interest_chips[extra_key].click()
+    assert dlg._interests_dirty is True
+    dlg.apply_profile({
+        "user_id": "u-self",
+        "email": "creator@openfocus.top",
+        "nickname": "ServerNick",
+        "points_balance": 500,
+        "interests": ["insects"],
+    })
+    assert dlg.nickname_input.text() == "DraftNick"
+    assert dlg.interest_chips[extra_key].isChecked() is True
+
+    # Non-work notification (n-2) has a mark-read button and syncs read to state_store
+    mark_n2 = next(
+        b for b in dlg._messages_host.findChildren(QPushButton)
+        if b.property("controlId") == "account_notif_mark_read_n-2"
+    )
+    mark_n2.click()
+    assert dlg.wait_for_idle()
+    assert store.local_read_calls[-1] == (["n-2"], False)
+    assert client.marked_read_calls[-1] == {"ids": ["n-2"], "all": False}
+
+    dlg.apply_theme("light")
+    assert dlg._theme == "light"
+    dlg.close()

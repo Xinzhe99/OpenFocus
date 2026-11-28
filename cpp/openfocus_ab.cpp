@@ -235,7 +235,7 @@ inline void burt_accumulate_row_i64(
         const int64_t right = static_cast<int64_t>(laps[row_a + col]) * (den - fy)
                             + static_cast<int64_t>(laps[row_b + col]) * fy;
         const int64_t delta = right - left;
-        const int64_t initial = (left << shift) + delta + rounding;
+        const int64_t initial = left * den + delta + rounding;
         const int64_t span = std::min(factor, fine_width - end);
         for (int64_t dx = 0; dx < span; ++dx) {
             response[end + dx] += static_cast<int32_t>((initial + 2 * delta * dx) >> (2 * shift));

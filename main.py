@@ -204,7 +204,6 @@ from controllers.label_manager import LabelManager
 from controllers.export_manager import ExportManager
 from controllers.transform_manager import TransformManager
 from controllers.batch_manager import BatchManager
-from controllers.gallery_controller import GalleryController
 from controllers.update_manager import (
     UpdateManager,
     STATE_DOWNLOADING,
@@ -440,6 +439,7 @@ def _restore_storage_directory(window):
 class OpenFocus(QMainWindow):
     storage_fallback_notice = pyqtSignal(str, str, str)
     account_session_loaded = pyqtSignal(object, object)
+    _developer_grant_revalidated = pyqtSignal(object)
 
     def __init__(self):
         super().__init__()
@@ -494,6 +494,14 @@ class OpenFocus(QMainWindow):
         self.roi_aligned_raw_count = 0  # 记录对齐时原始图像的数量，用于判断是否可以复用
         self.roi_alignment_key = None
 
+        # Alignment Detection Area & Pre-Render Alignment Preview (#13 / #14)
+        self.alignment_roi = None  # Optional (x, y, w, h) in source image coordinates
+        self._show_aligned_active = False
+        self._aligned_preview_worker = None
+        self._aligned_preview_cache = None
+        self._aligned_preview_pixmaps = {}
+        self._aligned_preview_timer = None
+
         # Tile settings defaults
         self.tile_enabled = True
         self.tile_block_size = TILE_BLOCK_SIZE
@@ -518,6 +526,8 @@ class OpenFocus(QMainWindow):
         self._alignment_choice_explicit = False
         self._applying_alignment_default = False
         self.profile_performance = False
+        self.strip_exif_on_export = False
+        self.enable_ui_icc_preview = True
         # 恢复持久化设置与最近文件（语言需在菜单构建前应用）
         load_window_settings(self)
         self.ui_theme = self._resolved_theme()
@@ -539,6 +549,16 @@ class OpenFocus(QMainWindow):
         self.excluded_frames = set()
         
         self.render_manager = RenderManager(self)
+        from core.render_queue import RenderQueueManager
+        self.render_queue = RenderQueueManager(
+            runner=self.render_manager.start_queued_render,
+            cancel_runner=self.render_manager.cancel_queued_render,
+            is_pipeline_busy=self.render_manager.is_pipeline_busy,
+            parent=self,
+        )
+        self.render_queue.queue_changed.connect(self._refresh_render_queue_badge)
+        self.render_queue.all_jobs_finished.connect(self._on_render_queue_all_finished)
+        self._render_queue_dialog = None
         self.output_manager = OutputManager(self)
         self.source_manager = SourceManager(self)
         self.label_manager = LabelManager(self)
@@ -546,12 +566,23 @@ class OpenFocus(QMainWindow):
         self.transform_manager = TransformManager(self)
         self.batch_manager = BatchManager(self)
         self.update_manager = UpdateManager(self)
+        from controllers.gallery_controller import GalleryController
         self.gallery_controller = GalleryController(self)
         from utils.usage_analytics import UsageAnalytics
         from PyQt6.QtCore import QTimer as _QTimer
         self.usage_analytics = UsageAnalytics(self)
         _QTimer.singleShot(0, self.usage_analytics.start)
-        _QTimer.singleShot(0, self.gallery_controller.start)
+        self._developer_grant_revalidated.connect(
+            self._on_developer_grant_revalidated, Qt.ConnectionType.QueuedConnection
+        )
+        self._gallery_start_timer = _QTimer(self)
+        self._gallery_start_timer.setSingleShot(True)
+        self._gallery_start_timer.timeout.connect(self.gallery_controller.start)
+        from core.developer_options import is_community_enabled, load_developer_grant
+        if is_community_enabled():
+            self._gallery_start_timer.start(1500)
+        if load_developer_grant() is not None:
+            _QTimer.singleShot(250, self._start_developer_grant_revalidation)
 
         # 初始化图像加载器
         self.image_loader = ImageStackLoader()
@@ -668,9 +699,18 @@ class OpenFocus(QMainWindow):
         self.lbl_stack_info = source_panel.info_label
         self.stack_slider.valueChanged.connect(self.update_source_view)
 
-        # ROI Button
+        # ROI Button & Alignment Preview / Detection Area buttons
         self.btn_preview_roi = source_panel.roi_btn
         self.btn_preview_roi.toggled.connect(self.toggle_roi_mode)
+        self.btn_align_area = source_panel.align_area_btn
+        self.btn_clear_align_area = source_panel.clear_align_area_btn
+        self.btn_show_aligned = source_panel.show_aligned_btn
+        self.btn_align_area.toggled.connect(self.toggle_alignment_area_mode)
+        self.btn_clear_align_area.clicked.connect(self.clear_alignment_roi)
+        self.btn_show_aligned.toggled.connect(self.toggle_show_aligned)
+        self.lbl_source_img.alignRoiChanged.connect(self._on_alignment_roi_changed)
+        self.lbl_source_img.alignRoiCleared.connect(self.clear_alignment_roi)
+        self.lbl_source_img.alignRoiModeExitRequested.connect(self._on_alignment_area_mode_exit_requested)
         self.sharpness_curve = source_panel.sharpness_curve
         self.sharpness_curve.set_tooltip_base(trans.t('sharpness_curve_tooltip'))
         self.sharpness_curve.frame_clicked.connect(
@@ -731,6 +771,10 @@ class OpenFocus(QMainWindow):
         self.right_splitter = right_panel_components.splitter
         self.btn_reset = right_panel_components.btn_reset
         self.btn_render = right_panel_components.btn_render
+        self.btn_live_preview = right_panel_components.btn_live_preview
+        self._live_preview_dialog = None
+        self.btn_enqueue = right_panel_components.btn_enqueue
+        self.btn_render_queue = right_panel_components.btn_render_queue
         self.btn_compare_all = right_panel_components.btn_compare
         self.btn_compare_all.clicked.connect(self.render_manager.start_compare_all)
         self.chk_quick_preview = right_panel_components.chk_quick_preview
@@ -755,6 +799,9 @@ class OpenFocus(QMainWindow):
         self.chk_reverse_order = right_panel_components.chk_reverse_order
         self.fusion_parameter_panel = right_panel_components.fusion_parameter_panel
         self.registration_parameter_panel = right_panel_components.registration_parameter_panel
+        self.lbl_reg_align_area = right_panel_components.lbl_reg_align_area
+        self.btn_reg_align_area = right_panel_components.btn_reg_align_area
+        self.btn_reg_clear_align_area = right_panel_components.btn_reg_clear_align_area
         self.source_images_label = right_panel_components.source_images_label
         self.file_list = right_panel_components.file_list
         self.output_label = right_panel_components.output_label
@@ -789,6 +836,7 @@ class OpenFocus(QMainWindow):
         self.output_list.currentRowChanged.connect(self.render_manager.inspect_previous_output)
         self.output_list.itemClicked.connect(self.render_manager.inspect_previous_output)
         bind_right_panel(self, right_panel_components)
+        self._refresh_live_preview_availability()
         if hasattr(self, "gallery_controller"):
             self.gallery_controller.attach_ui()
         # Selecting a method through the combo box is a project edit even
@@ -999,6 +1047,19 @@ class OpenFocus(QMainWindow):
         else:
             self.lbl_status_loaded.setText(trans.t('status_loaded').format(0))
             self.lbl_status_resolution.setText(trans.t('status_res').format('-'))
+        sync_align = getattr(self, '_sync_alignment_preview_controls', None)
+        if callable(sync_align):
+            sync_align()
+        self._refresh_live_preview_availability()
+
+    def _refresh_live_preview_availability(self) -> None:
+        has_stack = len(getattr(self, "raw_images", None) or []) >= 2
+        btn = getattr(self, "btn_live_preview", None)
+        if btn is not None:
+            btn.setEnabled(has_stack)
+        action = getattr(self, "ui_objs", {}).get("action_live_preview")
+        if action is not None:
+            action.setEnabled(has_stack)
 
     def _update_dynamic_status(self):
         """Update GPU and Memory status."""
@@ -2651,14 +2712,62 @@ class OpenFocus(QMainWindow):
         """Disable the editor when there is nothing it could preview."""
         ui = getattr(self, "ui_objs", {})
         action = ui.get("action_watermark_add")
+        if action is not None:
+            has_target = bool(
+                getattr(self, "raw_images", ()) or
+                getattr(self, "registration_results", ()) or
+                getattr(self, "fusion_result", None) is not None or
+                getattr(self, "fusion_results", ()))
+            action.setEnabled(has_target)
+        self._sync_substack_actions()
+
+    def _sync_substack_actions(self) -> None:
+        """Enable Render Substacks when at least 4 active source frames are loaded."""
+        ui = getattr(self, "ui_objs", {})
+        action = ui.get("action_render_substacks")
         if action is None:
             return
-        has_target = bool(
-            getattr(self, "raw_images", ()) or
-            getattr(self, "registration_results", ()) or
-            getattr(self, "fusion_result", None) is not None or
-            getattr(self, "fusion_results", ()))
-        action.setEnabled(has_target)
+        try:
+            active_count = len(self.included_indices())
+        except Exception:
+            active_count = len(getattr(self, "raw_images", ()) or ())
+        action.setEnabled(active_count >= 4)
+
+    def show_render_substacks_dialog(self) -> None:
+        """Configure and run single-stack substack rendering."""
+        render = getattr(self, "render_manager", None)
+        if render is not None and (
+            render._render_worker_active()
+            or getattr(render, "_compare_mode", False)
+            or getattr(render, "_substack_mode", False)
+            or getattr(render, "_render_pending", False)
+        ):
+            show_warning_box(self, trans.t("substack_dialog_title"), trans.t("substack_busy"))
+            return
+        images, _filenames, included = self.effective_stack()
+        if len(images) < 4:
+            show_warning_box(self, trans.t("substack_dialog_title"), trans.t("substack_need_frames"))
+            return
+        if self.current_fusion_method() == "none":
+            show_warning_box(self, trans.t("substack_dialog_title"), trans.t("substack_need_fusion_method"))
+            return
+        from dialogs.render_substacks import RenderSubstacksDialog
+        dialog = RenderSubstacksDialog(
+            self,
+            frame_count=len(images),
+            included_indices=included,
+            fusion_method=self.current_fusion_method(),
+            alignment_method=self.current_alignment_method(),
+            theme=getattr(self, "ui_theme", "light"),
+        )
+        try:
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                self.render_manager.start_substack_render(
+                    dialog.substack_ranges(),
+                    auto_restack=dialog.auto_restack(),
+                )
+        finally:
+            dialog.deleteLater()
 
     def refresh_annotation_views(self) -> None:
         """Redraw both canvases after label or scale-bar state changes."""
@@ -2829,12 +2938,19 @@ class OpenFocus(QMainWindow):
         from dialogs.advanced_settings import AdvancedSettingsDialog
         AdvancedSettingsDialog(self).exec()
 
+    def show_raw_develop_dialog(self) -> None:
+        """Open the interactive RAW Develop parameters dialog."""
+        from dialogs.raw_develop import RawDevelopDialog
+        dialog = RawDevelopDialog(self, theme=getattr(self, "ui_theme", None))
+        dialog.exec()
+
     def _settings_reset_busy(self) -> bool:
         render = self.render_manager
         return (self._has_work_in_flight() or self.source_manager._reset_busy()
                 or self.source_manager._review_worker is not None
                 or bool(getattr(render, '_render_pending', False))
                 or render._render_after_load is not None or render._compare_mode
+                or getattr(render, '_substack_mode', False)
                 or self.update_manager.is_busy()
                 or QApplication.activeModalWidget() is not None
                 or any(dialog.isVisible() for dialog in self.findChildren(QDialog)))
@@ -2875,6 +2991,7 @@ class OpenFocus(QMainWindow):
                 self.reset_to_default()
                 self.apply_theme(self.theme_mode)
                 self.set_use_gpu(self.use_gpu)
+                self.set_ui_icc_preview(self.enable_ui_icc_preview)
             self.persist_settings()
         except Exception as exc:
             show_message_box(self, trans.t('msg_error'), trans.t('msg_save_failed_text'),
@@ -2896,6 +3013,116 @@ class OpenFocus(QMainWindow):
             return
         from dialogs.compare import CompareDialog
         CompareDialog(self).exec()
+
+    def _cached_live_preview_transforms(self):
+        """Return cached alignment transforms for the current stack when reusable."""
+        raw = getattr(self, "raw_images", None) or []
+        n = len(raw)
+        if n < 2:
+            return None
+        manager = getattr(self, "render_manager", None)
+        diagnostic = getattr(manager, "alignment_diagnostics", None) if manager is not None else None
+        if not diagnostic:
+            return None
+        try:
+            entries, _names, indices = diagnostic
+        except (TypeError, ValueError):
+            return None
+        if not entries or len(indices) != n or list(indices) != list(range(n)):
+            return None
+        key = getattr(self, "alignment_request_key", None)
+        if key is not None:
+            current_rev = getattr(self, "source_revision", 0)
+            if key[0] != current_rev:
+                return None
+        transforms = [None] * n
+        found_any = False
+        for entry in entries:
+            idx = entry.get("frame_index")
+            if not isinstance(idx, int) or not 0 <= idx < n:
+                continue
+            mat = entry.get("transform")
+            if mat is not None:
+                transforms[idx] = mat
+                found_any = True
+        return transforms if found_any else None
+
+    def open_live_preview(self):
+        """Open or raise the standalone interactive Live Color Preview window."""
+        raw = getattr(self, "raw_images", None) or []
+        if len(raw) < 2:
+            show_warning_box(self, trans.t("msg_no_images_title"),
+                             trans.t("live_preview_need_two_frames"))
+            return None
+        if any(image.ndim == 3 and image.shape[2] == 4 for image in raw):
+            show_warning_box(self, trans.t('msg_warning'),
+                             trans.t('transparent_desktop_unsupported').format(path=''))
+            return None
+
+        existing = getattr(self, "_live_preview_dialog", None)
+        current_rev = int(getattr(self, "source_revision", 0))
+        if existing is not None:
+            try:
+                if existing.isVisible() and existing.matches_stack(raw, current_rev):
+                    existing.raise_()
+                    existing.activateWindow()
+                    return existing
+                existing.close()
+            except RuntimeError:
+                pass
+            self._live_preview_dialog = None
+
+        from dialogs.live_preview import LivePreviewDialog
+
+        method = self.current_fusion_method()
+        if method not in ("openfocus_a", "openfocus_b", "openfocus_c"):
+            method = "openfocus_b"
+        method_params = {
+            m: self.fusion_parameters_for(m)
+            for m in ("openfocus_a", "openfocus_b", "openfocus_c")
+        }
+        alignment = self.current_alignment_method()
+        reg_params = self.registration_parameters_for(alignment)
+        cached_transforms = self._cached_live_preview_transforms()
+        aligned_frames = None
+        if (getattr(self, "is_images_aligned", False)
+                and len(getattr(self, "aligned_images", None) or ()) == len(raw)):
+            aligned_frames = list(self.aligned_images)
+
+        # Infer contiguous front/back substack trim if any frames are excluded.
+        n = len(raw)
+        excluded = set(getattr(self, "excluded_frames", set()) or set())
+        included = [i for i in range(n) if i not in excluded]
+        initial_substack = (0, n - 1)
+        if len(included) >= 2 and included == list(range(included[0], included[-1] + 1)):
+            initial_substack = (included[0], included[-1])
+
+        dialog = LivePreviewDialog(
+            self,
+            images=list(raw),
+            filenames=list(getattr(self, "image_filenames", None) or []),
+            initial_method=method,
+            method_params=method_params,
+            alignment_method=alignment,
+            registration_params=reg_params,
+            cached_transforms=cached_transforms,
+            aligned_frames=aligned_frames,
+            initial_substack=initial_substack,
+            source_revision=current_rev,
+            theme=getattr(self, "ui_theme", "light"),
+        )
+        self._live_preview_dialog = dialog
+
+        def _clear_ref(*_args):
+            if getattr(self, "_live_preview_dialog", None) is dialog:
+                self._live_preview_dialog = None
+
+        dialog.finished.connect(_clear_ref)
+        dialog.destroyed.connect(_clear_ref)
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        return dialog
 
 
     def apply_flat_field_to_stack(self, gain, remove_index=None, prepared=None, reference=None) -> bool:
@@ -3036,6 +3263,12 @@ class OpenFocus(QMainWindow):
                 if self.linear_dng_metadata is not None and not getattr(frame, 'preview_is_display', False):
                     from utils.linear_dng import develop_linear
                     image = develop_linear(image, self.linear_dng_metadata)
+                elif bool(getattr(self, 'enable_ui_icc_preview', True)):
+                    iccs = getattr(self, 'image_icc_profiles', ()) or ()
+                    profile = iccs[index] if 0 <= index < len(iccs) else b""
+                    if profile:
+                        from core.color_management import convert_bgr_to_srgb_preview
+                        image = convert_bgr_to_srgb_preview(image, profile, enabled=True)
                 made = self.image_loader.create_pixmaps([image], max_size=(1024, 1024))
                 self.stack_images[index] = made[0]
                 # 惰性生成但不设上限等于无界缓存：只保留当前帧±1，
@@ -3146,17 +3379,25 @@ class OpenFocus(QMainWindow):
         from core.source_previews import SourceRegionWorker
         from utils import scalebar, watermark
         frame = self.raw_images[index]
+        lin_meta = getattr(frame, 'linear_metadata', None) or self.linear_dng_metadata
+        worker_icc = b""
+        if lin_meta is None and bool(getattr(self, 'enable_ui_icc_preview', True)):
+            iccs = getattr(self, 'image_icc_profiles', ()) or ()
+            worker_icc = iccs[index] if 0 <= index < len(iccs) else b""
         worker = SourceRegionWorker(frame, key, labels=self.label_manager.snapshot(), index=index,
                                     scale_cfg=scalebar.export_cfg(self, target='source'),
                                     watermark_cfg=watermark.export_cfg(self, target='source'),
-                                    metadata=getattr(frame, 'linear_metadata', None) or self.linear_dng_metadata)
+                                    metadata=lin_meta,
+                                    icc_profile=worker_icc)
         workers[key] = worker
         def accept(decoded_key, region_request, image, rect):
             if (decoded_key != getattr(self, '_source_display_key', None)
                     or getattr(self, '_shutting_down', False) or image is None):
                 return
-            self.lbl_source_img.set_source_region(cv2_to_pixmap(image), rect,
-                                                   source_key=decoded_key, request=region_request)
+            # ICC preview transform already ran off the UI thread inside SourceRegionWorker.
+            self.lbl_source_img.set_source_region(
+                cv2_to_pixmap(image, apply_icc=False),
+                rect, source_key=decoded_key, request=region_request)
         def failed(decoded_key, message):
             if (decoded_key == getattr(self, '_source_display_key', None)
                     and not getattr(self, '_shutting_down', False)):
@@ -3208,8 +3449,13 @@ class OpenFocus(QMainWindow):
                 return
             
             try:
-                # 获取原始图片并根据需要叠加标签
-                original_pixmap = self.get_or_create_source_pixmap(index)
+                # 获取原始图片（或在启用“预览对齐效果”时获取对齐后的预览帧）并根据需要叠加标签
+                aligned_pixmap = (
+                    self._get_aligned_source_pixmap(index)
+                    if getattr(self, '_show_aligned_active', False)
+                    else None
+                )
+                original_pixmap = aligned_pixmap if aligned_pixmap is not None else self.get_or_create_source_pixmap(index)
                 from utils import scalebar, watermark
                 display_pixmap = self.label_manager.apply_labels_to_source_pixmap(
                     original_pixmap, index,
@@ -3220,8 +3466,16 @@ class OpenFocus(QMainWindow):
                     self.lbl_source_img.sourceRegionRequested.connect(self._request_source_region)
                     self.lbl_source_img.sourceRegionsReleased.connect(self._release_source_regions)
                     self._source_regions_connected = True
-                self.lbl_source_img.set_display_pixmap(
-                    display_pixmap, source_size=(frame.shape[1], frame.shape[0]), source_key=key)
+                if aligned_pixmap is not None:
+                    self.lbl_source_img.set_display_pixmap(
+                        display_pixmap,
+                        source_size=(frame.shape[1], frame.shape[0]),
+                        source_key=key,
+                        source_pixmap=display_pixmap,
+                    )
+                else:
+                    self.lbl_source_img.set_display_pixmap(
+                        display_pixmap, source_size=(frame.shape[1], frame.shape[0]), source_key=key)
                 
                 # Keep the wipe view's left side following the current frame
                 if self.wipe_active and self.chk_wipe_follow_left.isChecked():
@@ -3324,6 +3578,9 @@ class OpenFocus(QMainWindow):
             self.refresh_registration_parameters()
         if memory[method] != previous:
             self._mark_project_setting_changed()
+            invalidate = getattr(self, '_invalidate_aligned_preview', None)
+            if callable(invalidate):
+                invalidate(refresh=True)
         self.persist_settings()
 
     def _set_fusion_option_available(self, widget, available: bool,
@@ -3393,6 +3650,9 @@ class OpenFocus(QMainWindow):
         manager = getattr(self, 'render_manager', None)
         if manager is not None and getattr(self, 'btn_render', None) is not None:
             manager.refresh_action_labels()
+        invalidate = getattr(self, '_invalidate_aligned_preview', None)
+        if callable(invalidate):
+            invalidate(refresh=True)
     
     def update_result_view(self, index):
         """更新Output区域显示的图像（用于配准结果或ROI模式下的对齐图像）"""
@@ -3868,6 +4128,59 @@ class OpenFocus(QMainWindow):
             return gallery.open_screensaver()
         return None
 
+    def apply_community_feature_state(self, *, start_remote: bool = True) -> bool:
+        """Apply live Community menu visibility and GalleryController lifecycle state."""
+        from core.developer_options import is_community_enabled
+        from ui.menus import apply_community_menu_visibility
+
+        enabled = is_community_enabled()
+        apply_community_menu_visibility(self, enabled)
+        start_timer = getattr(self, "_gallery_start_timer", None)
+        if not enabled and start_timer is not None and start_timer.isActive():
+            start_timer.stop()
+        gallery = getattr(self, "gallery_controller", None)
+        if gallery is not None:
+            gallery.set_community_enabled(enabled, start_remote=start_remote)
+        return enabled
+
+    def _start_developer_grant_revalidation(self) -> None:
+        """Background-revalidate any saved developer grant without blocking the UI thread."""
+        if getattr(self, "_shutting_down", False):
+            return
+        from core.developer_options import load_developer_grant, revalidate_saved_developer_grant
+
+        if load_developer_grant() is None:
+            return
+
+        import threading
+        client = getattr(self, "_account_client", None)
+        bearer = None
+        if client is not None and hasattr(client, "is_signed_in"):
+            try:
+                if client.is_signed_in() and hasattr(client, "token"):
+                    bearer = client.token()
+            except Exception:
+                bearer = None
+
+        def _worker() -> None:
+            try:
+                result = revalidate_saved_developer_grant(bearer_token=bearer)
+            except Exception:
+                result = None
+            if not getattr(self, "_shutting_down", False):
+                try:
+                    self._developer_grant_revalidated.emit(result)
+                except RuntimeError:
+                    pass
+
+        threading.Thread(target=_worker, daemon=True, name="openfocus-dev-revalidate").start()
+
+    def _on_developer_grant_revalidated(self, result: object) -> None:
+        if getattr(self, "_shutting_down", False) or result is None:
+            return
+        if getattr(result, "revoked", False):
+            self.apply_community_feature_state(start_remote=False)
+
     def show_feedback_dialog(self) -> None:
         """Report a bug or suggestion, with the session log attached."""
         from dialogs.feedback import FeedbackDialog
@@ -3992,6 +4305,7 @@ class OpenFocus(QMainWindow):
                 exposure_match=self.brightness_option_for('exposure_match'),
                 use_gpu=self.use_gpu,
                 reverse_registration=alignment_key[-1] == 'reverse-registration-v1',
+                alignment_roi=getattr(self, 'alignment_roi', None),
             )
             self.roi_alignment_worker.finished_signal.connect(self._on_roi_alignment_finished)
             self.roi_alignment_worker.error_signal.connect(self._on_roi_alignment_error)
@@ -4188,6 +4502,305 @@ class OpenFocus(QMainWindow):
             # 取消ROI按钮的选中状态，这会触发toggle_roi_mode(False)
             self.btn_preview_roi.setChecked(False)
 
+    # --- Alignment Detection Area (#14) & Pre-Render Alignment Preview (#13) ---
+
+    def _sync_alignment_preview_controls(self) -> None:
+        has_multi = len(getattr(self, 'raw_images', ()) or ()) >= 2
+        has_roi = getattr(self, 'alignment_roi', None) is not None
+        for btn_name in ('btn_align_area', 'btn_reg_align_area', 'btn_show_aligned'):
+            btn = getattr(self, btn_name, None)
+            if btn is not None:
+                btn.setEnabled(has_multi)
+        if not has_multi:
+            if getattr(self, '_show_aligned_active', False):
+                self._show_aligned_active = False
+                btn = getattr(self, 'btn_show_aligned', None)
+                if btn is not None:
+                    with QSignalBlocker(btn):
+                        btn.setChecked(False)
+                    btn.setText(trans.t('btn_show_aligned'))
+                self._cancel_aligned_preview_worker()
+            self._aligned_preview_cache = None
+            self._aligned_preview_pixmaps = {}
+            if getattr(self, 'alignment_roi', None) is not None or (
+                hasattr(self, 'lbl_source_img') and getattr(self.lbl_source_img, 'align_roi_mode', False)
+            ):
+                self.toggle_alignment_area_mode(False)
+                self.clear_alignment_roi(refresh=False)
+        clear_bar = getattr(self, 'btn_clear_align_area', None)
+        if clear_bar is not None:
+            clear_bar.setVisible(has_roi)
+        clear_panel = getattr(self, 'btn_reg_clear_align_area', None)
+        if clear_panel is not None:
+            clear_panel.setEnabled(has_roi)
+        self._update_source_title_text()
+
+    def _update_source_title_text(self) -> None:
+        lbl = getattr(self, 'lbl_source_title', None)
+        if lbl is None:
+            return
+        base = trans.t('panel_source_stack')
+        if getattr(self, '_show_aligned_active', False):
+            lbl.setText(f"{base} · {trans.t('source_aligned_badge')}")
+        else:
+            lbl.setText(base)
+
+    def toggle_alignment_area_mode(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        if enabled and len(getattr(self, 'raw_images', ()) or ()) < 2:
+            enabled = False
+        for btn_name in ('btn_align_area', 'btn_reg_align_area'):
+            btn = getattr(self, btn_name, None)
+            if btn is not None and btn.isChecked() != enabled:
+                with QSignalBlocker(btn):
+                    btn.setChecked(enabled)
+        if hasattr(self, 'lbl_source_img'):
+            self.lbl_source_img.align_roi_mode = enabled
+
+    def _on_alignment_area_mode_exit_requested(self) -> None:
+        self.toggle_alignment_area_mode(False)
+
+    def set_alignment_roi(self, roi) -> None:
+        from PyQt6.QtCore import QRectF
+        if roi is None:
+            self.clear_alignment_roi(refresh=True)
+            return
+        rx, ry, rw, rh = (int(round(v)) for v in roi)
+        if self.raw_images:
+            h, w = self.raw_images[0].shape[:2]
+            rx = max(0, min(rx, max(0, w - 1)))
+            ry = max(0, min(ry, max(0, h - 1)))
+            rw = max(0, min(rw, w - rx))
+            rh = max(0, min(rh, h - ry))
+        if rw < 8 or rh < 8:
+            self.clear_alignment_roi(refresh=True)
+            return
+        normalized = (rx, ry, rw, rh)
+        if normalized == getattr(self, 'alignment_roi', None):
+            return
+        self.alignment_roi = normalized
+        if hasattr(self, 'lbl_source_img'):
+            self.lbl_source_img.set_align_roi_rect(QRectF(rx, ry, rw, rh))
+        self._sync_alignment_preview_controls()
+        self._invalidate_aligned_preview(refresh=True)
+
+    def _on_alignment_roi_changed(self, rect) -> None:
+        self.set_alignment_roi((rect.x(), rect.y(), rect.width(), rect.height()))
+
+    def clear_alignment_roi(self, refresh: bool = True) -> None:
+        had_roi = getattr(self, 'alignment_roi', None) is not None
+        self.alignment_roi = None
+        if hasattr(self, 'lbl_source_img'):
+            with QSignalBlocker(self.lbl_source_img):
+                self.lbl_source_img.set_align_roi_rect(None)
+        self._sync_alignment_preview_controls()
+        if had_roi and refresh:
+            self._invalidate_aligned_preview(refresh=True)
+
+    def _aligned_preview_key(self):
+        _, _, included = self.effective_stack()
+        method = self.current_alignment_method()
+        params = self.registration_parameters_for(method)
+        return (
+            getattr(self, 'source_revision', 0),
+            tuple(included),
+            method,
+            tuple(sorted(params.items())),
+            getattr(self, 'alignment_roi', None),
+        )
+
+    def _cancel_aligned_preview_worker(self) -> None:
+        timer = getattr(self, '_aligned_preview_timer', None)
+        if timer is not None:
+            timer.stop()
+        worker = getattr(self, '_aligned_preview_worker', None)
+        if worker is not None:
+            worker.cancel()
+
+    def _on_cached_alignment_updated(self) -> None:
+        self._aligned_preview_pixmaps = {}
+        if getattr(self, '_show_aligned_active', False) and self.stack_images:
+            self._cancel_aligned_preview_worker()
+            btn = getattr(self, 'btn_show_aligned', None)
+            if btn is not None:
+                btn.setText(trans.t('btn_show_aligned'))
+            self.update_source_view(self.current_display_index)
+
+    def _invalidate_aligned_preview(self, *, refresh: bool = False) -> None:
+        self._cancel_aligned_preview_worker()
+        self._aligned_preview_cache = None
+        self._aligned_preview_pixmaps = {}
+        if not getattr(self, '_show_aligned_active', False):
+            return
+        if not refresh or len(getattr(self, 'raw_images', ()) or ()) < 2:
+            return
+        # Debounce rapid parameter/box drags before starting background proxy alignment.
+        timer = getattr(self, '_aligned_preview_timer', None)
+        if timer is None:
+            from PyQt6.QtCore import QTimer
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.setInterval(120)
+            timer.timeout.connect(self._ensure_aligned_preview)
+            self._aligned_preview_timer = timer
+        timer.start()
+
+    def toggle_show_aligned(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        if enabled and len(getattr(self, 'raw_images', ()) or ()) < 2:
+            btn = getattr(self, 'btn_show_aligned', None)
+            if btn is not None:
+                with QSignalBlocker(btn):
+                    btn.setChecked(False)
+            self._show_aligned_active = False
+            self._update_source_title_text()
+            return
+        self._show_aligned_active = enabled
+        self._update_source_title_text()
+        if not enabled:
+            self._cancel_aligned_preview_worker()
+            btn = getattr(self, 'btn_show_aligned', None)
+            if btn is not None:
+                btn.setText(trans.t('btn_show_aligned'))
+            if self.stack_images:
+                self.update_source_view(self.current_display_index)
+            return
+        self._ensure_aligned_preview()
+
+    def _has_matching_cached_alignment(self, included):
+        if not (getattr(self, 'is_images_aligned', False) and getattr(self, 'aligned_images', None)):
+            return False
+        if len(self.aligned_images) != len(included):
+            return False
+        manager = getattr(self, 'render_manager', None)
+        if manager is None:
+            return False
+        return getattr(self, 'alignment_request_key', None) == manager._alignment_key(included)
+
+    def _ensure_aligned_preview(self) -> None:
+        if not getattr(self, '_show_aligned_active', False):
+            return
+        images, _, included = self.effective_stack()
+        if len(images) < 2:
+            return
+        if self._has_matching_cached_alignment(included):
+            btn = getattr(self, 'btn_show_aligned', None)
+            if btn is not None:
+                btn.setText(trans.t('btn_show_aligned'))
+            self.update_source_view(self.current_display_index)
+            return
+        key = self._aligned_preview_key()
+        cache = getattr(self, '_aligned_preview_cache', None)
+        if cache is not None and cache[0] == key:
+            btn = getattr(self, 'btn_show_aligned', None)
+            if btn is not None:
+                btn.setText(trans.t('btn_show_aligned'))
+            self.update_source_view(self.current_display_index)
+            return
+        self._start_aligned_preview_worker(images, included, key)
+
+    def _start_aligned_preview_worker(self, images, included, key) -> None:
+        from core.workers import AlignedPreviewWorker
+
+        self._cancel_aligned_preview_worker()
+        method = self.current_alignment_method()
+        params = self.registration_parameters_for(method)
+        index_map = {orig_idx: pos for pos, orig_idx in enumerate(included)}
+        btn = getattr(self, 'btn_show_aligned', None)
+        if btn is not None:
+            btn.setText(trans.t('btn_show_aligned_computing'))
+
+        worker = AlignedPreviewWorker(
+            list(images),
+            alignment=method,
+            registration_parameters=params,
+            alignment_roi=getattr(self, 'alignment_roi', None),
+            max_edge=640,
+            thread_count=getattr(self, 'thread_count', 4),
+            cache_key=(key, index_map),
+        )
+        self._aligned_preview_worker = worker
+        worker.finished_signal.connect(self._on_aligned_preview_finished)
+        worker.error_signal.connect(self._on_aligned_preview_error)
+        worker.finished.connect(lambda w=worker: self._release_aligned_preview_worker(w))
+        worker.start()
+
+    def _on_aligned_preview_finished(self, payload_key, aligned_frames) -> None:
+        key, index_map = payload_key
+        if getattr(self, '_shutting_down', False) or not getattr(self, '_show_aligned_active', False):
+            return
+        if key != self._aligned_preview_key():
+            return
+        self._aligned_preview_cache = (key, aligned_frames, index_map)
+        self._aligned_preview_pixmaps = {}
+        btn = getattr(self, 'btn_show_aligned', None)
+        if btn is not None:
+            btn.setText(trans.t('btn_show_aligned'))
+        if self.stack_images:
+            self.update_source_view(self.current_display_index)
+
+    def _on_aligned_preview_error(self, payload_key, message: str) -> None:
+        key, _index_map = payload_key
+        if getattr(self, '_shutting_down', False):
+            return
+        if key != self._aligned_preview_key():
+            return
+        btn = getattr(self, 'btn_show_aligned', None)
+        if btn is not None:
+            btn.setText(trans.t('btn_show_aligned'))
+        if hasattr(self, '_show_status_message'):
+            self._show_status_message(
+                trans.t('show_aligned_failed').format(reason=message), 6000)
+
+    def _release_aligned_preview_worker(self, worker) -> None:
+        if getattr(self, '_aligned_preview_worker', None) is worker:
+            self._aligned_preview_worker = None
+        worker.deleteLater()
+
+    def _get_aligned_source_pixmap(self, index: int):
+        _, _, included = self.effective_stack()
+        if len(included) < 2:
+            return None
+        pixmaps = self.__dict__.setdefault('_aligned_preview_pixmaps', {})
+
+        if self._has_matching_cached_alignment(included) and index in included:
+            alignment_key = self.render_manager._alignment_key(included)
+            pkey = ('full', alignment_key, index)
+            cached_pix = pixmaps.get(pkey)
+            if cached_pix is not None:
+                return cached_pix
+            pos = included.index(index)
+            frame = self.aligned_images[pos]
+            from core.aligned_previews import can_preview, registered_preview
+            from core.source_frames import display_image, _small, PREVIEW_EDGE
+            preview_img = None
+            if can_preview(frame):
+                res = registered_preview(frame, captured_only=False)
+                if res is not None:
+                    img, is_display = res
+                    preview_img = img if is_display else display_image(img)
+            elif isinstance(frame, np.ndarray):
+                preview_img = display_image(_small(frame, PREVIEW_EDGE))
+            if preview_img is not None:
+                pix = cv2_to_pixmap(preview_img)
+                pixmaps[pkey] = pix
+                return pix
+
+        key = self._aligned_preview_key()
+        cache = getattr(self, '_aligned_preview_cache', None)
+        if cache is not None and cache[0] == key:
+            _ckey, frames, index_map = cache
+            pos = index_map.get(index)
+            if pos is not None and 0 <= pos < len(frames):
+                pkey = ('proxy', key, index)
+                cached_pix = pixmaps.get(pkey)
+                if cached_pix is not None:
+                    return cached_pix
+                pix = cv2_to_pixmap(frames[pos])
+                pixmaps[pkey] = pix
+                return pix
+        return None
+
     def _system_theme_changed(self, scheme):
         if self.theme_mode == 'system' and not getattr(self, '_shutting_down', False):
             system_theme = 'dark' if scheme == Qt.ColorScheme.Dark else 'light'
@@ -4258,6 +4871,9 @@ class OpenFocus(QMainWindow):
         from dialogs._community_layout import apply_community_theme
         for dialog in self.findChildren(QDialog, 'communityDialog'):
             apply_community_theme(dialog)
+        for dialog in self.findChildren(QDialog, 'renderSubstacksDialog'):
+            if hasattr(dialog, 'apply_theme'):
+                dialog.apply_theme(theme)
         # Inline "?" button styles are captured at creation; re-apply them for
         # the new theme or the dark chip stays dark on the light panel.
         from ui.styles import help_button_style
@@ -4282,6 +4898,24 @@ class OpenFocus(QMainWindow):
         gallery = getattr(self, "gallery_controller", None)
         if gallery is not None:
             gallery.apply_theme(theme)
+
+        watch_dlg = getattr(self, "_watch_folder_dialog", None)
+        if watch_dlg is not None:
+            try:
+                watch_dlg.apply_theme(theme)
+            except RuntimeError:
+                self._watch_folder_dialog = None
+
+        live_preview = getattr(self, "_live_preview_dialog", None)
+        if live_preview is not None:
+            try:
+                live_preview.apply_theme(theme)
+            except RuntimeError:
+                self._live_preview_dialog = None
+
+        queue_dialog = getattr(self, "_render_queue_dialog", None)
+        if queue_dialog is not None and not sip.isdeleted(queue_dialog):
+            queue_dialog.apply_theme(theme)
 
         self._enable_dark_title_bar(dark=(theme != "light"))
         self._sync_appearance_actions()
@@ -4314,7 +4948,208 @@ class OpenFocus(QMainWindow):
         from dialogs.about import ContactInfoDialog
         from dialogs._community_layout import show_community_dialog
         show_community_dialog(self, ContactInfoDialog)
-    
+
+    def show_watch_folder_dialog(self) -> None:
+        """Open or raise the non-modal Watch Folder Monitor dialog."""
+        from dialogs.watch_folder import WatchFolderDialog
+
+        dialog = getattr(self, "_watch_folder_dialog", None)
+        if dialog is not None:
+            try:
+                dialog.apply_theme(getattr(self, "ui_theme", "light"))
+                dialog.show()
+                dialog.raise_()
+                dialog.activateWindow()
+                return
+            except RuntimeError:
+                self._watch_folder_dialog = None
+        dialog = WatchFolderDialog(self, theme=getattr(self, "ui_theme", "light"))
+        self._watch_folder_dialog = dialog
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def enqueue_render_job(
+        self,
+        *,
+        method: str | None = None,
+        align_method: str | None = None,
+        method_params: dict | None = None,
+        align_params: dict | None = None,
+        frame_indices=None,
+        options: dict | None = None,
+        label: str | None = None,
+        interactive: bool = True,
+    ) -> str | None:
+        """Capture a render snapshot and enqueue it onto the background queue.
+
+        Usable from the right panel, Tools menu, Render Queue window, or
+        interactive preview tools without blocking workspace controls.
+        """
+        from copy import deepcopy
+        from core.render_queue import RenderQueueItem, format_queue_job_label
+
+        resolved_method = method if method is not None else self.current_fusion_method()
+        resolved_align = (
+            align_method if align_method is not None else self.current_alignment_method()
+        )
+        lock_reason = desktop_fusion_lock_reason(self, resolved_method)
+        if not lock_reason:
+            from core.experimental import alignment_is_locked
+            if alignment_is_locked(self, resolved_align):
+                lock_reason = trans.t('experimental_locked_hint')
+        if lock_reason:
+            if interactive:
+                show_warning_box(self, trans.t('msg_error'), lock_reason)
+                return None
+            raise ValueError(lock_reason)
+
+        if frame_indices is not None:
+            resolved_indices = tuple(int(i) for i in frame_indices)
+        else:
+            resolved_indices = tuple(self.included_indices())
+        raw_count = len(self.raw_images or ())
+        if (len(resolved_indices) < 2
+                or any(i < 0 or i >= raw_count for i in resolved_indices)):
+            if interactive:
+                show_warning_box(
+                    self,
+                    trans.t("msg_no_images_title"),
+                    trans.t("msg_render_need_images_text"),
+                )
+            return None
+
+        resolved_method_params = (
+            deepcopy(method_params)
+            if method_params is not None
+            else deepcopy(self.fusion_parameters_for(resolved_method))
+        )
+        resolved_align_params = (
+            deepcopy(align_params)
+            if align_params is not None
+            else deepcopy(self.registration_parameters_for(resolved_align))
+        )
+        preview_widget = getattr(self, "chk_quick_preview", None)
+        resolved_options = {
+            "exposure_match": bool(self.brightness_option_for("exposure_match", resolved_method)),
+            "base_correct": bool(self.brightness_option_for("base_correct", resolved_method)),
+            "reverse_order": bool(getattr(self, "stack_reverse_order", False)),
+            "sharpen_output": bool(getattr(self, "sharpen_output", False)),
+            "sharpen_strength": getattr(self, "sharpen_strength", DEFAULT_SHARPEN_STRENGTH),
+            "preview": bool(preview_widget.isChecked()) if preview_widget is not None else False,
+        }
+        if options:
+            resolved_options.update(deepcopy(options))
+
+        job_label = label or format_queue_job_label(
+            resolved_method,
+            resolved_method_params,
+            align_method=resolved_align,
+            frame_count=len(resolved_indices),
+            options=resolved_options,
+        )
+        item = RenderQueueItem(
+            label=job_label,
+            method=resolved_method,
+            align_method=resolved_align,
+            method_params=resolved_method_params,
+            align_params=resolved_align_params,
+            frame_indices=resolved_indices,
+            options=resolved_options,
+            frame_count=len(resolved_indices),
+            source_content_revision=getattr(self, "source_content_revision", 0),
+        )
+        job_id = self.render_queue.enqueue(item)
+        if hasattr(self, "statusBar") and self.statusBar() is not None:
+            self.statusBar().showMessage(
+                trans.t("render_queue_enqueued").format(label=job_label), 4000
+            )
+        return job_id
+
+    def show_render_queue_dialog(self):
+        """Open (or focus) the non-modal Background Render Queue window."""
+        from dialogs.render_queue import RenderQueueDialog
+
+        dialog = getattr(self, "_render_queue_dialog", None)
+        if dialog is None or sip.isdeleted(dialog):
+            dialog = RenderQueueDialog(
+                self.render_queue, self, theme=getattr(self, "ui_theme", None)
+            )
+            dialog.view_result_requested.connect(self._view_queue_result)
+            self._render_queue_dialog = dialog
+        else:
+            dialog.apply_theme(getattr(self, "ui_theme", None))
+            dialog.refresh()
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        return dialog
+
+    def _view_queue_result(self, job_id: str) -> bool:
+        """Select and display the output produced by a completed queue job."""
+        item = self.render_queue.get_job(job_id)
+        if item is None:
+            return False
+        output_list = getattr(self, "output_list", None)
+        output_manager = getattr(self, "output_manager", None)
+        if output_list is None or output_manager is None:
+            return False
+
+        target_row = None
+        if item.result_output_id and hasattr(output_manager, "record_for_row"):
+            for row in range(output_list.count()):
+                rec = output_manager.record_for_row(row)
+                if rec is not None and getattr(rec, "output_id", None) == item.result_output_id:
+                    target_row = row
+                    break
+        if target_row is None and item.result_name:
+            for row in range(output_list.count()):
+                row_item = output_list.item(row)
+                if row_item is not None and row_item.text() == item.result_name:
+                    target_row = row
+                    break
+        if (target_row is None and item.result_index is not None
+                and 0 <= item.result_index < output_list.count()):
+            target_row = item.result_index
+
+        if target_row is None:
+            if hasattr(self, "statusBar") and self.statusBar() is not None:
+                self.statusBar().showMessage(trans.t("render_queue_result_missing"), 4000)
+            return False
+
+        output_list.clearSelection()
+        output_list.setCurrentRow(target_row)
+        display_row = getattr(output_manager, "display_current_output_row", None)
+        if callable(display_row):
+            display_row(target_row)
+        self.raise_()
+        self.activateWindow()
+        return True
+
+    def _refresh_render_queue_badge(self) -> None:
+        button = getattr(self, "btn_render_queue", None)
+        if button is None or sip.isdeleted(button):
+            return
+        queue = getattr(self, "render_queue", None)
+        active_count = queue.active_and_pending_count() if queue is not None else 0
+        if active_count > 0:
+            button.setText(trans.t("btn_render_queue_count").format(count=active_count))
+        else:
+            button.setText(trans.t("btn_render_queue"))
+        button.setToolTip(
+            f"{trans.t('btn_render_queue')}\n{trans.t('btn_render_queue_hint')}"
+        )
+
+    def _on_render_queue_all_finished(self) -> None:
+        from core.render_queue import STATUS_COMPLETED
+        completed = sum(
+            1 for item in self.render_queue.items() if item.status == STATUS_COMPLETED
+        )
+        if completed and hasattr(self, "statusBar") and self.statusBar() is not None:
+            self.statusBar().showMessage(
+                trans.t("render_queue_all_finished").format(count=completed), 8000
+            )
+
     def show_batch_processing_dialog(self, preload_folder_paths: list[str] = None, scale_factor: float = 1.0):
         """显示批处理设置对话框
 
@@ -4447,6 +5282,9 @@ class OpenFocus(QMainWindow):
                                 or getattr(render_manager, '_retiring_context_workers', None)))
         if render_manager is not None and getattr(render_manager, 'worker', None):
             running.append(render_manager.worker.isRunning())
+        render_queue = getattr(self, 'render_queue', None)
+        if render_queue is not None:
+            running.append(bool(render_queue.is_running() or render_queue.pending_count() > 0))
         batch_manager = getattr(self, 'batch_manager', None)
         if batch_manager is not None and getattr(batch_manager, '_thread', None):
             running.append(batch_manager._thread.isRunning())
@@ -4542,6 +5380,13 @@ class OpenFocus(QMainWindow):
                 dialog.reject()
         self._cancel_depth_warmup()
         self.render_manager.cancel_storage_preflight()
+        render_queue = getattr(self, 'render_queue', None)
+        if render_queue is not None:
+            render_queue.pause()
+            render_queue.cancel_pending_jobs()
+        queue_dialog = getattr(self, '_render_queue_dialog', None)
+        if queue_dialog is not None and not sip.isdeleted(queue_dialog):
+            queue_dialog.close()
 
         # Keep dialog owners and their documents alive while native work stops.
         # A Python reference to a QThread cannot protect it from destruction
@@ -4560,9 +5405,11 @@ class OpenFocus(QMainWindow):
         shutdown_running = cancel_sensor_inspections(self) or shutdown_running
         from dialogs.batch_converter import BatchConverterDialog
         from dialogs.compare import CompareDialog
+        from dialogs.live_preview import LivePreviewDialog
         from dialogs.scalebar import ScaleBarDialog
+        from dialogs.watch_folder import WatchFolderDialog
         from dialogs.watermark import WatermarkDialog
-        for dialog_type in (ScaleBarDialog, WatermarkDialog, CompareDialog):
+        for dialog_type in (ScaleBarDialog, WatermarkDialog, CompareDialog, WatchFolderDialog, LivePreviewDialog):
             for dialog in self.findChildren(dialog_type):
                 shutdown_running = dialog.shutdown_running() or shutdown_running
         for dialog in self.findChildren(BatchConverterDialog):
@@ -4649,6 +5496,9 @@ class OpenFocus(QMainWindow):
         from utils.logging_setup import log_action, get_logger
         shutdown_started = perf_counter()
         log_action("shutdown.started", restart=bool(getattr(self, '_restart_for_update', False)))
+        start_timer = getattr(self, "_gallery_start_timer", None)
+        if start_timer is not None:
+            start_timer.stop()
         gallery = getattr(self, "gallery_controller", None)
         if gallery is not None:
             gallery.shutdown()
@@ -4672,6 +5522,9 @@ class OpenFocus(QMainWindow):
         if getattr(self, 'roi_alignment_worker', None) is not None:
             _shutdown_worker(self.roi_alignment_worker)
             self.roi_alignment_worker = None
+        if getattr(self, '_aligned_preview_worker', None) is not None:
+            _shutdown_worker(self._aligned_preview_worker)
+            self._aligned_preview_worker = None
 
         # Stop stack-load worker if running (closing mid-decode otherwise
         # destroys a running QThread at teardown and aborts the process)
@@ -4801,6 +5654,26 @@ class OpenFocus(QMainWindow):
         self.use_gpu = enabled
         self._update_dynamic_status()
         self._refresh_gpu_action()
+        self.persist_settings()
+
+    def set_ui_icc_preview(self, enabled: bool) -> None:
+        """Toggle UI-level ICC-to-sRGB preview without modifying source or exported pixels."""
+        self.enable_ui_icc_preview = bool(enabled)
+        action = getattr(self, "ui_objs", {}).get("action_ui_icc_preview")
+        if action is not None and action.isChecked() != self.enable_ui_icc_preview:
+            action.setChecked(self.enable_ui_icc_preview)
+        # Clear cached source pixmaps so the next paint reflects the new ICC preview setting.
+        if getattr(self, "stack_images", None):
+            self.stack_images = [None] * len(self.stack_images)
+        cache = getattr(self, "_wipe_pix_cache", None)
+        if cache is not None:
+            cache.clear()
+        self._wipe_source_cache = None
+        if hasattr(self, "refresh_annotation_views"):
+            try:
+                self.refresh_annotation_views()
+            except Exception:
+                pass
         self.persist_settings()
 
     def set_restore_last_stack(self, enabled: bool) -> None:
@@ -4948,6 +5821,12 @@ class OpenFocus(QMainWindow):
         from ui.menus import update_development_actions
         update_development_actions(self)
         self._refresh_account_action()
+        watch_dlg = getattr(self, "_watch_folder_dialog", None)
+        if watch_dlg is not None:
+            try:
+                watch_dlg.retranslate_ui()
+            except RuntimeError:
+                self._watch_folder_dialog = None
         
         # Update Right Panel
         c = self.right_panel_components
@@ -4992,6 +5871,24 @@ class OpenFocus(QMainWindow):
         self.refresh_registration_parameters()
         c.btn_reset.setText(trans.t('btn_reset'))
         c.btn_render_settings.setText(trans.t('render_settings_title'))
+        if getattr(c, 'btn_live_preview', None) is not None:
+            c.btn_live_preview.setText(trans.t('btn_live_preview'))
+            c.btn_live_preview.setToolTip(
+                f"{trans.t('btn_live_preview')}\n{trans.t('btn_live_preview_hint')}")
+        live_preview = getattr(self, '_live_preview_dialog', None)
+        if live_preview is not None:
+            try:
+                live_preview.retranslate()
+            except RuntimeError:
+                self._live_preview_dialog = None
+        if getattr(c, 'btn_enqueue', None) is not None:
+            c.btn_enqueue.setText(trans.t('btn_enqueue'))
+            c.btn_enqueue.setToolTip(
+                f"{trans.t('btn_enqueue')}\n{trans.t('btn_enqueue_hint')}")
+        self._refresh_render_queue_badge()
+        queue_dialog = getattr(self, '_render_queue_dialog', None)
+        if queue_dialog is not None and not sip.isdeleted(queue_dialog):
+            queue_dialog.retranslate()
         self.source_manager.decorate_source_items()
         # Keep the cancel/progress affordance while a render or comparison
         # runs — the retranslation must not reset "Cancel render"/"Cancel" to
@@ -5014,7 +5911,7 @@ class OpenFocus(QMainWindow):
         # kept the language the app was launched in ("Source Stack"/"Output"
         # stayed English after switching to Polish).
         if hasattr(self, 'lbl_source_title'):
-            self.lbl_source_title.setText(' ' + trans.t('panel_source_stack'))
+            self._update_source_title_text()
         if hasattr(self, 'lbl_result_title'):
             self.lbl_result_title.setText(trans.t('panel_output'))
         set_panel_label(c.chk_quick_preview, trans.t('chk_quick_preview'),
@@ -5023,10 +5920,32 @@ class OpenFocus(QMainWindow):
         if dialog is not None:
             dialog.retranslate()
         
-        # ROI Button
+        # ROI, Alignment Area & Show Aligned Buttons
         if hasattr(self, 'btn_preview_roi'):
             self.btn_preview_roi.setText(trans.t('btn_roi'))
             self.btn_preview_roi.setToolTip(trans.t('btn_roi_hint'))
+        if hasattr(self, 'btn_align_area'):
+            self.btn_align_area.setText(trans.t('btn_align_area'))
+            self.btn_align_area.setToolTip(trans.t('btn_align_area_hint'))
+        if hasattr(self, 'btn_clear_align_area'):
+            self.btn_clear_align_area.setToolTip(trans.t('btn_clear_align_area_hint'))
+        if hasattr(self, 'btn_show_aligned'):
+            worker = getattr(self, '_aligned_preview_worker', None)
+            computing = worker is not None and worker.isRunning()
+            self.btn_show_aligned.setText(
+                trans.t('btn_show_aligned_computing' if computing else 'btn_show_aligned'))
+            self.btn_show_aligned.setToolTip(trans.t('btn_show_aligned_hint'))
+        if getattr(c, 'lbl_reg_align_area', None) is not None:
+            c.lbl_reg_align_area.setText(trans.t('label_align_area'))
+            c.lbl_reg_align_area.setToolTip(trans.t('btn_align_area_hint'))
+        if getattr(c, 'btn_reg_align_area', None) is not None:
+            c.btn_reg_align_area.setText(trans.t('btn_align_area'))
+            c.btn_reg_align_area.setToolTip(trans.t('btn_align_area_hint'))
+        if getattr(c, 'btn_reg_clear_align_area', None) is not None:
+            c.btn_reg_clear_align_area.setText(trans.t('btn_clear_align_area'))
+            c.btn_reg_clear_align_area.setToolTip(trans.t('btn_clear_align_area_hint'))
+        if hasattr(self, 'lbl_source_img'):
+            self.lbl_source_img.update()
 
         # Lists labels
         count = self.file_list.count()
@@ -5095,6 +6014,9 @@ class OpenFocus(QMainWindow):
         gallery = getattr(self, "gallery_controller", None)
         if gallery is not None:
             gallery.retranslate()
+        from core.developer_options import is_community_enabled
+        from ui.menus import apply_community_menu_visibility
+        apply_community_menu_visibility(self, is_community_enabled())
 
 
 if __name__ == "__main__":

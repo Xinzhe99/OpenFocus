@@ -545,3 +545,89 @@ def test_builtin_fallback_works_avoid_duplicate_openfocus_camera_metadata():
     for work in works:
         cam = str(work.exif.get("camera", "") or "")
         assert "openfocus" not in cam.lower()
+
+
+def test_state_store_syncs_unread_notifications_and_uses_bounded_executor(qapp):
+    from concurrent.futures import ThreadPoolExecutor
+
+    store = gs.GalleryStateStore(client=gc.GalleryClient(token="tok"))
+    try:
+        assert isinstance(store._executor, ThreadPoolExecutor)
+        assert store._executor._max_workers == 2
+
+        gs.apply_profile_snapshot(
+            store,
+            {"user_id": "u1", "nickname": "Macro", "unread_notifications_count": 5},
+        )
+        assert store.unread_notifications_count == 5
+
+        emitted = []
+        store.notifications_changed.connect(lambda items, count: emitted.append((len(items), count)))
+
+        notes = [
+            gs.GalleryNotification(notification_id="n1", type="work_liked", is_read=False),
+            gs.GalleryNotification(notification_id="n2", type="user_followed", is_read=False),
+            gs.GalleryNotification(notification_id="n3", type="points_recharged", is_read=True),
+        ]
+        store._apply_notifications(store._account_generation, notes)
+        assert store.unread_notifications_count == 2
+        assert store.profile.unread_notifications_count == 2
+        assert emitted[-1] == (3, 2)
+
+        assert store.mark_notifications_read_local(ids=["n1"]) == 1
+        assert store.unread_notifications_count == 1
+        assert store.profile.unread_notifications_count == 1
+        assert store.notifications[0].is_read is True
+        assert emitted[-1] == (3, 1)
+
+        assert store.mark_notifications_read_local(all=True) == 0
+        assert store.unread_notifications_count == 0
+        assert store.profile.unread_notifications_count == 0
+        assert all(item.is_read for item in store.notifications)
+        assert emitted[-1] == (3, 0)
+    finally:
+        store.shutdown()
+
+
+def test_free_upload_defaults_boost_packages_and_local_boost_update(qapp):
+    default_cfg = gs.GalleryConfig()
+    assert default_cfg.upload_cost_points == 0
+    assert default_cfg.upload_prompt_probability == 1.0
+    assert default_cfg.boost_enabled is True
+    assert len(default_cfg.boost_packages) >= 3
+
+    parsed_cfg = gs.GalleryConfig.from_dict({
+        "publish_cost": 0,
+        "boost_packages": [
+            {"package_id": "starter", "impressions": 200, "points": 80},
+            {"package_id": "pro", "impressions": 1000, "points": 320, "recommended": True},
+        ],
+    })
+    assert parsed_cfg.upload_cost_points == 0
+    assert [p.package_id for p in parsed_cfg.boost_packages] == ["starter", "pro"]
+    assert parsed_cfg.boost_packages[1].recommended is True
+
+    work = gs.GalleryWork.from_dict({
+        "work_id": "w_boost",
+        "title": "Amber Wing",
+        "showcase_impressions_remaining": 150,
+        "showcase_impressions_total": 500,
+    })
+    assert work.showcase_impressions_remaining == 150
+    assert work.showcase_impressions_total == 500
+
+    store = gs.GalleryStateStore(client=gc.GalleryClient(token="tok"))
+    try:
+        gs.apply_profile_snapshot(store, {"user_id": "u1", "nickname": "Creator", "points_balance": 400})
+        store._apply_feed(store._account_generation, [work])
+        store.apply_work_boost_local(
+            "w_boost",
+            showcase_impressions_remaining=650,
+            impressions_added=500,
+            points_balance=200,
+        )
+        assert store.profile.points_balance == 200
+        assert store.feed_works[0].showcase_impressions_remaining == 650
+        assert store.feed_works[0].showcase_impressions_total == 1000
+    finally:
+        store.shutdown()

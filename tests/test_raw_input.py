@@ -161,7 +161,7 @@ def test_raw_budget_rejection_precedes_native_unpack(tmp_path, monkeypatch):
     monkeypatch.setattr(il, 'RAWPY_AVAILABLE', True)
     monkeypatch.setattr(il, 'rawpy', SimpleNamespace(RawPy=Raw), raising=False)
     def reject(required, **kwargs):
-        assert required == 6200 * 4100 * 64 + 6000 * 4000 * 6 + 6
+        assert required == resource_policy.raw_decode_bytes(6200, 4100, 6000 * 4000 * 6, 3)
         raise resource_policy.ResourceLimitError('budget')
     monkeypatch.setattr(resource_policy, 'require_memory', reject)
     with pytest.raises(resource_policy.ResourceLimitError):
