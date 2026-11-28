@@ -30,6 +30,11 @@ import cv2
 import numpy as np
 
 from core.html_animation_export import _safe_json_for_script, encode_frame_data_uri
+from core.html_viewer_i18n import (
+    HTML_3D_VIEWER_I18N,
+    VIEWER_LANG_NAMES,
+    normalize_viewer_lang,
+)
 from core.stereo_3d_export import LightingSettings, RENDER_MODES
 
 
@@ -68,6 +73,7 @@ class Html3DOptions:
     physical_z_range_um: Optional[Tuple[float, float]] = None
     pixel_size_um: Optional[float] = None
     colormap_name: str = ""
+    language: str = "en"
 
     def normalized(self) -> "Html3DOptions":
         grid = max(32, min(1024, int(self.max_grid_size)))
@@ -117,6 +123,7 @@ class Html3DOptions:
             physical_z_range_um=z_range,
             pixel_size_um=px_um,
             colormap_name=str(self.colormap_name or "").strip(),
+            language=normalize_viewer_lang(self.language),
         )
 
 
@@ -310,6 +317,9 @@ def build_html_3d_viewer(
         "motion": opts.auto_motion,
         "theme": opts.theme,
         "showFooter": bool(opts.show_footer),
+        "lang": opts.language,
+        "langNames": VIEWER_LANG_NAMES,
+        "i18n": HTML_3D_VIEWER_I18N,
         "light": {
             "azimuth": round(float(opts.lighting.key_azimuth), 1),
             "elevation": round(float(opts.lighting.key_elevation), 1),
@@ -328,7 +338,11 @@ def build_html_3d_viewer(
         "colormapName": opts.colormap_name,
     }
     payload_json = _safe_json_for_script(payload)
-    html_text = _HTML_3D_TEMPLATE.replace("__TITLE__", escaped_title).replace("__PAYLOAD_JSON__", payload_json)
+    html_text = (
+        _HTML_3D_TEMPLATE.replace("__LANG__", html.escape(opts.language, quote=True))
+        .replace("__TITLE__", escaped_title)
+        .replace("__PAYLOAD_JSON__", payload_json)
+    )
     if progress_callback is not None:
         progress_callback(4, 4)
 
@@ -406,7 +420,7 @@ def export_html_3d(
 
 
 _HTML_3D_TEMPLATE = r"""<!DOCTYPE html>
-<html lang="en">
+<html lang="__LANG__">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
@@ -458,6 +472,7 @@ body.hud-hidden .hud-item{opacity:0;pointer-events:none;}
 .icon-btn:hover{background:var(--btn-hover);}
 .icon-btn.active{background:var(--accent-soft);border-color:var(--accent);color:var(--accent);}
 .icon-btn svg{width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;}
+.lang-select{background:var(--btn);color:var(--text);border:1px solid var(--border);border-radius:8px;height:28px;padding:0 6px;font-size:11px;cursor:pointer;width:auto;max-width:106px;}
 .dock{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);z-index:10;background:var(--panel);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border:1px solid var(--border);border-radius:14px;box-shadow:var(--shadow);padding:6px;display:flex;align-items:center;gap:4px;max-width:calc(100vw - 24px);overflow-x:auto;}
 .dock-sep{width:1px;height:20px;background:var(--border);margin:0 3px;flex:0 0 auto;}
 .drawer{position:fixed;top:64px;right:14px;width:268px;max-height:calc(100vh - 144px);overflow-y:auto;background:var(--panel);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);border:1px solid var(--border);border-radius:14px;box-shadow:var(--shadow);padding:12px;z-index:11;display:flex;flex-direction:column;gap:11px;}
@@ -502,21 +517,22 @@ select option{background:var(--panel-solid);color:var(--text);}
     <div class="meta-row" id="metaLine"></div>
   </div>
   <div class="actions-pill">
-    <button class="icon-btn" id="btnLightDrag" title="Drag on canvas to move studio light (or Alt+Drag)">
+    <select id="selLang" class="lang-select" aria-label="Language" data-i18n-title="langTip"></select>
+    <button class="icon-btn" id="btnLightDrag" title="Drag on canvas to move studio light (or Alt+Drag)" data-i18n-title="lightDragTitle">
       <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
-      <span>Light</span>
+      <span data-i18n="lightBtn">Light</span>
     </button>
-    <button class="icon-btn" id="btnSnapshot" title="Save PNG Snapshot (S)">
+    <button class="icon-btn" id="btnSnapshot" title="Save PNG Snapshot (S)" data-i18n-title="snapTitle">
       <svg viewBox="0 0 24 24"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
     </button>
-    <button class="icon-btn" id="btnTheme" title="Toggle Dark / Light Theme (T)">
+    <button class="icon-btn" id="btnTheme" title="Toggle Dark / Light Theme (T)" data-i18n-title="themeTitle">
       <svg viewBox="0 0 24 24"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
     </button>
-    <button class="icon-btn" id="btnFullscreen" title="Fullscreen (F)">
+    <button class="icon-btn" id="btnFullscreen" title="Fullscreen (F)" data-i18n-title="fullTitle">
       <svg viewBox="0 0 24 24"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>
     </button>
-    <button class="icon-btn" id="btnHelp" title="Controls & Shortcuts (?)">?</button>
-    <button class="icon-btn active" id="btnInspector" title="Inspector Panel">
+    <button class="icon-btn" id="btnHelp" title="Controls & Shortcuts (?)" data-i18n-title="helpTitle">?</button>
+    <button class="icon-btn active" id="btnInspector" title="Inspector Panel" data-i18n-title="inspectorTitle">
       <svg viewBox="0 0 24 24"><line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="18" x2="20" y2="18"/><circle cx="9" cy="6" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="10" cy="18" r="2"/></svg>
     </button>
   </div>
@@ -524,69 +540,69 @@ select option{background:var(--panel-solid);color:var(--text);}
 
 <div class="drawer hud-item" id="inspector">
   <div>
-    <div class="sec-title"><span>Surface &amp; Relief</span><button class="icon-btn" id="btnResetView" style="height:22px;padding:0 7px;font-size:10.5px;">Reset (R)</button></div>
+    <div class="sec-title"><span data-i18n="surfSec">Surface &amp; Relief</span><button class="icon-btn" id="btnResetView" data-i18n="resetView" style="height:22px;padding:0 7px;font-size:10.5px;">Reset (R)</button></div>
     <div class="ctrl-row">
-      <div class="ctrl-head"><span>Relief (Z)</span><span class="ctrl-val" id="valRelief">15%</span></div>
+      <div class="ctrl-head"><span data-i18n="reliefLbl">Relief (Z)</span><span class="ctrl-val" id="valRelief">15%</span></div>
       <input type="range" id="rngRelief" min="1" max="150" step="1" value="15">
     </div>
     <div class="toggle-row" style="margin-top:4px;">
-      <label for="chkInvert">Invert Depth</label>
+      <label for="chkInvert" data-i18n="invertLbl">Invert Depth</label>
       <input type="checkbox" id="chkInvert">
     </div>
     <div class="toggle-row">
-      <label for="chkPersp">Perspective Projection</label>
+      <label for="chkPersp" data-i18n="perspLbl">Perspective Projection</label>
       <input type="checkbox" id="chkPersp" checked>
     </div>
     <div class="toggle-row" id="contourRow">
-      <label for="chkContours">Elevation Contours</label>
+      <label for="chkContours" data-i18n="contoursLbl">Elevation Contours</label>
       <input type="checkbox" id="chkContours" checked>
     </div>
   </div>
 
   <div>
-    <div class="sec-title"><span>Camera Presets</span></div>
+    <div class="sec-title"><span data-i18n="presetsSec">Camera Presets</span></div>
     <div class="preset-grid">
-      <button class="icon-btn" data-preset="iso">Iso</button>
-      <button class="icon-btn" data-preset="top">Top</button>
-      <button class="icon-btn" data-preset="front">Front</button>
-      <button class="icon-btn" data-preset="side">Side</button>
+      <button class="icon-btn" data-preset="iso" data-i18n="iso">Iso</button>
+      <button class="icon-btn" data-preset="top" data-i18n="top">Top</button>
+      <button class="icon-btn" data-preset="front" data-i18n="front">Front</button>
+      <button class="icon-btn" data-preset="side" data-i18n="side">Side</button>
     </div>
   </div>
 
   <div>
-    <div class="sec-title"><span>Studio Lighting</span><button class="icon-btn" id="btnResetLight" style="height:22px;padding:0 7px;font-size:10.5px;">Reset</button></div>
+    <div class="sec-title"><span data-i18n="lightSec">Studio Lighting</span><button class="icon-btn" id="btnResetLight" data-i18n="resetLight" style="height:22px;padding:0 7px;font-size:10.5px;">Reset</button></div>
     <div class="ctrl-row">
-      <div class="ctrl-head"><span>Key Azimuth</span><span class="ctrl-val" id="valAz">315°</span></div>
+      <div class="ctrl-head"><span data-i18n="azLbl">Key Azimuth</span><span class="ctrl-val" id="valAz">315°</span></div>
       <input type="range" id="rngAz" min="0" max="360" step="1" value="315">
     </div>
     <div class="ctrl-row">
-      <div class="ctrl-head"><span>Key Elevation</span><span class="ctrl-val" id="valEl">50°</span></div>
+      <div class="ctrl-head"><span data-i18n="elLbl">Key Elevation</span><span class="ctrl-val" id="valEl">50°</span></div>
       <input type="range" id="rngEl" min="5" max="90" step="1" value="50">
     </div>
     <div class="ctrl-row">
-      <div class="ctrl-head"><span>Key Light</span><span class="ctrl-val" id="valKey">75%</span></div>
+      <div class="ctrl-head"><span data-i18n="keyLbl">Key Light</span><span class="ctrl-val" id="valKey">75%</span></div>
       <input type="range" id="rngKey" min="0" max="150" step="1" value="75">
     </div>
     <div class="ctrl-row">
-      <div class="ctrl-head"><span>Fill / Ambient</span><span class="ctrl-val" id="valAmb">35%</span></div>
+      <div class="ctrl-head"><span data-i18n="ambLbl">Fill / Ambient</span><span class="ctrl-val" id="valAmb">35%</span></div>
       <input type="range" id="rngAmb" min="0" max="100" step="1" value="35">
     </div>
     <div class="ctrl-row">
-      <div class="ctrl-head"><span>Specular Sheen</span><span class="ctrl-val" id="valSpec">16%</span></div>
+      <div class="ctrl-head"><span data-i18n="specLbl">Specular Sheen</span><span class="ctrl-val" id="valSpec">16%</span></div>
       <input type="range" id="rngSpec" min="0" max="100" step="1" value="16">
     </div>
   </div>
 
   <div>
-    <div class="sec-title"><span>Turntable Motion</span></div>
+    <div class="sec-title"><span data-i18n="motionSec">Turntable Motion</span></div>
     <select id="selMotion">
-      <option value="off">Manual (Paused)</option>
-      <option value="turntable_360">360° Turntable</option>
-      <option value="rock_25">±25° Rock Sweep</option>
-      <option value="orbit_pitch">360° Orbit + Pitch</option>
+      <option value="off" data-i18n="mOff">Manual (Paused)</option>
+      <option value="turntable_360" data-i18n="m360">360° Turntable</option>
+      <option value="rock_25" data-i18n="mRock">±25° Rock Sweep</option>
+      <option value="orbit_pitch" data-i18n="mOrbit">360° Orbit + Pitch</option>
     </select>
     <div class="ctrl-row" style="margin-top:6px;">
-      <div class="ctrl-head"><span>Motion Speed</span><span class="ctrl-val" id="valSpeed">1.0×</span></div>
+      <div class="ctrl-head"><span data-i18n="speedLbl">Motion Speed</span><span class="ctrl-val" id="valSpeed">1.0×</span></div>
       <input type="range" id="rngSpeed" min="2" max="30" step="1" value="10">
     </div>
   </div>
@@ -594,35 +610,35 @@ select option{background:var(--panel-solid);color:var(--text);}
 
 <div class="depth-legend hud-item" id="depthLegend">
   <canvas class="legend-bar" id="legendCanvas" width="256" height="10"></canvas>
-  <div class="legend-labels"><span id="legLow">Near</span><span id="legHigh">Far</span></div>
+  <div class="legend-labels"><span id="legLow" data-i18n="near">Near</span><span id="legHigh" data-i18n="far">Far</span></div>
 </div>
 
 <div class="dock hud-item" id="modeDock">
-  <button class="icon-btn" data-mode="textured">Textured</button>
-  <button class="icon-btn" data-mode="shaded_clay">Clay</button>
-  <button class="icon-btn" data-mode="depth_color">Depth</button>
-  <button class="icon-btn" data-mode="wireframe">Wireframe</button>
-  <button class="icon-btn" data-mode="textured_wireframe">Tex+Wire</button>
+  <button class="icon-btn" data-mode="textured" data-i18n="modeTextured">Textured</button>
+  <button class="icon-btn" data-mode="shaded_clay" data-i18n="modeClay">Clay</button>
+  <button class="icon-btn" data-mode="depth_color" data-i18n="modeDepth">Depth</button>
+  <button class="icon-btn" data-mode="wireframe" data-i18n="modeWire">Wireframe</button>
+  <button class="icon-btn" data-mode="textured_wireframe" data-i18n="modeTexWire">Tex+Wire</button>
   <span class="dock-sep"></span>
-  <button class="icon-btn" id="btnPlay" title="Play / Pause Auto-Rotate (Space)">Play</button>
-  <button class="icon-btn" id="btnHideHud" title="Hide HUD (H)">HUD</button>
+  <button class="icon-btn" id="btnPlay" title="Play / Pause Auto-Rotate (Space)" data-i18n-title="playTitle">Play</button>
+  <button class="icon-btn" id="btnHideHud" title="Hide HUD (H)" data-i18n="hudBtn" data-i18n-title="hudTitle">HUD</button>
 </div>
 
-<div class="footer-badge hud-item" id="footerBadge">Exported with OpenFocus</div>
+<div class="footer-badge hud-item" id="footerBadge" data-i18n="footer">Exported with OpenFocus</div>
 <div class="toast" id="toast"></div>
 
 <div class="help-modal" id="helpModal">
   <div class="help-card">
-    <div class="sec-title" style="margin:0;"><span>3D Viewer Controls</span><button class="icon-btn" id="btnCloseHelp">Close</button></div>
+    <div class="sec-title" style="margin:0;"><span data-i18n="helpHdr">3D Viewer Controls</span><button class="icon-btn" id="btnCloseHelp" data-i18n="closeBtn">Close</button></div>
     <div class="help-grid">
-      <span class="kbd">Left Drag</span><span>Orbit 3D surface</span>
-      <span class="kbd">Right / Shift Drag</span><span>Pan view</span>
-      <span class="kbd">Wheel / Pinch</span><span>Zoom in / out</span>
-      <span class="kbd">Alt + Drag</span><span>Move studio light</span>
-      <span class="kbd">Double Click / R</span><span>Reset camera</span>
-      <span class="kbd">1 – 4</span><span>Iso / Top / Front / Side</span>
-      <span class="kbd">Space</span><span>Play / Pause turntable</span>
-      <span class="kbd">S / F / T / H</span><span>Snapshot / Fullscreen / Theme / HUD</span>
+      <span class="kbd" data-i18n="kOrbit">Left Drag</span><span data-i18n="dOrbit">Orbit 3D surface</span>
+      <span class="kbd" data-i18n="kPan">Right / Shift Drag</span><span data-i18n="dPan">Pan view</span>
+      <span class="kbd" data-i18n="kZoom">Wheel / Pinch</span><span data-i18n="dZoom">Zoom in / out</span>
+      <span class="kbd" data-i18n="kLight">Alt + Drag</span><span data-i18n="dLight">Move studio light</span>
+      <span class="kbd" data-i18n="kReset">Double Click / R</span><span data-i18n="dReset">Reset camera</span>
+      <span class="kbd" data-i18n="kPreset">1 – 4</span><span data-i18n="dPreset">Iso / Top / Front / Side</span>
+      <span class="kbd" data-i18n="kPlay">Space</span><span data-i18n="dPlay">Play / Pause turntable</span>
+      <span class="kbd" data-i18n="kMisc">S / F / T / H</span><span data-i18n="dMisc">Snapshot / Fullscreen / Theme / HUD</span>
     </div>
   </div>
 </div>
@@ -656,15 +672,46 @@ function applyTheme(t){
   if(state.gl) scheduleDraw();
 }
 
-const metaParts = [`${DATA.gridW}×${DATA.gridH} grid`, `${((DATA.gridW - 1) * (DATA.gridH - 1) * 2).toLocaleString()} tris`];
-if(DATA.physicalZ){
-  const span = Math.abs(DATA.physicalZ[1] - DATA.physicalZ[0]);
-  metaParts.push(`Z ${span.toFixed(1)} µm`);
+let curLang = (DATA.i18n && DATA.i18n[DATA.lang]) ? DATA.lang : "en";
+function t(k){
+  return (DATA.i18n && DATA.i18n[curLang] && DATA.i18n[curLang][k]) || (DATA.i18n && DATA.i18n.en && DATA.i18n.en[k]) || k;
 }
-if(DATA.pixelSizeUm){
-  metaParts.push(`${DATA.pixelSizeUm.toFixed(2)} µm/px`);
+function updateMetaLine(){
+  const metaParts = [`${DATA.gridW}×${DATA.gridH} ${t("gridWord")}`, `${((DATA.gridW - 1) * (DATA.gridH - 1) * 2).toLocaleString()} ${t("trisWord")}`];
+  if(DATA.physicalZ){
+    const span = Math.abs(DATA.physicalZ[1] - DATA.physicalZ[0]);
+    metaParts.push(`Z ${span.toFixed(1)} µm`);
+  }
+  if(DATA.pixelSizeUm){
+    metaParts.push(`${DATA.pixelSizeUm.toFixed(2)} µm/px`);
+  }
+  $("metaLine").textContent = metaParts.join(" · ");
 }
-$("metaLine").textContent = metaParts.join(" · ");
+function applyLang(lang){
+  curLang = (DATA.i18n && DATA.i18n[lang]) ? lang : "en";
+  root.setAttribute("lang", curLang);
+  if($("selLang").value !== curLang) $("selLang").value = curLang;
+  document.querySelectorAll("[data-i18n]").forEach((el) => {
+    el.textContent = t(el.dataset.i18n);
+  });
+  document.querySelectorAll("[data-i18n-title]").forEach((el) => {
+    el.title = t(el.dataset.i18nTitle);
+  });
+  updateMetaLine();
+  syncUI();
+}
+function initLangSelect(){
+  const sel = $("selLang");
+  const names = DATA.langNames || {en:"English"};
+  Object.keys(names).forEach((code) => {
+    if(!DATA.i18n || !DATA.i18n[code]) return;
+    const opt = document.createElement("option");
+    opt.value = code;
+    opt.textContent = names[code];
+    sel.appendChild(opt);
+  });
+  sel.addEventListener("change", (e) => applyLang(e.target.value));
+}
 if(!DATA.showFooter) $("footerBadge").style.display = "none";
 if(window.innerWidth < 760) {
   inspector.classList.add("collapsed");
@@ -783,7 +830,7 @@ function syncUI(){
   $("valSpec").textContent = `${Math.round(state.specular * 100)}%`;
   $("selMotion").value = state.motion;
   $("btnPlay").classList.toggle("active", state.motion !== "off");
-  $("btnPlay").textContent = state.motion !== "off" ? "Pause" : "Play";
+  $("btnPlay").textContent = state.motion !== "off" ? t("pause") : t("play");
   $("btnLightDrag").classList.toggle("active", state.lightDrag);
   canvas.classList.toggle("lightdrag", state.lightDrag);
 }
@@ -1097,7 +1144,7 @@ function render2DFallback(texImg){
   const s = Math.min((w * 0.8) / texImg.width, (h * 0.72) / texImg.height);
   const dw = texImg.width * s, dh = texImg.height * s;
   ctx.drawImage(texImg, (w - dw) * 0.5, (h - dh) * 0.5, dw, dh);
-  showToast("WebGL unavailable in this browser — showing 2D preview");
+  showToast(t("toastNoGl"));
 }
 
 function drawFrame(){
@@ -1375,7 +1422,7 @@ $("btnInspector").addEventListener("click", () => {
 });
 $("btnHideHud").addEventListener("click", () => {
   document.body.classList.toggle("hud-hidden");
-  showToast("Press H to toggle HUD");
+  showToast(t("hudTitle"));
 });
 $("btnFullscreen").addEventListener("click", () => {
   if(!document.fullscreenElement){
@@ -1385,13 +1432,13 @@ $("btnFullscreen").addEventListener("click", () => {
   }
 });
 $("btnSnapshot").addEventListener("click", () => {
-  if(!state.gl) return;
+  if(!state.gl){ showToast(t("toastNoSnap")); return; }
   drawFrame();
   const a = document.createElement("a");
   a.href = canvas.toDataURL("image/png");
   a.download = "openfocus_3d_view.png";
   a.click();
-  showToast("Saved PNG snapshot");
+  showToast(t("toastSnap"));
 });
 $("btnHelp").addEventListener("click", () => helpModal.classList.add("open"));
 $("btnCloseHelp").addEventListener("click", () => helpModal.classList.remove("open"));
@@ -1416,8 +1463,11 @@ window.addEventListener("keydown", (e) => {
 
 window.addEventListener("resize", () => scheduleDraw());
 
+initLangSelect();
+applyLang(curLang);
+
 async function init(){
-  syncUI();
+  applyLang(curLang);
   const [hImg, tImg] = await Promise.all([loadImage(DATA.heightUri), loadImage(DATA.textureUri)]);
   const mesh = decodeHeightfieldMesh(hImg);
 

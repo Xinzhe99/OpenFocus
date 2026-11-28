@@ -213,4 +213,5 @@ class Html3DExportDialog(QDialog):
             physical_z_range_um=physical_z_range_um,
             pixel_size_um=pixel_size_um,
             colormap_name=colormap_name,
+            language=trans.current_lang,
         ).normalized()

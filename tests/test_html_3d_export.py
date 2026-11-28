@@ -271,3 +271,36 @@ def test_html_3d_translations_present_in_all_12_languages():
         table = trans.translations[code]
         for key in keys:
             assert table.get(key), f"{code}: missing {key}"
+
+
+def test_html_3d_viewer_defaults_to_app_language_and_embeds_12_lang_switcher(qapp, monkeypatch):
+    from core.html_viewer_i18n import HTML_3D_VIEWER_I18N, SUPPORTED_VIEWER_LANGS
+    from dialogs.html_3d_export import Html3DExportDialog
+    from locales import trans
+
+    z, tex = _surface(64, 80)
+    monkeypatch.setattr(trans, "current_lang", "zh")
+    dlg = Html3DExportDialog(source_shape=(64, 80), has_texture=True)
+    try:
+        opts = dlg.build_options()
+        assert opts.language == "zh"
+    finally:
+        dlg.deleteLater()
+
+    html_text, _ = build_html_3d_viewer(z, tex, options=Html3DOptions(max_grid_size=64, language="ja_JP"))
+    assert '<html lang="ja">' in html_text
+    assert 'id="selLang"' in html_text
+    m = re.search(r"const DATA = (\{.*?\});", html_text)
+    assert m is not None
+    payload = json.loads(m.group(1).replace("<\\/", "</"))
+    assert payload["lang"] == "ja"
+    assert set(payload["langNames"]) == set(SUPPORTED_VIEWER_LANGS)
+    assert set(payload["i18n"]) == set(SUPPORTED_VIEWER_LANGS)
+    assert payload["i18n"]["zh"]["surfSec"] == HTML_3D_VIEWER_I18N["zh"]["surfSec"]
+
+    node_exe = shutil.which("node")
+    if node_exe is not None:
+        ms = re.search(r"<script>\n(.*?)\n</script>", html_text, re.DOTALL)
+        assert ms is not None
+        res = subprocess.run([node_exe, "--check", "-"], input=ms.group(1), text=True, capture_output=True, timeout=10)
+        assert res.returncode == 0, res.stderr
