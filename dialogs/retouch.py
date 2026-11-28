@@ -532,25 +532,87 @@ class _SharpnessWorker(QThread):
     """Compute one shared-scale detail map for every source frame."""
 
     ready = pyqtSignal(int, object)
+    progress = pyqtSignal(int, int, int)
     failed = pyqtSignal(int, str)
 
-    def __init__(self, frames, request_id: int, preview_side: int = 768):
+    def __init__(
+        self,
+        frames,
+        request_id: int,
+        preview_side: int = 768,
+        *,
+        navigation_previews=None,
+        linear_dng_metadata=None,
+    ):
         super().__init__()
+        configure_native_worker_stack(self)
         self.frames = list(frames)
         self.request_id = int(request_id)
         self.preview_side = int(preview_side)
+        self.navigation_previews = (
+            list(navigation_previews) if navigation_previews is not None else None
+        )
+        self.linear_dng_metadata = linear_dng_metadata
+
+    def _bounded_frame_display(self, index: int, frame):
+        from core.aligned_previews import registered_preview
+        from core.source_frames import ProcessedFrame, SourceFrame, resolve_frame
+
+        if (
+            self.navigation_previews is not None
+            and 0 <= index < len(self.navigation_previews)
+        ):
+            cached = self.navigation_previews[index]
+            if isinstance(cached, np.ndarray) and cached.size > 0:
+                sh, sw = frame.image.shape[:2] if hasattr(frame.image, "shape") else (0, 0)
+                target_min = min(self.preview_side, max(sh, sw, 1)) if (sh and sw) else self.preview_side
+                if max(cached.shape[:2]) >= min(target_min, 256):
+                    return cached
+
+        raw = frame.image
+        if isinstance(raw, (ProcessedFrame, SourceFrame)):
+            preview = None
+            try:
+                preview = registered_preview(
+                    raw,
+                    should_cancel=self.isInterruptionRequested,
+                    captured_only=False,
+                    edge=self.preview_side,
+                )
+            except (OSError, ValueError):
+                preview = registered_preview(
+                    raw,
+                    should_cancel=self.isInterruptionRequested,
+                    captured_only=True,
+                    edge=self.preview_side,
+                )
+            if preview is not None:
+                pixels, is_display = preview
+                if pixels is not None and pixels.size > 0:
+                    if not is_display and self.linear_dng_metadata is not None:
+                        from utils.linear_dng import develop_linear
+                        pixels = develop_linear(pixels, self.linear_dng_metadata)
+                    return to_display_uint8(pixels)
+
+        image = (
+            resolve_frame(raw, should_cancel=self.isInterruptionRequested)
+            if isinstance(raw, ProcessedFrame)
+            else display_image(raw)
+        )
+        if image is None or image.size == 0:
+            return None
+        return to_display_uint8(image)
 
     def run(self) -> None:
         try:
             detail = {}
+            total = len(self.frames)
             for index, frame in enumerate(self.frames):
                 if self.isInterruptionRequested():
                     return
-                from core.source_frames import ProcessedFrame, resolve_frame
-                image = (resolve_frame(frame.image, should_cancel=self.isInterruptionRequested)
-                         if isinstance(frame.image, ProcessedFrame)
-                         else display_image(frame.image))
+                image = self._bounded_frame_display(index, frame)
                 if image is None or image.size == 0:
+                    self.progress.emit(self.request_id, index + 1, total)
                     continue
                 h, w = image.shape[:2]
                 scale = min(1.0, self.preview_side / float(max(h, w, 1)))
@@ -567,6 +629,7 @@ class _SharpnessWorker(QThread):
                 energy = cv2.GaussianBlur(
                     np.abs(lap), (0, 0), max(1.0, display.shape[1] / 300.0))
                 detail[index] = energy
+                self.progress.emit(self.request_id, index + 1, total)
             if not detail:
                 self.ready.emit(self.request_id, {})
                 return
@@ -3656,9 +3719,15 @@ class RetouchDialog(QDialog):
     def _start_sharpness_worker(self) -> None:
         self._sharpness_started = True
         self._sharpness_request += 1
-        worker = _SharpnessWorker(self.doc.frames, self._sharpness_request)
+        worker = _SharpnessWorker(
+            self.doc.frames,
+            self._sharpness_request,
+            navigation_previews=getattr(self.doc, "source_navigation_previews", None),
+            linear_dng_metadata=getattr(getattr(self.doc, "context", None), "linear_dng_metadata", None),
+        )
         self._sharpness_worker = worker
         worker.ready.connect(self._on_sharpness_ready)
+        worker.progress.connect(self._on_sharpness_progress)
         worker.failed.connect(self._on_sharpness_failed)
         _SHARPNESS_WORKERS.add(worker)
         worker.finished.connect(lambda w=worker: _SHARPNESS_WORKERS.discard(w))
@@ -3672,6 +3741,14 @@ class RetouchDialog(QDialog):
         worker.finished.connect(self._sharpness_finished_callback)
         worker.finished.connect(worker.deleteLater)
         worker.start()
+
+    def _on_sharpness_progress(self, request: int, done: int, total: int) -> None:
+        if self._closing or request != self._sharpness_request:
+            return
+        if self.chk_sharp.isChecked() and not self._sharpness_maps and self.lbl_sharp_state is not None:
+            self.lbl_sharp_state.setText(f"{trans.t('retouch_sharp_computing')} ({done}/{total})")
+            self.lbl_sharp_state.setStyleSheet("")
+            self.lbl_sharp_state.setVisible(True)
 
     def _on_sharpness_failed(self, request: int, error: str) -> None:
         if self._closing or request != self._sharpness_request:

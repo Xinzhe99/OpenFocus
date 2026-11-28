@@ -1789,3 +1789,53 @@ def test_retouch_filmstrip_fits_64px_thumbnails_labels_and_scrollbar(qapp):
         dlg._allow_close = True
         dlg.close()
         dlg.deleteLater()
+
+
+def test_sharpness_worker_uses_bounded_preview_and_emits_progress(qapp, monkeypatch, tmp_path):
+    import cv2
+    from core.registration import PerspectiveWarp
+    from core.render_context import SourceFrame
+    from core.source_frames import ProcessedFrame, scan_source
+    from dialogs.retouch import _SharpnessWorker
+    import core.source_frames as sf
+
+    frames = []
+    for idx in range(2):
+        path = tmp_path / f"slice_{idx}.png"
+        img = np.zeros((120, 160, 3), dtype=np.uint8)
+        img[20:100, 30:130] = 60 + idx * 80
+        assert cv2.imwrite(str(path), img)
+        raw = scan_source(str(path))[0]
+        warped = ProcessedFrame(
+            raw,
+            PerspectiveWarp(
+                raw,
+                (1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+                "float32",
+                (160, 120),
+            ),
+            (120, 160),
+            raw.dtype,
+        )
+        frames.append(SourceFrame(frame_id=f"{idx}", name=f"slice_{idx}.png", image=warped))
+
+    def forbid_full_resolve(*_args, **_kwargs):
+        raise AssertionError("Sharpness worker must not resolve full-resolution warped frames")
+
+    monkeypatch.setattr(sf, "resolve_frame", forbid_full_resolve)
+
+    worker = _SharpnessWorker(frames, request_id=7, preview_side=96)
+    seen_progress = []
+    seen_maps = []
+    errors = []
+    worker.progress.connect(lambda req, done, total: seen_progress.append((req, done, total)))
+    worker.ready.connect(lambda req, maps: seen_maps.append((req, maps)))
+    worker.failed.connect(lambda req, err: errors.append((req, err)))
+    worker.run()
+
+    assert errors == []
+    assert seen_progress == [(7, 1, 2), (7, 2, 2)]
+    assert len(seen_maps) == 1
+    assert set(seen_maps[0][1]) == {0, 1}
+    for m in seen_maps[0][1].values():
+        assert max(m.shape[:2]) <= 96

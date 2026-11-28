@@ -1739,3 +1739,68 @@ def test_selected_render_exports_roi_depth_without_measuring(depth_dialog, monke
     _wait(qapp, dialog._has_current_map)
     assert dialog._map_rendered
     assert len(measurements) == 1
+
+
+def test_visual_worker_bounds_memory_for_102mp_3d_preview(monkeypatch):
+    import dialogs.depthmap as dm
+    import core.resource_policy as rp
+
+    H, W = 8736, 11648
+    # Strided broadcast views simulate a 102MP depth index + texture without allocating gigabytes.
+    col = np.linspace(0.0, 1.0, W, dtype=np.float32)[None, :]
+    huge_index = np.broadcast_to(col, (H, W))
+    base_pixel = np.array([[[20, 120, 220]]], dtype=np.uint8)
+    huge_texture = np.broadcast_to(base_pixel, (H, W, 3))
+
+    recorded = []
+    monkeypatch.setattr(rp, "require_memory", lambda bytes_needed, **_kw: recorded.append(int(bytes_needed)))
+
+    snapshot = {
+        'index': huge_index,
+        'mask': None,
+        'map_key': 'test-102mp',
+        'map_only': False,
+        'texture_color': False,
+        'texture': huge_texture,
+        'texture_metadata': None,
+        'texture_identity': 'tex',
+        'overlay_identity': None,
+        'color': {
+            'smooth': 2,
+            'colormap': 'turbo',
+            'stops': None,
+            'invert': False,
+            'gamma': 1.0,
+            'overlay': None,
+            'overlay_metadata': None,
+            'overlay_identity': None,
+            'opacity': 0.3,
+        },
+        'physical': False,
+        'z_enabled': False,
+        'indices': (0, 1),
+        'z0': 0.0,
+        'step': 1.0,
+        'direction': 1,
+        'pixel_size': None,
+        'mesh_size': 600,
+        'relief': 0.15,
+        'preview_dpr': 1.0,
+        'preview_size': (800, 600),
+    }
+
+    worker = dm.DepthVisualWorker(snapshot, {})
+    results = []
+    errors = []
+    worker.ok.connect(results.append)
+    worker.failed.connect(errors.append)
+    worker.run()
+
+    assert errors == []
+    assert recorded and recorded[0] < 350 * 1024 * 1024
+    assert len(results) == 1
+    res = results[0]
+    assert res['error'] == ''
+    assert res['extent'] == (H - 1, W - 1)
+    assert max(res['surface'].shape) == 600
+    assert res['surface_texture'].shape[:2] == res['surface'].shape
