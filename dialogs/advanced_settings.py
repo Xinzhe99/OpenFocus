@@ -292,7 +292,7 @@ class AdvancedSettingsDialog(QDialog):
 
         self.chk_render_complete_sound = QCheckBox(trans.t("render_complete_sound_label"))
         self.chk_render_complete_sound.setProperty("controlId", "chk_render_complete_sound")
-        self.chk_render_complete_sound.setChecked(bool(getattr(w, "render_complete_sound", False)))
+        self.chk_render_complete_sound.setChecked(bool(getattr(w, "render_complete_sound", True)))
         self.chk_render_complete_sound.setToolTip(trans.t("render_complete_sound_hint"))
         output.addRow(self.chk_render_complete_sound)
 
@@ -318,6 +318,7 @@ class AdvancedSettingsDialog(QDialog):
         self.raw_dng_converter_path = QLineEdit(raw_cfg.external_dng_converter_path)
         self.raw_dng_converter_path.setProperty("controlId", "edit_advanced_dng_path")
         self.raw_dng_converter_path.setPlaceholderText(trans.t("raw_develop_dng_placeholder"))
+        self.raw_dng_converter_path.setToolTip(trans.t("raw_develop_dng_hint"))
         dng_lay.addWidget(self.raw_dng_converter_path, 1)
         btn_dng_browse = QPushButton(trans.t("raw_develop_dng_browse"))
         btn_dng_browse.setProperty("controlId", "btn_advanced_dng_browse")
@@ -331,9 +332,9 @@ class AdvancedSettingsDialog(QDialog):
 
         self.btn_open_raw_develop = QPushButton(trans.t("raw_develop_open_button"))
         self.btn_open_raw_develop.setProperty("controlId", "btn_advanced_open_raw_develop")
+        self.btn_open_raw_develop.setToolTip(trans.t("raw_develop_dng_hint"))
         self.btn_open_raw_develop.clicked.connect(self._open_raw_develop_dialog)
         raw_section.addRow("", self.btn_open_raw_develop)
-        _note(page_lay, trans.t("raw_develop_dng_hint"))
 
     def _build_fusion(self, page_lay):
         w = self.window_main
@@ -615,9 +616,8 @@ class AdvancedSettingsDialog(QDialog):
         self._update_gallery_cache_usage_label()
 
     def _build_developer_options(self, page_lay):
-        _note(page_lay, trans.t("dev_options_intro"))
-
         self.dev_status_card = QFrame()
+        self.dev_status_card.setToolTip(trans.t("dev_options_intro"))
         self.dev_status_card.setObjectName("devStatusCard")
         self.dev_status_card.setProperty("controlId", "dev_status_card")
         card_lay = QVBoxLayout(self.dev_status_card)
@@ -692,9 +692,9 @@ class AdvancedSettingsDialog(QDialog):
         self.chk_dev_community = QCheckBox(trans.t("dev_feature_community"))
         self.chk_dev_community.setObjectName("chk_developer_community")
         self.chk_dev_community.setProperty("controlId", "chk_developer_community")
+        self.chk_dev_community.setToolTip(trans.t("dev_feature_community_hint"))
         self.chk_dev_community.toggled.connect(self._on_dev_community_toggled)
         features.addRow(self.chk_dev_community)
-        self.lbl_dev_community_hint = _note(page_lay, trans.t("dev_feature_community_hint"))
 
         self._refresh_developer_ui(sync_checkbox=True)
 

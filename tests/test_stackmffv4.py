@@ -82,7 +82,7 @@ def test_v4_registry_flags_and_legacy_separation():
 
     v4 = get_fusion("stackmffv4")
     assert v4.family == "stackmff"
-    assert v4.experimental is False
+    assert v4.experimental is True
     assert v4.legacy is False
     assert v4.order_sensitive is False
     assert v4.weights == "weights/stackmff_v4_flash.onnx"
@@ -216,10 +216,11 @@ def test_legacy_features_toggle_controls_ui_visibility(qapp, monkeypatch, tmp_pa
     w.apply_legacy_features()
     try:
         assert not w.legacy_features
-        # Main window: V4 visible & enabled; V1-V3 hidden by default.
+        # Main window: V4 visible (experimental); V1-V3 hidden by default.
         v4_idx = w.combo_fusion.findData("stackmffv4")
         assert v4_idx >= 0
-        assert w.combo_fusion.model().item(v4_idx).isEnabled()
+        assert not w.combo_fusion.model().item(v4_idx).isEnabled()
+        assert trans.t("experimental_label") in w.combo_fusion.itemText(v4_idx)
         for legacy_id in ("stackmffv3", "stackmffv2", "stackmff"):
             assert w.combo_fusion.findData(legacy_id) < 0
 
@@ -258,12 +259,12 @@ def test_legacy_features_toggle_controls_ui_visibility(qapp, monkeypatch, tmp_pa
         w.set_fusion_method("stackmffv3")
         assert w.current_fusion_method() == "stackmffv3"
 
-        # Turning Legacy Features off hides V1-V3 again and falls back to StackMFF V4.
+        # Turning Legacy Features off hides V1-V3 again and falls back to OpenFocus B when experimental features are off.
         adv2 = AdvancedSettingsDialog(w)
         adv2.chk_legacy_features.setChecked(False)
         adv2._apply()
         assert w.legacy_features is False
-        assert w.current_fusion_method() == "stackmffv4"
+        assert w.current_fusion_method() == "openfocus_b"
         for legacy_id in ("stackmffv3", "stackmffv2", "stackmff"):
             assert w.combo_fusion.findData(legacy_id) < 0
     finally:

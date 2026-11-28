@@ -847,6 +847,12 @@ def test_feedback_copy_matches_visible_log_and_export_failure_is_inline(qapp, mo
     assert "disk full" in dialog.diagnostic_status.text()
     assert "report.zip" in dialog.diagnostic_status.text()
     assert not dialog._export_path
+    from PyQt6.QtWidgets import QLabel
+    from locales import trans
+    label_texts = {lbl.text() for lbl in dialog.findChildren(QLabel)}
+    assert trans.t('feedback_local_export_scope') not in label_texts
+    assert trans.t('feedback_channels_hint') not in label_texts
+    assert trans.t('feedback_error_hint') not in label_texts
     dialog.deleteLater()
 
 

@@ -1793,14 +1793,14 @@ class OpenFocus(QMainWindow):
             current = self.current_fusion_method()
             switched_label = None
             if current != 'none' and fusion_is_legacy(current):
-                target = 'stackmffv4'
+                target = 'stackmffv4' if experimental_enabled(self) else FUSION_DEFAULT
                 self.set_fusion_method(target)
                 switched_label = trans.t(get_fusion(target).label_key)
             preferred = getattr(self, '_preferred_fusion_method', None)
             if switched_label is not None or (
                     preferred not in (None, 'none') and fusion_is_legacy(preferred)):
                 self._preferred_fusion_method = (
-                    'stackmffv4' if switched_label is not None else current
+                    target if switched_label is not None else current
                 )
                 self.persist_settings()
             if switched_label is not None:

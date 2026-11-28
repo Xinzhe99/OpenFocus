@@ -215,7 +215,7 @@ class BatchManager:
                                                 if os.path.isdir(stack.get('path') or '')), '')
             if not was_cancelled and success_count > 0:
                 from utils.sound_notify import play_completion_sound
-                play_completion_sound(bool(getattr(self.window, "render_complete_sound", False)))
+                play_completion_sound(bool(getattr(self.window, "render_complete_sound", True)))
             self._show_message(
                 title=(trans.t('compare_cancelled') if was_cancelled else
                        trans.t('batch_partial_title') if problems else trans.t('batch_done_title')),

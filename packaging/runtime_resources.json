@@ -40,9 +40,11 @@
     "weights/stackmff_final.pth",
     "weights/stackmff_v2_final.pth",
     "weights/stackmff_v3_final.pth",
+    "weights/stackmff_v4_flash.pth",
     "weights/stackmff_final.onnx",
     "weights/stackmff_v2_final.onnx",
-    "weights/stackmff_v3_final.onnx"
+    "weights/stackmff_v3_final.onnx",
+    "weights/stackmff_v4_flash.onnx"
   ],
   "exclude": [
     "assets/launch.mp4",

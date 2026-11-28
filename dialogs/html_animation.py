@@ -40,10 +40,7 @@ class HtmlAnimationDialog(QDialog):
         layout.setContentsMargins(16, 14, 16, 14)
         layout.setSpacing(10)
 
-        hint = QLabel(trans.t("html_anim_dialog_hint"))
-        hint.setWordWrap(True)
-        hint.setObjectName("mutedLabel")
-        layout.addWidget(hint)
+        self.setToolTip(trans.t("html_anim_dialog_hint"))
 
         form = QFormLayout()
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
