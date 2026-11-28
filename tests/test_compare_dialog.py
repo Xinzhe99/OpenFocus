@@ -130,17 +130,13 @@ def test_parameter_cards_stack_headers_and_wrap(dialog, qapp):
         assert title.geometry().bottom() < panel.geometry().top()
         assert title.width() >= title.fontMetrics().horizontalAdvance(title.text())
         editors = list(panel.editors.values())
-        specs_by_key = {spec.key: spec for spec in panel._specs}
         numeric_count = sum(1 for spec in panel._specs if not spec.choices)
         for key, editor in panel.editors.items():
             label = panel._labels[key]
             assert label.text()
             assert editor.accessibleName().rstrip(':： ').strip() == label.text().rstrip(':： ').strip()
             assert label.width() >= label.fontMetrics().horizontalAdvance(label.text())
-            if numeric_count > 1 and not specs_by_key[key].choices:
-                assert label.geometry().bottom() < editor.geometry().top()
-            else:
-                assert label.geometry().right() < editor.geometry().left()
+            assert label.geometry().right() < editor.geometry().left()
         assert len({editor.geometry().left() for editor in editors}) <= (2 if numeric_count > 1 else 1)
 
     widths = [card.sizeHint().width() for card in cards]
