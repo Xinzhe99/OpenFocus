@@ -1766,3 +1766,26 @@ def test_stroke_copy_failure_aborts_and_allows_retry(monkeypatch):
     monkeypatch.setattr(doc.history, '_tile_copy', original)
     assert doc.begin_stroke(30, 30)
     assert doc.end_stroke() == 'committed'
+
+
+def test_retouch_filmstrip_fits_64px_thumbnails_labels_and_scrollbar(qapp):
+    from PyQt6.QtCore import QSize
+
+    dlg, _ = _dialog(qapp)
+    try:
+        assert dlg.frame_list.iconSize() == QSize(64, 64)
+        grid = dlg.frame_list.gridSize()
+        label_h = max(18, dlg.frame_list.fontMetrics().height() + 4)
+        sb_h = max(14, dlg.frame_list.horizontalScrollBar().sizeHint().height())
+        assert grid.width() == 80
+        assert grid.height() >= 64 + label_h + 10
+        assert dlg.frame_list.height() >= grid.height() + sb_h
+        assert dlg.btn_prev.width() >= 32
+        assert dlg.btn_next.width() >= 32
+        for row in range(dlg.frame_list.count()):
+            hint = dlg.frame_list.item(row).sizeHint()
+            assert hint.height() >= 64 + dlg.frame_list.fontMetrics().height() + 8
+    finally:
+        dlg._allow_close = True
+        dlg.close()
+        dlg.deleteLater()

@@ -2159,22 +2159,32 @@ class RetouchDialog(QDialog):
         strip_row = QHBoxLayout()
         strip_row.setSpacing(4)
         self.btn_prev = QPushButton("◀")
-        self.btn_prev.setFixedWidth(28)
+        self.btn_prev.setObjectName("retouchStripNav")
+        self.btn_prev.setFixedWidth(32)
         self.btn_prev.clicked.connect(self._prev_frame)
         self.frame_list = QListWidget()
+        self.frame_list.setObjectName("retouchFilmstrip")
         self.frame_list.setViewMode(QListWidget.ViewMode.IconMode)
         self.frame_list.setFlow(QListWidget.Flow.LeftToRight)
         self.frame_list.setWrapping(False)
         self.frame_list.setResizeMode(QListWidget.ResizeMode.Adjust)
         self.frame_list.setMovement(QListWidget.Movement.Static)
-        self.frame_list.setIconSize(QSize(56, 42))
-        self.frame_list.setGridSize(QSize(66, 62))
-        self.frame_list.setFixedHeight(80)
+        self._filmstrip_thumb_size = 64
+        self.frame_list.setIconSize(QSize(self._filmstrip_thumb_size, self._filmstrip_thumb_size))
+        label_h = max(18, self.frame_list.fontMetrics().height() + 4)
+        self._filmstrip_item_height = self._filmstrip_thumb_size + label_h + 10
+        grid_h = self._filmstrip_item_height + 2
+        sb_h = max(14, self.frame_list.horizontalScrollBar().sizeHint().height())
+        list_h = grid_h + sb_h + 6
+        self.frame_list.setGridSize(QSize(80, grid_h))
+        self.frame_list.setFixedHeight(list_h)
+        self.frame_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.frame_list.setSelectionMode(
             QListWidget.SelectionMode.SingleSelection)
         self.frame_list.currentRowChanged.connect(self._on_frame_selected)
         self.btn_next = QPushButton("▶")
-        self.btn_next.setFixedWidth(28)
+        self.btn_next.setObjectName("retouchStripNav")
+        self.btn_next.setFixedWidth(32)
         self.btn_next.clicked.connect(self._next_frame)
         self.frame_spin = QSpinBox()
         self.frame_spin.setProperty("compactSpin", True)
@@ -2195,7 +2205,9 @@ class RetouchDialog(QDialog):
         self.frame_slider.setToolTip(trans.t("retouch_stack_hint"))
         self.frame_slider.valueChanged.connect(self._on_frame_slider)
         strip_layout.addWidget(self.frame_slider)
-        strip.setFixedHeight(106)
+        slider_h = max(20, self.frame_slider.sizeHint().height())
+        strip.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        strip.setFixedHeight(list_h + slider_h + 8)
         register_help_target(strip, "retouch_filmstrip")
 
         status = QHBoxLayout()
@@ -2281,10 +2293,10 @@ class RetouchDialog(QDialog):
             image = self.doc.source_previews[index]
             item = QListWidgetItem(str(index + 1))
             if image is not None:
-                thumb = thumbnail_bgr(image, 56)
+                thumb = thumbnail_bgr(image, self._filmstrip_thumb_size)
                 item.setIcon(QIcon(QPixmap.fromImage(_qimage_from_bgr(thumb))))
             item.setToolTip(frame.name)
-            item.setSizeHint(QSize(64, 60))
+            item.setSizeHint(QSize(76, self._filmstrip_item_height))
             item.setTextAlignment(Qt.AlignmentFlag.AlignHCenter
                                   | Qt.AlignmentFlag.AlignBottom)
             self.frame_list.addItem(item)

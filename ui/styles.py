@@ -434,6 +434,15 @@ QListWidget::item:selected, QTreeWidget::item:selected {{
     background-color: {t['accentSoft']};
     color: {t['accentSoftText']};
 }}
+QListWidget#retouchFilmstrip::item {{
+    padding: 3px 4px;
+    border-radius: {r['xs']}px;
+}}
+QPushButton#retouchStripNav {{
+    padding: 0px;
+    min-width: 32px;
+    max-width: 32px;
+}}
 QHeaderView::section {{
     background-color: {t['surfaceSunken']};
     color: {t['textMuted']};
