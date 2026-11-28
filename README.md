@@ -215,9 +215,10 @@ Control the desktop app through a token-protected local channel.
 - **Languages** — twelve UI languages with automatic locale detection.
 - **Memory** — bounded frame/tile work, disk-backed intermediates and neural models loaded only when selected.
 
-OpenFocus A, B and C are the stable fusion methods. To use the other fusion
-methods, enable **Experimental features** in Advanced Settings or pass
-`--experimental` to the headless CLI.
+OpenFocus A, B and C, Guided Filter, GFG-FGF, DCT and DTCWT are the stable
+fusion methods. To use the experimental fusion methods (StackMFF V1/V2/V3),
+enable **Experimental features** in Advanced Settings or pass `--experimental`
+to the headless CLI.
 
 StackMFF V1/V2/V3 run with the bundled ONNX Runtime. **Settings → AI acceleration
 components** can install TensorRT and PyTorch CUDA on compatible Windows NVIDIA

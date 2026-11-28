@@ -108,7 +108,7 @@ StackMFF V3 は AI で各フレームの鮮明な部分を組み合わせ、焦�
 
 融合手法を並べて比較し、選んだ結果を出力に採用するか、設定をメインウィンドウに適用できます。
 
-安定版の融合手法は OpenFocus A、OpenFocus B、OpenFocus C の 3 つです。それ以外の手法は実験的です。デスクトップ版で実験的な手法を使うには、**設定 → 詳細設定… → 実験的機能を有効にする**を選びます。ヘッドレス CLI では `--experimental` を指定してください。
+安定版の融合手法は OpenFocus A、OpenFocus B、OpenFocus C、ガイドフィルタ、GFG-FGF、DCT、DTCWT です。実験的な融合手法（StackMFF V1/V2/V3）をデスクトップ版で使うには、**設定 → 詳細設定… → 実験的機能を有効にする**を選び、ヘッドレス CLI では `--experimental` を指定してください。
 
 </td>
 <td width="54%">

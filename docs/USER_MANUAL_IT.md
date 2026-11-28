@@ -28,7 +28,7 @@ OpenFocus è un'applicazione desktop professionale per la fusione di immagini mu
 ### Funzionalità principali
 
 - **Fusione di immagini multifocus**: combina più immagini con punti di fuoco diversi in un'unica immagine completamente a fuoco
-- **Dieci algoritmi di fusione**. OpenFocus A/B/C sono stabili. Filtro guidato, DCT, DTCWT, GFG-FGF e StackMFF V1/V2/V3 sono sperimentali. È disponibile anche la modalità solo allineamento.
+- **Dieci algoritmi di fusione**. OpenFocus A/B/C, filtro guidato, DCT, DTCWT e GFG-FGF sono stabili. StackMFF V1/V2/V3 sono sperimentali. È disponibile anche la modalità solo allineamento.
 - **Registrazione delle immagini**: allinea sequenze disallineate con OpenFocus (veloce), ECC, omografia o la catena omografia → ECC
 - **Sfondo automatico**: sostituire uno sfondo impilato irregolare con un fotogramma reale e vedere dove nessun fotogramma ha ripreso chiaramente la scena
 - **Vista di confronto Wipe (a tendina)**: controlla l'allineamento e confronta i risultati con un divisore A/B
@@ -56,7 +56,7 @@ Gli stack PNG trasparenti possono essere fusi nell'app desktop, nell'elaborazion
 
 Carica a dimensione piena, scegli nessun allineamento, disattiva l'anteprima rapida e la ROI, quindi renderizza e salva come PNG. La modalità batch richiede un metodo di fusione e un output PNG senza salvare uno stack allineato. Allineamento, ridimensionamento o riduzione, correzione di campo piatto, mappe di profondità, confronto metodi, ritocco e barre di scala non sono supportati per i dati trasparenti, e le etichette non possono essere incise in un'esportazione. Un metodo di fusione che cambia le dimensioni del rettangolo viene rifiutato. Maschere variabili o con bordi sfumati, maschere diverse tra fotogrammi, input TIFF trasparente e output non PNG, inclusi GIF e TIFF multipagina, non sono supportati. La CLI rifiuta anche la pulizia del sensore e le mappe di profondità per input trasparenti.
 
-Ad esempio, l'equivalente CLI è `python main.py --input ./png-stack --output ./result.png --method guided_filter --align none --experimental`.
+Ad esempio, l'equivalente CLI è `python main.py --input ./png-stack --output ./result.png --method guided_filter --align none`.
 
 ### Formati di output supportati
 
@@ -389,7 +389,7 @@ Le impostazioni aggiuntive si trovano in **Impostazioni → Impostazioni avanzat
 
 ## 8. Metodi di fusione delle immagini
 
-Un nuovo profilo desktop usa **OpenFocus B** con registrazione **ECC**. I metodi di fusione stabili sono OpenFocus A, B e C. Per usare gli altri metodi di fusione nell’app desktop, seleziona **Attiva funzioni sperimentali** in **Impostazioni → Impostazioni avanzate → Generali** e conferma. Nella CLI aggiungi `--experimental` a ogni comando che usa un metodo di fusione sperimentale.
+Un nuovo profilo desktop usa **OpenFocus B** con registrazione **ECC**. I metodi di fusione stabili sono OpenFocus A, B e C, filtro guidato, GFG-FGF, DCT e DTCWT. Per usare i metodi sperimentali (StackMFF V1/V2/V3) nell’app desktop, seleziona **Attiva funzioni sperimentali** in **Impostazioni → Impostazioni avanzate → Generali** e conferma. Nella CLI aggiungi `--experimental` a ogni comando che usa un metodo di fusione sperimentale.
 
 ### Filtro guidato
 
@@ -867,16 +867,16 @@ Da un ambiente Python (o accanto all'eseguibile pacchettizzato):
 python main.py --input ./stack_folder --output ./result/fused.png
 
 # DTCWT con registrazione ECC, 8 thread
-python main.py -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8 --experimental
+python main.py -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8
 
 # StackMFF V3 forzato su CPU con una dimensione tassello personalizzata
 python main.py -i ./stack_folder -o ./result/fused.png -m stackmffv3 --cpu --tile-size 512 --experimental
 
 # Elenco file esplicito; anche i file video sono accettati come input
-python main.py -i img1.jpg img2.jpg img3.jpg -o fused.png -m gfgfgf --experimental
+python main.py -i img1.jpg img2.jpg img3.jpg -o fused.png -m gfgfgf
 
 # Un singolo stack Z TIFF multipagina con barra di scala calibrata dai metadati
-python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar --experimental
+python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar
 
 # Esamina fotogrammi adiacenti simili senza fondere né modificare l'input
 python main.py -i ./stack_folder --suggest-duplicates
@@ -894,7 +894,7 @@ Ad esempio, aggiungi `--align openfocus --alignment-report alignment.json` a un 
 | `--output-dir, -d` | Modalità batch: fonde ogni cartella di input scrivendo `<cartella>.png` per stack |
 | `--resume` | Salta la cartella solo se tutti i risultati richiesti sono file regolari non vuoti; non verifica contenuto o parametri |
 | `--config FILE` | Modalità batch: override JSON per cartella, ad es. `{"stackA": {"method": "dct"}}` |
-| `--method, -m` | Metodi stabili (`openfocus_a`, `openfocus_b` predefinito, `openfocus_c`) e sperimentali (`guided_filter`, `dct`, `dtcwt`, `gfgfgf`, `stackmff`, `stackmffv2`, `stackmffv3`) |
+| `--method, -m` | Metodi stabili (`openfocus_a`, `openfocus_b` predefinito, `openfocus_c`, `guided_filter`, `dct`, `dtcwt`, `gfgfgf`) e sperimentali (`stackmff`, `stackmffv2`, `stackmffv3`) |
 | `--experimental` | Consente di usare i metodi di fusione sperimentali in questa esecuzione, anche se scelti con `--config` |
 | `--param KEY=JSON_VALUE` | Imposta qualsiasi parametro di fusione; ripetibile e prevale sulle opzioni legacy |
 | `--align, -a` | `none` (predefinito), `homography`, `ecc`, `both`, `openfocus` |

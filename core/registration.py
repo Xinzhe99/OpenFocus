@@ -87,14 +87,16 @@ _deferred_ecc_gpu = ContextVar('deferred_ecc_gpu', default=None)
 
 _deferred_alignment_timers_lock = threading.Lock()
 _deferred_alignment_timers = []
+_deferred_alignment_tls = threading.local()
 
 
 class DeferredAlignmentTimer:
     """Measure wall-clock time spent inside deferred alignment warps.
 
-    Uses active-depth reference counting so concurrent producer threads and
-    nested warp stages accumulate the wall-clock union of warp intervals
-    without double-counting or exceeding the enclosing stage's elapsed time.
+    Uses active-depth reference counting for synchronous/direct warps so nested
+    warp stages accumulate the wall-clock union without double-counting, plus
+    additive pipeline attribution (`add_elapsed`) for unoverlapped stalls inside
+    concurrent producer-consumer execution.
     """
 
     def __init__(self):
@@ -116,6 +118,17 @@ class DeferredAlignmentTimer:
             self._active -= 1
             if self._active == 0:
                 self._elapsed += max(0.0, time.monotonic() - self._started)
+
+    def add_elapsed(self, seconds: float) -> None:
+        dt = float(seconds)
+        if dt <= 0.0:
+            return
+        with self._lock:
+            self._elapsed += dt
+
+    def record_warp(self) -> None:
+        with self._lock:
+            self._warps += 1
 
     @property
     def elapsed(self) -> float:
@@ -148,7 +161,33 @@ def deferred_alignment_timer():
 
 @contextmanager
 def measure_deferred_alignment():
-    """Attribute this block's wall-clock span to all active alignment timers."""
+    """Attribute this block's wall-clock span to all active alignment timers.
+
+    Inside a concurrent producer-consumer pipeline (`deferred_alignment_pipeline`),
+    record warp duration on the worker thread's accumulator rather than charging
+    overlapped background warps against consumer fusion time.
+    """
+    producer_state = getattr(_deferred_alignment_tls, "producer", None)
+    if producer_state is not None:
+        if _deferred_alignment_timers:
+            with _deferred_alignment_timers_lock:
+                timers = tuple(_deferred_alignment_timers)
+            for timer in timers:
+                timer.record_warp()
+        depth = producer_state["depth"]
+        if depth == 0:
+            producer_state["started"] = time.monotonic()
+        producer_state["depth"] = depth + 1
+        try:
+            yield
+        finally:
+            remaining = producer_state["depth"] - 1
+            producer_state["depth"] = remaining
+            if remaining == 0:
+                producer_state["warp_seconds"] += max(
+                    0.0, time.monotonic() - producer_state["started"]
+                )
+        return
     if not _deferred_alignment_timers:
         yield
         return
@@ -164,6 +203,81 @@ def measure_deferred_alignment():
     finally:
         for timer in timers:
             timer._exit()
+
+
+class DeferredAlignmentPipeline:
+    """Measure unoverlapped consumer wait attributable to pipelined producer warps."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._producer_total = 0.0
+        self._producer_warp = 0.0
+        self._wait_seconds = 0.0
+
+    def wrap_producer(self, fn):
+        """Wrap a producer callable so warp time is separated from consumer fusion."""
+
+        def wrapped(*args, **kwargs):
+            prev = getattr(_deferred_alignment_tls, "producer", None)
+            state = {"depth": 0, "started": 0.0, "warp_seconds": 0.0}
+            _deferred_alignment_tls.producer = state
+            started = time.monotonic()
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                task_dt = max(0.0, time.monotonic() - started)
+                warp_dt = max(0.0, min(task_dt, state["warp_seconds"]))
+                if prev is None:
+                    try:
+                        del _deferred_alignment_tls.producer
+                    except AttributeError:
+                        pass
+                else:
+                    _deferred_alignment_tls.producer = prev
+                with self._lock:
+                    self._producer_total += task_dt
+                    self._producer_warp += warp_dt
+
+        return wrapped
+
+    @contextmanager
+    def wait_scope(self):
+        """Measure blocking consumer wait while waiting on producer futures."""
+        started = time.monotonic()
+        try:
+            yield
+        finally:
+            dt = max(0.0, time.monotonic() - started)
+            if dt > 0.0:
+                with self._lock:
+                    self._wait_seconds += dt
+
+    def flush_to_active_timers(self) -> float:
+        """Attribute unoverlapped warp share to all active alignment timers."""
+        with self._lock:
+            total = self._producer_total
+            warp = self._producer_warp
+            wait_s = self._wait_seconds
+        if total <= 0.0 or warp <= 0.0 or wait_s <= 0.0:
+            return 0.0
+        attributed = wait_s * min(1.0, warp / total)
+        if not _deferred_alignment_timers:
+            return attributed
+        with _deferred_alignment_timers_lock:
+            timers = tuple(_deferred_alignment_timers)
+        for timer in timers:
+            timer.add_elapsed(attributed)
+        return attributed
+
+
+@contextmanager
+def deferred_alignment_pipeline():
+    """Scope concurrent producer-consumer deferred alignment attribution."""
+    pipeline = DeferredAlignmentPipeline()
+    try:
+        yield pipeline
+    finally:
+        pipeline.flush_to_active_timers()
 
 
 @contextmanager
@@ -2640,7 +2754,9 @@ class ImageRegistration:
         registration = ImageRegistration(method='both')
         result = registration.process(image_list, './output')
     """
-    
+
+    _UNSET_STAGE_ROI = object()
+
     def __init__(self, method='homography', downscale_width=1024,
                  max_shift_ratio=None, brightness_reference='first',
                  use_gpu=False, parameters=None, *, defer_warps=False, accelerate_ecc=True,
@@ -2731,7 +2847,7 @@ class ImageRegistration:
         self.alignment_plan = None
         self._perspective_stages = []
         self._dispatch = []
-        self._active_stage_roi = None
+        self._active_stage_roi = self._UNSET_STAGE_ROI
 
     @property
     def dispatch(self):
@@ -2909,6 +3025,7 @@ class ImageRegistration:
                         thread_count=thread_count, resource_preference=resource_preference)
                 parameters = {item.key: self.parameters[item.key] for item in spec.parameters}
                 self._active_stage_roi = stage_roi
+                stage_input_shape = result[0].shape[:2]
                 stage_count_before = len(self._perspective_stages)
                 with log_operation('registration_stage', method=step,
                                    parameters=parameters, provider='OpenCV',
@@ -2932,16 +3049,18 @@ class ImageRegistration:
                         operation.cancel()
                         raise
                     finally:
-                        self._active_stage_roi = None
+                        self._active_stage_roi = self._UNSET_STAGE_ROI
                 if stage_roi is not None and len(self._perspective_stages) > stage_count_before:
                     top_b, bottom_b, left_b, right_b = self._perspective_stages[-1].bounds
                     if top_b < bottom_b and left_b < right_b:
-                        rx, ry, rw, rh = stage_roi
+                        rx, ry, rw, rh = normalize_alignment_roi(stage_roi, stage_input_shape)
                         stage_h, stage_w = result[0].shape[:2]
                         nx = max(0, rx - left_b)
                         ny = max(0, ry - top_b)
-                        nw = min(rw, stage_w - nx)
-                        nh = min(rh, stage_h - ny)
+                        nx1 = min(stage_w, rx + rw - left_b)
+                        ny1 = min(stage_h, ry + rh - top_b)
+                        nw = nx1 - nx
+                        nh = ny1 - ny
                         stage_roi = (nx, ny, nw, nh) if nw >= 8 and nh >= 8 else None
             if len(self._perspective_stages) == len(self.steps):
                 self.alignment_plan = PerspectiveAlignmentPlan(tuple(self._perspective_stages),
@@ -2970,7 +3089,7 @@ class ImageRegistration:
         Returns:
             配准后的图像列表
         """
-        roi = self._active_stage_roi if self._active_stage_roi is not None else self.alignment_roi
+        roi = self.alignment_roi if self._active_stage_roi is self._UNSET_STAGE_ROI else self._active_stage_roi
         return _align_homography_impl(
             input_source, output_path, downscale_width=self.downscale_width,
             thread_count=thread_count, should_cancel=should_cancel, failure_policy=failure_policy,
@@ -3000,7 +3119,7 @@ class ImageRegistration:
         Returns:
             配准后的图像列表
         """
-        roi = self._active_stage_roi if self._active_stage_roi is not None else self.alignment_roi
+        roi = self.alignment_roi if self._active_stage_roi is self._UNSET_STAGE_ROI else self._active_stage_roi
         try:
             with _serial_ecc_native_threads() if stage_budget is not None else nullcontext():
                 return _align_ecc_impl(
