@@ -73,7 +73,7 @@ OpenFocus 是一款面向科研人员、工程师和图像处理从业者的专�
 输出或帧的标签不会。渐变透明、不同蒙版、透明 TIFF、GIF 和多页 TIFF 导出均不支持。
 CLI 也会拒绝透明输入的传感器清理与深度图。
 
-命令行示例：`python main.py --input ./png-stack --output ./result.png --method guided_filter --align none --experimental`。
+命令行示例：`python main.py --input ./png-stack --output ./result.png --method guided_filter --align none`。
 
 ### 支持的输出格式
 
@@ -669,9 +669,7 @@ Wipe 模式与 ROI 模式共用结果面板，进入其一自动退出另一个�
 
 ## 8. 图像融合方法
 
-OpenFocus A、B、C 是稳定融合方法。使用其他融合方法时，请在高级设置中启用
-**实验性功能**，或在命令行中加上 `--experimental`。桌面全新配置默认使用
-**OpenFocus B** 融合和 **ECC** 配准，已有的方法选择会保留。
+OpenFocus A、B、C 与引导滤波（Guided Filter）、GFG-FGF、DCT、DTCWT 是稳定融合方法。使用实验性融合方法（StackMFF V1/V2/V3）时，请在高级设置中启用**实验性功能**，或在命令行中加上 `--experimental`。桌面全新配置默认使用 **OpenFocus B** 融合和 **ECC** 配准，已有的方法选择会保留。
 
 ### 引导滤波
 
@@ -1448,16 +1446,16 @@ openfocus -i ./stack_folder -o ./result/fused.png
 python main.py --input ./stack_folder --output ./result/fused.png
 
 # DTCWT + ECC 配准，8 线程
-python main.py -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8 --experimental
+python main.py -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8
 
 # StackMFF V3 强制 CPU + 自定义瓦片尺寸
 python main.py -i ./stack_folder -o ./result/fused.png -m stackmffv3 --cpu --tile-size 512 --experimental
 
 # 显式文件列表；也接受视频文件作为输入
-python main.py -i img1.jpg img2.jpg img3.jpg -o fused.png -m gfgfgf --experimental
+python main.py -i img1.jpg img2.jpg img3.jpg -o fused.png -m gfgfgf
 
 # 单个多页 TIFF Z-Stack + 元数据自动标定的比例尺
-python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar --experimental
+python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar
 
 # 只检查相邻相似帧，不融合也不改变输入
 python main.py -i ./stack_folder --suggest-duplicates
@@ -1539,7 +1537,7 @@ openfocus retouch replay edits.ofretouch --base fused.png --sources frame1.png f
 | `--input, -i` | 图像文件夹、视频文件、一个/多个图像文件，或单个多页 TIFF |
 | `--output, -o` | 单栈输出图像路径（扩展名决定格式）；没有 `--output-dir` 时必需 |
 | `--output-dir, -d` | 批处理模式：逐个处理输入文件夹，每个栈写入 `<文件夹名>.png` |
-| `--method, -m` | 稳定：`openfocus_a`、`openfocus_b`（默认）、`openfocus_c`；实验性：`guided_filter`、`dct`、`dtcwt`、`gfgfgf`、`stackmff`、`stackmffv2`、`stackmffv3` |
+| `--method, -m` | 稳定：`openfocus_a`、`openfocus_b`（默认）、`openfocus_c`、`guided_filter`、`dct`、`dtcwt`、`gfgfgf`；实验性：`stackmff`、`stackmffv2`、`stackmffv3` |
 | `--experimental` | 在本次命令行运行中启用实验性融合方法 |
 | `--param KEY=JSON_VALUE` | 算法参数，可重复；优先于旧式专用参数 |
 | `--align, -a` | `none`（默认）、`homography`、`ecc`、`openfocus`、`both` |

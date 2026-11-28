@@ -158,16 +158,20 @@ def test_cli_defaults_to_openfocus_b_and_requires_experimental_opt_in(tmp_path):
     result = run_cli(*args)
     assert result.returncode == 0, result.stderr
     assert 'method=openfocus_b' in result.stdout
-    result = run_cli(*args, '--method', 'dct')
+    for stable in ('guided_filter', 'gfgfgf', 'dct', 'dtcwt'):
+        result = run_cli(*args, '--method', stable)
+        assert result.returncode == 0, result.stderr
+        assert f'method={stable}' in result.stdout
+    result = run_cli(*args, '--method', 'stackmffv3')
     assert result.returncode == 2
-    assert 'DCT' in result.stderr and '--experimental' in result.stderr
-    result = run_cli(*args, '--method', 'dct', '--experimental')
+    assert 'StackMFF V3' in result.stderr and '--experimental' in result.stderr
+    result = run_cli(*args, '--method', 'stackmffv3', '--experimental')
     assert result.returncode == 0, result.stderr
-    assert 'method=dct' in result.stdout
+    assert 'method=stackmffv3' in result.stdout
     assert not output.exists()
 
     config = tmp_path / 'config.json'
-    config.write_text(json.dumps({'stack': {'method': 'dct'}}), encoding='utf-8')
+    config.write_text(json.dumps({'stack': {'method': 'stackmffv3'}}), encoding='utf-8')
     batch = ('--input', str(stack), '--output-dir', str(tmp_path / 'out'),
              '--config', str(config), '--dry-run')
     result = run_cli(*batch)
@@ -175,7 +179,7 @@ def test_cli_defaults_to_openfocus_b_and_requires_experimental_opt_in(tmp_path):
     assert 'config stack' in result.stderr and '--experimental' in result.stderr
     result = run_cli(*batch, '--experimental')
     assert result.returncode == 0, result.stderr
-    assert 'method=dct' in result.stdout
+    assert 'method=stackmffv3' in result.stdout
 
 
 def test_full_pipeline_synthetic_stack(tmp_path):

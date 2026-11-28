@@ -28,7 +28,7 @@ OpenFocus ist eine professionelle Desktop-Anwendung zur Multifokus-Bildfusion f�
 ### Hauptfunktionen
 
 - **Multifokus-Bildfusion**: Mehrere Bilder mit unterschiedlichen Fokuspunkten zu einem einzigen vollständig scharfen Bild kombinieren
-- **Zehn Fusionsverfahren**. OpenFocus A, B und C sind stabil. Guided Filter, DCT, DTCWT, GFG-FGF und StackMFF V1/V2/V3 sind experimentell. Dazu kommt ein reiner Ausrichtungsmodus.
+- **Zehn Fusionsverfahren**. OpenFocus A, B und C sowie Guided Filter, DCT, DTCWT und GFG-FGF sind stabil. StackMFF V1/V2/V3 sind experimentell. Dazu kommt ein reiner Ausrichtungsmodus.
 - **Bildregistrierung**: Fehlausgerichtete Bildsequenzen mit ECC, Homographie, Homographie mit anschließender ECC-Verfeinerung oder der schnellen OpenFocus-Ausrichtung ausrichten
 - **Automatischer Hintergrund**: einen unruhigen gestackten Hintergrund durch ein echtes Einzelbild ersetzen und sehen, wo kein Bild die Szene klar erfasst hat
 - **Quellengebundene Retusche**: Pixel aus den Bildern malen, die das Ergebnis tatsächlich erzeugt haben, mit Quell- und Wiederherstellungspinsel, Belichtungspinsel und Rückgängig pro Strich
@@ -57,7 +57,7 @@ Transparente PNG-Stapel lassen sich in der Desktop-App, in der Stapelverarbeitun
 
 Laden Sie in voller Größe, wählen Sie keine Ausrichtung, deaktivieren Sie Schnellvorschau und ROI, rendern Sie und speichern Sie als PNG. Die Stapelverarbeitung verlangt ein Fusionsverfahren und eine PNG-Ausgabe ohne Export eines ausgerichteten Stapels. Ausrichtung, Größenänderung oder Downsampling, Flachfeldkorrektur, Tiefenkarten, Methodenvergleich, Retusche und Maßstabsbalken sind für transparente Daten nicht verfügbar; Beschriftungen lassen sich nicht in einen Export einbrennen. Ein Fusionsverfahren, das die Abmessungen des Rechtecks ändert, wird abgelehnt. Abweichende oder weich auslaufende Masken, unterschiedliche Masken pro Bild, transparente TIFF-Eingaben und Nicht-PNG-Ausgaben – einschließlich GIF und mehrseitiger TIFF – sind nicht möglich. Die CLI lehnt außerdem Sensorbereinigung und Tiefenkarten für transparente Eingaben ab.
 
-Das CLI-Äquivalent lautet beispielsweise `python main.py --input ./png-stack --output ./result.png --method guided_filter --align none --experimental`.
+Das CLI-Äquivalent lautet beispielsweise `python main.py --input ./png-stack --output ./result.png --method guided_filter --align none`.
 
 ### Unterstützte Ausgabeformate
 
@@ -424,7 +424,7 @@ Weitere Einstellungen über **Einstellungen → Erweiterte Einstellungen… → 
 
 ## 8. Fusionsmethoden
 
-Ein neues Desktop-Profil verwendet **OpenFocus B** mit **ECC**-Registrierung. Die stabilen Fusionsverfahren sind OpenFocus A, B und C. Um die übrigen Fusionsverfahren in der Desktop-App zu nutzen, wählen Sie **Einstellungen → Erweiterte Einstellungen… → Allgemein**, setzen Sie das Häkchen bei **Experimentelle Funktionen aktivieren** und bestätigen Sie die Auswahl. Fügen Sie in der CLI bei jedem Aufruf mit einem experimentellen Fusionsverfahren `--experimental` hinzu.
+Ein neues Desktop-Profil verwendet **OpenFocus B** mit **ECC**-Registrierung. Die stabilen Fusionsverfahren sind OpenFocus A, B und C sowie Guided Filter, GFG-FGF, DCT und DTCWT. Um experimentelle Fusionsverfahren (StackMFF V1/V2/V3) in der Desktop-App zu nutzen, wählen Sie **Einstellungen → Erweiterte Einstellungen… → Allgemein**, setzen Sie das Häkchen bei **Experimentelle Funktionen aktivieren** und bestätigen Sie die Auswahl. Fügen Sie in der CLI bei jedem Aufruf mit einem experimentellen Fusionsverfahren `--experimental` hinzu.
 
 ### Guided Filter
 
@@ -907,16 +907,16 @@ Aus einer Python-Umgebung (oder neben der gepackten ausführbaren Datei):
 python main.py --input ./stack_folder --output ./result/fused.png
 
 # DTCWT mit ECC-Registrierung, 8 Threads
-python main.py -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8 --experimental
+python main.py -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8
 
 # StackMFF V3 auf CPU erzwungen, mit eigener Kachelgröße
 python main.py -i ./stack_folder -o ./result/fused.png -m stackmffv3 --cpu --tile-size 512 --experimental
 
 # Explizite Dateiliste; Videodateien werden ebenfalls als Eingabe akzeptiert
-python main.py -i img1.jpg img2.jpg img3.jpg -o fused.png -m gfgfgf --experimental
+python main.py -i img1.jpg img2.jpg img3.jpg -o fused.png -m gfgfgf
 
 # Einzelner mehrseitiger TIFF-Z-Stapel mit metadatenkalibriertem Maßstabsbalken
-python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar --experimental
+python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar
 
 # Benachbarte ähnliche Bilder prüfen, ohne zu fusionieren oder die Eingabe zu ändern
 python main.py -i ./stack_folder --suggest-duplicates
@@ -931,7 +931,7 @@ Für ein einzelnes Rendering lässt sich beispielsweise `--align openfocus --ali
 | `--input, -i` | Bildordner (auch mehrere), Videodatei, eine bzw. mehrere Bilddateien oder eine mehrseitige TIFF |
 | `--output, -o` | Pfad des Ausgabebildes (die Endung bestimmt das Format) |
 | `--output-dir, -d` | Stapelmodus: jeden Eingabeordner fusionieren und pro Stapel `<Ordner>.png` schreiben |
-| `--method, -m` | Stabile Verfahren (`openfocus_a`, `openfocus_b` als Standard, `openfocus_c`) und experimentelle Verfahren (`guided_filter`, `dct`, `dtcwt`, `gfgfgf`, `stackmff`, `stackmffv2`, `stackmffv3`) |
+| `--method, -m` | Stabile Verfahren (`openfocus_a`, `openfocus_b` als Standard, `openfocus_c`, `guided_filter`, `dct`, `dtcwt`, `gfgfgf`) und experimentelle Verfahren (`stackmff`, `stackmffv2`, `stackmffv3`) |
 | `--experimental` | Erlaubt experimentelle Fusionsverfahren für diesen Aufruf, auch bei der Auswahl über `--config` |
 | `--align, -a` | `none` (Standard), `homography`, `ecc`, `both`, `openfocus` |
 | `--param KEY=JSON_VALUE` | Fusionsparameter; für mehrere Schlüssel wiederholen; überschreibt ältere Flags |
