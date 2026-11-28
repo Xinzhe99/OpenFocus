@@ -733,3 +733,43 @@ def test_parallel_turntable_matches_serial_order(tmp_path):
             g1.seek(idx)
             g2.seek(idx)
             np.testing.assert_array_equal(np.asarray(g1.convert("RGB")), np.asarray(g2.convert("RGB")))
+
+
+def test_html_animation_includes_desktop_parity_loupe_and_valid_js(tmp_path):
+    """Exported HTML5 viewer embeds a self-contained magnifier loupe with valid JS and zero external URLs."""
+    import re
+    import shutil
+    import subprocess
+    from core.html_animation_export import HtmlAnimationOptions, build_html_animation
+
+    frames = [
+        np.full((90, 120, 3), (30 + i * 50, 100, 200), dtype=np.uint8)
+        for i in range(3)
+    ]
+    fused = np.full((90, 120, 3), (120, 160, 210), dtype=np.uint8)
+    html_doc = build_html_animation(
+        frames,
+        fused_image=fused,
+        options=HtmlAnimationOptions(max_width=120, include_fused_frame=True),
+    )
+
+    assert "http://" not in html_doc and "https://" not in html_doc
+    for token in (
+        'id="btnLoupe"',
+        'id="btnLoupeShape"',
+        "drawLoupe",
+        "ensureNativeLoupe",
+        "imageSmoothingEnabled = deviceScale < 1.0",
+        "LOUPE_MAX_ZOOM",
+        "LOUPE_MAX_SIZE",
+    ):
+        assert token in html_doc
+
+    match = re.search(r"<script>\s*(.*?)\s*</script>", html_doc, re.S)
+    assert match is not None
+    node_exe = shutil.which("node")
+    if node_exe is not None:
+        js_path = tmp_path / "viewer.js"
+        js_path.write_text(match.group(1), encoding="utf-8")
+        proc = subprocess.run([node_exe, "--check", str(js_path)], capture_output=True, text=True)
+        assert proc.returncode == 0, proc.stderr
