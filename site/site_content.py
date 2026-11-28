@@ -339,10 +339,10 @@ def _en() -> dict:
             "more_fmt": "{n} more",
             "how_title": "How this list is built",
             "how_body": (
-                "Generated from closed public GitHub issues opened by community members "
-                "(excluding maintainer-filed and bot issues). Each item links to the "
-                "OpenFocus release where the fix or feature shipped, or Next (main) while "
-                "merged improvements await the next tag."
+                "Automatically synchronized from closed public GitHub issues opened by "
+                "community members (excluding maintainer-filed and bot issues). Each item "
+                "links to the OpenFocus release where the fix or feature shipped, and "
+                "Next (main) entries promote to the release tag automatically when shipped."
             ),
             "optout_title": "Want to be removed or credited differently?",
             "optout_body": (
@@ -643,7 +643,7 @@ def _zh() -> dict:
             "next_version": "下个版本 (main)",
             "more_fmt": "还有 {n} 项",
             "how_title": "名单怎么来的",
-            "how_body": "直接整理自公开 GitHub Issue 中由社区成员提交并已解决的反馈与建议（已排除维护者自提与机器人账号），并与改动实际落地的 OpenFocus 版本一一对应；已合并到主分支、等待下一正式版打标的改动标记为“下个版本 (main)”。",
+            "how_body": "每当有社区成员提交的公开 GitHub Issue 关闭、或新版本正式发布时，自动化工作流都会同步更新名单（已排除维护者自提与机器人账号），并与改动落地的 OpenFocus 版本一一对应；主分支中尚未打标的修复先标为“下个版本 (main)”，发版后会自动关联到对应版本号。",
             "optout_title": "不想被列出，或想修改署名？",
             "optout_body": "如果你不希望出现在本页，或想调整显示名称与链接，欢迎直接在对应 Issue 下留言或发送邮件至 support@openfocus.top，我们会第一时间处理。",
         },

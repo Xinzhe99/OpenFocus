@@ -185,3 +185,71 @@ def test_contributors_loader_rejects_excluded_author(tmp_path, monkeypatch):
     monkeypatch.setattr(build_site, "SITE", site)
     with pytest.raises(ValueError, match="excluded contributor"):
         build_site.load_contributors()
+
+
+def test_sync_contributors_merges_promotes_and_filters():
+    from tools import sync_contributors
+
+    existing = {
+        "excluded_authors": ["Xinzhe99"],
+        "opt_out_authors": ["NoCreditUser"],
+        "excluded_issues": [10],
+        "contributors": [
+            {
+                "handle": "AlanRockefeller",
+                "platform": "GitHub",
+                "url": "https://github.com/AlanRockefeller",
+                "contributions": [
+                    {
+                        "issue": 329,
+                        "version": "next",
+                        "date": "2026-11-28",
+                        "kind": "bug",
+                        "en": "Curated English text.",
+                        "zh": "人工润色中文。",
+                    }
+                ],
+            },
+            {
+                "handle": "ReopenedUser",
+                "platform": "GitHub",
+                "url": "https://github.com/ReopenedUser",
+                "contributions": [
+                    {
+                        "issue": 99,
+                        "version": "next",
+                        "date": "2026-11-20",
+                        "kind": "bug",
+                        "en": "Stale",
+                        "zh": "Stale",
+                    }
+                ],
+            },
+        ],
+    }
+    issues = [
+        {"number": 329, "state": "closed", "closed_at": "2026-11-28T07:00:00Z", "user": {"login": "AlanRockefeller"}, "title": "Raw title"},
+        {"number": 345, "state": "closed", "closed_at": "2026-11-29T08:00:00Z", "user": {"login": "NewReporter"}, "title": "[Feature] Add dark grid", "labels": [{"name": "enhancement"}]},
+        {"number": 346, "state": "closed", "closed_at": "2026-11-29T09:00:00Z", "user": {"login": "Xinzhe99"}, "title": "Maintainer issue"},
+        {"number": 347, "state": "closed", "closed_at": "2026-11-29T09:00:00Z", "user": {"login": "NoCreditUser"}, "title": "Opt out"},
+        {"number": 348, "state": "closed", "closed_at": "2026-11-29T09:00:00Z", "user": {"login": "bot[bot]"}, "title": "Bot"},
+        {"number": 10, "state": "closed", "closed_at": "2026-11-29T09:00:00Z", "user": {"login": "SomeUser"}, "title": "Excluded issue"},
+        {"number": 349, "state": "closed", "closed_at": "2026-11-29T09:00:00Z", "user": {"login": "SomeUser"}, "title": "PR item", "pull_request": {}},
+        {"number": 350, "state": "closed", "state_reason": "not_planned", "closed_at": "2026-11-29T09:00:00Z", "user": {"login": "SomeUser"}, "title": "Not planned"},
+    ]
+    releases = [
+        {"tag_name": "v2.0.1-beta.1", "draft": False, "prerelease": True, "published_at": "2026-11-28T10:00:00Z"},
+        {"tag_name": "v2.0.1", "draft": False, "prerelease": False, "published_at": "2026-11-28T12:00:00Z"},
+    ]
+
+    merged = sync_contributors.merge_contributors(existing, issues, releases)
+    handles = [p["handle"] for p in merged["contributors"]]
+    assert handles == ["NewReporter", "AlanRockefeller"]
+    assert merged["contributors"][0]["contributions"][0]["version"] == "next"
+    assert merged["contributors"][0]["contributions"][0]["kind"] == "feature"
+    assert merged["contributors"][0]["contributions"][0]["en"] == "Add dark grid"
+    # Issue #329 closed before v2.0.1 is promoted automatically while keeping curated EN/ZH copy.
+    alan_item = merged["contributors"][1]["contributions"][0]
+    assert alan_item["version"] == "v2.0.1"
+    assert alan_item["en"] == "Curated English text."
+    assert alan_item["zh"] == "人工润色中文。"

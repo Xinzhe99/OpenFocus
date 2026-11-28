@@ -101,18 +101,23 @@
     <h1>{{contributors_page.heading}}</h1>
     <p class="lede">{{contributors_page.lede}}</p>
     <div class="contrib-actions">
-      <p class="contrib-stats">{{contributors_stats}}</p>
+      <p class="contrib-stats" id="contrib-stats">{{contributors_stats}}</p>
       <a class="btn ghost small" href="{{repo}}/issues" rel="noopener">{{contributors_page.cta_report}} ↗</a>
     </div>
   </header>
 
   <section class="contrib-board" aria-label="{{contributors_page.heading}}">
-    <div class="contrib-table">
+    <div class="contrib-table" id="contrib-table"
+         data-lang="{{code}}"
+         data-repo="{{repo}}"
+         data-next="{{contributors_page.next_version}}"
+         data-more="{{contributors_page.more_fmt}}"
+         data-stats-fmt="{{contributors_page.stats_fmt}}">
       <div class="contrib-row contrib-header" aria-hidden="true">
         <div>{{contributors_page.col_who}}</div>
         <div>{{contributors_page.col_changes}}</div>
       </div>
-      {{contributor_rows}}
+      <div id="contrib-rows">{{contributor_rows}}</div>
     </div>
   </section>
 

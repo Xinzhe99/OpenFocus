@@ -2,6 +2,8 @@
   "excluded_authors": [
     "Xinzhe99"
   ],
+  "opt_out_authors": [],
+  "excluded_issues": [],
   "contributors": [
     {
       "handle": "AlanRockefeller",
