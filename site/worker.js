@@ -50,6 +50,14 @@ const QR_ROUTES = new Map([
 const QR_MAX_BYTES = 512 * 1024;
 const QR_MAX_DIMENSION = 1024;
 const PNG_SIGNATURE = [137, 80, 78, 71, 13, 10, 26, 10];
+const LOCALIZED_ROUTES = new Map([
+  ["/", { en: "/", zh: "/zh/", lang: null, home: true }],
+  ["/zh/", { en: "/", zh: "/zh/", lang: "zh", home: true }],
+  ["/contributors", { en: "/contributors/", zh: "/zh/contributors/", lang: null, canonicalize: true, home: false }],
+  ["/contributors/", { en: "/contributors/", zh: "/zh/contributors/", lang: null, canonicalize: false, home: false }],
+  ["/zh/contributors", { en: "/contributors/", zh: "/zh/contributors/", lang: "zh", canonicalize: true, home: false }],
+  ["/zh/contributors/", { en: "/contributors/", zh: "/zh/contributors/", lang: "zh", canonicalize: false, home: false }],
+]);
 // /download/latest/* is a mutable URL even though the R2 object it resolves to
 // is versioned, so no downstream cache may pin the response.
 const OBJECT_CACHE = NO_STORE;
@@ -895,6 +903,144 @@ async function handleVersionedDownload(request, env, ctx) {
   return response || textResponse("The download mirror is not ready; retry the download.", 503, { "Retry-After": "60" }, method);
 }
 
+const CONTRIBUTORS_KEY = "openfocus-meta/contributors.json";
+const CONTRIBUTORS_CACHE_URL = "https://openfocus.internal/contributors-v1.json";
+const CONTRIBUTORS_MAX_BYTES = 256 * 1024;
+const DEFAULT_EXCLUDED_CONTRIBUTORS = new Set(["xinzhe99"]);
+
+function validContributorsPayload(data) {
+  if (!data || typeof data !== "object" || !Array.isArray(data.contributors)) return null;
+  const blocked = new Set(DEFAULT_EXCLUDED_CONTRIBUTORS);
+  for (const field of ["excluded_authors", "opt_out_authors"]) {
+    if (Array.isArray(data[field])) {
+      for (const item of data[field]) {
+        if (typeof item === "string" && item.trim()) blocked.add(item.trim().toLowerCase());
+      }
+    }
+  }
+  const blockedIssues = new Set(
+    Array.isArray(data.excluded_issues) ? data.excluded_issues.map((n) => Number(n)).filter(Number.isSafeInteger) : [],
+  );
+  const contributors = [];
+  for (const person of data.contributors) {
+    if (!person || typeof person !== "object") continue;
+    const handle = typeof person.handle === "string" ? person.handle.trim() : "";
+    const url = typeof person.url === "string" ? person.url.trim() : "";
+    if (!handle || blocked.has(handle.toLowerCase()) || handle.toLowerCase().endsWith("[bot]") ||
+        !/^https:\/\/github\.com\/[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(url)) {
+      continue;
+    }
+    const items = [];
+    for (const entry of Array.isArray(person.contributions) ? person.contributions : []) {
+      if (!entry || typeof entry !== "object") continue;
+      const issue = Number(entry.issue);
+      const version = typeof entry.version === "string" ? entry.version.trim() : "";
+      const date = typeof entry.date === "string" ? entry.date.trim() : "";
+      const en = typeof entry.en === "string" ? entry.en.trim() : "";
+      const zh = typeof entry.zh === "string" ? entry.zh.trim() : "";
+      if (!Number.isSafeInteger(issue) || issue <= 0 || blockedIssues.has(issue)) continue;
+      if (version !== "next" && !/^v[0-9]+(?:\.[0-9]+)*$/.test(version)) continue;
+      if (!date || !en || !zh) continue;
+      items.push({ issue, version, date, kind: typeof entry.kind === "string" ? entry.kind : "feedback", en, zh });
+    }
+    if (items.length) {
+      contributors.push({
+        handle,
+        platform: typeof person.platform === "string" && person.platform.trim() ? person.platform.trim() : "GitHub",
+        url,
+        contributions: items,
+      });
+    }
+  }
+  return { contributors };
+}
+
+async function readBoundedObjectText(object, maxBytes) {
+  if (typeof object.size === "number" && object.size > maxBytes) return null;
+  const reader = object.body?.getReader();
+  if (!reader) return null;
+  const chunks = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      reader.cancel().catch(() => {});
+      return null;
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+}
+
+async function handleContributors(request, env, ctx) {
+  const method = (request.method || "GET").toUpperCase();
+  if (method !== "GET" && method !== "HEAD") {
+    return textResponse("Method Not Allowed", 405, { Allow: "GET, HEAD" }, method);
+  }
+  const cache = typeof caches !== "undefined" ? caches.default : null;
+  const cacheRequest = new Request(CONTRIBUTORS_CACHE_URL);
+  if (cache) {
+    const cached = await cache.match(cacheRequest);
+    if (cached) {
+      return new Response(method === "HEAD" ? null : cached.body, {
+        status: cached.status,
+        headers: { ...jsonHeaders(), "X-OpenFocus-Contributors-Source": "r2" },
+      });
+    }
+  }
+  if (!env?.DOWNLOADS || typeof env.DOWNLOADS.get !== "function") {
+    return textResponse("Contributors data is unavailable", 503, { "Retry-After": "60" }, method);
+  }
+  let object;
+  try {
+    object = await env.DOWNLOADS.get(CONTRIBUTORS_KEY);
+  } catch {
+    return textResponse("Contributors data is unavailable", 503, { "Retry-After": "60" }, method);
+  }
+  if (!object) {
+    return new Response(method === "HEAD" ? null : JSON.stringify({ error: "Not found" }), {
+      status: 404,
+      headers: jsonHeaders(),
+    });
+  }
+  let parsed = null;
+  try {
+    const raw = await readBoundedObjectText(object, CONTRIBUTORS_MAX_BYTES);
+    if (raw !== null) parsed = validContributorsPayload(JSON.parse(raw));
+  } catch {
+    parsed = null;
+  }
+  if (!parsed) {
+    return textResponse("Contributors data is invalid", 503, { "Retry-After": "60" }, method);
+  }
+  const body = JSON.stringify(parsed);
+  if (cache && ctx?.waitUntil) {
+    ctx.waitUntil(
+      cache.put(
+        cacheRequest,
+        new Response(body, {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json; charset=utf-8",
+            "Cache-Control": `public, max-age=${EDGE_CACHE_SECONDS}`,
+          },
+        }),
+      ).catch(() => {}),
+    );
+  }
+  return new Response(method === "HEAD" ? null : body, {
+    headers: { ...jsonHeaders(), "X-OpenFocus-Contributors-Source": "r2" },
+  });
+}
+
 export default {
   async scheduled(_event, env, ctx) {
     if (!env?.ANALYTICS) return;
@@ -924,6 +1070,7 @@ export default {
     }
     if (url.pathname === "/api/usage") return usageRequest(request, env);
     if (url.pathname === "/api/admin/stats") return adminStats(request, env);
+    if (url.pathname === "/api/contributors") return handleContributors(request, env, ctx);
 
 
     if (url.pathname === "/api/updates") {
@@ -965,12 +1112,13 @@ export default {
     }
 
     let languageHeaders = null;
-    const homepage = url.pathname === "/" || url.pathname === "/zh/";
-    if (homepage && (method === "GET" || method === "HEAD")) {
+    const route = LOCALIZED_ROUTES.get(url.pathname);
+    const homepage = Boolean(route?.home);
+    if (route && (method === "GET" || method === "HEAD")) {
       const query = url.searchParams.get("lang");
       const explicit = query === "en" || query === "zh";
-      const lang = explicit ? query : url.pathname === "/zh/" ? "zh" : preferredLanguage(request);
-      if (url.pathname === "/" || explicit) {
+      const lang = explicit ? query : route.lang || preferredLanguage(request);
+      if (route.lang !== "zh" || explicit || route.canonicalize) {
         languageHeaders = new Headers({
           Vary: "Accept-Language, Cookie",
           "Cache-Control": NO_STORE,
@@ -979,7 +1127,7 @@ export default {
           languageHeaders.set("Set-Cookie", `lang=${lang}; Path=/; Max-Age=31536000; SameSite=Lax${url.protocol === "https:" ? "; Secure" : ""}`);
         }
       }
-      const pathname = lang === "zh" ? "/zh/" : "/";
+      const pathname = lang === "zh" ? route.zh : route.en;
       if (url.pathname !== pathname) {
         languageHeaders.set("Location", pathname + url.search);
         return new Response(null, { status: 302, headers: languageHeaders });

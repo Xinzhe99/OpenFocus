@@ -170,4 +170,122 @@
       applyDownload();
     } catch {}
   })();
+
+  // Hydrate the Contributors Wall with the live synced dataset when present.
+  (() => {
+    const table = $('#contrib-table');
+    const container = $('#contrib-rows');
+    if (!table || !container) return;
+
+    const lang = table.dataset.lang === 'zh' ? 'zh' : 'en';
+    const repo = table.dataset.repo || 'https://github.com/Xinzhe99/OpenFocus';
+    const nextLabel = table.dataset.next || 'Next (main)';
+    const moreFmt = table.dataset.more || '{n} more';
+    const statsFmt = table.dataset.statsFmt || '';
+    const profileRe = /^https:\/\/github\.com\/[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
+    const tagRe = /^v[0-9]+(?:\.[0-9]+)*$/;
+
+    const buildItemsList = (entries) => {
+      const ul = document.createElement('ul');
+      ul.className = 'contrib-items';
+      for (const entry of entries) {
+        const issueNum = Number(entry?.issue);
+        const ver = typeof entry?.version === 'string' ? entry.version.trim() : '';
+        const text = typeof entry?.[lang] === 'string' ? entry[lang].trim() : '';
+        if (!Number.isSafeInteger(issueNum) || issueNum <= 0 || !text) continue;
+        if (ver !== 'next' && !tagRe.test(ver)) continue;
+
+        const li = document.createElement('li');
+        li.className = 'contrib-item';
+
+        const verLink = document.createElement('a');
+        verLink.rel = 'noopener';
+        if (ver === 'next') {
+          verLink.className = 'contrib-ver is-next';
+          verLink.href = `${repo}/commits/main`;
+          verLink.textContent = nextLabel;
+        } else {
+          verLink.className = 'contrib-ver';
+          verLink.href = `${repo}/releases/tag/${ver}`;
+          verLink.textContent = ver;
+        }
+
+        const span = document.createElement('span');
+        span.className = 'contrib-text';
+        span.textContent = text;
+
+        const issueLink = document.createElement('a');
+        issueLink.className = 'contrib-issue';
+        issueLink.rel = 'noopener';
+        issueLink.href = `${repo}/issues/${issueNum}`;
+        issueLink.textContent = `#${issueNum}`;
+
+        li.append(verLink, span, issueLink);
+        ul.appendChild(li);
+      }
+      return ul;
+    };
+
+    (async () => {
+      try {
+        const res = await fetch('/api/contributors', { headers: { accept: 'application/json' } });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!data || !Array.isArray(data.contributors) || !data.contributors.length) return;
+
+        const rows = [];
+        let totalChanges = 0;
+        for (const person of data.contributors) {
+          const handle = typeof person?.handle === 'string' ? person.handle.trim() : '';
+          const url = typeof person?.url === 'string' ? person.url.trim() : '';
+          const items = Array.isArray(person?.contributions) ? person.contributions : [];
+          if (!handle || !profileRe.test(url) || !items.length) continue;
+
+          const row = document.createElement('div');
+          row.className = 'contrib-row';
+
+          const who = document.createElement('div');
+          who.className = 'contrib-who';
+          const handleLink = document.createElement('a');
+          handleLink.className = 'contrib-handle';
+          handleLink.href = url;
+          handleLink.rel = 'noopener';
+          handleLink.textContent = `@${handle}`;
+          const tag = document.createElement('span');
+          tag.className = 'contrib-tag';
+          tag.textContent = typeof person.platform === 'string' && person.platform.trim() ? person.platform.trim() : 'GitHub';
+          who.append(handleLink, tag);
+
+          const changes = document.createElement('div');
+          changes.className = 'contrib-changes';
+          const headList = buildItemsList(items.slice(0, 3));
+          changes.appendChild(headList);
+          const tail = items.slice(3);
+          if (tail.length) {
+            const details = document.createElement('details');
+            details.className = 'contrib-more';
+            const summary = document.createElement('summary');
+            summary.textContent = moreFmt.replace('{n}', String(tail.length));
+            details.append(summary, buildItemsList(tail));
+            changes.appendChild(details);
+          }
+          totalChanges += headList.childElementCount + (tail.length ? detailsCount(changes) : 0);
+          row.append(who, changes);
+          rows.push(row);
+        }
+        if (!rows.length) return;
+        container.replaceChildren(...rows);
+        const statsEl = $('#contrib-stats');
+        if (statsEl && statsFmt) {
+          statsEl.textContent = statsFmt
+            .replace('{people}', String(rows.length))
+            .replace('{changes}', String(totalChanges));
+        }
+      } catch {}
+    })();
+
+    function detailsCount(containerEl) {
+      return containerEl.querySelectorAll('.contrib-more .contrib-item').length;
+    }
+  })();
 })();
