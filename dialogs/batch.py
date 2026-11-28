@@ -63,7 +63,7 @@ def _track_import_worker(worker) -> None:
         _TRACKED_IMPORT_WORKERS.discard(w)
         w.deleteLater()
 
-    worker.finished.connect(release)
+    worker.finished.connect(release, Qt.ConnectionType.QueuedConnection)
 
 
 def _section_rule(text: str) -> QLabel:
@@ -1305,13 +1305,13 @@ class BatchProcessingDialog(QDialog):
         self.preview_label.setText(
             trans.t('batch_preview_adaptive_analyzing').format(done=0, total=len(entries))
         )
-        _track_import_worker(worker)
         self._set_import_busy(self._import_busy)
 
         worker.progress.connect(self._on_adaptive_progress)
         worker.split_ready.connect(self._on_adaptive_split_ready)
         worker.failed.connect(self._on_adaptive_split_failed)
         worker.finished.connect(self._on_adaptive_split_finished)
+        _track_import_worker(worker)
         worker.start()
 
     def _on_adaptive_progress(self, done: int, total: int) -> None:
@@ -1323,6 +1323,11 @@ class BatchProcessingDialog(QDialog):
         )
         self._update_import_status_labels()
 
+    def _clear_adaptive_busy(self) -> None:
+        self._adaptive_busy = False
+        self._adaptive_progress = (0, 0)
+        self._set_import_busy(self._import_busy)
+
     def _on_adaptive_split_ready(self, stacks, descriptors) -> None:
         if not self._active_adaptive_sender():
             return
@@ -1333,6 +1338,7 @@ class BatchProcessingDialog(QDialog):
                 self._adaptive_descriptor_cache[self._adaptive_entry_key(entry)] = desc
         self.single_folder_stacks = list(stacks or [])
         self.preview_label.setText(self._format_adaptive_preview(len(entries), self.single_folder_stacks))
+        self._clear_adaptive_busy()
 
     def _on_adaptive_split_failed(self, _message: str) -> None:
         if not self._active_adaptive_sender():
@@ -1341,14 +1347,13 @@ class BatchProcessingDialog(QDialog):
         entries = list(getattr(worker, 'adaptive_entries', ()))
         self.single_folder_stacks = [entries] if entries else []
         self.preview_label.setText(self._format_adaptive_preview(len(entries), self.single_folder_stacks))
+        self._clear_adaptive_busy()
 
     def _on_adaptive_split_finished(self) -> None:
         if not self._active_adaptive_sender():
             return
         self._adaptive_worker = None
-        self._adaptive_busy = False
-        self._adaptive_progress = (0, 0)
-        self._set_import_busy(self._import_busy)
+        self._clear_adaptive_busy()
 
     def update_single_folder_preview(self):
         """更新单文件夹预览"""

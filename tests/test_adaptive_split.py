@@ -319,6 +319,7 @@ def test_batch_dialog_adaptive_default_order_async_preview_and_simplified_ui(qap
         QTimer.singleShot(timeout_ms, loop.quit)
         loop.exec()
         qapp.processEvents()
+        assert predicate()
 
     # Build a real two-stack single folder on disk.
     folder = tmp_path / "mixed_stacks"
