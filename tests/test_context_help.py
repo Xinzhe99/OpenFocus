@@ -283,3 +283,67 @@ def test_hold_h_works_inside_sub_dialogs(qapp, tmp_path, monkeypatch):
         dlg.close()
         dlg.deleteLater()
         _destroy_main_window(qapp, window)
+
+
+def test_right_panel_icon_action_tooltips_and_help_beacon_labels(qapp, monkeypatch):
+    from ui.right_panel import IconActionButton
+
+    # Icon-only buttons hide their caption visually, so even a matching explicit
+    # tooltip must never be stripped back to "".
+    plain_btn = IconActionButton("reset", "Reset Default")
+    plain_btn.setToolTip("Reset Default")
+    assert plain_btn.toolTip() == "Reset Default"
+    plain_btn.deleteLater()
+
+    for lang, expected_beacon in (
+        ("zh", "帮助（拖拽 / 按住 H）"),
+        ("en", "Help (Drag / Hold H)"),
+    ):
+        monkeypatch.setattr(trans, "current_lang", lang)
+        parts = create_right_panel()
+        try:
+            assert parts.btn_context_help.text() == expected_beacon
+            for button in (
+                parts.btn_live_preview,
+                parts.btn_render_settings,
+                parts.btn_reset,
+                parts.btn_render_more,
+            ):
+                tip = button.toolTip()
+                assert "\n" in tip, (lang, button.full_text(), tip)
+                title, hint = tip.split("\n", 1)
+                assert title.strip()
+                assert hint.strip()
+                assert title != hint
+        finally:
+            parts.widget.close()
+            parts.widget.deleteLater()
+
+
+def test_help_beacon_mounts_in_menubar_corner_and_retranslates_without_clipping(
+        qapp, tmp_path, monkeypatch):
+    from main import OpenFocus
+    from tests.test_control_channel import _destroy_main_window, _new_main_window
+
+    monkeypatch.setattr(OpenFocus, "_probe_stackmff_availability_async", lambda self: None)
+    monkeypatch.setattr(OpenFocus, "_probe_device_kind_async", lambda self: None)
+    monkeypatch.setattr(trans, "current_lang", "zh")
+    window = _new_main_window(qapp, tmp_path, monkeypatch, use_gpu=False)
+    try:
+        beacon = window.btn_context_help
+        menubar = window.menuBar()
+        assert beacon is not None
+        if not menubar.isNativeMenuBar():
+            corner = menubar.cornerWidget(Qt.Corner.TopRightCorner)
+            assert corner is not None and corner.isAncestorOf(beacon)
+            assert not window.right_panel_components.context_help_host.isVisible()
+            assert beacon.text() == "帮助（拖拽 / 按住 H）"
+            assert beacon.width() >= beacon.sizeHint().width()
+
+            trans.current_lang = "en"
+            window.update_ui_text()
+            qapp.processEvents()
+            assert beacon.text() == "Help (Drag / Hold H)"
+            assert beacon.width() >= beacon.sizeHint().width()
+    finally:
+        _destroy_main_window(qapp, window)

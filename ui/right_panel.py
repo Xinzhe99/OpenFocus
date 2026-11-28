@@ -448,6 +448,13 @@ class IconActionButton(ElidingButton):
     def minimumSizeHint(self):  # noqa: N802
         return QSize(34, 34)
 
+    def _update_tooltip(self) -> None:
+        # IconActionButton hides its caption visually, so even a tooltip that
+        # equals the hidden button label must stay intact on hover.
+        target = self._explicit_tip or self._full_text
+        if self.toolTip() != target:
+            super(ElidingButton, self).setToolTip(target)
+
     def _refresh_display(self) -> None:
         self._elided_text = self._full_text
         self._update_tooltip()
@@ -626,6 +633,7 @@ class RightPanelComponents:
     btn_method_help: Optional[QPushButton] = None
     btn_reg_help: Optional[QPushButton] = None
     btn_context_help: Optional[ContextHelpBeacon] = None
+    context_help_host: Optional[QWidget] = None
     btn_render_more: Optional[IconActionButton] = None
     lbl_reg_align_area: QLabel = None
     btn_reg_align_area: QPushButton = None
@@ -700,12 +708,15 @@ def create_right_panel() -> RightPanelComponents:
     config_layout.setSpacing(6)
 
     # Top-right interactive help beacon: click to pick, drag '?' onto any target, or hold H.
-    beacon_row = QHBoxLayout()
+    # Placed in a hideable wrapper row so the main window can dock the beacon in the menu bar
+    # corner while retaining a clean fallback when a native OS menu bar is active.
+    context_help_host = QWidget(config_widget)
+    beacon_row = QHBoxLayout(context_help_host)
     beacon_row.setContentsMargins(0, 0, 0, 0)
     beacon_row.addStretch(1)
-    btn_context_help = ContextHelpBeacon(config_widget)
+    btn_context_help = ContextHelpBeacon(context_help_host)
     beacon_row.addWidget(btn_context_help)
-    config_layout.addLayout(beacon_row)
+    config_layout.addWidget(context_help_host)
 
     method_group = QGroupBox(trans.t('group_fusion'))
     method_layout = QVBoxLayout(method_group)
@@ -790,10 +801,12 @@ def create_right_panel() -> RightPanelComponents:
     btn_live_preview.setEnabled(False)
 
     btn_render_settings = IconActionButton("render_settings", trans.t('render_settings_title'), config_widget)
-    btn_render_settings.setToolTip(trans.t('render_settings_title'))
+    btn_render_settings.setToolTip(
+        f"{trans.t('render_settings_title')}\n{trans.t('ctx_help_btn_render_settings_hint')}")
 
     btn_reset = IconActionButton("reset", trans.t('btn_reset'), config_widget)
-    btn_reset.setToolTip(trans.t('btn_reset'))
+    btn_reset.setToolTip(
+        f"{trans.t('btn_reset')}\n{trans.t('ctx_help_btn_reset_hint')}")
 
     btn_render_more = IconActionButton("render_more", trans.t('ctx_help_btn_menu_more'), config_widget)
     btn_render_more.setToolTip(
@@ -1018,6 +1031,7 @@ def create_right_panel() -> RightPanelComponents:
         lbl_status_gpu=lbl_status_gpu,
         lbl_status_memory=lbl_status_memory,
         btn_context_help=btn_context_help,
+        context_help_host=context_help_host,
         btn_render_more=btn_render_more,
         lbl_reg_align_area=lbl_reg_align_area,
         btn_reg_align_area=btn_reg_align_area,
