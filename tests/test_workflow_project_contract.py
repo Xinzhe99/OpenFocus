@@ -288,6 +288,7 @@ def test_restoring_checked_frames_reuses_ecc_across_fusion_methods(qapp, monkeyp
     from tests.test_gui_units import _render_window, _patched_render_manager, _finish_alignment
 
     window = _render_window([np.full((12, 18, 3), i, np.uint8) for i in range(3)])
+    window.legacy_features = True
     window.effective_stack = OpenFocus.effective_stack.__get__(window)
     window.set_alignment_method('ecc')
     manager, _ = _patched_render_manager(monkeypatch, window, ai_available=True)

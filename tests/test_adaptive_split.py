@@ -344,12 +344,13 @@ def test_batch_dialog_adaptive_default_order_async_preview_and_simplified_ui(qap
         assert dialog.split_method_combo.currentData() == "adaptive"
         assert dialog.split_method_combo.itemText(0) == trans.t("batch_split_adaptive")
 
-        # Switch to single-folder mode: spinbox row hidden, adaptive hint visible.
+        # Switch to single-folder mode: spinbox row hidden, adaptive hint lives in tooltip.
         dialog.rb_single_folder.setChecked(True)
         qapp.processEvents()
         assert dialog.get_split_settings() == ("adaptive", None)
         assert dialog.param_row_widget.isHidden()
-        assert not dialog.adaptive_hint_label.isHidden()
+        assert dialog.adaptive_hint_label.isHidden()
+        assert trans.t("batch_adaptive_hint") in dialog.split_method_combo.toolTip()
 
         # 2. Simplified UI verification (#209): legacy controls never shown to users.
         tabs = dialog.findChild(QTabWidget)

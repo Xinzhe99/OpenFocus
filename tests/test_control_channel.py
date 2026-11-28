@@ -1211,7 +1211,7 @@ def test_gpu_action_allows_retry_when_memory_becomes_readable(qapp, tmp_path, mo
     monkeypatch.setattr(neural_runtime, "_session", session)
     window = _new_main_window(qapp, tmp_path, monkeypatch, use_gpu=False)
     try:
-        window.combo_fusion.setCurrentIndex(window.combo_fusion.findData('stackmff'))
+        window.combo_fusion.setCurrentIndex(window.combo_fusion.findData('stackmffv4'))
         window._update_dynamic_status()
         assert window.use_gpu is False
         settings = settings_store._settings_singleton
@@ -1252,7 +1252,7 @@ def test_gpu_action_allows_retry_when_memory_becomes_readable(qapp, tmp_path, mo
         _destroy_main_window(qapp, window)
 
 
-@pytest.mark.parametrize('method', ['openfocus_a', 'openfocus_b', 'openfocus_c', 'stackmff', 'stackmffv3'])
+@pytest.mark.parametrize('method', ['openfocus_a', 'openfocus_b', 'openfocus_c', 'stackmffv4', 'stackmff', 'stackmffv3'])
 def test_device_label_separates_available_adapter_and_completed_job(
         qapp, tmp_path, monkeypatch, method):
     from core import multi_focus_fusion as mff
@@ -1269,6 +1269,9 @@ def test_device_label_separates_available_adapter_and_completed_job(
     monkeypatch.setattr(neural_runtime, '_ACTUAL_DEVICE', 'CPU')
     window = _new_main_window(qapp, tmp_path, monkeypatch, use_gpu=True)
     try:
+        if method in ('stackmff', 'stackmffv3'):
+            window.legacy_features = True
+            window.apply_legacy_features()
         window.combo_fusion.setCurrentIndex(window.combo_fusion.findData(method))
         status = window.lbl_status_gpu
         manager = window.render_manager
@@ -2176,7 +2179,7 @@ def test_render_start_reports_sensor_cleanup_validation(server, control_window, 
 
 def test_render_start_reports_confirmation_without_a_modal(server, control_window,
                                                            monkeypatch):
-    monkeypatch.setattr(control_window, "current_fusion_method", lambda: "stackmffv3")
+    monkeypatch.setattr(control_window, "current_fusion_method", lambda: "stackmffv4")
     monkeypatch.setattr(control_window, "current_alignment_method", lambda: "none")
     monkeypatch.setattr(control_window.render_manager, "_ai_confirmation_needed",
                         lambda *args, **kwargs: True)
@@ -2549,17 +2552,21 @@ def test_control_channel_guards_experimental_fusion_and_alignment(server, contro
     from core.algorithms import fusion_algorithms
     from locales import trans
 
-    assert call(server, 'method.set', id='stackmffv3')['result']['id'] == 'stackmffv3'
+    assert call(server, 'method.set', id='stackmffv4')['result']['id'] == 'stackmffv4'
     control_window.experimental_features = False
     control_window.apply_experimental_features()
     locked_render = call(server, 'render.start')
     assert locked_render['error']['code'] == 'invalid_argument'
     assert trans.t('experimental_locked_hint') in locked_render['error']['message']
-    assert control_window.current_fusion_method() == 'stackmffv3'
+    assert control_window.current_fusion_method() == 'stackmffv4'
     for spec in fusion_algorithms():
         before = control_window.current_fusion_method()
         reply = call(server, 'method.set', id=spec.id)
-        if spec.experimental:
+        if spec.legacy:
+            assert reply['error']['code'] == 'invalid_argument'
+            assert trans.t('legacy_locked_hint') in reply['error']['message']
+            assert control_window.current_fusion_method() == before
+        elif spec.experimental:
             assert reply['error']['code'] == 'invalid_argument'
             assert trans.t('experimental_locked_hint') in reply['error']['message']
             assert control_window.current_fusion_method() == before

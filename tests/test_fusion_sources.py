@@ -299,9 +299,9 @@ def test_gfg_long_uncacheable_sources_resolve_once_per_source_pass(tmp_path, mon
     monkeypatch.setattr(image_loader, 'decode_image', tracked_decode)
     actual = gfgfgf_impl(descriptors, kernel_size=3, thread_count=1)
     np.testing.assert_array_equal(actual, expected)
-    # Channel selection, decisions, weights and source reconstruction are fixed
-    # passes; eight reconstruction strips must still read their source only once.
-    assert counts == {descriptors[0].path: 4, descriptors[1].path: 1}
+    # Channel selection, fused decision pass, and source reconstruction are
+    # fixed passes; eight reconstruction strips still read each source once.
+    assert counts == {descriptors[0].path: 3, descriptors[1].path: 1}
 
 
 def test_v3_hard_blend_rejects_changed_noncontributing_source(tmp_path):

@@ -554,11 +554,13 @@ def test_batch_sharpen_strength_is_seeded_and_retained(qapp):
         qapp.processEvents()
 
 
-def test_batch_fusion_only_options_follow_the_selected_method(qapp):
+def test_batch_fusion_only_options_follow_the_selected_method(qapp, monkeypatch):
     """Alignment-only disables fusion-only inputs but keeps their drafts."""
+    import ui.algorithm_combo as algorithm_combo
     from dialogs.batch import BatchProcessingDialog
     from locales import trans
 
+    monkeypatch.setattr(algorithm_combo, 'legacy_enabled', lambda _w: True)
     dialog = BatchProcessingDialog(None)
     try:
         assert dialog.fusion_combo.currentData() == 'none'
@@ -717,6 +719,7 @@ def test_batch_disables_unavailable_methods_without_dropping_selection(
     monkeypatch.setattr(algorithm_combo, '_package_available', lambda _name: False)
     parent = QWidget()
     parent.experimental_features = True
+    parent.legacy_features = True
     parent.current_fusion_method = lambda: 'stackmffv3'
     parent.current_alignment_method = lambda: 'none'
     parent.stack_reverse_order = False
@@ -751,12 +754,10 @@ def test_batch_depth_warning_only_appears_for_eight_bit_formats(qapp):
     try:
         assert dialog.depth_hint.isHidden()
         assert trans.t('export_depth_hint') in dialog.format_combo.toolTip()
-        for image_format in ('JPG', 'BMP'):
-            dialog.format_combo.setCurrentText(image_format)
-            assert not dialog.depth_hint.isHidden()
-        for image_format in ('PNG', 'TIFF'):
+        for image_format in ('JPG', 'BMP', 'PNG', 'TIFF'):
             dialog.format_combo.setCurrentText(image_format)
             assert dialog.depth_hint.isHidden()
+            assert trans.t('export_depth_hint') in dialog.format_combo.toolTip()
     finally:
         dialog.close()
         dialog.deleteLater()

@@ -73,9 +73,9 @@ def test_command_create_and_batch_dry_run(tmp_path):
     _stack(tmp_path / "stack")
     recipe = tmp_path / "recipe.json"
     assert run_cli(["recipe", "create", str(recipe), "-i", str(tmp_path / "stack"),
-                    "-d", str(tmp_path / "results"), "-m", "dct", "--experimental"]) == 0
+                    "-d", str(tmp_path / "results"), "-m", "stackmffv4", "--experimental"]) == 0
     options = load_recipe(recipe)['options']
-    assert options['method'] == 'dct'
+    assert options['method'] == 'stackmffv4'
     assert 'experimental' not in options
     assert run_cli(["recipe", "run", str(recipe), "--dry-run"]) == 2
     assert run_cli(["recipe", "run", str(recipe), "--dry-run", "--experimental"]) == 0

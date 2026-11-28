@@ -10,6 +10,68 @@ LANGUAGES = ("en", "zh", "ja", "es", "de", "fr", "ru", "ko", "pt", "it", "nl", "
 
 # Summaries of the shipped CHANGELOG section, not installation boilerplate.
 RELEASE_NOTES = {
+    "2.1.0": {
+        "en": """- Major speed and scalability upgrades across OpenFocus A, B, and C, ECC and OpenFocusAlign registration, GFG-FGF, and DCT/DTCWT, with DCT, DTCWT, Guided Filter, and GFG-FGF now graduated as standard fusion methods alongside OpenFocus A/B/C.
+- New experimental StackMFF V4 Flash neural focus stacking and depth estimation (`stackmffv4`) with bundled weights; legacy StackMFF V1-V3 models remain accessible under Settings -> Advanced Settings -> Enable legacy features.
+- Upgraded interactive HTML5 exports: standalone HTML5 WebGL 3D depth viewer export, and HTML5 animation exports with a desktop-parity magnifier loupe and 12-language offline switcher.
+- Expanded output workflows: Batch Processing and Watch Folders now support Linear DNG export, large layered PSD/PSB v2 (64-bit) exports run in bounded memory with progress reporting, and the Result panel adds 1:1 / Fit-to-Window / continuous zoom controls.
+- Compact right-hand control panel, refreshed Retouch workflow with faster bounded sharpness maps, interactive Context Help (`H` / menubar beacon) across dialogs, and incremental `.ofdelta.zip` / `2.0.0` patch updates across Windows, macOS, and Linux.""",
+        "zh": """- 全面提升 OpenFocus A/B/C、ECC 与 OpenFocusAlign 配准、GFG-FGF 及 DCT/DTCWT 的性能与大图可扩展性；DCT、DTCWT、引导滤波与 GFG-FGF 已转正为常规融合算法。
+- 新增实验性 StackMFF V4 Flash 神经融合与深度估计模型（`stackmffv4`）并随安装包内置权重；历史 StackMFF V1–V3 模型可在「设置 → 高级设置 → 启用遗留功能」中按需开启。
+- 交互式 HTML5 导出升级：新增独立 HTML5 WebGL 3D 深度查看器导出，HTML5 动画导出新增与桌面端一致的局部放大镜及 12 种语言离线切换。
+- 输出与界面流程增强：批处理与监控文件夹新增 Linear DNG 输出，大型分层 PSD/PSB v2（64 位）支持有界内存进度导出；结果视图新增 1:1、适应窗口与连续缩放工具栏。
+- 新增紧凑右侧控制面板、优化的修饰工作区与有界锐度图计算、全对话框上下文帮助（按住 `H` 或拖拽帮助信标），并支持面向 v2.0.0 与 Beta 通道的增量更新包。""",
+        "ja": """- OpenFocus A/B/C、ECC・OpenFocusAlign 位置合わせ、GFG-FGF、DCT/DTCWT を高速化・省メモリ化し、DCT、DTCWT、Guided Filter、GFG-FGF を標準手法に昇格しました。
+- 実験的な StackMFF V4 Flash ニューラル融合・深度推定（`stackmffv4`）を同梱ウェイト付きで追加し、従来の V1–V3 モデルは「設定 → 詳細設定」のレガシー機能から利用できます。
+- 対話型 HTML5 出力を強化：単体動作する HTML5 WebGL 3D 深度ビューア書き出し、ならびに拡大ルーペと 12 言語切り替えを備えた HTML5 アニメーション書き出しを追加しました。
+- バッチ処理と監視フォルダーで Linear DNG 書き出しに対応し、大容量レイヤー PSD/PSB v2（64bit）の進捗付き省メモリ書き出し、結果ビューの 1:1 / 全体表示 / 連続ズームを追加しました。
+- コンパクトな右側パネル、改善されたレタッチ作業画面、全ダイアログ対応のコンテキストヘルプ（`H` キー）、v2.0.0 向けパッチと `.ofdelta.zip` 差分更新を提供します。""",
+        "es": """- Importantes mejoras de velocidad y uso de memoria en OpenFocus A/B/C, registro ECC y OpenFocusAlign, GFG-FGF y DCT/DTCWT; DCT, DTCWT, Filtro Guiado y GFG-FGF pasan a ser métodos estándar.
+- Nuevo modelo experimental StackMFF V4 Flash (`stackmffv4`) con pesos incluidos; los modelos heredados StackMFF V1–V3 siguen disponibles activando funciones heredadas en Configuración avanzada.
+- Exportaciones HTML5 interactivas mejoradas: visor 3D WebGL independiente para mapas de profundidad y visor HTML5 animado con lupa de escritorio y selector sin conexión de 12 idiomas.
+- Procesamiento por lotes y carpetas vigiladas compatibles con Linear DNG, exportación PSD/PSB v2 de 64 bits con memoria acotada y nueva barra de zoom 1:1 / Ajustar en Resultados.
+- Panel derecho compacto, espacio de Retoque optimizado, Ayuda contextual interactiva (`H`) en todos los diálogos y actualizaciones incrementales `.ofdelta.zip` / parche desde v2.0.0.""",
+        "de": """- Deutliche Geschwindigkeits- und Speicheroptimierungen für OpenFocus A/B/C, ECC- und OpenFocusAlign-Registrierung, GFG-FGF sowie DCT/DTCWT; DCT, DTCWT, Guided Filter und GFG-FGF sind nun Standardmethoden.
+- Neues experimentelles StackMFF V4 Flash Modell (`stackmffv4`) mit integrierten Gewichten; ältere StackMFF V1–V3 Modelle bleiben über Einstellungen → Erweiterte Einstellungen → Legacy-Funktionen verfügbar.
+- Erweiterte interaktive HTML5-Exporte: eigenständiger HTML5-WebGL-3D-Tiefenbetrachter sowie animierter HTML5-Export mit Lupe und 12-Sprachen-Umschalter offline.
+- Stapelverarbeitung und Überwachungsordner unterstützen nun Linear DNG; große PSD/PSB v2 (64-Bit)-Exporte laufen speicherbegrenzt mit Fortschritt; Ergebnisansicht mit 1:1-, Einpassen- und stufenlosem Zoom.
+- Kompaktes rechtes Bedienfeld, überarbeitete Retusche-Oberfläche, vollständige Kontexthilfe (`H`) in allen Dialogen sowie inkrementelle `.ofdelta.zip`- und v2.0.0-Patch-Updates.""",
+        "fr": """- Gains majeurs de vitesse et de mémoire sur OpenFocus A/B/C, l'alignement ECC et OpenFocusAlign, GFG-FGF et DCT/DTCWT ; DCT, DTCWT, Filtre guidé et GFG-FGF deviennent des méthodes standard.
+- Nouveau modèle expérimental StackMFF V4 Flash (`stackmffv4`) avec poids intégrés ; les anciens modèles StackMFF V1–V3 restent accessibles via Paramètres → Paramètres avancés → Fonctions héritées.
+- Exports HTML5 interactifs améliorés : visionneuse 3D WebGL autonome de carte de profondeur, et animation HTML5 dotée d'une loupe fidèle au bureau et d'un sélecteur hors ligne en 12 langues.
+- Traitement par lots et dossiers surveillés compatibles Linear DNG, export PSD/PSB v2 64 bits à mémoire bornée avec progression, et contrôles de zoom 1:1 / Ajuster / continu dans Résultat.
+- Panneau droit compact, atelier Retouche amélioré, aide contextuelle interactive (`H`) sur tous les dialogues et mises à jour différentielles `.ofdelta.zip` / correctif depuis v2.0.0.""",
+        "ru": """- Значительное ускорение и снижение потребления памяти в OpenFocus A/B/C, выравнивании ECC и OpenFocusAlign, GFG-FGF и DCT/DTCWT; DCT, DTCWT, Guided Filter и GFG-FGF переведены в основные методы.
+- Новая экспериментальная нейросеть StackMFF V4 Flash (`stackmffv4`) со встроенными весами; прежние модели StackMFF V1–V3 доступны при включении устаревших функций в расширенных настройках.
+- Обновлённый интерактивный экспорт HTML5: автономный 3D-просмотрщик карты глубины на WebGL и HTML5-анимация с лупой настольного уровня и офлайн-переключением 12 языков.
+- Экспорт Linear DNG в пакетной обработке и отслеживаемых папках, многослойный PSD/PSB v2 (64-бит) с ограниченной памятью и панель масштаба 1:1 / по окну в окне результата.
+- Компактная правая панель, обновлённая ретушь, контекстная справка (`H`) во всех диалогах и инкрементальные обновления `.ofdelta.zip` / патч с v2.0.0.""",
+        "ko": """- OpenFocus A/B/C, ECC 및 OpenFocusAlign 정합, GFG-FGF, DCT/DTCWT의 속도와 메모리 효율이 크게 향상되었으며 DCT, DTCWT, Guided Filter, GFG-FGF가 정식 메서드로 승격되었습니다.
+- 가중치가 포함된 실험적 StackMFF V4 Flash 신경망 융합/깊이 모델(`stackmffv4`)을 추가했으며, 기존 V1–V3 모델은 고급 설정의 레거시 기능 활성화로 계속 사용할 수 있습니다.
+- 대화형 HTML5 내보내기 강화: 독립형 HTML5 WebGL 3D 깊이 뷰어 내보내기와 데스크톱 동일 수준의 돋보기 및 12개 언어 오프라인 전환을 지원하는 HTML5 애니메이션 내보내기를 제공합니다.
+- 일괄 처리 및 감시 폴더의 Linear DNG 내보내기, 대용량 레이어드 PSD/PSB v2(64비트) 제한 메모리 내보내기, 결과 창의 1:1·창 맞춤·연속 줌 도구를 추가했습니다.
+- 컴팩트한 우측 제어 패널, 개선된 리터치 작업 공간, 전체 대화상자 상황별 도움말(`H`), v2.0.0 패치 및 `.ofdelta.zip` 증분 업데이트를 지원합니다.""",
+        "pt": """- Grandes ganhos de velocidade e memória em OpenFocus A/B/C, alinhamento ECC e OpenFocusAlign, GFG-FGF e DCT/DTCWT; DCT, DTCWT, Filtro Guiado e GFG-FGF agora são métodos padrão.
+- Novo modelo experimental StackMFF V4 Flash (`stackmffv4`) com pesos incluídos; os modelos legados StackMFF V1–V3 continuam disponíveis ativando recursos legados nas Configurações Avançadas.
+- Exportações HTML5 interativas aprimoradas: visualizador 3D WebGL independente do mapa de profundidade e animação HTML5 com lupa equivalente à do desktop e troca offline entre 12 idiomas.
+- Processamento em lote e pastas monitoradas com suporte a Linear DNG, exportação PSD/PSB v2 de 64 bits com memória limitada e barra de zoom 1:1 / Ajustar na visualização de Resultados.
+- Painel direito compacto, Retoque aprimorado, ajuda contextual interativa (`H`) em todos os diálogos e atualizações incrementais `.ofdelta.zip` / patch a partir da v2.0.0.""",
+        "it": """- Notevoli miglioramenti di velocità e memoria per OpenFocus A/B/C, allineamento ECC e OpenFocusAlign, GFG-FGF e DCT/DTCWT; DCT, DTCWT, Guided Filter e GFG-FGF diventano metodi standard.
+- Nuovo modello sperimentale StackMFF V4 Flash (`stackmffv4`) con pesi inclusi; i modelli precedenti StackMFF V1–V3 restano disponibili abilitando le funzioni legacy nelle Impostazioni avanzate.
+- Esportazioni HTML5 interattive potenziate: visualizzatore 3D WebGL autonomo della mappa di profondità e animazione HTML5 con lente d'ingrandimento pari al desktop e selettore offline in 12 lingue.
+- Elaborazione batch e cartelle monitorate con esportazione Linear DNG, esportazione PSD/PSB v2 a 64 bit a memoria limitata e nuova barra zoom 1:1 / Adatta nel pannello Risultato.
+- Pannello destro compatto, Ritocco aggiornato, guida contestuale interattiva (`H`) in tutte le finestre e aggiornamenti incrementali `.ofdelta.zip` / patch da v2.0.0.""",
+        "nl": """- Grote snelheids- en geheugenverbeteringen in OpenFocus A/B/C, ECC- en OpenFocusAlign-uitlijning, GFG-FGF en DCT/DTCWT; DCT, DTCWT, Guided Filter en GFG-FGF zijn nu standaardmethoden.
+- Nieuw experimenteel StackMFF V4 Flash-model (`stackmffv4`) met meegeleverde gewichten; oudere StackMFF V1–V3-modellen blijven beschikbaar via Geavanceerde instellingen → Legacy-functies inschakelen.
+- Vernieuwde interactieve HTML5-exports: zelfstandige HTML5 WebGL 3D-diepteviewer en HTML5-animatie-export met desktop-loep en offline taalwisselaar voor 12 talen.
+- Batchverwerking en bewaakte mappen ondersteunen nu Linear DNG-export, grote PSD/PSB v2 (64-bit)-exports draaien met begrensd geheugen en het Resultaatpaneel biedt 1:1 / Passend / vloeiende zoom.
+- Compact rechterpaneel, vernieuwde Retoucheer-werkruimte, interactieve contextuele hulp (`H`) in alle dialoogvensters en incrementele `.ofdelta.zip`- en v2.0.0-patch-updates.""",
+        "pl": """- Znaczne przyspieszenie i optymalizacja pamięci w OpenFocus A/B/C, wyrównywaniu ECC i OpenFocusAlign, GFG-FGF oraz DCT/DTCWT; DCT, DTCWT, filtr kierowany i GFG-FGF są teraz standardowymi metodami.
+- Nowy eksperymentalny model StackMFF V4 Flash (`stackmffv4`) z wbudowanymi wagami; starsze modele StackMFF V1–V3 są nadal dostępne po włączeniu funkcji starszych w Ustawieniach zaawansowanych.
+- Rozbudowane interaktywne eksporty HTML5: samodzielna przeglądarka 3D WebGL mapy głębi oraz eksport animacji HTML5 z lupą na wzór aplikacji desktopowej i przełącznikiem 12 języków offline.
+- Przetwarzanie wsadowe i obserwowane foldery obsługują eksport Linear DNG, eksport warstwowy PSD/PSB v2 (64-bit) działa w ograniczonej pamięci z raportowaniem postępu, a widok wyniku zyskał kontrolki 1:1 / Dopasuj.
+- Kompaktowy panel prawy, odświeżony tryb Retuszu, pełna pomoc kontekstowa (`H`) we wszystkich oknach oraz przyrostowe aktualizacje `.ofdelta.zip` i łatka z wersji v2.0.0.""",
+    },
     "2.0.0": {
         "en": """- OpenFocus A, B and C are the stable fusion methods. To use other methods, choose Settings → Advanced Settings → Enable experimental features, or pass `--experimental` in the headless CLI. Experimental DTCWT can use OpenCL on compatible devices with a working driver.
 - Inspect original pixels in the loupe and side-by-side previews. Method Comparison opens in whole-image view and reuses compatible workspace results with their original settings and alignment. At 100%, one image pixel maps to one physical display pixel, including on high-DPI screens.
