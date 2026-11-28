@@ -365,8 +365,8 @@ class _CoachCard(QFrame):
 
     def _apply_styles(self, *, index: int, completed: bool, busy: bool) -> None:
         t = palette(self._theme)
-        status_bg = t["successSoft"] if completed else (t["warningSoft"] if busy else t["accentSoft"])
-        status_fg = t["success"] if completed else (t["warning"] if busy else t["accentSoftText"])
+        status_bg = t["successSoft"] if completed else t["accentSoft"]
+        status_fg = t["success"] if completed else t["accentSoftText"]
         self.setStyleSheet(f"""
             QFrame#onboardingCoachCard {{
                 background-color: {t['surface']};

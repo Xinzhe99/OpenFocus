@@ -1266,7 +1266,7 @@ class MagnifierLabel(QLabel):
                 painter.drawText(res_bg, Qt.AlignmentFlag.AlignCenter, res_str)
 
         if (self._align_roi_mode or self._align_roi_rect is not None) and self._base_pixmap is not None and not self._base_pixmap.isNull():
-            amber = QColor(245, 158, 11)
+            accent = QColor(0, 120, 215)
             if self._align_roi_rect is None:
                 if self._align_roi_mode:
                     painter.fillRect(self.rect(), QColor(0, 0, 0, 100))
@@ -1285,10 +1285,10 @@ class MagnifierLabel(QLabel):
                     painter.setClipRegion(dim_region)
                     painter.fillRect(self.rect(), QColor(0, 0, 0, 80))
                     painter.restore()
-                # Subtle translucent amber tint inside detection box
-                painter.fillRect(screen_roi, QColor(245, 158, 11, 24))
-                # Distinct dashed amber border
-                pen = QPen(amber, 2, Qt.PenStyle.DashLine)
+                # Subtle translucent accent tint inside detection box
+                painter.fillRect(screen_roi, QColor(0, 120, 215, 20))
+                # Distinct dashed accent border (solid border = Output ROI, dashed = Alignment Detection Area)
+                pen = QPen(accent, 2, Qt.PenStyle.DashLine)
                 pen.setDashPattern([6, 4])
                 painter.setPen(pen)
                 painter.setBrush(Qt.BrushStyle.NoBrush)
@@ -1297,7 +1297,7 @@ class MagnifierLabel(QLabel):
                 if self._align_roi_mode:
                     handles = self._get_handle_rects(screen_roi)
                     painter.setBrush(Qt.GlobalColor.white)
-                    painter.setPen(QPen(amber, 1.5))
+                    painter.setPen(QPen(accent, 1.5))
                     for name, rect in handles.items():
                         if name == "del":
                             continue
@@ -1332,9 +1332,9 @@ class MagnifierLabel(QLabel):
                     by = screen_roi.top() + 3
                 badge_rect = QRectF(bx, by, bw, bh)
                 painter.setBrush(QColor(24, 24, 28, 215))
-                painter.setPen(QPen(amber, 1.5))
+                painter.setPen(QPen(accent, 1.5))
                 painter.drawRoundedRect(badge_rect, 4, 4)
-                painter.setPen(QColor(253, 224, 71))
+                painter.setPen(QColor(255, 255, 255))
                 painter.drawText(badge_rect, Qt.AlignmentFlag.AlignCenter, badge_text)
 
         self._draw_zoom_indicator(painter)

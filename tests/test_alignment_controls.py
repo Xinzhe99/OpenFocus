@@ -452,3 +452,17 @@ def test_alignment_control_translations_complete_in_all_12_languages():
         table = trans.translations[code]
         for key in _ALIGNMENT_CONTROLS_KEYS:
             assert table.get(key), f"{code}: missing {key}"
+
+
+def test_alignment_area_button_uses_panel_toggle_consistent_theme(qapp):
+    from ui.image_panels import _panel_qss, create_source_panel
+
+    panel = create_source_panel()
+    try:
+        assert panel.align_area_btn.objectName() == panel.show_aligned_btn.objectName() == "panelToggle"
+        for theme in ("light", "dark", "gray"):
+            qss = _panel_qss(theme)
+            assert "alignAreaToggle" not in qss
+            assert "warningSoft" not in qss
+    finally:
+        panel.widget.deleteLater()
