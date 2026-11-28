@@ -150,22 +150,6 @@ QPushButton#panelToggle:checked {{
 QPushButton#panelToggle:disabled {{
     color: {t['textFaint']};
 }}
-QPushButton#alignAreaToggle {{
-    background-color: transparent;
-    color: {t['textMuted']};
-    border: 1px solid transparent;
-    border-radius: {RADIUS['sm']}px;
-    padding: 2px {SPACE['sm']}px;
-}}
-QPushButton#alignAreaToggle:hover {{ background-color: {t['surfaceHover']}; }}
-QPushButton#alignAreaToggle:checked {{
-    background-color: {t['warningSoft']};
-    color: {t['warning']};
-    border-color: {t['warning']};
-}}
-QPushButton#alignAreaToggle:disabled {{
-    color: {t['textFaint']};
-}}
 """
 
 
@@ -554,7 +538,7 @@ def create_source_panel() -> SourcePanel:
     title.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
     align_area_btn = QPushButton(trans.t('btn_align_area'))
-    align_area_btn.setObjectName("alignAreaToggle")
+    align_area_btn.setObjectName("panelToggle")
     align_area_btn.setCheckable(True)
     align_area_btn.setEnabled(False)
     align_area_btn.setToolTip(trans.t('btn_align_area_hint'))

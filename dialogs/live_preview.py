@@ -700,7 +700,7 @@ class DepthHistogramWidget(QWidget):
         # Current browsed slice hairline indicator.
         if 0 <= self._current_slice < n:
             sx = plot.left() + (self._current_slice / max(1, n - 1)) * plot.width()
-            painter.setPen(QPen(QColor(t["warning"]), 1.5))
+            painter.setPen(QPen(QColor(t["text"]), 1.5))
             painter.drawLine(QPointF(sx, plot.top()), QPointF(sx, plot.bottom()))
 
         # Subtle axis endpoint labels (1 ... N).
