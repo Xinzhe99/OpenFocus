@@ -3238,3 +3238,28 @@ def test_bounded_drag_delivers_press_and_release(server, control_window, monkeyp
     assert response['result']['steps'] == steps
     assert (probe.presses, probe.moves, probe.releases) == (1, steps, 1)
     probe.deleteLater()
+
+
+def test_stack_load_mixed_sizes_fails_cleanly_without_modal_hang(server, tmp_path):
+    import cv2
+
+    mixed_dir = tmp_path / "mixed"
+    mixed_dir.mkdir()
+    paths = []
+    for idx, height in enumerate((40, 50, 60)):
+        path = mixed_dir / f"frame_{idx}.tif"
+        assert cv2.imwrite(str(path), np.full((height, 60, 3), 100 + idx * 10, dtype=np.uint8))
+        paths.append(str(path))
+
+    for req in ({"files": paths}, {"folder": str(mixed_dir)}):
+        started = call(server, "stack.load", **req)["result"]
+        assert wait_until(
+            lambda: call(server, "stack.frames")["result"]["load"]["id"] == started["load_id"]
+            and call(server, "stack.frames")["result"]["load"]["finished"],
+            timeout=10,
+        )
+        frames = call(server, "stack.frames")["result"]
+        assert frames["load"]["active"] is False
+        assert frames["load"]["finished"] is True
+        assert frames["load"]["error"]
+        assert frames["count"] == 0

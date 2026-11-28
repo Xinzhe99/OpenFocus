@@ -687,7 +687,7 @@ class CompareDialog(QDialog):
         preserved = {}
         for method in selected:
             entry = self._results.get(method)
-            full_entry = self._full_results.get(method) or self._reused_full.get(method)
+            full_entry = self._full_result_entry(method)
             if roi:
                 source = entry if (entry is not None and entry.get('full')) else full_entry
                 if (source is not None and region is not None
@@ -1138,6 +1138,7 @@ class CompareDialog(QDialog):
                 'full': not roi, 'record': record,
                 'display': (previous.get('display') if previous and previous.get('record') is record
                             else None),
+                'fusion_details': getattr(record, 'fusion_details', None),
             }
             self._results[method] = entry
             if not roi:
@@ -1464,6 +1465,7 @@ class CompareDialog(QDialog):
                 pending.append(method)
         if not pending:
             self._refresh_panes()
+            self._update_adopt_actions()
             self._set_idle()
             return
         if self._aligned_frames is None:
@@ -1534,6 +1536,12 @@ class CompareDialog(QDialog):
             canvas.set_selected(name == method and bool(method))
         self._update_adopt_actions()
 
+    def _full_result_entry(self, method: str):
+        """Return the active full-frame result for method, including reused workspace outputs."""
+        if not method:
+            return None
+        return self._full_results.get(method) or self._reused_full.get(method)
+
     def _update_adopt_actions(self) -> None:
         method = self._selected_method
         available = bool(method) and self._worker is None and not self._closing
@@ -1557,7 +1565,7 @@ class CompareDialog(QDialog):
                     and self._worker is None and not self._closing
                     and not self._published and not self._publishing)
         self.btn_adopt_params.setEnabled(eligible and not direction_mismatch)
-        result = self._full_results.get(method) if method else None
+        result = self._full_result_entry(method)
         self.btn_adopt_output.setEnabled(eligible and bool(result)
                                         and result["key"] == self._result_key(method))
 
@@ -1634,7 +1642,7 @@ class CompareDialog(QDialog):
         method = self._selected_method
         if not method or self._published or self._publishing or self._worker is not None:
             return
-        entry = self._full_results.get(method)
+        entry = self._full_result_entry(method)
         if (not entry or entry["key"] != self._result_key(method)
                 or not self._result_is_current(method)):
             return

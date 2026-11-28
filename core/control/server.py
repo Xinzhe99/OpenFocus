@@ -841,15 +841,18 @@ class ControlServer(QObject):
         load_id = None
         if folder:
             load_id = manager._start_load_worker(
-                folder=folder, scale=scale, append=append, linear_raw=linear_raw, on_error=_log.warning)
+                folder=folder, scale=scale, append=append, linear_raw=linear_raw,
+                on_error=_log.warning, non_interactive=True)
             source = folder
         elif video:
             load_id = manager._start_load_worker(
-                video=video, scale=scale, append=append, on_error=_log.warning)
+                video=video, scale=scale, append=append,
+                on_error=_log.warning, non_interactive=True)
             source = video
         else:
             load_id = manager._start_load_worker(
-                filepaths=list(files), scale=scale, append=append, linear_raw=linear_raw, on_error=_log.warning)
+                filepaths=list(files), scale=scale, append=append, linear_raw=linear_raw,
+                on_error=_log.warning, non_interactive=True)
             source = list(files)
         return {"loading": True, "source": source, "load_id": load_id,
                 "baseline_count": self._load_baseline}

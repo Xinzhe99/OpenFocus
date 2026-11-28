@@ -1559,3 +1559,54 @@ def test_workspace_reuse_computes_only_edited_or_added_method_and_aligns_lazily(
             dialog.reject()
         _until(qapp, lambda: not dialog._has_workers())
         host.deleteLater()
+
+
+def test_reused_workspace_output_enables_adopt_output_in_full_mode_only(qapp, monkeypatch):
+    import numpy as np
+    from PyQt6.QtCore import QEvent
+    from PyQt6.QtGui import QKeyEvent
+
+    host = _make_workspace_host(qapp, alignment='none', fusion_method='dct')
+    expected = np.full((160, 560, 3), 210, dtype=np.uint8)
+    _add_workspace_fusion(
+        host, 'dct', 'Workspace dct', expected, alignment_options=(),
+    )
+    records = []
+    host.output_manager.publish_compare_output = records.append
+
+    dialog = CompareDialog(host)
+    try:
+        dialog.show()
+        dialog.view_combo.setCurrentIndex(dialog.view_combo.findData("full"))
+        dialog.run_comparison()
+        _until(qapp, lambda: _finished(dialog) and dialog._canvases['dct'].can_show_full())
+        canvas = dialog._canvases['dct']
+        dialog.eventFilter(canvas, QKeyEvent(
+            QEvent.Type.KeyPress, Qt.Key.Key_Return, Qt.KeyboardModifier.NoModifier))
+        assert dialog._selected_method == 'dct'
+        assert dialog.btn_adopt_output.isEnabled()
+
+        # Switching to ROI mode clears full-frame adopt eligibility until returning to Full.
+        dialog.ref_canvas.set_magnification(4)
+        dialog.mode_combo.setCurrentIndex(dialog.mode_combo.findData(True))
+        _until(qapp, lambda: _finished(dialog) and dialog._canvases['dct'].has_region())
+        assert not dialog.btn_adopt_output.isEnabled()
+
+        dialog.mode_combo.setCurrentIndex(dialog.mode_combo.findData(False))
+        assert dialog.btn_adopt_output.isEnabled()
+        dialog.view_combo.setCurrentIndex(dialog.view_combo.findData("full"))
+        _until(qapp, lambda: _finished(dialog) and dialog._canvases['dct'].can_show_full())
+        if dialog._selected_method != 'dct':
+            dialog._select_method('dct')
+        else:
+            dialog._update_adopt_actions()
+        assert dialog.btn_adopt_output.isEnabled()
+
+        dialog._adopt_output()
+        assert len(records) == 1
+        np.testing.assert_array_equal(records[0].image, expected)
+    finally:
+        if not sip.isdeleted(dialog):
+            dialog.reject()
+        _until(qapp, lambda: not dialog._has_workers())
+        host.deleteLater()
