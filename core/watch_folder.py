@@ -158,16 +158,26 @@ def _default_render_stack(
     loader = ImageStackLoader()
     loader.should_cancel = should_cancel
 
+    ext = (config.output_format or "png").lstrip(".").lower()
     with scratch_directory(separate=True):
-        ok, message, images, filenames = loader.load_from_filepaths(
-            list(candidate.file_paths),
-            thread_count=config.thread_count,
-            resource_preference=config.resource_preference,
-        )
+        if ext == "dng":
+            ok, message, images, filenames = loader.load_linear_raw_stack(
+                list(candidate.file_paths),
+                thread_count=config.thread_count,
+                resource_preference=config.resource_preference,
+            )
+        else:
+            ok, message, images, filenames = loader.load_from_filepaths(
+                list(candidate.file_paths),
+                thread_count=config.thread_count,
+                resource_preference=config.resource_preference,
+            )
         if should_cancel():
             raise RegistrationCancelled()
         if not ok or not images:
             raise ValueError(message or f"Failed to load stack: {candidate.name}")
+        if ext == "dng" and getattr(loader, "linear_dng_metadata", None) is None:
+            raise ValueError(message or f"Linear DNG export requires matching camera RAW frames ({candidate.name})")
         if len(images) < 2 and config.fusion_method != "none":
             raise ValueError(f"Fusion requires at least 2 frames ({candidate.name})")
 
@@ -238,14 +248,23 @@ def _default_render_stack(
             prefix=config.output_name_prefix,
             context=ctx,
         )
-        ext = (config.output_format or "png").lstrip(".").lower()
         target = os.path.join(config.output_dir, f"{stem}.{ext}")
         exif = getattr(loader, "source_exif", b"") or b""
-        icc = getattr(loader, "source_icc_profile", b"") or b""
+        icc = b"" if ext == "dng" else (getattr(loader, "source_icc_profile", b"") or b"")
+        linear_meta = getattr(loader, "linear_dng_metadata", None) if ext == "dng" else None
+        linear_px = getattr(loader, "px_size_um", None) if ext == "dng" else None
         params = get_imwrite_params(f".{ext}")
         written_path = publish_unique(
             target,
-            lambda staging: imwrite_auto(staging, result_img, params, exif=exif, icc_profile=icc),
+            lambda staging: imwrite_auto(
+                staging,
+                result_img,
+                params,
+                exif=exif,
+                icc_profile=icc,
+                linear_dng_metadata=linear_meta,
+                linear_dng_px_size_um=linear_px,
+            ),
             should_cancel=should_cancel,
         )
         return written_path
