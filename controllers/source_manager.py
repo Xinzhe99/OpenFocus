@@ -370,7 +370,19 @@ class SourceManager(QObject):
         if label is not None:
             label.setText(self._source_count_text())
 
+    def _is_non_interactive_modal_env(self) -> bool:
+        """Return True when blocking confirmation modals cannot be answered by a user."""
+        if os.environ.get("QT_QPA_PLATFORM", "").strip().lower() == "offscreen":
+            return True
+        from PyQt6.QtWidgets import QApplication
+        app = QApplication.instance()
+        return app is not None and app.platformName().strip().lower() == "offscreen"
+
     def _confirm_size_mismatch(self, text: str, informative_text: str) -> bool:
+        self._last_size_mismatch_error = None
+        if getattr(self, "_non_interactive_confirm", False) or self._is_non_interactive_modal_env():
+            self._last_size_mismatch_error = text
+            return False
         msg = QMessageBox(self.window)
         from utils.ui_utils import style_message_box
         style_message_box(msg)
@@ -432,7 +444,8 @@ class SourceManager(QObject):
     def _start_load_worker(self, folder=None, video=None, filepaths=None,
                            scale=1.0, append=False, on_success=None,
                            accept_event=None, prepare_options=None, on_error=None,
-                           linear_raw=False, on_finished=None, crash_restore=False) -> None:
+                           linear_raw=False, on_finished=None, crash_restore=False,
+                           non_interactive: bool = False) -> None:
         """Run the loader on a background thread and apply results on the
         UI thread when it finishes."""
         window = self.window
@@ -599,24 +612,36 @@ class SourceManager(QObject):
                         transform_frame(image, 'resize', width=max(1, int(image.shape[1] * factor)),
                                         height=max(1, int(image.shape[0] * factor)))
                         for image in images]
-                mixed_ok = self._confirm_mixed_sizes(images if crash_restore else load_options.working_images)
-                if not load_is_current():
-                    return
-                if reject_changed_append():
-                    return
-                if not mixed_ok:
-                    if on_error is not None:
-                        on_error("CANCELLED")
-                    return
-                append_ok = not append or self._confirm_append_dimensions(load_options.working_images)
-                if not load_is_current():
-                    return
-                if reject_changed_append():
-                    return
-                if not append_ok:
-                    if on_error is not None:
-                        on_error("CANCELLED")
-                    return
+                prev_non_interactive = getattr(self, "_non_interactive_confirm", False)
+                self._non_interactive_confirm = bool(non_interactive)
+                self._last_size_mismatch_error = None
+                try:
+                    mixed_ok = self._confirm_mixed_sizes(images if crash_restore else load_options.working_images)
+                    if not load_is_current():
+                        return
+                    if reject_changed_append():
+                        return
+                    if not mixed_ok:
+                        mismatch_err = getattr(self, "_last_size_mismatch_error", None)
+                        self._last_size_mismatch_error = None
+                        result_error = mismatch_err or "CANCELLED"
+                        if on_error is not None:
+                            on_error(result_error)
+                        return
+                    append_ok = not append or self._confirm_append_dimensions(load_options.working_images)
+                    if not load_is_current():
+                        return
+                    if reject_changed_append():
+                        return
+                    if not append_ok:
+                        mismatch_err = getattr(self, "_last_size_mismatch_error", None)
+                        self._last_size_mismatch_error = None
+                        result_error = mismatch_err or "CANCELLED"
+                        if on_error is not None:
+                            on_error(result_error)
+                        return
+                finally:
+                    self._non_interactive_confirm = prev_non_interactive
                 if prepare_options is not None and not crash_restore:
                     load_options = prepare_options(load_options)
                 if not load_is_current():
