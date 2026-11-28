@@ -63,3 +63,19 @@ When the task is complete, archive any results needed for recovery or review.
 Remove the task's remaining temporary files, preview profiles, and downloaded
 inference packs, and use `git worktree remove` to retire its temporary worktrees
 after preserving any local changes.
+
+## Desktop UI visual consistency
+
+Keep desktop UI controls, overlays, and status badges visually restrained and
+consistent with OpenFocus's primary blue accent and neutral surface, border,
+and text tokens across Light, Dark, and Neutral Gray themes.
+
+- Do not use high-saturation orange, amber, or yellow fills, borders, or pills
+  on normal buttons, toggles, canvas selection overlays, non-critical status
+  states (such as paused or cancelled), or chart indicators.
+- Keep adjacent controls in the same bar or panel visually uniform by reusing
+  standard shared widget styles (for example `panelToggle`, `secondaryButton`,
+  and theme palette tokens) instead of introducing ad-hoc per-button accent
+  colors.
+- Reserve `warning` and `danger` colors strictly for genuine destructive
+  actions, blocking errors, or explicit failure states.
