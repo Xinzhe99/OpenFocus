@@ -283,3 +283,38 @@ def test_hold_h_works_inside_sub_dialogs(qapp, tmp_path, monkeypatch):
         dlg.close()
         dlg.deleteLater()
         _destroy_main_window(qapp, window)
+
+
+def test_right_panel_icon_action_tooltips_and_help_beacon_labels(qapp, monkeypatch):
+    from ui.right_panel import IconActionButton
+
+    # Icon-only buttons hide their caption visually, so even a matching explicit
+    # tooltip must never be stripped back to "".
+    plain_btn = IconActionButton("reset", "Reset Default")
+    plain_btn.setToolTip("Reset Default")
+    assert plain_btn.toolTip() == "Reset Default"
+    plain_btn.deleteLater()
+
+    for lang, expected_beacon in (
+        ("zh", "? 帮助（拖拽 / 按住 H）"),
+        ("en", "? Help (Drag / Hold H)"),
+    ):
+        monkeypatch.setattr(trans, "current_lang", lang)
+        parts = create_right_panel()
+        try:
+            assert parts.btn_context_help.text() == expected_beacon
+            for button in (
+                parts.btn_live_preview,
+                parts.btn_render_settings,
+                parts.btn_reset,
+                parts.btn_render_more,
+            ):
+                tip = button.toolTip()
+                assert "\n" in tip, (lang, button.full_text(), tip)
+                title, hint = tip.split("\n", 1)
+                assert title.strip()
+                assert hint.strip()
+                assert title != hint
+        finally:
+            parts.widget.close()
+            parts.widget.deleteLater()

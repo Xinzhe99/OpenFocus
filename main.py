@@ -5945,9 +5945,11 @@ class OpenFocus(QMainWindow):
         self.refresh_algorithm_parameters()
         self.refresh_registration_parameters()
         c.btn_reset.setText(trans.t('btn_reset'))
-        c.btn_reset.setToolTip(trans.t('btn_reset'))
+        c.btn_reset.setToolTip(
+            f"{trans.t('btn_reset')}\n{trans.t('ctx_help_btn_reset_hint')}")
         c.btn_render_settings.setText(trans.t('render_settings_title'))
-        c.btn_render_settings.setToolTip(trans.t('render_settings_title'))
+        c.btn_render_settings.setToolTip(
+            f"{trans.t('render_settings_title')}\n{trans.t('ctx_help_btn_render_settings_hint')}")
         if getattr(c, 'btn_context_help', None) is not None:
             c.btn_context_help.retranslate()
         if getattr(c, 'btn_render_more', None) is not None:

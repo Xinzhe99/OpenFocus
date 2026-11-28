@@ -489,20 +489,24 @@ _ZH_TOPICS: dict[str, tuple[str, str, str]] = {
 
 _EXTRA_KEYS: dict[str, dict[str, str]] = {
     "en": {
-        "ctx_help_beacon_label": "Help · Drag / H",
+        "ctx_help_beacon_label": "? Help (Drag / Hold H)",
         "ctx_help_beacon_tooltip": "Click to pick any UI element, drag '?' onto any control, or hold H anywhere and click to view illustrated help.",
         "ctx_help_pick_banner": "Help Mode: click any panel, button, or setting to view illustrated help (or drag '?' / hold H anywhere) · Press Esc to exit",
         "ctx_help_footer_tip": "Tip: Drag the '?' pill in the top-right corner onto any area, or hold the H key anywhere (even inside sub-dialogs) and click any item to inspect it.",
+        "ctx_help_btn_render_settings_hint": "Configure quick preview draft, stack order reversal, exposure matching, base brightness correction, and output sharpening",
+        "ctx_help_btn_reset_hint": "Restore registration, fusion method, core parameters, and render settings to defaults (keeps loaded sources and outputs)",
         "ctx_help_btn_menu_more": "Queue, Batch & Compare Methods",
         "ctx_help_btn_menu_more_hint": "Enqueue current settings, open Render Queue, or run Render All Methods",
         "ctx_help_open_full_methods": "Available Algorithms in OpenFocus",
         "ctx_help_drag_chip": "? Drop onto control for help",
     },
     "zh": {
-        "ctx_help_beacon_label": "帮助 · 拖/? · 按住H",
+        "ctx_help_beacon_label": "? 帮助（拖拽 / 按住 H）",
         "ctx_help_beacon_tooltip": "按住拖动到任意不懂的区域即可图文讲解；单击进入点选模式；在软件任意界面（含子窗口）按住 H 键并用鼠标点击也可随时呼出说明。",
         "ctx_help_pick_banner": "帮助模式已开启：点击任意功能区、按钮或参数即可查看图文说明（也可拖动右上角 ? 或按住 H 键点击）· 按 Esc 退出",
         "ctx_help_footer_tip": "提示：平时也可直接按住右上角“?”拖到任何区域，或在软件任意界面按住 H 键并点击目标控件直接呼出图文帮助。",
+        "ctx_help_btn_render_settings_hint": "配置快速预览草稿、反转栈序、亮度匹配、基底亮度校正与输出锐化等后处理选项",
+        "ctx_help_btn_reset_hint": "将配准方式、融合算法、核心参数与渲染设置恢复为推荐默认值（保留已导入源图与历史输出）",
         "ctx_help_btn_menu_more": "队列与全部方法对比",
         "ctx_help_btn_menu_more_hint": "加入渲染队列、管理批量任务，或用所有可用融合算法对比渲染",
         "ctx_help_open_full_methods": "当前可选算法列表与适用场景",

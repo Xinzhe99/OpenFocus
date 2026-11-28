@@ -448,6 +448,13 @@ class IconActionButton(ElidingButton):
     def minimumSizeHint(self):  # noqa: N802
         return QSize(34, 34)
 
+    def _update_tooltip(self) -> None:
+        # IconActionButton hides its caption visually, so even a tooltip that
+        # equals the hidden button label must stay intact on hover.
+        target = self._explicit_tip or self._full_text
+        if self.toolTip() != target:
+            super(ElidingButton, self).setToolTip(target)
+
     def _refresh_display(self) -> None:
         self._elided_text = self._full_text
         self._update_tooltip()
@@ -790,10 +797,12 @@ def create_right_panel() -> RightPanelComponents:
     btn_live_preview.setEnabled(False)
 
     btn_render_settings = IconActionButton("render_settings", trans.t('render_settings_title'), config_widget)
-    btn_render_settings.setToolTip(trans.t('render_settings_title'))
+    btn_render_settings.setToolTip(
+        f"{trans.t('render_settings_title')}\n{trans.t('ctx_help_btn_render_settings_hint')}")
 
     btn_reset = IconActionButton("reset", trans.t('btn_reset'), config_widget)
-    btn_reset.setToolTip(trans.t('btn_reset'))
+    btn_reset.setToolTip(
+        f"{trans.t('btn_reset')}\n{trans.t('ctx_help_btn_reset_hint')}")
 
     btn_render_more = IconActionButton("render_more", trans.t('ctx_help_btn_menu_more'), config_widget)
     btn_render_more.setToolTip(
