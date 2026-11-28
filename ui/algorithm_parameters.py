@@ -261,15 +261,17 @@ class AlgorithmParameterPanel(QWidget):
                     self._form.addWidget(ed1, grid_row, 3, Qt.AlignmentFlag.AlignVCenter)
                     j += 2
                 else:
-                    row_layout = QHBoxLayout()
-                    row_layout.setContentsMargins(0, 0, 0, 0)
-                    row_layout.setSpacing(6)
-                    row_layout.addWidget(lbl0)
-                    row_layout.addWidget(ed0)
+                    self._form.addWidget(lbl0, grid_row, 0, Qt.AlignmentFlag.AlignVCenter)
                     if btn0 is not None:
+                        row_layout = QHBoxLayout()
+                        row_layout.setContentsMargins(0, 0, 0, 0)
+                        row_layout.setSpacing(6)
+                        row_layout.addWidget(ed0)
                         row_layout.addWidget(btn0)
-                    row_layout.addStretch(1)
-                    self._form.addLayout(row_layout, grid_row, 0, 1, 5)
+                        row_layout.addStretch(1)
+                        self._form.addLayout(row_layout, grid_row, 1, 1, 4)
+                    else:
+                        self._form.addWidget(ed0, grid_row, 1, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
                     j += 1
                 grid_row += 1
             idx = run_end
