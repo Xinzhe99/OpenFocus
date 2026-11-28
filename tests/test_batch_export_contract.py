@@ -412,7 +412,7 @@ def test_batch_cancellation_keeps_controls_until_worker_finishes(qapp):
 
 def test_unknown_export_extension_is_not_silently_reencoded():
     with pytest.raises(ValueError):
-        ExportManager(None).normalize_export_path('image.jp2')
+        ExportManager(None).normalize_export_path('image.xyz')
 
 
 @pytest.mark.parametrize('suffix', ['.jpeg', '.jpe', '.jfif', '.JPEG', '.PNG'])

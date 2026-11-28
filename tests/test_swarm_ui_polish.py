@@ -256,11 +256,12 @@ def test_retouch_dialog_shows_header_and_provenance(qapp):
         assert "80×64" in dlg.lbl_title.text()
         assert "openfocus_a" in dlg.lbl_source_summary.text()
         from PyQt6.QtCore import QPoint
-        restore_bottom = dlg.btn_restore_all.mapTo(
-            dlg.side_scroll.viewport(),
-            QPoint(0, dlg.btn_restore_all.height()),
-        ).y()
-        assert restore_bottom <= dlg.side_scroll.viewport().height()
+        assert dlg.btn_restore_all.isVisible()
+        container_h = dlg.side_container.height()
+        for btn in (dlg.btn_restore_all, dlg.btn_apply, dlg.btn_cancel):
+            top = btn.mapTo(dlg.side_container, QPoint(0, 0)).y()
+            bottom = btn.mapTo(dlg.side_container, QPoint(0, btn.height())).y()
+            assert 0 <= top < bottom <= container_h
     finally:
         dlg.close()
         dlg.deleteLater()
@@ -404,11 +405,27 @@ def test_custom_scheme_dialog_sets_contrasting_stop_foreground(qapp):
         dlg.deleteLater()
 
 
-def test_advanced_settings_gallery_cache_scan_is_lazy_and_cached(qapp):
+def test_advanced_settings_gallery_cache_scan_is_lazy_and_cached(qapp, monkeypatch):
     import time
     from PyQt6.QtWidgets import QWidget
+    from core import developer_options
     from dialogs.advanced_settings import AdvancedSettingsDialog
     from widgets.danmaku_overlay import DanmakuSettings
+
+    class FakeGrant:
+        key_prefix = "ofk_test"
+        label = "Test"
+        features = ("community",)
+        expires_at = None
+
+        def is_active(self):
+            return True
+
+        def has_feature(self, _feature):
+            return True
+
+    monkeypatch.setattr(developer_options, "is_community_enabled", lambda: True)
+    monkeypatch.setattr(developer_options, "load_developer_grant", lambda: FakeGrant())
 
     class FakeGalleryController:
         def __init__(self):
