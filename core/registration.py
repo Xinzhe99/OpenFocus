@@ -2754,7 +2754,9 @@ class ImageRegistration:
         registration = ImageRegistration(method='both')
         result = registration.process(image_list, './output')
     """
-    
+
+    _UNSET_STAGE_ROI = object()
+
     def __init__(self, method='homography', downscale_width=1024,
                  max_shift_ratio=None, brightness_reference='first',
                  use_gpu=False, parameters=None, *, defer_warps=False, accelerate_ecc=True,
@@ -2845,7 +2847,7 @@ class ImageRegistration:
         self.alignment_plan = None
         self._perspective_stages = []
         self._dispatch = []
-        self._active_stage_roi = None
+        self._active_stage_roi = self._UNSET_STAGE_ROI
 
     @property
     def dispatch(self):
@@ -3023,6 +3025,7 @@ class ImageRegistration:
                         thread_count=thread_count, resource_preference=resource_preference)
                 parameters = {item.key: self.parameters[item.key] for item in spec.parameters}
                 self._active_stage_roi = stage_roi
+                stage_input_shape = result[0].shape[:2]
                 stage_count_before = len(self._perspective_stages)
                 with log_operation('registration_stage', method=step,
                                    parameters=parameters, provider='OpenCV',
@@ -3046,16 +3049,18 @@ class ImageRegistration:
                         operation.cancel()
                         raise
                     finally:
-                        self._active_stage_roi = None
+                        self._active_stage_roi = self._UNSET_STAGE_ROI
                 if stage_roi is not None and len(self._perspective_stages) > stage_count_before:
                     top_b, bottom_b, left_b, right_b = self._perspective_stages[-1].bounds
                     if top_b < bottom_b and left_b < right_b:
-                        rx, ry, rw, rh = stage_roi
+                        rx, ry, rw, rh = normalize_alignment_roi(stage_roi, stage_input_shape)
                         stage_h, stage_w = result[0].shape[:2]
                         nx = max(0, rx - left_b)
                         ny = max(0, ry - top_b)
-                        nw = min(rw, stage_w - nx)
-                        nh = min(rh, stage_h - ny)
+                        nx1 = min(stage_w, rx + rw - left_b)
+                        ny1 = min(stage_h, ry + rh - top_b)
+                        nw = nx1 - nx
+                        nh = ny1 - ny
                         stage_roi = (nx, ny, nw, nh) if nw >= 8 and nh >= 8 else None
             if len(self._perspective_stages) == len(self.steps):
                 self.alignment_plan = PerspectiveAlignmentPlan(tuple(self._perspective_stages),
@@ -3084,7 +3089,7 @@ class ImageRegistration:
         Returns:
             配准后的图像列表
         """
-        roi = self._active_stage_roi if self._active_stage_roi is not None else self.alignment_roi
+        roi = self.alignment_roi if self._active_stage_roi is self._UNSET_STAGE_ROI else self._active_stage_roi
         return _align_homography_impl(
             input_source, output_path, downscale_width=self.downscale_width,
             thread_count=thread_count, should_cancel=should_cancel, failure_policy=failure_policy,
@@ -3114,7 +3119,7 @@ class ImageRegistration:
         Returns:
             配准后的图像列表
         """
-        roi = self._active_stage_roi if self._active_stage_roi is not None else self.alignment_roi
+        roi = self.alignment_roi if self._active_stage_roi is self._UNSET_STAGE_ROI else self._active_stage_roi
         try:
             with _serial_ecc_native_threads() if stage_budget is not None else nullcontext():
                 return _align_ecc_impl(
