@@ -248,9 +248,9 @@ _EN_TOPICS: dict[str, tuple[str, str, str]] = {
         "• Keep disabled for routine production stacks if you prefer locked defaults.|• Changes take effect after clicking OK.",
     ),
     "adv_legacy": (
-        "Legacy Neural Models (StackMFF V1–V3)",
-        "Restores older StackMFF V1–V3 fusion and depth models strictly for reproducing historical projects.",
-        "• For new stacks, StackMFF V4 Flash delivers faster inference and much lower memory usage on deep stacks.",
+        "Legacy Features",
+        "Restores older deprecated algorithms and workflows strictly for reproducing historical projects.",
+        "• Recommended defaults supersede legacy options with faster processing and lower memory usage on new stacks.|• Keep disabled unless an archived project specifically requires an older method.",
     ),
     "adv_privacy": (
         "Crash Reports & Usage Telemetry",
@@ -701,9 +701,9 @@ _ZH_TOPICS: dict[str, tuple[str, str, str]] = {
         "• 常规日常生产如果希望保持稳定默认算法集合，保持关闭即可。",
     ),
     "adv_legacy": (
-        "启用遗留功能（StackMFF V1–V3）",
-        "仅用于复现历史工程时恢复旧版 StackMFF V1–V3 模型；新工程推荐使用推理更快、深栈显存更低的 StackMFF V4。",
-        "• 不必为了常规新堆栈开启此项；关闭时主界面与深度图选择器会保持简洁。",
+        "启用遗留功能",
+        "仅用于复现历史工程时恢复已被替代的早期算法或旧版功能；常规新工程建议使用当前推荐方案以获得更快速度与更低内存占用。",
+        "• 不必为了常规新堆栈开启此项；关闭时主界面与算法选择器会保持简洁。",
     ),
     "adv_privacy": (
         "隐私、错误报告与使用统计",
