@@ -11,6 +11,9 @@ from PyQt6.QtWidgets import (
     QAbstractSpinBox,
     QApplication,
     QComboBox,
+    QFormLayout,
+    QGroupBox,
+    QLabel,
     QLineEdit,
     QPlainTextEdit,
     QPushButton,
@@ -85,20 +88,125 @@ def register_help_target(widget: Optional[QWidget], topic_id: str) -> None:
         widget.setProperty("helpTopic", topic_id)
 
 
-def _topic_for_widget(widget: Optional[QWidget]) -> tuple[Optional[QWidget], Optional[str]]:
-    """Walk up from *widget* until a widget carrying help metadata is found."""
+def _direct_widget_topic(widget: Optional[QWidget]) -> Optional[str]:
+    if widget is None or sip.isdeleted(widget):
+        return None
+    topic = widget.property("helpTopic")
+    if isinstance(topic, str) and topic:
+        return topic
+    param_kind = widget.property("parameterHelp")
+    if isinstance(param_kind, str) and param_kind:
+        return param_kind
+    control_id = widget.property("controlId")
+    if isinstance(control_id, str) and control_id in _CONTROL_ID_TOPICS:
+        return _CONTROL_ID_TOPICS[control_id]
+    return None
+
+
+def _first_layout_widget_topic(layout_item) -> tuple[Optional[QWidget], Optional[str]]:
+    if layout_item is None:
+        return None, None
+    w = layout_item.widget()
+    if w is not None:
+        topic = _direct_widget_topic(w)
+        if topic:
+            return w, topic
+        for child in w.findChildren(QWidget):
+            topic = _direct_widget_topic(child)
+            if topic:
+                return child, topic
+        return None, None
+    sub = layout_item.layout()
+    if sub is not None:
+        for i in range(sub.count()):
+            child_w, topic = _first_layout_widget_topic(sub.itemAt(i))
+            if topic:
+                return child_w, topic
+    return None, None
+
+
+def _paired_form_field(label: QLabel) -> Optional[QWidget]:
+    parent = label.parentWidget()
+    if parent is None or sip.isdeleted(parent):
+        return None
+    layout = parent.layout()
+    if not isinstance(layout, QFormLayout):
+        return None
+    row, role = layout.getWidgetPosition(label)
+    if row < 0 or role != QFormLayout.ItemRole.LabelRole:
+        return None
+    item = layout.itemAt(row, QFormLayout.ItemRole.FieldRole)
+    if item is None:
+        return None
+    if item.widget() is not None:
+        return item.widget()
+    sub = item.layout()
+    if sub is not None:
+        for i in range(sub.count()):
+            child = sub.itemAt(i).widget()
+            if child is not None:
+                return child
+    return None
+
+
+def _form_label_for_widget(widget: Optional[QWidget]) -> str:
     cur = widget
     while cur is not None and not sip.isdeleted(cur):
-        topic = cur.property("helpTopic")
-        if isinstance(topic, str) and topic:
+        parent = cur.parentWidget()
+        layout = parent.layout() if parent is not None and not sip.isdeleted(parent) else None
+        if isinstance(layout, QFormLayout):
+            row, role = layout.getWidgetPosition(cur)
+            if row >= 0 and role == QFormLayout.ItemRole.FieldRole:
+                lbl_item = layout.itemAt(row, QFormLayout.ItemRole.LabelRole)
+                lbl_w = lbl_item.widget() if lbl_item is not None else None
+                if isinstance(lbl_w, QLabel):
+                    return lbl_w.text().replace("&", "").rstrip(":： ").strip()
+        cur = parent
+    return ""
+
+
+def _topic_for_widget(widget: Optional[QWidget]) -> tuple[Optional[QWidget], Optional[str]]:
+    """Walk up from *widget* until a widget carrying help metadata is found."""
+    if isinstance(widget, QLabel) and not sip.isdeleted(widget):
+        buddy = widget.buddy()
+        if buddy is not None and not sip.isdeleted(buddy):
+            topic = _direct_widget_topic(buddy)
+            if topic:
+                return buddy, topic
+        parent = widget.parentWidget()
+        layout = parent.layout() if parent is not None and not sip.isdeleted(parent) else None
+        if isinstance(layout, QFormLayout):
+            row, role = layout.getWidgetPosition(widget)
+            if row >= 0 and role == QFormLayout.ItemRole.LabelRole:
+                field_w, topic = _first_layout_widget_topic(
+                    layout.itemAt(row, QFormLayout.ItemRole.FieldRole)
+                )
+                if topic:
+                    return field_w, topic
+
+    cur = widget
+    while cur is not None and not sip.isdeleted(cur):
+        topic = _direct_widget_topic(cur)
+        if topic:
             return cur, topic
-        param_kind = cur.property("parameterHelp")
-        if isinstance(param_kind, str) and param_kind:
-            return cur, param_kind
-        control_id = cur.property("controlId")
-        if isinstance(control_id, str) and control_id in _CONTROL_ID_TOPICS:
-            return cur, _CONTROL_ID_TOPICS[control_id]
         cur = cur.parentWidget()
+
+    # Fallback: resolve to the nearest control carrying a non-empty tooltip so
+    # users never land on a generic overview when a tooltip explains the control.
+    candidates: list[Optional[QWidget]] = []
+    if isinstance(widget, QLabel) and not sip.isdeleted(widget):
+        if widget.buddy() is not None:
+            candidates.append(widget.buddy())
+        paired = _paired_form_field(widget)
+        if paired is not None:
+            candidates.append(paired)
+    cur = widget
+    while cur is not None and not sip.isdeleted(cur):
+        candidates.append(cur)
+        cur = cur.parentWidget()
+    for cand in candidates:
+        if cand is not None and not sip.isdeleted(cand) and cand.toolTip().strip():
+            return cand, "widget_tip"
     return None, None
 
 
@@ -106,8 +214,29 @@ def resolve_help_target(widget: Optional[QWidget]) -> tuple[Optional[QWidget], O
     return _topic_for_widget(widget)
 
 
-def _topic_title_and_diagram(topic_id: str, owner: Optional[QWidget]) -> tuple[str, str, str, list[str], str]:
+def _topic_title_and_diagram(topic_id: str, target_widget: Optional[QWidget]) -> tuple[str, str, str, list[str], str]:
     """Return ``(title, diagram_kind, body, tips_list, title_override)`` for *topic_id*."""
+    if topic_id == "widget_tip" and target_widget is not None and not sip.isdeleted(target_widget):
+        raw_tip = target_widget.toolTip().strip()
+        raw_name = ""
+        text_fn = getattr(target_widget, "full_text", None) or getattr(target_widget, "text", None)
+        if callable(text_fn):
+            raw_name = str(text_fn() or "").replace("&", "").strip()
+        if not raw_name:
+            raw_name = _form_label_for_widget(target_widget)
+        if not raw_name:
+            raw_name = str(target_widget.accessibleName() or "").strip()
+        if "\n" in raw_tip:
+            first, _, rest = raw_tip.partition("\n")
+            first = first.strip()
+            rest = rest.strip()
+            title = raw_name or first or trans.t("ctx_help_overview_title")
+            body = rest if (rest and (not raw_name or first == raw_name)) else raw_tip
+        else:
+            title = raw_name or trans.t("ctx_help_overview_title")
+            body = raw_tip or title
+        return title, "adv_settings", body, [], ""
+
     if topic_id.startswith("param:"):
         # Dynamic parameter fallback: param:<label_key>|<hint_key>
         rest = topic_id[len("param:"):]
@@ -141,12 +270,12 @@ class IllustratedHelpDialog(HelpDialog):
     """Themed illustrated help dialog generated from a context-help topic."""
 
     def __init__(self, topic_id: str, parent: Optional[QWidget] = None, *, title_override: Optional[str] = None):
-        owner = parent.window() if parent is not None else None
+        owner = parent.window() if (parent is not None and not sip.isdeleted(parent)) else None
         theme = getattr(owner, "ui_theme", "light") if owner is not None else "light"
-        title, diagram_kind, body, tips, _ = _topic_title_and_diagram(topic_id, owner)
+        title, diagram_kind, body, tips, _ = _topic_title_and_diagram(topic_id, parent)
         if title_override:
             title = title_override
-        super().__init__(title, "", parent)
+        super().__init__(title, "", owner)
         self.setProperty("controlId", "illustrated_help_dialog")
         colors = palette(theme)
 
@@ -186,6 +315,7 @@ class IllustratedHelpDialog(HelpDialog):
         )
         self.text_browser.setHtml(html)
         self.resize(580, 520 if registry_html else 430)
+        self._center_on_host(owner)
 
     @staticmethod
     def _algorithm_reference_html(topic_id: str, colors: dict) -> str:
@@ -236,8 +366,8 @@ def show_context_help(
     title_override: Optional[str] = None,
 ) -> None:
     """Open the illustrated help dialog for *topic_id* modal over *parent*."""
-    owner = parent.window() if parent is not None and not sip.isdeleted(parent) else QApplication.activeWindow()
-    dialog = IllustratedHelpDialog(topic_id, owner, title_override=title_override)
+    target = parent if parent is not None and not sip.isdeleted(parent) else QApplication.activeWindow()
+    dialog = IllustratedHelpDialog(topic_id, target, title_override=title_override)
     try:
         dialog.exec()
     finally:
@@ -263,6 +393,12 @@ def _make_help_cursor(theme: str = "light") -> QCursor:
     p.drawText(QRectF(0, 0, size, size), Qt.AlignmentFlag.AlignCenter, "?")
     p.end()
     return QCursor(pm, size // 2, size // 2)
+
+
+def _alpha(color_hex: str, alpha: int) -> QColor:
+    color = QColor(color_hex)
+    color.setAlpha(max(0, min(255, int(alpha))))
+    return color
 
 
 class _HelpTargetOverlay(QWidget):
@@ -329,7 +465,7 @@ class _HelpTargetOverlay(QWidget):
             p.drawRoundedRect(r, 6.0, 6.0)
 
             if self._target_title:
-                pill_text = f"?  {self._target_title}"
+                pill_text = self._target_title
                 font = p.font()
                 font.setPointSize(9)
                 font.setWeight(QFont.Weight.DemiBold)

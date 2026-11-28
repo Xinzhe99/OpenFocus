@@ -5,6 +5,7 @@ from PyQt6.QtWidgets import (
 )
 
 from locales import trans
+from ui.context_help import register_help_target
 from utils.design_tokens import FONT, SPACE, UI_FONT_RANGE, WEIGHT, ui_font_sizes
 from widgets.stepper import StepperSpinBox
 
@@ -45,6 +46,7 @@ class FontSizeDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
+        register_help_target(self, "font_size")
         self.size_spin.setFocus()
         screen = self.screen().availableGeometry()
         self.resize(min(580, screen.width() - 32), self.sizeHint().height())

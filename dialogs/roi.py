@@ -6,6 +6,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 from locales import trans
+from ui.context_help import register_help_target
 import numpy as np
 
 
@@ -52,6 +53,7 @@ class ROIRenderOptionsDialog(QDialog):
         vbox.addWidget(self.rb_paste)
         group.setLayout(vbox)
         layout.addWidget(group)
+        register_help_target(self, "roi_options")
 
         # Frame Selection (Visible only if Paste selected)
         self.frame_container = QGroupBox(trans.t("dialog_roi_group_base"))

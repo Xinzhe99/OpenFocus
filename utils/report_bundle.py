@@ -48,7 +48,7 @@ need_ram free_ram need_disk free_disk in_flight ram_budget vram_budget rss_bytes
 peak_rss_bytes available_ram_bytes total_ram_bytes fixed_bytes per_worker_bytes
 inference_bytes ram_ceiling waited_ms exit_code total_bytes radius sigma threshold levels
 iterations kernel_size strength quality compression downscale width height smoothing feather N
-max_shift_ratio rotation magnification reference_frame exposure_reference_index
+max_shift_ratio max_shift_x_ratio max_shift_y_ratio max_rotation_deg max_scale_change rotation magnification reference_frame exposure_reference_index
 tile_block_size tile_overlap tile_threshold ai_batch_size registration_downscale_width
 group_number group_size group_overlap load_scale_factor roi_base_index button
 angle_dx angle_dy pixel_dx pixel_dy'''.split())
@@ -62,7 +62,7 @@ _BOOL_FIELDS = frozenset(('preview', 'use_gpu', 'gpu_requested', 'cancelled', 't
     'roi_only', 'reverse_order', 'fallback', 'fallback_cpu', 'exposure_match',
     'sharpen_output', 'reverse_registration', 'source_order_reversed', 'sensor_denoise',
     'defect_mask', 'flat_field', 'grouped', 'need_fusion', 'full_frame_roi',
-    'alignment_reused', 'alignment_computed'))
+    'alignment_reused', 'alignment_computed', 'auto_crop'))
 _CONTROLS = frozenset('''fusion_method alignment_method render compare_all quick_preview
 exposure_match base_correct reverse_order sharpen_output wipe source_frame result_frame roi'''.split())
 _CONTROL_ID = re.compile(r'^[A-Za-z_][A-Za-z_0-9]*(?:\.[A-Za-z_][A-Za-z_0-9]*){0,20}$')
@@ -79,6 +79,7 @@ _ENUMS = {
     'action': frozenset(('press', 'move', 'release', 'scroll')),
     'error_category': frozenset(('resource_limit', 'memory', 'os', 'value', 'runtime', 'other')),
     'error_origin': frozenset(('child_worker', 'child_setup_or_transfer', 'child_exit')),
+    'interpolation': frozenset(('lanczos', 'cubic', 'linear')),
     'render_stage': frozenset(('prepare', 'align', 'fuse', 'finish', 'finalize', 'publish', 'unknown')),
     'resource_status': frozenset(('unknown', 'insufficient')),
 }

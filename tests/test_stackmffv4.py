@@ -272,3 +272,13 @@ def test_legacy_features_toggle_controls_ui_visibility(qapp, monkeypatch, tmp_pa
         w.close()
         w.deleteLater()
         qapp.processEvents()
+
+
+def test_legacy_features_toggle_is_product_and_series_generic():
+    from locales import trans
+
+    assert len(trans.PACK_ORDER) == 12
+    for code in trans.PACK_ORDER:
+        label = trans.translations[code].get("legacy_features", "")
+        assert label
+        assert "StackMFF" not in label, f"{code}: legacy_features should stay generic, got {label!r}"

@@ -16,6 +16,7 @@ from core.mosaic_photo import PhotometricSpec
 from core.mosaic_projection import CameraSpec, LensSpec, ProjectionSpec
 from core.mosaic_seam import SeamSpec
 from locales import trans
+from ui.context_help import register_help_target
 from widgets.stepper import StepperSpinBox
 
 
@@ -137,6 +138,7 @@ class MosaicSettingsPanel(QWidget):
         self.seam_mode.currentIndexChanged.connect(self._applicability)
         self.blend_mode.currentIndexChanged.connect(self._applicability)
         self.hdr_mode.currentIndexChanged.connect(self._applicability)
+        register_help_target(self, "mosaic_export")
         trans.languageChanged.connect(self._retranslate)
         self._retranslate()
         self._applicability()

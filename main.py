@@ -659,6 +659,26 @@ class OpenFocus(QMainWindow):
             self.right_panel_components.fit_configuration(restored=self._right_splitter_restored)
             self._right_splitter_restored = None
 
+    def _mount_context_help_beacon(self):
+        """Dock the help beacon in the menu bar top-right corner when non-native."""
+        beacon = getattr(self, "btn_context_help", None)
+        menubar = self.menuBar() if hasattr(self, "menuBar") else None
+        if beacon is None or menubar is None or menubar.isNativeMenuBar():
+            return
+        corner_host = QWidget(menubar)
+        corner_host.setObjectName("menuBarHelpCorner")
+        corner_layout = QHBoxLayout(corner_host)
+        corner_layout.setContentsMargins(4, 0, 8, 0)
+        corner_layout.setSpacing(0)
+        corner_layout.addWidget(beacon, 0, Qt.AlignmentFlag.AlignVCenter)
+        menubar.setCornerWidget(corner_host, Qt.Corner.TopRightCorner)
+        corner_host.show()
+        beacon.show()
+        self._menubar_help_corner = corner_host
+        host = getattr(getattr(self, "right_panel_components", None), "context_help_host", None)
+        if host is not None and not sip.isdeleted(host):
+            host.hide()
+
     def _show_storage_fallback(self, path, error, fallback):
         if not getattr(self, '_shutting_down', False):
             message = trans.t('advanced_storage_fallback').format(
@@ -845,6 +865,7 @@ class OpenFocus(QMainWindow):
         self._context_help_manager = ContextHelpManager(self)
         if getattr(self, "btn_context_help", None) is not None:
             self._context_help_manager.attach_beacon(self.btn_context_help)
+            self._mount_context_help_beacon()
         self._refresh_live_preview_availability()
         if hasattr(self, "gallery_controller"):
             self.gallery_controller.attach_ui()
@@ -5945,11 +5966,21 @@ class OpenFocus(QMainWindow):
         self.refresh_algorithm_parameters()
         self.refresh_registration_parameters()
         c.btn_reset.setText(trans.t('btn_reset'))
-        c.btn_reset.setToolTip(trans.t('btn_reset'))
+        c.btn_reset.setToolTip(
+            f"{trans.t('btn_reset')}\n{trans.t('ctx_help_btn_reset_hint')}")
         c.btn_render_settings.setText(trans.t('render_settings_title'))
-        c.btn_render_settings.setToolTip(trans.t('render_settings_title'))
+        c.btn_render_settings.setToolTip(
+            f"{trans.t('render_settings_title')}\n{trans.t('ctx_help_btn_render_settings_hint')}")
         if getattr(c, 'btn_context_help', None) is not None:
             c.btn_context_help.retranslate()
+            corner = getattr(self, "_menubar_help_corner", None)
+            if corner is not None and not sip.isdeleted(corner):
+                c.btn_context_help.adjustSize()
+                corner.adjustSize()
+                menubar = self.menuBar() if hasattr(self, "menuBar") else None
+                if menubar is not None:
+                    menubar.setCornerWidget(corner, Qt.Corner.TopRightCorner)
+                    menubar.updateGeometry()
         if getattr(c, 'btn_render_more', None) is not None:
             c.btn_render_more.setText(trans.t('ctx_help_btn_menu_more'))
             c.btn_render_more.setToolTip(

@@ -594,8 +594,14 @@ def test_openfocus_advanced_draft_accept_and_persistence(settings_window, tmp_pa
 
     dialog = AdvancedSettingsDialog(window)
     editors = dialog.openfocus_registration_panel.editors
-    assert set(editors) == {'max_shift_ratio', 'rotation', 'magnification', 'reference_frame'}
-    assert editors['max_shift_ratio'].value() == .12
+    assert set(editors) == {
+        'max_shift_x_ratio', 'max_shift_y_ratio', 'rotation', 'magnification',
+        'auto_crop', 'interpolation', 'reference_frame',
+    }
+    assert editors['max_shift_x_ratio'].value() == .12
+    assert editors['max_shift_y_ratio'].value() == .12
+    assert editors['auto_crop'].isChecked() is True
+    assert editors['interpolation'].currentData() == 'lanczos'
     assert editors['reference_frame'].value() == 4
     editors['rotation'].setValue(8)
     dialog.reject()
@@ -604,15 +610,19 @@ def test_openfocus_advanced_draft_accept_and_persistence(settings_window, tmp_pa
 
     dialog = AdvancedSettingsDialog(window)
     editors = dialog.openfocus_registration_panel.editors
-    for key, value in {'max_shift_ratio': .2, 'rotation': 8,
+    for key, value in {'max_shift_x_ratio': .2, 'max_shift_y_ratio': .15, 'rotation': 8,
                        'magnification': 5, 'reference_frame': 2}.items():
         editors[key].setValue(value)
+    editors['auto_crop'].setChecked(False)
+    editors['interpolation'].setCurrentIndex(editors['interpolation'].findData('cubic'))
     dialog._apply()
     assert dialog.result() == QDialog.DialogCode.Accepted
     restored = SimpleNamespace()
     settings_store.load_parameter_memories(restored)
     assert restored._registration_parameters_by_method['openfocus'] == {
-        'max_shift_ratio': .2, 'rotation': 8., 'magnification': 5.,
+        'max_shift_x_ratio': .2, 'max_shift_y_ratio': .15,
+        'rotation': 8., 'magnification': 5.,
+        'auto_crop': False, 'interpolation': 'cubic',
         'reference_frame': 2, 'failure_policy': 'fail'}
     assert restored._registration_parameters_by_method['ecc']['failure_policy'] == 'continue'
 

@@ -46,6 +46,7 @@ from ui.algorithm_parameters import AlgorithmParameterPanel
 from ui.algorithm_combo import apply_method_availability, selected_item_enabled
 from core.experimental import alignment_is_experimental, experimental_enabled
 from locales import trans
+from ui.context_help import register_help_target
 from widgets.flow_layout import FlowPanel
 from widgets.stepper import StepperSpinBox
 from widgets.workspace import WorkspaceSplitter
@@ -111,6 +112,10 @@ def _draw_depth_export_pixmap(kind: str, color_hex: str) -> QPixmap:
         painter.drawLine(QPointF(8.0, 8.0), QPointF(8.0, 14.0))
         painter.drawLine(QPointF(8.0, 8.0), QPointF(2.6, 5.0))
         painter.drawLine(QPointF(8.0, 8.0), QPointF(13.4, 5.0))
+    elif kind == "html3d":
+        painter.drawEllipse(QRectF(2.4, 2.4, 11.2, 11.2))
+        painter.drawEllipse(QRectF(5.2, 2.4, 5.6, 11.2))
+        painter.drawLine(QPointF(2.6, 8.0), QPointF(13.4, 8.0))
 
     painter.end()
     return pm
@@ -409,6 +414,48 @@ class TurntableExportWorker(QThread):
             self.failed.emit("cancelled" if self.isInterruptionRequested() else str(exc))
 
 
+class Html3DExportWorker(QThread):
+    progress = pyqtSignal(int, int)
+    ok = pyqtSignal(object)
+    failed = pyqtSignal(str)
+
+    def __init__(self, path, height_field, texture, extent, colormap_lut, options, source_paths=(), parent=None):
+        super().__init__(parent)
+        configure_native_worker_stack(self)
+        self.path = path
+        self.height_field = height_field
+        self.texture = texture
+        self.extent = extent
+        self.colormap_lut = colormap_lut
+        self.options = options
+        self.source_paths = tuple(source_paths)
+
+    def cancel(self):
+        self.requestInterruption()
+
+    def run(self):
+        from core.html_3d_export import Html3DExportCancelled, export_html_3d
+        try:
+            protect_sources((self.path,), self.source_paths)
+            result = export_html_3d(
+                self.path,
+                self.height_field,
+                self.texture,
+                extent=self.extent,
+                depth_lut_bgr=self.colormap_lut,
+                options=self.options,
+                overwrite=True,
+                source_paths=self.source_paths,
+                progress_callback=lambda i, n: self.progress.emit(i, n),
+                should_cancel=self.isInterruptionRequested,
+            )
+            self.ok.emit(result)
+        except Html3DExportCancelled:
+            self.failed.emit("cancelled")
+        except Exception as exc:
+            self.failed.emit("cancelled" if self.isInterruptionRequested() else str(exc))
+
+
 class DepthProductExportWorker(QThread):
     ok = pyqtSignal(object)
     failed = pyqtSignal(str)
@@ -647,9 +694,29 @@ class DepthVisualWorker(QThread):
             with heavy_job(self.isInterruptionRequested):
                 s, cache = self.snapshot, self.cache
                 index, mask, opts = s['index'], s['mask'], dict(s['color'])
+                height, width = index.shape[:2]
+                tw, th = s['preview_size']
+                work_edge = max(int(s['mesh_size']), int(tw), int(th), 1024)
+                work_scale = min(1.0, work_edge / float(max(height, width, 1)))
+                if work_scale < 1.0:
+                    ww = max(2, int(round(width * work_scale)))
+                    wh = max(2, int(round(height * work_scale)))
+                    grid = np.ix_(np.arange(wh) * height // wh, np.arange(ww) * width // ww)
+                    work_index = np.asarray(index[grid], dtype=np.float32)
+                    work_mask = mask[grid] if mask is not None else None
+                    if opts['overlay'] is not None:
+                        opts['overlay'] = opts['overlay'][grid]
+                else:
+                    ww, wh = width, height
+                    work_index = index
+                    work_mask = mask
                 retained = sum(value.nbytes for value in cache.values() if isinstance(value, np.ndarray))
-                textures = [s['texture'], opts['overlay']]
-                require_memory(retained + index.size * 72 + sum(t.nbytes * 5 for t in textures if t is not None))
+                tex_src = s['texture']
+                tex_bytes = 0
+                if not s['texture_color'] and tex_src is not None:
+                    ts = getattr(tex_src, 'shape', (wh, ww))
+                    tex_bytes = min(int(ts[0]) * int(ts[1]), 4096 * 4096) * 9
+                require_memory(retained + ww * wh * 72 + tex_bytes)
                 def checkpoint():
                     if self.isInterruptionRequested():
                         raise InterruptedError('cancelled')
@@ -659,16 +726,17 @@ class DepthVisualWorker(QThread):
                         cache[name + '_key'] = key
                     checkpoint()
                     return cache[name]
-                smooth_key = (s['map_key'], id(mask), opts['smooth'])
+                smooth_key = (s['map_key'], id(mask), ww, wh, opts['smooth'])
                 def smooth():
-                    values = smooth_index_map(index, opts['smooth'])
-                    return np.where(mask, values, np.nan) if mask is not None else values
+                    values = smooth_index_map(work_index, opts['smooth'])
+                    return np.where(work_mask, values, np.nan) if work_mask is not None else values
                 values = cached('smooth', smooth_key, smooth)
                 def develop(image, metadata, key):
                     if image is None or metadata is None:
                         return image
                     from utils.linear_dng import develop_linear
-                    return cached(key, (s[key + '_identity'], id(metadata)), lambda: develop_linear(image, metadata))
+                    return cached(key, (s[key + '_identity'], id(metadata), getattr(image, 'shape', ())),
+                                  lambda: develop_linear(image, metadata))
                 overlay = opts['overlay']
                 if (overlay is not None and opts['overlay_metadata'] is not None and
                         overlay.dtype == np.uint16 and overlay.ndim == 3 and overlay.shape[2] == 3):
@@ -676,7 +744,7 @@ class DepthVisualWorker(QThread):
                     opts['overlay_metadata'] = None
                 color_key = (smooth_key, opts['colormap'], repr(opts['stops']), opts['invert'],
                              opts['gamma'], s['overlay_identity'], id(s['color']['overlay_metadata']), opts['opacity'])
-                color = cached('color', color_key, lambda: _depth_color_pixels(index, mask, opts, values))
+                color = cached('color', color_key, lambda: _depth_color_pixels(work_index, work_mask, opts, values))
                 mesh_error = ''
                 try:
                     mesh_key = (smooth_key, s['physical'], s['z_enabled'], s['indices'], s['z0'], s['step'],
@@ -686,12 +754,12 @@ class DepthVisualWorker(QThread):
                             if (not s['z_enabled'] or s['pixel_size'] is None or
                                     not np.isfinite(s['pixel_size']) or s['pixel_size'] <= 0):
                                 raise ValueError(trans.t('depth_physical_missing'))
-                            height, _ = physical_depth(values, s['indices'], s['z0'], s['step'], s['direction'])
+                            height_m, _ = physical_depth(values, s['indices'], s['z0'], s['step'], s['direction'])
                             if opts['invert']:
-                                height = -height
+                                height_m = -height_m
                         else:
-                            height = 1.0 - values if opts['invert'] else values
-                        return build_height_field(height, s['mesh_size'])
+                            height_m = 1.0 - values if opts['invert'] else values
+                        return build_height_field(height_m, s['mesh_size'])
                     mesh_height = cached('mesh', mesh_key, mesh)
                     if s['texture_color']:
                         texture = cmap.colorize(values, opts['colormap'], invert=opts['invert'],
@@ -701,15 +769,25 @@ class DepthVisualWorker(QThread):
                         texture = s['texture']
                         if texture is not None:
                             texture = resolve_frame(texture, should_cancel=self.isInterruptionRequested)
+                        if texture is None or texture.shape[:2] != (height, width):
+                            raise ValueError(trans.t('depth_texture_unavailable'))
+                        if max(texture.shape[:2]) > 4096:
+                            tex_scale = 4096.0 / float(max(texture.shape[:2]))
+                            texture = cv2.resize(
+                                texture,
+                                (max(2, int(round(texture.shape[1] * tex_scale))),
+                                 max(2, int(round(texture.shape[0] * tex_scale)))),
+                                interpolation=cv2.INTER_AREA,
+                            )
                         texture = develop(texture, s['texture_metadata'], 'texture')
-                    if texture is None or texture.shape[:2] != index.shape[:2]:
+                    if texture is None or texture.size == 0:
                         raise ValueError(trans.t('depth_texture_unavailable'))
                     texture = to_display_uint8(texture)
                     if texture.ndim == 2:
                         texture = cv2.cvtColor(texture, cv2.COLOR_GRAY2BGR)
                     elif texture.shape[2] == 4:
                         texture = texture[:, :, :3]
-                    preview_height = (mesh_height / (max(index.shape[0] - 1, index.shape[1] - 1) * s['pixel_size'])
+                    preview_height = (mesh_height / (max(height - 1, width - 1) * s['pixel_size'])
                                       if s['physical'] else mesh_height)
                     tex = cv2.resize(texture, (preview_height.shape[1], preview_height.shape[0]),
                                      interpolation=cv2.INTER_AREA)
@@ -719,15 +797,14 @@ class DepthVisualWorker(QThread):
                     mesh_error = str(exc)
                     mesh_height = texture = preview_height = tex = None
                 checkpoint()
-                height, width = color.shape[:2]
-                tw, th = s['preview_size']
-                scale = min(tw / width, th / height, 1.0)
-                preview = (cv2.resize(color, (max(1, int(width * scale)), max(1, int(height * scale))),
+                ch, cw = color.shape[:2]
+                scale = min(tw / cw, th / ch, 1.0)
+                preview = (cv2.resize(color, (max(1, int(cw * scale)), max(1, int(ch * scale))),
                                       interpolation=cv2.INTER_AREA) if scale < 1.0 else color)
                 checkpoint()
                 self.ok.emit({'cache': cache, 'preview': preview, 'mesh': mesh_height,
                               'texture': texture, 'surface': preview_height, 'surface_texture': tex,
-                              'error': mesh_error, 'extent': (index.shape[0] - 1, index.shape[1] - 1),
+                              'error': mesh_error, 'extent': (height - 1, width - 1),
                               'relief': 1.0 if s['physical'] else s['relief']})
         except Exception as exc:
             if not self.isInterruptionRequested():
@@ -1022,6 +1099,11 @@ class DepthMapDialog(QDialog):
         self.btn_export_turntable = QPushButton(trans.t("depth_3d_export_turntable"))
         self.btn_export_turntable.clicked.connect(self._export_turntable)
         toolbar_3d.add(self.btn_export_turntable)
+
+        self.btn_export_html_3d = QPushButton(trans.t("depth_3d_export_html"))
+        self.btn_export_html_3d.setToolTip(trans.t("depth_3d_export_html_hint"))
+        self.btn_export_html_3d.clicked.connect(self._export_html_3d)
+        toolbar_3d.add(self.btn_export_html_3d)
 
         self.btn_surface_reset = QPushButton(trans.t("depth_3d_reset"))
         self.btn_surface_reset.clicked.connect(self._reset_3d_view)
@@ -1338,6 +1420,9 @@ class DepthMapDialog(QDialog):
         self.btn_save_3d = QPushButton(trans.t("depth_export_3d"))
         self.btn_save_3d.setToolTip(trans.t("depth_export_3d_hint"))
         self.btn_save_3d.clicked.connect(self._export_3d)
+        self.btn_save_html_3d = QPushButton(trans.t("depth_3d_export_html"))
+        self.btn_save_html_3d.setToolTip(trans.t("depth_3d_export_html_hint"))
+        self.btn_save_html_3d.clicked.connect(self._export_html_3d)
         close_btn = QPushButton(trans.t("btn_close"))
         close_btn.clicked.connect(self.reject)
         self.btn_save_indices = QPushButton(trans.t("depth_save_indices"))
@@ -1359,6 +1444,7 @@ class DepthMapDialog(QDialog):
             (self.btn_save_contrast, "contrast"),
             (self.btn_save_physical, "physical"),
             (self.btn_save_3d, "mesh3d"),
+            (self.btn_save_html_3d, "html3d"),
         )
         for btn, icon_kind in export_buttons:
             btn.setObjectName("secondaryButton")
@@ -1410,8 +1496,14 @@ class DepthMapDialog(QDialog):
         mesh_row.addWidget(self.mesh_size)
         mesh_row.addStretch(1)
         mesh_card_lay.addLayout(mesh_row)
+        mesh_btn_row = QHBoxLayout()
+        mesh_btn_row.setContentsMargins(0, 0, 0, 0)
+        mesh_btn_row.setSpacing(8)
         self.btn_save_3d.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        mesh_card_lay.addWidget(self.btn_save_3d)
+        self.btn_save_html_3d.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        mesh_btn_row.addWidget(self.btn_save_3d, 1)
+        mesh_btn_row.addWidget(self.btn_save_html_3d, 1)
+        mesh_card_lay.addLayout(mesh_btn_row)
         export_lay.addWidget(self._export_mesh_card)
         export_lay.addStretch(1)
 
@@ -1436,13 +1528,43 @@ class DepthMapDialog(QDialog):
         self._reconcile_controls()
         for _control in ("method_combo", "align_combo", "compute_btn",
                          "cancel_btn", "btn_save_color", "btn_save_raw",
-                         "btn_save_3d", "btn_save_indices", "btn_save_render", "fusion_parameter_panel",
+                         "btn_save_3d", "btn_save_html_3d", "btn_export_html_3d",
+                         "btn_save_indices", "btn_save_render", "fusion_parameter_panel",
                          "registration_parameter_panel"):
             _widget = getattr(self, _control, None)
             if _widget is not None:
                 _widget.setProperty("controlId", _control)
         self._load_rendered_depth()
+        self._register_context_help()
         splitter.fit_dialog(980, 680)
+
+    def _register_context_help(self):
+        for name in (
+            "source_combo", "align_combo", "registration_parameter_panel",
+            "method_combo", "fusion_parameter_panel", "compute_btn",
+        ):
+            register_help_target(getattr(self, name, None), "depth_source_method")
+        for name in (
+            "map_combo", "invert_chk", "gamma_spin", "smooth_spin",
+            "physical_chk", "physical_panel", "texture_combo",
+            "overlay_chk", "opacity_spin",
+        ):
+            register_help_target(getattr(self, name, None), "depth_postprocess")
+        for name in (
+            "surface", "render_mode_combo", "relief_spin", "detail_slider",
+            "btn_surface_reset",
+        ):
+            register_help_target(getattr(self, name, None), "depth_3d_surface")
+        for name in ("lighting_group", "btn_light_reset"):
+            register_help_target(getattr(self, name, None), "depth_3d_lighting")
+        for name in (
+            "_export_maps_card", "_export_mesh_card", "mesh_size", "btn_save_3d",
+            "btn_save_color", "btn_save_raw", "btn_save_indices", "btn_save_render",
+            "btn_save_contrast", "btn_save_physical",
+            "btn_export_anaglyph", "btn_export_stereo_pair", "btn_export_turntable",
+            "btn_export_html_3d", "btn_save_html_3d",
+        ):
+            register_help_target(getattr(self, name, None), "depth_export")
 
     @staticmethod
     def _settings_form():
@@ -2120,7 +2242,8 @@ class DepthMapDialog(QDialog):
         surface_ready = (current and self._visual_ready_revision == self._visual_revision
                          and (self._mesh_height is not None or self._map_only_view()))
         self.btn_save_3d.setEnabled(surface_ready)
-        for name in ("btn_export_anaglyph", "btn_export_stereo_pair", "btn_export_turntable"):
+        for name in ("btn_save_html_3d", "btn_export_anaglyph", "btn_export_stereo_pair",
+                     "btn_export_turntable", "btn_export_html_3d"):
             btn = getattr(self, name, None)
             if btn is not None:
                 btn.setEnabled(surface_ready)
@@ -2282,8 +2405,11 @@ class DepthMapDialog(QDialog):
             self._resize_timer.start(0)
             return
         if outcome is None or outcome[1]:
+            err = outcome[1] if outcome else trans.t('depth_no_outcome')
             self._export_after_surface = False
-            self.status_lbl.setText(outcome[1] if outcome else trans.t('depth_no_outcome'))
+            self.status_lbl.setText(err)
+            if not self._map_only_view() and hasattr(self, 'lbl_surface_state'):
+                self.lbl_surface_state.setText(trans.t('depth_3d_failed').format(error=err))
             self._reconcile_controls()
             return
         result = outcome[0]
@@ -2319,9 +2445,12 @@ class DepthMapDialog(QDialog):
             cells = valid[:-1, :-1] & valid[1:, :-1] & valid[:-1, 1:] & valid[1:, 1:]
             self.lbl_surface_state.setText(f"{valid.shape[1]}×{valid.shape[0]} · V {int(valid.sum())} · △ {int(cells.sum()) * 2}")
         self._reconcile_controls()
-        if self._export_after_surface:
+        pending = self._export_after_surface
+        if pending:
             self._export_after_surface = False
-            if self._mesh_height is not None:
+            if pending == "html3d" and self._surface_height is not None:
+                self._export_html_3d()
+            elif self._mesh_height is not None:
                 self._export_3d()
 
     def _require_current_map(self) -> bool:
@@ -2665,6 +2794,100 @@ class DepthMapDialog(QDialog):
             (worker.finished, lambda w=worker: self._export_finished(w)),
         ))
         self.status_lbl.setText(trans.t("depth_3d_turntable_progress").format(i=0, n=options.frame_count))
+        self.status_lbl.setToolTip(path)
+        self._reconcile_controls()
+        remember_image_save(path)
+        try:
+            worker.start()
+        except Exception as exc:
+            self._export_worker = None
+            worker.deleteLater()
+            self.status_lbl.setText(str(exc))
+            self._reconcile_controls()
+
+    def _html3d_progress(self, i: int, n: int, worker):
+        if not self._closing and worker is self._export_worker and not self._cancelling:
+            self.status_lbl.setText(trans.t("html_3d_export_progress").format(i=i, n=n))
+
+    def _export_html_3d(self):
+        if not self._require_current_map() or self._export_worker is not None:
+            return
+        if self._map_only_view():
+            self._export_after_surface = "html3d"
+            self.tabs.setCurrentIndex(1)
+            return
+        if self._surface_height is None:
+            self.tabs.setCurrentIndex(1)
+            self.status_lbl.setText(self.lbl_surface_state.text() or trans.t("depth_no_map_yet"))
+            return
+        from dialogs.html_3d_export import Html3DExportDialog
+        ui_theme = (getattr(self.window_main, "ui_theme", None)
+                    or getattr(self.window_main, "theme_mode", None) or "dark")
+        default_theme = "light" if ui_theme == "light" else "dark"
+        dlg = Html3DExportDialog(
+            self,
+            source_shape=self._surface_height.shape[:2],
+            has_texture=self._surface_texture is not None,
+            default_render_mode=self.surface.render_mode(),
+        )
+        theme_idx = dlg.theme_combo.findData(default_theme)
+        if theme_idx >= 0:
+            dlg.theme_combo.setCurrentIndex(theme_idx)
+        if not dlg.exec():
+            return
+        yaw, pitch, zoom = self.surface.camera_state()
+        z_range_um = None
+        pixel_size_um = None
+        if self.physical_chk.isChecked():
+            unit = self.z_unit.currentData()
+            z_vals = [float((self.z_start.value() + i * self.z_step.value()
+                             * self.z_direction.currentData()) * unit)
+                      for i in self._map_indices]
+            if z_vals:
+                z_range_um = (min(z_vals), max(z_vals))
+            pixel_size_um = self._pixel_size()
+        options = dlg.build_options(
+            initial_yaw=yaw,
+            initial_pitch=pitch,
+            initial_zoom=zoom,
+            relief=1.0 if self.physical_chk.isChecked() else self.relief_spin.value() / 100.0,
+            invert_depth=False,
+            lighting=self.surface.lighting(),
+            physical_z_range_um=z_range_um,
+            pixel_size_um=pixel_size_um,
+            colormap_name=str(self._selected_colormap()[0] or ""),
+        )
+        start_dir = image_save_dir()
+        default = os.path.join(start_dir, "depth_3d_viewer.html")
+        path, _ = FileDialog.getSaveFileName(
+            self, trans.t("html_3d_dialog_title"), default, "Interactive HTML 3D (*.html *.htm)")
+        if not path or not self._require_current_map():
+            return
+        try:
+            self._safe_export_paths([path])
+        except (ValueError, OSError) as exc:
+            self.status_lbl.setText(str(exc))
+            return
+        worker = Html3DExportWorker(
+            path,
+            self._surface_height,
+            self._surface_texture,
+            self._surface_extent,
+            self._surface_lut,
+            options,
+            source_paths=self._export_source_paths(),
+            parent=self,
+        )
+        self._export_worker = worker
+        self._export_outcome = None
+        self._cancelling = False
+        self._bind_worker(worker, (
+            (worker.progress, lambda i, n, w=worker: self._html3d_progress(i, n, w)),
+            (worker.ok, lambda info, w=worker: self._set_export_outcome((True, info), w)),
+            (worker.failed, lambda error, w=worker: self._set_export_outcome((False, error), w)),
+            (worker.finished, lambda w=worker: self._export_finished(w)),
+        ))
+        self.status_lbl.setText(trans.t("html_3d_export_progress").format(i=0, n=4))
         self.status_lbl.setToolTip(path)
         self._reconcile_controls()
         remember_image_save(path)

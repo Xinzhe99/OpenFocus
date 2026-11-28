@@ -20,6 +20,7 @@ from core.frame_storage import configure_storage_directory, restore_storage_dire
 from locales import trans
 from utils.export_paths import prefix_output_name, valid_output_prefix
 from ui.algorithm_parameters import AlgorithmParameterPanel
+from ui.context_help import register_help_target
 from ui.parameter_help import add_help_row
 from widgets.stepper import StepperSpinBox
 
@@ -155,6 +156,10 @@ class AdvancedSettingsDialog(QDialog):
         buttons.button(QDialogButtonBox.StandardButton.Cancel).setText(trans.t("btn_cancel"))
         buttons.accepted.connect(self._apply)
         buttons.rejected.connect(self.reject)
+        if self._gallery_scroll_page is not None:
+            register_help_target(self._gallery_scroll_page, "adv_gallery")
+        if hasattr(self, "_developer_scroll_page") and self._developer_scroll_page is not None:
+            register_help_target(self._developer_scroll_page, "adv_developer")
         root.addWidget(buttons)
         ok_btn.setDefault(True)
         self.tabs.currentChanged.connect(self._on_tab_changed)
@@ -205,15 +210,15 @@ class AdvancedSettingsDialog(QDialog):
         self.chk_experimental_features.setProperty("controlId", "chk_experimental_features")
         self.chk_experimental_features.setChecked(bool(getattr(w, "experimental_features", False)))
         self.chk_experimental_features.setToolTip(trans.t("experimental_features_hint"))
+        register_help_target(self.chk_experimental_features, "adv_experimental")
         page_lay.addWidget(self.chk_experimental_features)
-        _note(page_lay, trans.t("experimental_features_hint"))
 
         self.chk_legacy_features = QCheckBox(trans.t("legacy_features"))
         self.chk_legacy_features.setProperty("controlId", "chk_legacy_features")
         self.chk_legacy_features.setChecked(bool(getattr(w, "legacy_features", False)))
         self.chk_legacy_features.setToolTip(trans.t("legacy_features_hint"))
+        register_help_target(self.chk_legacy_features, "adv_legacy")
         page_lay.addWidget(self.chk_legacy_features)
-        _note(page_lay, trans.t("legacy_features_hint"))
 
         privacy = _section(page_lay, trans.t('advanced_privacy'))
         self.chk_auto_error_reports = QCheckBox(trans.t('report_auto_setting'))
@@ -223,12 +228,14 @@ class AdvancedSettingsDialog(QDialog):
         self.chk_auto_error_reports.toggled.connect(
             lambda _checked: setattr(self, '_reports_choice_touched', True))
         self.chk_auto_error_reports.setToolTip(trans.t('report_auto_hint'))
+        register_help_target(self.chk_auto_error_reports, "adv_privacy")
         privacy.addRow(self.chk_auto_error_reports)
         self.chk_usage = QCheckBox(trans.t('usage_enabled'))
         self.chk_usage.setProperty('controlId', 'chk_usage')
         analytics = getattr(w, 'usage_analytics', None)
         self.chk_usage.setChecked(analytics.enabled() if analytics is not None else True)
         self.chk_usage.setToolTip(trans.t('usage_disclosure'))
+        register_help_target(self.chk_usage, "adv_privacy")
         privacy.addRow(self.chk_usage)
 
         storage = _section(page_lay, trans.t('advanced_working_storage'))
@@ -241,12 +248,14 @@ class AdvancedSettingsDialog(QDialog):
         browse = QPushButton(trans.t("advanced_storage_browse"))
         browse.clicked.connect(self._browse_storage_directory)
         storage_layout.addWidget(browse)
+        register_help_target(storage_row, "adv_storage")
         storage.addRow(trans.t("advanced_storage_directory"), storage_row)
 
         output = _section(page_lay, trans.t("output_prefix_section"))
         self.output_prefix = QLineEdit(getattr(w, "output_name_prefix", "") or "")
         self.output_prefix.setMaxLength(40)
         self.output_prefix.setToolTip(trans.t("output_prefix_hint"))
+        register_help_target(self.output_prefix, "adv_naming")
         output.addRow(trans.t("output_prefix_label"), self.output_prefix)
 
         from core.filename_template import DEFAULT_FILENAME_TEMPLATE, TEMPLATE_TOKENS
@@ -263,6 +272,7 @@ class AdvancedSettingsDialog(QDialog):
         self.btn_reset_template = QPushButton(trans.t("output_template_clear"))
         self.btn_reset_template.clicked.connect(self.output_template.clear)
         template_row_lay.addWidget(self.btn_reset_template)
+        register_help_target(template_row, "adv_naming")
         output.addRow(trans.t("output_template_label"), template_row)
 
         chips_host = QWidget()
@@ -281,10 +291,12 @@ class AdvancedSettingsDialog(QDialog):
             chip.clicked.connect(lambda _checked=False, tok=token: self._insert_template_token(tok))
             chips_grid.addWidget(chip, idx // cols, idx % cols)
             self.template_token_buttons[token] = chip
+        register_help_target(chips_host, "adv_naming")
         output.addRow(trans.t("output_template_tokens_label"), chips_host)
 
         self.output_prefix_preview = QLabel()
         self.output_prefix_preview.setWordWrap(True)
+        register_help_target(self.output_prefix_preview, "adv_naming")
         output.addRow(trans.t("output_prefix_preview"), self.output_prefix_preview)
         self.output_prefix.textChanged.connect(self._update_output_prefix_preview)
         self.output_template.textChanged.connect(self._update_output_prefix_preview)
@@ -294,6 +306,7 @@ class AdvancedSettingsDialog(QDialog):
         self.chk_render_complete_sound.setProperty("controlId", "chk_render_complete_sound")
         self.chk_render_complete_sound.setChecked(bool(getattr(w, "render_complete_sound", True)))
         self.chk_render_complete_sound.setToolTip(trans.t("render_complete_sound_hint"))
+        register_help_target(self.chk_render_complete_sound, "adv_naming")
         output.addRow(self.chk_render_complete_sound)
 
         export_color = _section(page_lay, trans.t("advanced_export_color_section"))
@@ -301,12 +314,14 @@ class AdvancedSettingsDialog(QDialog):
         self.chk_strip_exif_on_export.setProperty("controlId", "chk_strip_exif_on_export")
         self.chk_strip_exif_on_export.setChecked(bool(getattr(w, "strip_exif_on_export", False)))
         self.chk_strip_exif_on_export.setToolTip(trans.t("export_strip_exif_hint"))
+        register_help_target(self.chk_strip_exif_on_export, "adv_export_color")
         export_color.addRow(self.chk_strip_exif_on_export)
 
         self.chk_ui_icc_preview = QCheckBox(trans.t("ui_icc_preview_setting"))
         self.chk_ui_icc_preview.setProperty("controlId", "chk_ui_icc_preview")
         self.chk_ui_icc_preview.setChecked(bool(getattr(w, "enable_ui_icc_preview", True)))
         self.chk_ui_icc_preview.setToolTip(trans.t("ui_icc_preview_setting_hint"))
+        register_help_target(self.chk_ui_icc_preview, "adv_export_color")
         export_color.addRow(self.chk_ui_icc_preview)
 
         from core.raw_develop import load_raw_develop_settings
@@ -315,25 +330,30 @@ class AdvancedSettingsDialog(QDialog):
         dng_row = QWidget()
         dng_lay = QHBoxLayout(dng_row)
         dng_lay.setContentsMargins(0, 0, 0, 0)
+        dng_hint = trans.t("raw_develop_dng_hint")
         self.raw_dng_converter_path = QLineEdit(raw_cfg.external_dng_converter_path)
         self.raw_dng_converter_path.setProperty("controlId", "edit_advanced_dng_path")
         self.raw_dng_converter_path.setPlaceholderText(trans.t("raw_develop_dng_placeholder"))
-        self.raw_dng_converter_path.setToolTip(trans.t("raw_develop_dng_hint"))
+        self.raw_dng_converter_path.setToolTip(dng_hint)
         dng_lay.addWidget(self.raw_dng_converter_path, 1)
         btn_dng_browse = QPushButton(trans.t("raw_develop_dng_browse"))
         btn_dng_browse.setProperty("controlId", "btn_advanced_dng_browse")
+        btn_dng_browse.setToolTip(dng_hint)
         btn_dng_browse.clicked.connect(self._browse_dng_converter)
         dng_lay.addWidget(btn_dng_browse)
         btn_dng_detect = QPushButton(trans.t("raw_develop_dng_detect"))
         btn_dng_detect.setProperty("controlId", "btn_advanced_dng_detect")
+        btn_dng_detect.setToolTip(dng_hint)
         btn_dng_detect.clicked.connect(self._detect_dng_converter)
         dng_lay.addWidget(btn_dng_detect)
+        register_help_target(dng_row, "adv_raw_decode")
         raw_section.addRow(trans.t("raw_develop_dng_path"), dng_row)
 
         self.btn_open_raw_develop = QPushButton(trans.t("raw_develop_open_button"))
         self.btn_open_raw_develop.setProperty("controlId", "btn_advanced_open_raw_develop")
-        self.btn_open_raw_develop.setToolTip(trans.t("raw_develop_dng_hint"))
+        self.btn_open_raw_develop.setToolTip(dng_hint)
         self.btn_open_raw_develop.clicked.connect(self._open_raw_develop_dialog)
+        register_help_target(self.btn_open_raw_develop, "adv_raw_decode")
         raw_section.addRow("", self.btn_open_raw_develop)
 
     def _build_fusion(self, page_lay):
@@ -348,22 +368,28 @@ class AdvancedSettingsDialog(QDialog):
         self.combo_resources.setCurrentIndex(max(0, index))
         self.combo_resources.setToolTip(
             trans.t("advanced_resource_hint"))
+        register_help_target(self.combo_resources, "adv_resources")
         perf.addRow(trans.t("advanced_resource_mode"), self.combo_resources)
         self.tile_status = _note(page_lay, '')
         self.tile_status.setProperty('controlId', 'effective_tiling_status')
+        register_help_target(self.tile_status, "tiles")
         self.manual_tile_panel = QWidget()
+        register_help_target(self.manual_tile_panel, "tiles")
         tile_layout = QVBoxLayout(self.manual_tile_panel)
         tile_layout.setContentsMargins(0, 0, 0, 0)
         self.manual_tile_disclosure = _disclosure(
             page_lay, trans.t('advanced_tile_manual'), 'manual_tile_disclosure', self.manual_tile_panel)
+        register_help_target(self.manual_tile_disclosure, "tiles")
         self.manual_tile_scope_note = _note(tile_layout, trans.t('advanced_tile_experimental_only_note'))
         tiles = _section(tile_layout)
         self.chk_tile = QCheckBox(trans.t('advanced_tile_enabled'))
         self.chk_tile.setChecked(bool(getattr(w, 'tile_enabled', True)))
+        register_help_target(self.chk_tile, "tiles")
         tiles.addRow(self.chk_tile)
         self.spin_block = StepperSpinBox(
             minimum=TILE_BLOCK_MIN, maximum=TILE_BLOCK_MAX, step=128,
             decimals=0, value=int(getattr(w, 'tile_block_size', 1024)))
+        register_help_target(self.spin_block, "tiles")
         tiles.addRow(trans.t('advanced_tile_block'), self.spin_block)
         self.spin_overlap = StepperSpinBox(
             minimum=0, maximum=TILE_OVERLAP_MAX, step=32, decimals=0,
@@ -375,6 +401,7 @@ class AdvancedSettingsDialog(QDialog):
         self.spin_threshold = StepperSpinBox(
             minimum=TILE_THRESHOLD_MIN, maximum=TILE_THRESHOLD_MAX, step=256,
             decimals=0, value=int(getattr(w, 'tile_threshold', _DEFAULT_TILE_THRESHOLD)))
+        register_help_target(self.spin_threshold, "tiles")
         tiles.addRow(trans.t('advanced_tile_threshold'), self.spin_threshold)
         # Display effective bounds, but never write a clamped legacy value back
         # when the user only visits this dialog or changes another preference.
@@ -422,6 +449,7 @@ class AdvancedSettingsDialog(QDialog):
             getattr(w, 'defect_mask_path', ''), getattr(w, 'sensor_denoise', False))
         self.sensor_cleanup_disclosure = _disclosure(
             page_lay, trans.t('sensor_section'), 'sensor_cleanup_disclosure', self.sensor_cleanup)
+        register_help_target(self.sensor_cleanup_disclosure, "sensor_cleanup")
         self.finished.connect(lambda _result: self.sensor_cleanup.stop_inspection())
 
     def _build_registration(self, page_lay):
@@ -450,6 +478,8 @@ class AdvancedSettingsDialog(QDialog):
         self.registration_options_disclosure = _disclosure(
             page_lay, reg_title,
             'registration_options_disclosure', self.openfocus_registration_panel)
+        register_help_target(self.registration_options_disclosure, "registration")
+        register_help_target(self.openfocus_registration_panel, "registration")
         self._initial_registration_fields = self.openfocus_registration_panel.values()
         self._sync_experimental_controls()
         self.chk_experimental_features.toggled.connect(self._sync_experimental_controls)
@@ -468,13 +498,16 @@ class AdvancedSettingsDialog(QDialog):
         other = _section(page_lay)
         self.chk_restore = QCheckBox(trans.t('action_restore_last_stack'))
         self.chk_restore.setChecked(bool(getattr(w, "restore_last_stack", False)))
+        register_help_target(self.chk_restore, "adv_startup")
         other.addRow(self.chk_restore)
         self.chk_ask_scale = QCheckBox(trans.t('action_ask_load_scale'))
         self.chk_ask_scale.setChecked(bool(getattr(w, "ask_load_scale", True)))
         self.chk_ask_scale.setToolTip(trans.t("action_ask_load_scale_hint"))
+        register_help_target(self.chk_ask_scale, "adv_startup")
         other.addRow(self.chk_ask_scale)
         self.lbl_load_scale = QLabel(
             f"{float(getattr(w, 'load_scale_default', 1.0)) * 100:g}%")
+        register_help_target(self.lbl_load_scale, "adv_startup")
         other.addRow(trans.t("ds_title"), self.lbl_load_scale)
         self.chk_ask_scale.toggled.connect(
             lambda checked: other.setRowVisible(self.lbl_load_scale, not checked))
@@ -482,11 +515,13 @@ class AdvancedSettingsDialog(QDialog):
         manager = getattr(w, 'update_manager', None)
         self.chk_auto_update = QCheckBox(trans.t('action_auto_download'))
         self.chk_auto_update.setChecked(bool(getattr(manager, 'auto_download', True)))
+        register_help_target(self.chk_auto_update, "adv_startup")
         other.addRow(self.chk_auto_update)
         self.chk_auto_update.setToolTip(trans.t("action_auto_download_hint"))
         self.chk_include_beta = QCheckBox(trans.t('action_include_beta_with_hint'))
         self.chk_include_beta.setProperty("controlId", "chk_include_beta")
         self.chk_include_beta.setChecked(bool(getattr(manager, 'include_beta', False)))
+        register_help_target(self.chk_include_beta, "adv_startup")
         other.addRow(self.chk_include_beta)
 
     def _build_gallery(self, page_lay):

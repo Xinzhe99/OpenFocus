@@ -1766,3 +1766,76 @@ def test_stroke_copy_failure_aborts_and_allows_retry(monkeypatch):
     monkeypatch.setattr(doc.history, '_tile_copy', original)
     assert doc.begin_stroke(30, 30)
     assert doc.end_stroke() == 'committed'
+
+
+def test_retouch_filmstrip_fits_64px_thumbnails_labels_and_scrollbar(qapp):
+    from PyQt6.QtCore import QSize
+
+    dlg, _ = _dialog(qapp)
+    try:
+        assert dlg.frame_list.iconSize() == QSize(64, 64)
+        grid = dlg.frame_list.gridSize()
+        label_h = max(18, dlg.frame_list.fontMetrics().height() + 4)
+        sb_h = max(14, dlg.frame_list.horizontalScrollBar().sizeHint().height())
+        assert grid.width() == 80
+        assert grid.height() >= 64 + label_h + 10
+        assert dlg.frame_list.height() >= grid.height() + sb_h
+        assert dlg.btn_prev.width() >= 32
+        assert dlg.btn_next.width() >= 32
+        for row in range(dlg.frame_list.count()):
+            hint = dlg.frame_list.item(row).sizeHint()
+            assert hint.height() >= 64 + dlg.frame_list.fontMetrics().height() + 8
+    finally:
+        dlg._allow_close = True
+        dlg.close()
+        dlg.deleteLater()
+
+
+def test_sharpness_worker_uses_bounded_preview_and_emits_progress(qapp, monkeypatch, tmp_path):
+    import cv2
+    from core.registration import PerspectiveWarp
+    from core.render_context import SourceFrame
+    from core.source_frames import ProcessedFrame, scan_source
+    from dialogs.retouch import _SharpnessWorker
+    import core.source_frames as sf
+
+    frames = []
+    for idx in range(2):
+        path = tmp_path / f"slice_{idx}.png"
+        img = np.zeros((120, 160, 3), dtype=np.uint8)
+        img[20:100, 30:130] = 60 + idx * 80
+        assert cv2.imwrite(str(path), img)
+        raw = scan_source(str(path))[0]
+        warped = ProcessedFrame(
+            raw,
+            PerspectiveWarp(
+                raw,
+                (1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+                "float32",
+                (160, 120),
+            ),
+            (120, 160),
+            raw.dtype,
+        )
+        frames.append(SourceFrame(frame_id=f"{idx}", name=f"slice_{idx}.png", image=warped))
+
+    def forbid_full_resolve(*_args, **_kwargs):
+        raise AssertionError("Sharpness worker must not resolve full-resolution warped frames")
+
+    monkeypatch.setattr(sf, "resolve_frame", forbid_full_resolve)
+
+    worker = _SharpnessWorker(frames, request_id=7, preview_side=96)
+    seen_progress = []
+    seen_maps = []
+    errors = []
+    worker.progress.connect(lambda req, done, total: seen_progress.append((req, done, total)))
+    worker.ready.connect(lambda req, maps: seen_maps.append((req, maps)))
+    worker.failed.connect(lambda req, err: errors.append((req, err)))
+    worker.run()
+
+    assert errors == []
+    assert seen_progress == [(7, 1, 2), (7, 2, 2)]
+    assert len(seen_maps) == 1
+    assert set(seen_maps[0][1]) == {0, 1}
+    for m in seen_maps[0][1].values():
+        assert max(m.shape[:2]) <= 96
