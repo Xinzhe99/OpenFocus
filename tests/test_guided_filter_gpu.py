@@ -474,3 +474,55 @@ def test_guided_filter_drains_queue_on_error_and_cancel(monkeypatch):
     with pytest.raises(RegistrationCancelled):
         MultiFocusFusion(use_gpu=True, **options).fuse(frames, thread_count=1)
     assert drained == [True]
+
+
+@pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
+def test_guided_filter_row_parallel_cpu_and_multiband_gpu_parity(dtype, monkeypatch):
+    """Cross the 512-row GPU band seam and 512x512 CPU row-parallel threshold."""
+    from fusion_methods import _openfocus_gpu
+    rng = np.random.default_rng(7101)
+    scale = 65535 if dtype == np.uint16 else 255
+    sharp = (rng.random((560, 540, 3)) * scale).astype(dtype)
+    blurred = cv2.GaussianBlur(sharp, (0, 0), 5)
+    frames = []
+    for y0, y1 in ((0, 260), (220, 480), (440, 560)):
+        f = blurred.copy()
+        f[y0:y1] = sharp[y0:y1]
+        frames.append(f)
+
+    cpu_t1 = gff.gff_impl(frames, None, kernel_size=31, thread_count=1)
+    cpu_par = gff.gff_impl(frames, None, kernel_size=31, thread_count=4)
+    np.testing.assert_array_equal(cpu_par, cpu_t1)
+
+    if not _openfocus_gpu.gpu_available():
+        return
+    monkeypatch.setattr(_openfocus_gpu, '_free_vram',
+                        lambda device: (int(device.global_mem_size),
+                                        int(device.global_mem_size)))
+    devs = []
+    gpu_out = gff.gff_impl(frames, None, kernel_size=31, use_gpu=True, device_callback=devs.append)
+    assert devs and devs[-1].startswith('OpenCL: ')
+    diff = np.abs(gpu_out.astype(np.float64) - cpu_t1.astype(np.float64))
+    if dtype == np.uint8:
+        assert diff.max() <= 1
+        assert np.mean(diff == 0) >= 0.95
+    else:
+        assert diff.max() <= 0.05
+
+
+def test_guided_filter_gpu_large_kernel_slide_fallback(monkeypatch):
+    """Exercise box3_h_slide when average_filter_size // 2 > 64."""
+    from fusion_methods import _openfocus_gpu
+    if not _openfocus_gpu.gpu_available():
+        pytest.skip('No OpenCL GPU is available')
+    monkeypatch.setattr(_openfocus_gpu, '_free_vram',
+                        lambda device: (int(device.global_mem_size),
+                                        int(device.global_mem_size)))
+    frames = _stack(np.uint8, 3, shape=(65, 67), count=3, seed=7102)
+    cpu_out = gff.gff_impl(frames, None, kernel_size=135, thread_count=2)
+    devs = []
+    gpu_out = gff.gff_impl(frames, None, kernel_size=135, use_gpu=True, device_callback=devs.append)
+    assert devs and devs[-1].startswith('OpenCL: ')
+    diff = np.abs(gpu_out.astype(np.float64) - cpu_out.astype(np.float64))
+    assert diff.max() <= 1
+    assert np.mean(diff == 0) >= 0.999

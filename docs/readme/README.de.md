@@ -290,7 +290,7 @@ Die OpenFocus-Anwendung steht unter der [MIT-Lizenz](../../LICENSE).
 Aus dem Checkout starten:
 
 ```bash
-conda create -n openfocus python=3.10
+conda create -n openfocus python=3.12
 conda activate openfocus
 pip install -r requirements.txt
 python main.py

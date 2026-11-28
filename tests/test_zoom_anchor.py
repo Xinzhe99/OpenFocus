@@ -272,3 +272,67 @@ sip.delete(second.widget)
     result = subprocess.run([sys.executable, '-c', script], env=environment,
                             capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
+
+
+class TestResultZoomBar:
+    def test_100_percent_fit_slider_and_theme(self, qapp):
+        from ui.image_panels import _ResultZoomBar, apply_panel_theme, create_result_panel
+
+        panel = create_result_panel()
+        label = panel.image_label
+        bar = panel.widget.findChild(_ResultZoomBar)
+        assert bar is not None
+        try:
+            # Empty state disables all controls cleanly
+            assert not bar._zoom_100.isEnabled()
+            assert not bar._zoom_fit.isEnabled()
+            assert not bar._zoom_slider.isEnabled()
+            assert bar._zoom_level.text() == "—"
+
+            panel.widget.resize(800, 600)
+            label.resize(780, 500)
+            pixmap = QPixmap(1600, 1200)
+            pixmap.fill(0)
+            label.set_display_pixmap(pixmap)
+            panel.widget.show()
+            qapp.processEvents()
+
+            # Loaded initially at Fit
+            assert bar._zoom_100.isEnabled()
+            assert bar._zoom_fit.isEnabled()
+            assert bar._zoom_slider.isEnabled()
+            assert bar._zoom_fit.isChecked()
+            assert not bar._zoom_100.isChecked()
+
+            # Click 1:1 -> jumps to 100% actual pixels
+            bar._zoom_100.click()
+            qapp.processEvents()
+            assert label.actual_zoom_percent() == pytest.approx(100.0, abs=1.5)
+            assert bar._zoom_100.isChecked()
+            assert not bar._zoom_fit.isChecked()
+            assert bar._zoom_level.text().endswith("%")
+
+            # Drag slider interactively -> updates zoom + _interactive_transform, release refines
+            bar._apply_slider_value(850, interactive=True)
+            assert label._interactive_transform is True
+            zoom_dragged = label.view_zoom_state()[0]
+            assert zoom_dragged > 1.0
+            bar._apply_slider_value(850, interactive=False)
+            assert label._interactive_transform is False
+            assert abs(bar._zoom_slider.value() - 850) <= 2
+
+            # Click percentage readout -> jumps to 1:1 when away from 100%, then toggles back to Fit
+            bar._zoom_level.click()  # jumps to 1:1 first (since at slider=850)
+            qapp.processEvents()
+            assert bar._zoom_100.isChecked()
+            bar._zoom_level.click()  # now at 1:1 -> toggles to Fit
+            qapp.processEvents()
+            assert label.view_zoom_state()[0] == pytest.approx(1.0)
+            assert bar._zoom_fit.isChecked()
+
+            # Theme switches keep monochrome Fit icon populated and valid across themes
+            for theme in ("light", "dark", "gray"):
+                apply_panel_theme(panel.widget, theme)
+                assert not bar._zoom_fit.icon().isNull()
+        finally:
+            panel.widget.close()

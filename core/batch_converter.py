@@ -20,7 +20,7 @@ import tifffile
 
 from core import image_loader
 from utils.image_utils import imwrite_auto, to_display_uint8, export_exif, read_image_exif
-from utils.memory import available_memory_bytes
+from utils.memory import InsufficientMemoryError, available_memory_bytes
 from core import resource_policy
 from utils.logging_setup import log_operation, log_action
 from locales import trans
@@ -279,9 +279,9 @@ def _admit(path, page, output_dir, ext=None):
     estimate, disk = estimate_job(path, page, ext)
     available = available_memory_bytes()
     if not available:
-        raise MemoryError(trans.t('converter_memory_unknown'))
+        raise InsufficientMemoryError(trans.t('converter_memory_unknown'))
     if estimate > available // 2:
-        raise MemoryError(trans.t('converter_memory_error'))
+        raise InsufficientMemoryError(trans.t('converter_memory_error'))
     if disk_usage(output_dir).free < disk:
         raise OSError(trans.t('converter_space_error'))
 

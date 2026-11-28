@@ -2,7 +2,7 @@
 from core.algorithms import validate_parameter
 
 from PyQt6.QtCore import QLocale, QSignalBlocker, Qt, pyqtSignal
-from PyQt6.QtWidgets import QComboBox, QGridLayout, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QCheckBox, QComboBox, QGridLayout, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 from locales import trans
 from ui.parameter_help import create_help_button, set_help_caption
@@ -70,6 +70,12 @@ def _compact_label_text(text):
     return (text or '').rstrip(':： ').strip()
 
 
+def _is_bool_spec(spec):
+    return (len(spec.choices) == 2
+            and all(isinstance(v, bool) for v in spec.choices)
+            and set(spec.choices) == {True, False})
+
+
 def _clear_layout(layout):
     while layout.count():
         item = layout.takeAt(0)
@@ -122,19 +128,26 @@ class AlgorithmParameterPanel(QWidget):
         if specs == self._specs:
             for spec in specs:
                 editor = self.editors[spec.key]
-                label = self._labels[spec.key]
+                label = self._labels.get(spec.key)
                 raw_label = trans.t(spec.label_key)
-                label.setText(raw_label if spec.choices or numeric_count <= 1 else _compact_label_text(raw_label))
+                if _is_bool_spec(spec):
+                    editor.setText(_compact_label_text(raw_label))
+                elif label is not None:
+                    label.setText(raw_label if spec.choices or numeric_count <= 1 else _compact_label_text(raw_label))
                 if button := self._help_buttons.get(spec.key):
                     set_help_caption(button, raw_label)
                 editor.setAccessibleName(raw_label)
                 if not spec.choices:
                     editor.lineEdit().setAccessibleName(raw_label)
                 if spec.hint_key:
-                    label.setToolTip(trans.t(spec.hint_key))
-                    editor.setToolTip(label.toolTip())
+                    hint = trans.t(spec.hint_key)
+                    if label is not None:
+                        label.setToolTip(hint)
+                    editor.setToolTip(hint)
                 with QSignalBlocker(editor):
-                    if spec.choices:
+                    if _is_bool_spec(spec):
+                        editor.setChecked(bool(resolved[spec.key]))
+                    elif spec.choices:
                         for index, choice in enumerate(spec.choices):
                             editor.setItemText(index, trans.t(spec.choice_labels[index]) if spec.choice_labels else str(choice))
                         editor.setCurrentIndex(self._choice_index(spec, resolved[spec.key]))
@@ -153,6 +166,18 @@ class AlgorithmParameterPanel(QWidget):
         idx = 0
         while idx < len(specs):
             spec = specs[idx]
+            if _is_bool_spec(spec):
+                _label, editor, button = self._build_field(spec, resolved[spec.key], compact=False)
+                row_layout = QHBoxLayout()
+                row_layout.setContentsMargins(0, 0, 0, 0)
+                row_layout.setSpacing(6)
+                row_layout.addWidget(editor, 1)
+                if button is not None:
+                    row_layout.addWidget(button)
+                self._form.addLayout(row_layout, grid_row, 0, 1, 2)
+                grid_row += 1
+                idx += 1
+                continue
             if spec.choices:
                 label, editor, button = self._build_field(spec, resolved[spec.key], compact=False)
                 row_layout = QHBoxLayout()
@@ -208,42 +233,55 @@ class AlgorithmParameterPanel(QWidget):
 
     def _build_field(self, spec, value, *, compact):
         raw_label = trans.t(spec.label_key)
-        label = QLabel(_compact_label_text(raw_label) if compact else raw_label, self)
-        if spec.choices:
-            editor = QComboBox(self)
-            for index, choice in enumerate(spec.choices):
-                text = trans.t(spec.choice_labels[index]) if spec.choice_labels else str(choice)
-                editor.addItem(text, choice)
-            editor.setCurrentIndex(self._choice_index(spec, value))
-            editor.currentIndexChanged.connect(self._edited)
-            label.setBuddy(editor)
+        if _is_bool_spec(spec):
+            label = None
+            editor = QCheckBox(_compact_label_text(raw_label), self)
+            editor.setChecked(bool(value))
+            editor.toggled.connect(self._edited)
         else:
-            if spec.whole_level_editor:
-                editor = _WholeLevelEditor(self, spec, value)
-                editor.levelChanged.connect(self._edited)
+            label = QLabel(_compact_label_text(raw_label) if compact else raw_label, self)
+            if spec.choices:
+                editor = QComboBox(self)
+                editor.setSizeAdjustPolicy(
+                    QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+                editor.setMinimumContentsLength(8)
+                editor.setMinimumWidth(0)
+                editor.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+                for index, choice in enumerate(spec.choices):
+                    text = trans.t(spec.choice_labels[index]) if spec.choice_labels else str(choice)
+                    editor.addItem(text, choice)
+                editor.setCurrentIndex(self._choice_index(spec, value))
+                editor.currentIndexChanged.connect(self._edited)
+                label.setBuddy(editor)
             else:
-                editor = StepperSpinBox(
-                    self, minimum=spec.minimum if spec.minimum is not None else -1e100,
-                    maximum=spec.maximum if spec.maximum is not None else 1e100,
-                    step=spec.step, decimals=spec.decimals, value=value)
-                editor.valueChanged.connect(self._edited)
-            editor.setMinimumWidth(76)
-            editor.setMaximumWidth(128)
-            editor.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-            label.setBuddy(editor.lineEdit())
-            editor.lineEdit().setAccessibleName(raw_label)
+                if spec.whole_level_editor:
+                    editor = _WholeLevelEditor(self, spec, value)
+                    editor.levelChanged.connect(self._edited)
+                else:
+                    editor = StepperSpinBox(
+                        self, minimum=spec.minimum if spec.minimum is not None else -1e100,
+                        maximum=spec.maximum if spec.maximum is not None else 1e100,
+                        step=spec.step, decimals=spec.decimals, value=value)
+                    editor.valueChanged.connect(self._edited)
+                editor.setMinimumWidth(76)
+                editor.setMaximumWidth(128)
+                editor.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+                label.setBuddy(editor.lineEdit())
+                editor.lineEdit().setAccessibleName(raw_label)
         editor.setAccessibleName(raw_label)
         editor.setObjectName(f"algorithm_parameter_{spec.key}")
         if spec.hint_key:
             hint = trans.t(spec.hint_key)
-            label.setToolTip(hint)
+            if label is not None:
+                label.setToolTip(hint)
             if not spec.whole_level_editor:
                 editor.setToolTip(hint)
         self.editors[spec.key] = editor
-        self._labels[spec.key] = label
+        if label is not None:
+            self._labels[spec.key] = label
         help_spec = _ILLUSTRATED_HELP.get(spec.label_key)
         button = None
-        if help_spec:
+        if help_spec and label is not None:
             button = create_help_button(self, label, *help_spec, size=20 if compact else 24)
             set_help_caption(button, raw_label)
             self._help_buttons[spec.key] = button
@@ -259,7 +297,9 @@ class AlgorithmParameterPanel(QWidget):
         result = dict(self._hidden_values)
         for spec in self._specs:
             editor = self.editors[spec.key]
-            if spec.choices:
+            if _is_bool_spec(spec):
+                value = bool(editor.isChecked())
+            elif spec.choices:
                 value = editor.currentData()
             elif spec.whole_level_editor:
                 value = editor.parameter_value

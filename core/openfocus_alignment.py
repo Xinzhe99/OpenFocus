@@ -32,6 +32,14 @@ _PARALLEL_BATCH_LOCK = threading.Lock()
 _ALIGNMENT_POOL = None
 
 
+def _measure_deferred_alignment():
+    reg = sys.modules.get('core.registration')
+    if reg is None:
+        return nullcontext()
+    measure = getattr(reg, 'measure_deferred_alignment', None)
+    return measure() if measure is not None else nullcontext()
+
+
 def _is_bgr_rev(image):
     return (isinstance(image, np.ndarray) and image.flags.aligned and not image.flags.c_contiguous
             and image.ndim == 3 and image.shape[2] == 3
@@ -794,15 +802,16 @@ def apply_translation(image, transform, *, should_cancel=None, source=None):
     Q8.8 truncates interpolation; out-of-bounds is black. The final source row
     and column use the verified W/H-1.001f clamp, even for integer shifts.
     """
-    _check_cancel(should_cancel)
-    _geometry(image)
-    if not isinstance(transform, TranslationTransform):
-        raise TypeError('transform must be a TranslationTransform')
-    resource_policy.require_memory(translation_resolution_bytes(image))
-    transform.source.validate_pixels(image, should_cancel, source=source)
-    result = _warp(image, transform.dx, transform.dy, should_cancel)
-    _check_cancel(should_cancel)
-    return result
+    with _measure_deferred_alignment():
+        _check_cancel(should_cancel)
+        _geometry(image)
+        if not isinstance(transform, TranslationTransform):
+            raise TypeError('transform must be a TranslationTransform')
+        resource_policy.require_memory(translation_resolution_bytes(image))
+        transform.source.validate_pixels(image, should_cancel, source=source)
+        result = _warp(image, transform.dx, transform.dy, should_cancel)
+        _check_cancel(should_cancel)
+        return result
 
 
 _ORIGINAL_APPLY_TRANSLATION = apply_translation
@@ -852,7 +861,7 @@ def _validate_direct_rgb_source(fingerprint, source_frame, should_cancel):
 def apply_translation_region(source_or_image, transform, x, y, width, height, *,
                              channels=None, should_cancel=None):
     """Compute a single rectangular translation crop bit-identical to apply_translation."""
-    from core.source_frames import _read_direct_rgb_tiff_region, is_direct_rgb_tiff
+    from core.source_frames import is_direct_rgb_tiff
 
     _check_cancel(should_cancel)
     if not isinstance(transform, TranslationTransform):
@@ -862,13 +871,27 @@ def apply_translation_region(source_or_image, transform, x, y, width, height, *,
         raise ValueError('Requested region does not fit the frame')
 
     direct_tiff = is_direct_rgb_tiff(source_or_image)
+    image = None
+    if not direct_tiff:
+        image = (source_or_image if isinstance(source_or_image, np.ndarray)
+                 else resolve_frame(source_or_image, should_cancel=should_cancel))
+    with _measure_deferred_alignment():
+        return _apply_translation_region_resolved(
+            source_or_image, image, direct_tiff, transform, x, y, width, height,
+            channels=channels, should_cancel=should_cancel,
+        )
+
+
+def _apply_translation_region_resolved(source_or_image, image, direct_tiff, transform,
+                                       x, y, width, height, *, channels=None, should_cancel=None):
+    from core.source_frames import _read_direct_rgb_tiff_region
+
+    src_h, src_w = transform.source.shape[:2]
     if direct_tiff:
         _validate_direct_rgb_source(transform.source, source_or_image, should_cancel)
         src_shape = tuple(source_or_image.shape)
         src_dtype = np.dtype(source_or_image.dtype)
     else:
-        image = (source_or_image if isinstance(source_or_image, np.ndarray)
-                 else resolve_frame(source_or_image, should_cancel=should_cancel))
         _geometry(image)
         src_obj = None if isinstance(source_or_image, np.ndarray) else source_or_image
         transform.source.validate_pixels(image, should_cancel, source=src_obj)
@@ -1493,13 +1516,14 @@ def align_pair_wide(ref_u16, test_u16, h_pct=12.0, v_pct=12.0, rot_deg=6.0,
         mag_rng = F32(mag_pct) / F32(100.0) * s
         rot_rng = F32(rot_deg) * s
         rot_cov = float(np.sin(np.radians(float(rot_rng)))) * 0.5
-        sf = 0.0 if fixed_center else max(float(shift_frac[0]), rot_cov)
-        rng = [F32(sf), F32(sf), mag_rng, rot_rng]
+        sfx = 0.0 if fixed_center else max(float(shift_frac[0]), rot_cov)
+        sfy = 0.0 if fixed_center else max(float(shift_frac[1]), rot_cov)
+        rng = [F32(sfx), F32(sfy), mag_rng, rot_rng]
         level_grid = grid_half
         if rot_rng == 0 and mag_rng == 0:
             # With translation alone, a coarse step above one pixel can skip
             # the true basin entirely before quarter-pixel refinement starts.
-            radius = F32(F32(sf) * F32(max(A.shape) // 2) * F32(2))
+            radius = F32(F32(max(sfx, sfy)) * F32(max(A.shape) // 2) * F32(2))
             level_grid = max(grid_half, math.ceil(float(radius)))
         f8, _r, rounds = grid_level_4d(A, B, base_lvl, rng, coef=1.0,
                                        grid_half=level_grid, divisor=divisor,
@@ -1658,6 +1682,11 @@ class AlignmentPlan:
     failure_policy: str = 'fail'
     rotation: float = 0.
     magnification: float = 3.
+    max_shift_x_ratio: float | None = None
+    max_shift_y_ratio: float | None = None
+    auto_crop: bool = True
+    interpolation: str | None = None
+    alignment_roi: tuple | None = None
 
     def __post_init__(self):
         count = len(self.transforms)
@@ -1671,6 +1700,14 @@ class AlignmentPlan:
                 or self.failure_policy not in ('fail', 'continue')
                 or not math.isfinite(self.rotation) or not 0 <= self.rotation <= 180
                 or not math.isfinite(self.magnification) or not 0 <= self.magnification < 100
+                or (self.max_shift_x_ratio is not None and (not math.isfinite(self.max_shift_x_ratio) or not 0 <= self.max_shift_x_ratio <= 1))
+                or (self.max_shift_y_ratio is not None and (not math.isfinite(self.max_shift_y_ratio) or not 0 <= self.max_shift_y_ratio <= 1))
+                or not isinstance(self.auto_crop, bool)
+                or (self.interpolation is not None and self.interpolation not in ('lanczos', 'cubic', 'linear'))
+                or (self.alignment_roi is not None and (
+                    not isinstance(self.alignment_roi, tuple) or len(self.alignment_roi) != 4
+                    or any(type(v) is not int for v in self.alignment_roi)
+                    or self.alignment_roi[2] <= 0 or self.alignment_roi[3] <= 0))
                 or self.estimation_bytes < 0):
             raise ValueError('Invalid alignment plan')
 
@@ -1704,9 +1741,20 @@ class AlignmentPlan:
             transforms.append(AlignmentTransform(int(item['source_index']), tuple(item['f8']),
                 tuple(item['pair_f8']), fingerprint, int(item['reference_index']),
                 int(item['rounds']), item['failure']))
-        return cls(tuple(transforms), int(data['reference_index']), tuple(data['processing_order']),
-                   float(data['max_shift_ratio']), int(data['estimation_bytes']), data['failure_policy'],
-                   float(data['rotation']), float(data['magnification']))
+        raw_roi = data.get('alignment_roi')
+        roi = tuple(int(v) for v in raw_roi) if raw_roi is not None else None
+        rx = data.get('max_shift_x_ratio')
+        ry = data.get('max_shift_y_ratio')
+        return cls(
+            tuple(transforms), int(data['reference_index']), tuple(data['processing_order']),
+            float(data['max_shift_ratio']), int(data['estimation_bytes']), data['failure_policy'],
+            float(data['rotation']), float(data['magnification']),
+            max_shift_x_ratio=None if rx is None else float(rx),
+            max_shift_y_ratio=None if ry is None else float(ry),
+            auto_crop=bool(data.get('auto_crop', True)),
+            interpolation=data.get('interpolation'),
+            alignment_roi=roi,
+        )
 
 
 def alignment_resolution_bytes(frame):
@@ -1804,32 +1852,65 @@ def _warp_alignment(image, f8, should_cancel, *, spillable: bool = False):
     return output
 
 
-def apply_alignment(image, transform, *, should_cancel=None):
+def _warp_alignment_cv(image, transform, interpolation, should_cancel):
+    import cv2
+    from core.registration import interpolation_flag
+
     _check_cancel(should_cancel)
-    _alignment_geometry(image)
-    _validate_internal_float(image, should_cancel)
-    if not isinstance(transform, AlignmentTransform):
-        raise TypeError('transform must be an AlignmentTransform')
-    transform.source.validate_pixels(image, should_cancel)
-    if not transform.is_identity:
-        resource_policy.require_memory(alignment_resolution_bytes(image))
-    return _warp_alignment(image, transform.f8, should_cancel)
+    h, w = image.shape[:2]
+    bgr_rev = _is_bgr_rev(image)
+    src = image[..., ::-1] if bgr_rev else image
+    flags = interpolation_flag(interpolation) | cv2.WARP_INVERSE_MAP
+    warped = cv2.warpPerspective(
+        src, transform.inverse_matrix.astype(np.float64), (w, h),
+        flags=flags, borderMode=cv2.BORDER_CONSTANT,
+    )
+    if bgr_rev and warped.ndim == 3 and warped.shape[2] == 3:
+        if _native_kernels.available() and warped.dtype in (np.uint8, np.uint16):
+            swap_fn = (_native_kernels.swap_bgr_inplace_rows_u8 if warped.dtype == np.uint8
+                       else _native_kernels.swap_bgr_inplace_rows_u16)
+            _run_row_bands(
+                warped.shape[0], 128, should_cancel, swap_fn, warped,
+                parallel_pixels=warped.shape[0] * warped.shape[1],
+            )
+        else:
+            warped = np.ascontiguousarray(warped[..., ::-1])
+    _check_cancel(should_cancel)
+    return warped
+
+
+def apply_alignment(image, transform, *, should_cancel=None, interpolation=None):
+    with _measure_deferred_alignment():
+        _check_cancel(should_cancel)
+        _alignment_geometry(image)
+        _validate_internal_float(image, should_cancel)
+        if not isinstance(transform, AlignmentTransform):
+            raise TypeError('transform must be an AlignmentTransform')
+        transform.source.validate_pixels(image, should_cancel)
+        if not transform.is_identity:
+            resource_policy.require_memory(alignment_resolution_bytes(image))
+            if interpolation is not None:
+                return _warp_alignment_cv(image, transform, interpolation, should_cancel)
+        return _warp_alignment(image, transform.f8, should_cancel)
 
 
 _ORIGINAL_APPLY_ALIGNMENT = apply_alignment
 
 
-def _apply_alignment_for_source(source_frame, image, transform, should_cancel=None):
+def _apply_alignment_for_source(source_frame, image, transform, should_cancel=None, *, interpolation=None):
     """Apply full alignment using source_frame's render-scope digest if available."""
-    _check_cancel(should_cancel)
-    _alignment_geometry(image)
-    _validate_internal_float(image, should_cancel)
-    if not isinstance(transform, AlignmentTransform):
-        raise TypeError('transform must be an AlignmentTransform')
-    transform.source.validate_pixels(image, should_cancel, source=source_frame)
-    if not transform.is_identity:
-        resource_policy.require_memory(alignment_resolution_bytes(image))
-    return _warp_alignment(image, transform.f8, should_cancel)
+    with _measure_deferred_alignment():
+        _check_cancel(should_cancel)
+        _alignment_geometry(image)
+        _validate_internal_float(image, should_cancel)
+        if not isinstance(transform, AlignmentTransform):
+            raise TypeError('transform must be an AlignmentTransform')
+        transform.source.validate_pixels(image, should_cancel, source=source_frame)
+        if not transform.is_identity:
+            resource_policy.require_memory(alignment_resolution_bytes(image))
+            if interpolation is not None:
+                return _warp_alignment_cv(image, transform, interpolation, should_cancel)
+        return _warp_alignment(image, transform.f8, should_cancel)
 
 
 def _warp_alignment_region_np(band, x, y, width, height, src_h, src_w, src_y0, fields, should_cancel):
@@ -1870,7 +1951,7 @@ def _warp_alignment_region_np(band, x, y, width, height, src_h, src_w, src_y0, f
 def apply_alignment_region(source_or_image, transform, x, y, width, height, *,
                            channels=None, should_cancel=None):
     """Compute a single rectangular similarity-warped crop bit-identical to apply_alignment."""
-    from core.source_frames import _read_direct_rgb_tiff_region, is_direct_rgb_tiff
+    from core.source_frames import is_direct_rgb_tiff
 
     _check_cancel(should_cancel)
     if not isinstance(transform, AlignmentTransform):
@@ -1880,13 +1961,27 @@ def apply_alignment_region(source_or_image, transform, x, y, width, height, *,
         raise ValueError('Requested region does not fit the frame')
 
     direct_tiff = is_direct_rgb_tiff(source_or_image)
+    image = None
+    if not direct_tiff:
+        image = (source_or_image if isinstance(source_or_image, np.ndarray)
+                 else resolve_frame(source_or_image, should_cancel=should_cancel))
+    with _measure_deferred_alignment():
+        return _apply_alignment_region_resolved(
+            source_or_image, image, direct_tiff, transform, x, y, width, height,
+            channels=channels, should_cancel=should_cancel,
+        )
+
+
+def _apply_alignment_region_resolved(source_or_image, image, direct_tiff, transform,
+                                     x, y, width, height, *, channels=None, should_cancel=None):
+    from core.source_frames import _read_direct_rgb_tiff_region
+
+    src_h, src_w = transform.source.shape[:2]
     if direct_tiff:
         _validate_direct_rgb_source(transform.source, source_or_image, should_cancel)
         src_shape = tuple(source_or_image.shape)
         src_dtype = np.dtype(source_or_image.dtype)
     else:
-        image = (source_or_image if isinstance(source_or_image, np.ndarray)
-                 else resolve_frame(source_or_image, should_cancel=should_cancel))
         _alignment_geometry(image)
         _validate_internal_float(image, should_cancel)
         src_obj = None if isinstance(source_or_image, np.ndarray) else source_or_image
@@ -2033,7 +2128,10 @@ def _alignment_pixels_equal(first, second, should_cancel):
 
 def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
                             rotation=0., magnification=3., should_cancel=None,
-                            progress_callback=None, failure_policy='fail'):
+                            progress_callback=None, failure_policy='fail',
+                            max_shift_x_ratio=None, max_shift_y_ratio=None,
+                            max_rotation_deg=None, max_scale_change=None,
+                            alignment_roi=None, auto_crop=True, interpolation=None):
     """Sequential wide search; rotation in degrees, magnification in percent.
 
     Each estimate matches the current frame to the previous aligned reference
@@ -2044,6 +2142,16 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
     ratio = float(max_shift_ratio)
     if not math.isfinite(ratio) or not 0 <= ratio <= 1:
         raise ValueError('max_shift_ratio must be finite and in [0, 1]')
+    rx = ratio if max_shift_x_ratio is None else float(max_shift_x_ratio)
+    ry = ratio if max_shift_y_ratio is None else float(max_shift_y_ratio)
+    if not math.isfinite(rx) or not 0 <= rx <= 1:
+        raise ValueError('max_shift_x_ratio must be finite and in [0, 1]')
+    if not math.isfinite(ry) or not 0 <= ry <= 1:
+        raise ValueError('max_shift_y_ratio must be finite and in [0, 1]')
+    if max_rotation_deg is not None:
+        rotation = float(max_rotation_deg)
+    if max_scale_change is not None:
+        magnification = float(max_scale_change) * 100.0
     rotation, magnification = float(rotation), float(magnification)
     if not math.isfinite(rotation) or not 0 <= rotation <= 180:
         raise ValueError('rotation must be finite and in [0, 180] degrees')
@@ -2051,7 +2159,13 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
         raise ValueError('magnification must be finite and in [0, 100) percent')
     if failure_policy not in ('fail', 'continue'):
         raise ValueError('Invalid alignment failure policy')
+    if interpolation is not None and interpolation not in ('lanczos', 'cubic', 'linear'):
+        raise ValueError(f'Unsupported interpolation: {interpolation!r}')
     h, w = _alignment_stack_geometry(sources)
+    roi = None
+    if alignment_roi is not None:
+        from core.registration import normalize_alignment_roi
+        roi = normalize_alignment_roi(alignment_roi, (h, w))
     decode_peak = max(_decode_bytes(frame) for frame in sources)
     needed = _alignment_memory(h, w, decode_peak)
     if not isinstance(reference_frame, (int, np.integer)) or not 1 <= reference_frame <= len(sources):
@@ -2116,6 +2230,7 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
     previous = anchor = None
     prev_pyr = anchor_pyr = None
     previous_index = ref
+    active_search = bool(rx or ry or rotation or magnification)
 
     def prepare_source(source_index, cancelled):
         _check_cancel(cancelled)
@@ -2130,10 +2245,14 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
             if _has_transparency(image):
                 raise UnsupportedTransparency('Registration of transparent images is unsupported')
         identity = _build_source_fingerprint(frame, image, cancelled, include_context=True)
-        gray = _alignment_gray16(image, cancelled, spillable=low_ram_spill)
+        if roi is not None:
+            rx0, ry0, rw, rh = roi
+            gray = _alignment_gray16(image[ry0:ry0 + rh, rx0:rx0 + rw], cancelled, spillable=low_ram_spill)
+        else:
+            gray = _alignment_gray16(image, cancelled, spillable=low_ram_spill)
         del image
         pyr = (build_pyramid(gray, 64, cancelled, spillable=False)
-               if (prefetch_workers and (ratio or rotation or magnification) and min(gray.shape) >= 2)
+               if (prefetch_workers and active_search and min(gray.shape) >= 2)
                else None)
         return identity, gray, pyr
 
@@ -2177,6 +2296,16 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
                     fut.cancel()
                 pending.clear()
 
+    if roi is not None:
+        rx0, ry0, rw, rh = roi
+        roi_span = float(max(rw, rh))
+        h_pct = min(50.0, (w * rx / roi_span) * 100.0) if rx > 0 else 0.0
+        v_pct = min(50.0, (h * ry / roi_span) * 100.0) if ry > 0 else 0.0
+    else:
+        rx0 = ry0 = 0
+        h_pct = rx * 100.0
+        v_pct = ry * 100.0
+
     with search_threads, closing(iter_prepared()) as prepared_stream:
         for done, index in enumerate(order):
             _check_cancel(should_cancel)
@@ -2187,7 +2316,7 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
             identity, gray, curr_pyr = next(prepared_stream)
             pair = np.array(_IDENTITY_F8, np.float32)
             rounds, failure = 0, ''
-            if (index != ref and (ratio or rotation or magnification)
+            if (index != ref and active_search
                     and not _alignment_pixels_equal(previous, gray, should_cancel)):
                 if prev_pyr is None:
                     prev_pyr = build_pyramid(previous, 64, should_cancel, spillable=low_ram_spill)
@@ -2195,11 +2324,30 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
                     anchor_pyr = prev_pyr
                 if curr_pyr is None:
                     curr_pyr = build_pyramid(gray, 64, should_cancel, spillable=low_ram_spill)
+                init_f8 = transforms[previous_index].f8
+                if roi is not None:
+                    init_roi = (
+                        init_f8[0] - rx0, init_f8[1] - ry0,
+                        init_f8[2] - rx0, init_f8[3] - ry0,
+                        *init_f8[4:],
+                    )
+                else:
+                    init_roi = init_f8
                 try:
-                    pair, rounds = align_pair_wide(previous, gray, h_pct=ratio * 100,
-                        v_pct=ratio * 100, rot_deg=rotation, mag_pct=magnification,
-                        should_cancel=should_cancel, initial_f8=transforms[previous_index].f8,
-                        _a_pyr=prev_pyr, _b_pyr=curr_pyr)
+                    pair_roi, rounds = align_pair_wide(
+                        previous, gray, h_pct=h_pct, v_pct=v_pct,
+                        rot_deg=rotation, mag_pct=magnification,
+                        should_cancel=should_cancel, initial_f8=init_roi,
+                        _a_pyr=prev_pyr, _b_pyr=curr_pyr,
+                    )
+                    if roi is not None:
+                        pair = pair_roi.copy()
+                        pair[0] = F32(float(pair[0]) + rx0)
+                        pair[1] = F32(float(pair[1]) + ry0)
+                        pair[2] = F32(float(pair[2]) + rx0)
+                        pair[3] = F32(float(pair[3]) + ry0)
+                    else:
+                        pair = pair_roi
                 except AlignmentEstimationError as error:
                     if failure_policy == 'fail':
                         failure = RejectedAlignmentFrame('OpenFocus', index, str(error))
@@ -2214,7 +2362,15 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
             transform = AlignmentTransform(index, tuple(float(v) for v in total),
                 tuple(float(v) for v in pair), identity, previous_index, rounds, failure)
             transforms[index] = transform
-            previous = _warp_alignment(gray, total, should_cancel, spillable=low_ram_spill)
+            if roi is not None:
+                warp_f8 = (
+                    float(total[0]) - rx0, float(total[1]) - ry0,
+                    float(total[2]) - rx0, float(total[3]) - ry0,
+                    *(float(v) for v in total[4:]),
+                )
+            else:
+                warp_f8 = total
+            previous = _warp_alignment(gray, warp_f8, should_cancel, spillable=low_ram_spill)
             prev_pyr = curr_pyr if previous is gray else None
             if index == ref and has_right_chain:
                 anchor = previous
@@ -2224,5 +2380,12 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
             if progress_callback is not None:
                 progress_callback(done + 1, len(sources))
     _check_cancel(should_cancel)
-    return AlignmentPlan(tuple(transforms), ref, order, ratio, needed, failure_policy,
-                         rotation, magnification)
+    return AlignmentPlan(
+        tuple(transforms), ref, order, ratio, needed, failure_policy,
+        rotation, magnification,
+        max_shift_x_ratio=None if max_shift_x_ratio is None else rx,
+        max_shift_y_ratio=None if max_shift_y_ratio is None else ry,
+        auto_crop=bool(auto_crop),
+        interpolation=interpolation,
+        alignment_roi=roi,
+    )

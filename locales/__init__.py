@@ -6,6 +6,7 @@ from importlib.util import find_spec
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from .en import EN
+from ._retouch_macro import RETOUCH_MACRO_TRANSLATIONS
 
 
 def __getattr__(name):
@@ -301,80 +302,691 @@ _GALLERY_EXTRA_KEYS = (
 
 _GALLERY_EXTRA_TEXT = {
     'en': (
-        'Account', 'My Downloads', 'Hide Fusion Result', 'Gallery & Danmaku',
-        'Gallery Storage & Cache', 'Cache size limit (MB)',
+        'Account', 'My Downloads', 'Hide Fusion Result', 'Community & Danmaku',
+        'Community Storage & Cache', 'Cache size limit (MB)',
         'Current usage: {used_mb} MB / {limit_mb} MB',
         'Show in Folder', 'Download failed: {reason}',
     ),
     'zh': (
-        '账户', '我的下载', '隐藏融合结果', '画廊与弹幕',
-        '画廊存储与缓存', '缓存上限（MB）',
+        '账户', '我的下载', '隐藏融合结果', '社区与弹幕',
+        '社区存储与缓存', '缓存上限（MB）',
         '当前占用：{used_mb} MB / {limit_mb} MB',
         '在文件夹中显示', '下载失败：{reason}',
     ),
     'ja': (
-        'アカウント', 'ダウンロード一覧', '合成結果を隠す', 'ギャラリーと弾幕',
-        'ギャラリー保存先とキャッシュ', 'キャッシュ上限（MB）',
+        'アカウント', 'ダウンロード一覧', '合成結果を隠す', 'コミュニティと弾幕',
+        'コミュニティ保存先とキャッシュ', 'キャッシュ上限（MB）',
         '現在の使用量：{used_mb} MB / {limit_mb} MB',
         'フォルダーで表示', 'ダウンロードに失敗しました：{reason}',
     ),
     'es': (
-        'Cuenta', 'Mis descargas', 'Ocultar resultado de fusión', 'Galería y comentarios',
-        'Almacenamiento y caché de la galería', 'Límite de caché (MB)',
+        'Cuenta', 'Mis descargas', 'Ocultar resultado de fusión', 'Comunidad y comentarios',
+        'Almacenamiento y caché de la comunidad', 'Límite de caché (MB)',
         'Uso actual: {used_mb} MB / {limit_mb} MB',
         'Mostrar en carpeta', 'Error de descarga: {reason}',
     ),
     'de': (
-        'Konto', 'Meine Downloads', 'Fusionsergebnis ausblenden', 'Galerie & Danmaku',
-        'Galerie-Speicher & Cache', 'Cache-Limit (MB)',
+        'Konto', 'Meine Downloads', 'Fusionsergebnis ausblenden', 'Community & Danmaku',
+        'Community-Speicher & Cache', 'Cache-Limit (MB)',
         'Aktuelle Belegung: {used_mb} MB / {limit_mb} MB',
         'Im Ordner anzeigen', 'Download fehlgeschlagen: {reason}',
     ),
     'fr': (
-        'Compte', 'Mes téléchargements', 'Masquer le résultat de fusion', 'Galerie et commentaires',
-        'Stockage et cache de la galerie', 'Limite du cache (Mo)',
+        'Compte', 'Mes téléchargements', 'Masquer le résultat de fusion', 'Communauté et commentaires',
+        'Stockage et cache de la communauté', 'Limite du cache (Mo)',
         'Utilisation actuelle : {used_mb} Mo / {limit_mb} Mo',
         'Afficher dans le dossier', 'Échec du téléchargement : {reason}',
     ),
     'ru': (
-        'Аккаунт', 'Мои загрузки', 'Скрыть результат слияния', 'Галерея и комментарии',
-        'Хранилище и кэш галереи', 'Лимит кэша (МБ)',
+        'Аккаунт', 'Мои загрузки', 'Скрыть результат слияния', 'Сообщество и комментарии',
+        'Хранилище и кэш сообщества', 'Лимит кэша (МБ)',
         'Использовано: {used_mb} МБ / {limit_mb} МБ',
         'Показать в папке', 'Ошибка загрузки: {reason}',
     ),
     'ko': (
-        '계정', '내 다운로드', '융합 결과 숨기기', '갤러리 및 탄막',
-        '갤러리 저장소 및 캐시', '캐시 용량 제한(MB)',
+        '계정', '내 다운로드', '융합 결과 숨기기', '커뮤니티 및 탄막',
+        '커뮤니티 저장소 및 캐시', '캐시 용량 제한(MB)',
         '현재 사용량: {used_mb} MB / {limit_mb} MB',
         '폴더에서 보기', '다운로드 실패: {reason}',
     ),
     'pt': (
-        'Conta', 'Meus downloads', 'Ocultar resultado da fusão', 'Galeria e comentários',
-        'Armazenamento e cache da galeria', 'Limite de cache (MB)',
+        'Conta', 'Meus downloads', 'Ocultar resultado da fusão', 'Comunidade e comentários',
+        'Armazenamento e cache da comunidade', 'Limite de cache (MB)',
         'Uso atual: {used_mb} MB / {limit_mb} MB',
         'Mostrar na pasta', 'Falha no download: {reason}',
     ),
     'it': (
-        'Account', 'I miei download', 'Nascondi risultato di fusione', 'Galleria e commenti',
-        'Archiviazione e cache della galleria', 'Limite cache (MB)',
+        'Account', 'I miei download', 'Nascondi risultato di fusione', 'Comunità e commenti',
+        'Archiviazione e cache della comunità', 'Limite cache (MB)',
         'Utilizzo attuale: {used_mb} MB / {limit_mb} MB',
         'Mostra nella cartella', 'Download non riuscito: {reason}',
     ),
     'nl': (
-        'Account', 'Mijn downloads', 'Fusieresultaat verbergen', 'Galerij & opmerkingen',
-        'Galerijopslag en cache', 'Cachelimiet (MB)',
+        'Account', 'Mijn downloads', 'Fusieresultaat verbergen', 'Community & opmerkingen',
+        'Communityopslag en cache', 'Cachelimiet (MB)',
         'Huidig gebruik: {used_mb} MB / {limit_mb} MB',
         'Tonen in map', 'Downloaden mislukt: {reason}',
     ),
     'pl': (
-        'Konto', 'Moje pobrania', 'Ukryj wynik łączenia', 'Galeria i komentarze',
-        'Pamięć i pamięć podręczna galerii', 'Limit pamięci podręcznej (MB)',
+        'Konto', 'Moje pobrania', 'Ukryj wynik łączenia', 'Społeczność i komentarze',
+        'Pamięć i pamięć podręczna społeczności', 'Limit pamięci podręcznej (MB)',
         'Bieżące użycie: {used_mb} MB / {limit_mb} MB',
         'Pokaż w folderze', 'Pobieranie nie powiodło się: {reason}',
     ),
 }
 
+_ALIGNMENT_CONTROLS_KEYS = (
+    'label_align_max_shift_x', 'align_max_shift_x_hint',
+    'label_align_max_shift_y', 'align_max_shift_y_hint',
+    'label_align_max_rotation', 'align_max_rotation_hint',
+    'label_align_max_scale_change', 'align_max_scale_change_hint',
+    'label_align_auto_crop', 'align_auto_crop_hint',
+    'label_align_interpolation', 'align_interp_hint',
+    'align_interp_lanczos', 'align_interp_cubic', 'align_interp_linear',
+    'label_align_area', 'btn_align_area', 'btn_align_area_hint',
+    'btn_clear_align_area', 'btn_clear_align_area_hint',
+    'align_area_badge', 'drag_align_area_hint',
+    'btn_show_aligned', 'btn_show_aligned_computing', 'btn_show_aligned_hint',
+    'source_aligned_badge', 'show_aligned_failed',
+    'alignment_reason_shift_x_limit', 'alignment_reason_shift_y_limit',
+    'alignment_reason_rotation_limit', 'alignment_reason_scale_limit',
+)
+
+_ALIGNMENT_CONTROLS_TEXT = {
+    'en': (
+        'Max X Shift:', 'Maximum allowed horizontal shift as a fraction of frame width.',
+        'Max Y Shift:', 'Maximum allowed vertical shift as a fraction of frame height.',
+        'Max Rotation (°):', 'Maximum allowed per-frame rotation in degrees.',
+        'Max Scale Change:', 'Maximum allowed per-frame scale ratio change (e.g. 0.15 = ±15%).',
+        'Auto-Crop Black Borders', 'Automatically crop invalid border margins after alignment. Disable to keep the full canvas.',
+        'Interpolation:', 'Resampling filter used when warping aligned frames.',
+        'Lanczos4 (Sharpest)', 'Bicubic (Balanced)', 'Bilinear (Fastest)',
+        'Detection Area:', 'Align Area', 'Restrict alignment transform estimation to a box on the source canvas while warping the full image.',
+        'Clear', 'Clear the Alignment Detection Area and estimate alignment on the full frame.',
+        'Align Area', 'Drag on the source image to set the Alignment Detection Area',
+        'Show Aligned', 'Aligning…', 'Preview aligned source frames before rendering.',
+        'Aligned', 'Aligned preview failed: {reason}',
+        'Horizontal shift exceeded the configured limit',
+        'Vertical shift exceeded the configured limit',
+        'Rotation exceeded the configured limit',
+        'Scale change exceeded the configured limit',
+    ),
+    'zh': (
+        '水平位移上限：', '允许的最大水平位移比例（占图像宽度）。',
+        '垂直位移上限：', '允许的最大垂直位移比例（占图像高度）。',
+        '最大旋转角（°）：', '允许的单步最大旋转角度（度）。',
+        '最大缩放变化：', '允许的单步最大缩放比例变化（如 0.15 表示 ±15%）。',
+        '自动裁剪黑边', '对齐后自动裁剪无效黑边。关闭时保留完整画布尺寸。',
+        '重采样插值：', '对齐变换时使用的像素重采样滤波器。',
+        'Lanczos4（最锐利）', '双三次 Bicubic（均衡）', '双线性 Bilinear（最快）',
+        '配准检测区：', '配准检测区', '仅在源图像选定区域内估计对齐变换（可排除暗角黑边干扰），同时仍对整幅图像进行对齐与融合。',
+        '清除', '清除配准检测区域，恢复全图估计对齐。',
+        '配准检测区', '在源图像上拖拽框选配准检测区域',
+        '预览对齐效果', '对齐预览中…', '渲染前在源图视图中实时预览对齐后的帧。',
+        '已对齐预览', '对齐预览失败：{reason}',
+        '水平位移超出设定上限',
+        '垂直位移超出设定上限',
+        '旋转角度超出设定上限',
+        '缩放变化超出设定上限',
+    ),
+    'ja': (
+        '水平シフト上限：', 'フレーム幅に対する水平移動の許容上限。',
+        '垂直シフト上限：', 'フレーム高さに対する垂直移動の許容上限。',
+        '最大回転角 (°)：', 'フレーム間で許容される最大回転角度（度）。',
+        '最大倍率変化：', 'フレーム間で許容される最大スケール変化（例: 0.15 = ±15%）。',
+        '黒縁を自動トリミング', '位置合わせ後の無効な黒縁を自動トリミングします。無効にすると元のキャンバスサイズを保持します。',
+        '補間方式：', '位置合わせ変形時に使用するリサンプリング補間フィルター。',
+        'Lanczos4（高精細）', 'バイキュービック（バランス）', 'バイリニア（高速）',
+        '検出領域：', '位置合わせ領域', 'ソース画像上の指定枠内のみで変換を推定し、画像全体を変形・合成します。',
+        'クリア', '位置合わせ検出領域を解除してフレーム全体で推定します。',
+        '検出領域', 'ソース画像上をドラッグして位置合わせ検出領域を指定',
+        '位置合わせプレビュー', '位置合わせ中…', 'レンダリング前に位置合わせ済みのソースフレームをプレビューします。',
+        '位置合わせ済み', '位置合わせプレビューに失敗しました：{reason}',
+        '水平シフトが設定上限を超えました',
+        '垂直シフトが設定上限を超えました',
+        '回転角が設定上限を超えました',
+        '倍率変化が設定上限を超えました',
+    ),
+    'es': (
+        'Desplaz. X máx.:', 'Desplazamiento horizontal máximo permitido como fracción del ancho.',
+        'Desplaz. Y máx.:', 'Desplazamiento vertical máximo permitido como fracción del alto.',
+        'Rotación máx. (°):', 'Rotación máxima permitida por fotograma en grados.',
+        'Cambio escala máx.:', 'Cambio de escala máximo permitido por fotograma (p. ej., 0.15 = ±15 %).',
+        'Recortar bordes negros', 'Recorta automáticamente los bordes inválidos tras alinear. Desactívelo para conservar el lienzo completo.',
+        'Interpolación:', 'Filtro de remuestreo utilizado al deformar los fotogramas alineados.',
+        'Lanczos4 (Más nítido)', 'Bicúbica (Equilibrada)', 'Bilineal (Más rápida)',
+        'Área de detección:', 'Área de alineación', 'Limita la estimación del alineamiento a un recuadro en el lienzo fuente mientras transforma la imagen completa.',
+        'Limpiar', 'Borra el área de detección de alineación y estima en todo el fotograma.',
+        'Área alineación', 'Arrastre sobre la imagen fuente para definir el área de detección',
+        'Ver alineado', 'Alineando…', 'Previsualiza los fotogramas fuente alineados antes de renderizar.',
+        'Alineado', 'Error en la vista previa alineada: {reason}',
+        'El desplazamiento horizontal superó el límite configurado',
+        'El desplazamiento vertical superó el límite configurado',
+        'La rotación superó el límite configurado',
+        'El cambio de escala superó el límite configurado',
+    ),
+    'de': (
+        'Max. X-Versatz:', 'Maximal zulässiger horizontaler Versatz als Anteil der Bildbreite.',
+        'Max. Y-Versatz:', 'Maximal zulässiger vertikaler Versatz als Anteil der Bildhöhe.',
+        'Max. Drehung (°):', 'Maximal zulässige Drehung pro Bild in Grad.',
+        'Max. Skalierung:', 'Maximal zulässige Skalierungsänderung pro Bild (z. B. 0,15 = ±15 %).',
+        'Schwarze Ränder zuschneiden', 'Schneidet ungültige Ränder nach der Ausrichtung automatisch zu. Deaktivieren für volle Bildgröße.',
+        'Interpolation:', 'Resampling-Filter beim Transformieren ausgerichteter Bilder.',
+        'Lanczos4 (Am schärfsten)', 'Bikubisch (Ausgewogen)', 'Bilinear (Am schnellsten)',
+        'Erkennungsbereich:', 'Ausrichtbereich', 'Beschränkt die Ausrichtungsschätzung auf ein Rechteck im Quellbild, während das gesamte Bild transformiert wird.',
+        'Löschen', 'Erkennungsbereich entfernen und auf dem gesamten Bild schätzen.',
+        'Ausrichtbereich', 'Auf dem Quellbild ziehen, um den Ausrichtbereich festzulegen',
+        'Ausgerichtet zeigen', 'Ausrichten…', 'Zeigt ausgerichtete Quellbilder bereits vor dem Rendern an.',
+        'Ausgerichtet', 'Ausrichtungsvorschau fehlgeschlagen: {reason}',
+        'Horizontaler Versatz überschreitet das Limit',
+        'Vertikaler Versatz überschreitet das Limit',
+        'Drehung überschreitet das Limit',
+        'Skalierungsänderung überschreitet das Limit',
+    ),
+    'fr': (
+        'Décalage X max. :', 'Décalage horizontal maximal autorisé en fraction de la largeur.',
+        'Décalage Y max. :', 'Décalage vertical maximal autorisé en fraction de la hauteur.',
+        'Rotation max. (°) :', 'Rotation maximale autorisée par image en degrés.',
+        'Échelle max. :', 'Variation d’échelle maximale autorisée par image (ex. 0,15 = ±15 %).',
+        'Recadrer les bords noirs', 'Recadre automatiquement les bords invalides après alignement. Désactivez pour garder le cadre complet.',
+        'Interpolation :', 'Filtre de rééchantillonnage utilisé lors de la transformation des images.',
+        'Lanczos4 (Plus net)', 'Bicubique (Équilibré)', 'Bilinéaire (Plus rapide)',
+        'Zone de détection :', 'Zone d’alignement', 'Limite l’estimation d’alignement à un rectangle sur l’image source tout en transformant toute l’image.',
+        'Effacer', 'Efface la zone de détection et estime sur toute l’image.',
+        'Zone align.', 'Faites glisser sur l’image source pour définir la zone de détection',
+        'Aperçu aligné', 'Alignement…', 'Prévisualise les images sources alignées avant le rendu.',
+        'Aligné', 'Échec de l’aperçu aligné : {reason}',
+        'Le décalage horizontal a dépassé la limite configurée',
+        'Le décalage vertical a dépassé la limite configurée',
+        'La rotation a dépassé la limite configurée',
+        'Le changement d’échelle a dépassé la limite configurée',
+    ),
+    'ru': (
+        'Макс. сдвиг X:', 'Максимальный горизонтальный сдвиг как доля ширины кадра.',
+        'Макс. сдвиг Y:', 'Максимальный вертикальный сдвиг как доля высоты кадра.',
+        'Макс. поворот (°):', 'Максимальный допустимый поворот на кадр в градусах.',
+        'Макс. масштаб:', 'Максимальное допустимое изменение масштаба (напр. 0.15 = ±15%).',
+        'Автообрезка чёрных полей', 'Автоматически обрезать пустые края после выравнивания. Отключите для сохранения полного кадра.',
+        'Интерполяция:', 'Фильтр передискретизации при трансформации выровненных кадров.',
+        'Lanczos4 (Чётче)', 'Бикубическая (Баланс)', 'Билинейная (Быстрее)',
+        'Область оценки:', 'Область выравнивания', 'Ограничивает оценку выравнивания выделенной областью на исходном кадре, трансформируя всё изображение.',
+        'Сбросить', 'Очистить область оценки выравнивания и использовать весь кадр.',
+        'Область выравн.', 'Выделите область на исходном изображении для оценки выравнивания',
+        'Показать выровненные', 'Выравнивание…', 'Предпросмотр выровненных исходных кадров до рендеринга.',
+        'Выровнено', 'Ошибка предпросмотра выравнивания: {reason}',
+        'Горизонтальный сдвиг превысил заданный предел',
+        'Вертикальный сдвиг превысил заданный предел',
+        'Поворот превысил заданный предел',
+        'Изменение масштаба превысило заданный предел',
+    ),
+    'ko': (
+        '최대 X 이동:', '프레임 너비 대비 허용되는 최대 수평 이동 비율.',
+        '최대 Y 이동:', '프레임 높이 대비 허용되는 최대 수직 이동 비율.',
+        '최대 회전(°):', '프레임당 허용되는 최대 회전 각도(도).',
+        '최대 배율 변화:', '프레임당 허용되는 최대 배율 변화(예: 0.15 = ±15%).',
+        '검은 테두리 자동 자르기', '정렬 후 유효하지 않은 테두리를 자동으로 자릅니다. 끄면 전체 캔버스 크기를 유지합니다.',
+        '보간 방식:', '정렬된 프레임을 변환할 때 사용할 리샘플링 필터.',
+        'Lanczos4 (가장 선명)', '바이큐빅 (균형)', '바이리니어 (가장 빠름)',
+        '감지 영역:', '정렬 영역', '원본 캔버스의 지정 영역에서만 정렬 변환을 추정하고 전체 이미지를 변형합니다.',
+        '지우기', '정렬 감지 영역을 지우고 전체 프레임에서 추정합니다.',
+        '정렬 영역', '원본 이미지에서 드래그하여 정렬 감지 영역 지정',
+        '정렬 미리보기', '정렬 중…', '렌더링 전에 정렬된 원본 프레임을 미리 봅니다.',
+        '정렬됨', '정렬 미리보기 실패: {reason}',
+        '수평 이동이 설정된 한도를 초과했습니다',
+        '수직 이동이 설정된 한도를 초과했습니다',
+        '회전이 설정된 한도를 초과했습니다',
+        '배율 변화가 설정된 한도를 초과했습니다',
+    ),
+    'pt': (
+        'Desloc. X máx.:', 'Deslocamento horizontal máximo permitido como fração da largura.',
+        'Desloc. Y máx.:', 'Deslocamento vertical máximo permitido como fração da altura.',
+        'Rotação máx. (°):', 'Rotação máxima permitida por quadro em graus.',
+        'Escala máx.:', 'Variação máxima de escala permitida por quadro (ex.: 0,15 = ±15%).',
+        'Recortar bordas pretas', 'Recorta automaticamente as bordas inválidas após o alinhamento. Desative para manter o quadro inteiro.',
+        'Interpolação:', 'Filtro de reamostragem usado ao transformar quadros alinhados.',
+        'Lanczos4 (Mais nítido)', 'Bicúbica (Equilibrada)', 'Bilinear (Mais rápida)',
+        'Área de detecção:', 'Área de alinhamento', 'Restringe a estimativa de alinhamento a um retângulo na imagem fonte enquanto transforma a imagem inteira.',
+        'Limpar', 'Limpa a área de detecção e estima o alinhamento no quadro completo.',
+        'Área alinh.', 'Arraste na imagem fonte para definir a área de detecção',
+        'Mostrar alinhado', 'Alinhando…', 'Pré-visualize os quadros fonte alinhados antes de renderizar.',
+        'Alinhado', 'Falha na pré-visualização alinhada: {reason}',
+        'O deslocamento horizontal excedeu o limite configurado',
+        'O deslocamento vertical excedeu o limite configurado',
+        'A rotação excedeu o limite configurado',
+        'A variação de escala excedeu o limite configurado',
+    ),
+    'it': (
+        'Spostam. X max:', 'Spostamento orizzontale massimo consentito come frazione della larghezza.',
+        'Spostam. Y max:', 'Spostamento verticale massimo consentito come frazione dell’altezza.',
+        'Rotazione max (°):', 'Rotazione massima consentita per fotogramma in gradi.',
+        'Scala max:', 'Variazione massima di scala consentita per fotogramma (es. 0,15 = ±15%).',
+        'Ritaglia bordi neri', 'Ritaglia automaticamente i bordi non validi dopo l’allineamento. Disattiva per mantenere l’intera tela.',
+        'Interpolazione:', 'Filtro di ricampionamento usato per deformare i fotogrammi allineati.',
+        'Lanczos4 (Più nitido)', 'Bicubica (Bilanciata)', 'Bilineare (Più veloce)',
+        'Area rilevamento:', 'Area allineamento', 'Limita la stima dell’allineamento a un riquadro sull’immagine sorgente trasformando comunque l’intera immagine.',
+        'Cancella', 'Rimuove l’area di rilevamento e stima l’allineamento sull’intero fotogramma.',
+        'Area allin.', 'Trascina sull’immagine sorgente per definire l’area di rilevamento',
+        'Mostra allineato', 'Allineamento…', 'Visualizza in anteprima i fotogrammi sorgente allineati prima del rendering.',
+        'Allineato', 'Anteprima allineata non riuscita: {reason}',
+        'Lo spostamento orizzontale ha superato il limite impostato',
+        'Lo spostamento verticale ha superato il limite impostato',
+        'La rotazione ha superato il limite impostato',
+        'La variazione di scala ha superato il limite impostato',
+    ),
+    'nl': (
+        'Max. X-verschuiving:', 'Maximaal toegestane horizontale verschuiving als fractie van de breedte.',
+        'Max. Y-verschuiving:', 'Maximaal toegestane verticale verschuiving als fractie van de hoogte.',
+        'Max. rotatie (°):', 'Maximaal toegestane rotatie per frame in graden.',
+        'Max. schaalwijziging:', 'Maximaal toegestane schaalverandering per frame (bijv. 0,15 = ±15%).',
+        'Zwarte randen bijsnijden', 'Snijdt ongeldige randen na uitlijning automatisch bij. Schakel uit om het volledige formaat te behouden.',
+        'Interpolatie:', 'Resamplingfilter voor het transformeren van uitgelijnde frames.',
+        'Lanczos4 (Scherpst)', 'Bikubisch (Gebalanceerd)', 'Bilineair (Snelst)',
+        'Detectiegebied:', 'Uitlijngebied', 'Beperkt de uitlijningsschatting tot een kader op het bronbeeld terwijl het hele beeld wordt getransformeerd.',
+        'Wissen', 'Wis het uitlijngebied en schat de uitlijning op het volledige beeld.',
+        'Uitlijngebied', 'Sleep op het bronbeeld om het uitlijngebied in te stellen',
+        'Uitgelijnd tonen', 'Uitlijnen…', 'Bekijk uitgelijnde bronframes alvast vóór het renderen.',
+        'Uitgelijnd', 'Uitgelijnd voorbeeld mislukt: {reason}',
+        'Horizontale verschuiving overschreed de ingestelde limiet',
+        'Verticale verschuiving overschreed de ingestelde limiet',
+        'Rotatie overschreed de ingestelde limiet',
+        'Schaalwijziging overschreed de ingestelde limiet',
+    ),
+    'pl': (
+        'Maks. przesun. X:', 'Maksymalne dopuszczalne przesunięcie poziome jako ułamek szerokości.',
+        'Maks. przesun. Y:', 'Maksymalne dopuszczalne przesunięcie pionowe jako ułamek wysokości.',
+        'Maks. obrót (°):', 'Maksymalny dopuszczalny obrót na klatkę w stopniach.',
+        'Maks. zmiana skali:', 'Maksymalna dopuszczalna zmiana skali na klatkę (np. 0,15 = ±15%).',
+        'Auto-przycinanie krawędzi', 'Automatycznie przycina czarne marginesy po wyrównaniu. Wyłącz, aby zachować pełny rozmiar.',
+        'Interpolacja:', 'Filtr próbkowania używany przy przekształcaniu wyrównanych klatek.',
+        'Lanczos4 (Najostrzejsza)', 'Bikubiczna (Zrównoważona)', 'Dwuliniowa (Najszybsza)',
+        'Obszar detekcji:', 'Obszar wyrównania', 'Ogranicza estymację wyrównania do ramki na obrazie źródłowym przy pełnym przekształceniu obrazu.',
+        'Wyczyść', 'Usuwa obszar detekcji wyrównania i estymuje na pełnej klatce.',
+        'Obszar wyrówn.', 'Przeciągnij na obrazie źródłowym, aby ustawić obszar detekcji',
+        'Pokaż wyrównane', 'Wyrównywanie…', 'Podgląd wyrównanych klatek źródłowych przed renderowaniem.',
+        'Wyrównano', 'Podgląd wyrównania nie powiódł się: {reason}',
+        'Przesunięcie poziome przekroczyło ustawiony limit',
+        'Przesunięcie pionowe przekroczyło ustawiony limit',
+        'Obrót przekroczył ustawiony limit',
+        'Zmiana skali przekroczyła ustawiony limit',
+    ),
+}
+
+_DEVELOPER_OPTIONS_KEYS = (
+    'developer_options_tab',
+    'dev_options_intro',
+    'dev_key_section',
+    'dev_key_label',
+    'dev_key_placeholder',
+    'dev_key_show',
+    'dev_key_hide',
+    'dev_key_verify_btn',
+    'dev_key_verifying',
+    'dev_key_lock_btn',
+    'dev_status_locked',
+    'dev_status_unlocked',
+    'dev_status_locked_detail',
+    'dev_status_unlocked_detail',
+    'dev_status_unlocked_expires',
+    'dev_key_err_empty',
+    'dev_key_err_invalid',
+    'dev_key_err_expired',
+    'dev_key_err_network',
+    'dev_key_err_rate_limited',
+    'dev_key_verified_ok',
+    'dev_key_locked_msg',
+    'dev_features_section',
+    'dev_feature_community',
+    'dev_feature_community_hint',
+    'dev_feature_requires_unlock',
+)
+
+_DEVELOPER_OPTIONS_TEXT = {
+    'en': (
+        'Developer Options',
+        'Developer Options control pre-release features that are hidden by default. Unlocking requires a valid developer key issued by the OpenFocus admin platform.',
+        'Developer Key',
+        'Access key:',
+        'Enter admin-issued developer key',
+        'Show',
+        'Hide',
+        'Verify & Unlock',
+        'Verifying developer key…',
+        'Lock & Clear Key',
+        'Locked',
+        'Unlocked',
+        'No active developer key. In-development features remain hidden.',
+        'Key {prefix} ({label}) · Scopes: {features}',
+        'Key {prefix} ({label}) · Scopes: {features} · Expires: {expires}',
+        'Please enter a developer key.',
+        'Developer key is invalid or has been revoked.',
+        'Developer key has expired.',
+        'Unable to reach the verification server. Check your network and try again.',
+        'Too many verification attempts. Please wait and try again.',
+        'Developer key verified and unlocked.',
+        'Developer key cleared. In-development features have been locked.',
+        'Feature Switches',
+        'Enable Community features (in development)',
+        'Shows Community menus, Gallery & Danmaku settings, fusion showcase, and community sync. Help → Account always remains available.',
+        'Verify a developer key with Community access to toggle this feature.',
+    ),
+    'zh': (
+        '开发者选项',
+        '开发者选项用于控制默认隐藏的开发中功能。解锁需要 OpenFocus 管理平台颁发的有效开发者密钥。',
+        '开发者密钥',
+        '访问密钥：',
+        '输入管理员颁发的开发者密钥',
+        '显示',
+        '隐藏',
+        '验证并解锁',
+        '正在验证开发者密钥…',
+        '锁定并清除密钥',
+        '已锁定',
+        '已解锁',
+        '未激活开发者密钥，开发中功能保持隐藏。',
+        '密钥 {prefix}（{label}）· 权限：{features}',
+        '密钥 {prefix}（{label}）· 权限：{features} · 到期：{expires}',
+        '请输入开发者密钥。',
+        '开发者密钥无效或已被吊销。',
+        '开发者密钥已过期。',
+        '无法连接验证服务器，请检查网络后重试。',
+        '验证请求过于频繁，请稍后重试。',
+        '开发者密钥验证通过，已解锁。',
+        '已清除开发者密钥并重新锁定开发中功能。',
+        '功能开关',
+        '启用社区功能（开发中）',
+        '开启后显示社区菜单、画廊与弹幕设置、融合展示窗口及社区同步。“帮助 → 账户”登录入口始终保持可用。',
+        '需先验证包含社区权限的开发者密钥方可切换此功能。',
+    ),
+    'ja': (
+        '開発者オプション',
+        '開発者オプションでは、既定で非表示の開発中機能を管理します。ロック解除には OpenFocus 管理プラットフォーム発行の有効な開発者キーが必要です。',
+        '開発者キー',
+        'アクセスキー：',
+        '管理者発行の開発者キーを入力',
+        '表示',
+        '非表示',
+        '検証してロック解除',
+        '開発者キーを検証中…',
+        'ロックしてキーを削除',
+        'ロック中',
+        'ロック解除済み',
+        '有効な開発者キーがありません。開発中機能は非表示のままです。',
+        'キー {prefix}（{label}）・権限：{features}',
+        'キー {prefix}（{label}）・権限：{features}・有効期限：{expires}',
+        '開発者キーを入力してください。',
+        '開発者キーが無効か、取り消されています。',
+        '開発者キーの有効期限が切れています。',
+        '検証サーバーに接続できません。ネットワークを確認して再試行してください。',
+        '検証の試行回数が多すぎます。しばらくしてから再試行してください。',
+        '開発者キーを検証し、ロックを解除しました。',
+        '開発者キーを削除し、開発中機能を再ロックしました。',
+        '機能スイッチ',
+        'コミュニティ機能を有効にする（開発中）',
+        'コミュニティメニュー、ギャラリーと弾幕の設定、合成ショーケース、同期を表示します。「ヘルプ → アカウント」は常に利用できます。',
+        'この機能を切り替えるには、コミュニティ権限のある開発者キーを検証してください。',
+    ),
+    'es': (
+        'Opciones de desarrollador',
+        'Las opciones de desarrollador controlan funciones en desarrollo ocultas por defecto. Para desbloquearlas se requiere una clave válida emitida por la plataforma de administración de OpenFocus.',
+        'Clave de desarrollador',
+        'Clave de acceso:',
+        'Introduce la clave de desarrollador',
+        'Mostrar',
+        'Ocultar',
+        'Verificar y desbloquear',
+        'Verificando clave de desarrollador…',
+        'Bloquear y borrar clave',
+        'Bloqueado',
+        'Desbloqueado',
+        'No hay ninguna clave de desarrollador activa. Las funciones en desarrollo siguen ocultas.',
+        'Clave {prefix} ({label}) · Permisos: {features}',
+        'Clave {prefix} ({label}) · Permisos: {features} · Caduca: {expires}',
+        'Introduce una clave de desarrollador.',
+        'La clave de desarrollador no es válida o fue revocada.',
+        'La clave de desarrollador ha caducado.',
+        'No se pudo conectar con el servidor de verificación. Comprueba tu red e inténtalo de nuevo.',
+        'Demasiados intentos de verificación. Espera un momento e inténtalo de nuevo.',
+        'Clave de desarrollador verificada y desbloqueada.',
+        'Clave borrada. Las funciones en desarrollo se han bloqueado.',
+        'Interruptores de funciones',
+        'Activar funciones de Comunidad (en desarrollo)',
+        'Muestra los menús de Comunidad, los ajustes de galería y comentarios, el escaparate de fusión y la sincronización. Ayuda → Cuenta permanece siempre disponible.',
+        'Verifica una clave de desarrollador con acceso a Comunidad para cambiar esta opción.',
+    ),
+    'de': (
+        'Entwickleroptionen',
+        'Die Entwickleroptionen steuern standardmäßig ausgeblendete Vorabfunktionen. Zum Entsperren ist ein gültiger Entwicklerschlüssel der OpenFocus-Verwaltungsplattform erforderlich.',
+        'Entwicklerschlüssel',
+        'Zugangsschlüssel:',
+        'Vom Administrator ausgestellten Schlüssel eingeben',
+        'Anzeigen',
+        'Verbergen',
+        'Prüfen & Entsperren',
+        'Entwicklerschlüssel wird geprüft…',
+        'Sperren & Schlüssel löschen',
+        'Gesperrt',
+        'Entsperrt',
+        'Kein aktiver Entwicklerschlüssel. Funktionen in Entwicklung bleiben ausgeblendet.',
+        'Schlüssel {prefix} ({label}) · Bereiche: {features}',
+        'Schlüssel {prefix} ({label}) · Bereiche: {features} · Läuft ab: {expires}',
+        'Bitte gib einen Entwicklerschlüssel ein.',
+        'Der Entwicklerschlüssel ist ungültig oder wurde widerrufen.',
+        'Der Entwicklerschlüssel ist abgelaufen.',
+        'Verifizierungsserver nicht erreichbar. Prüfe die Netzwerkverbindung und versuche es erneut.',
+        'Zu viele Prüfversuche. Bitte warte kurz und versuche es erneut.',
+        'Entwicklerschlüssel bestätigt und entsperrt.',
+        'Entwicklerschlüssel gelöscht. Funktionen in Entwicklung wurden wieder gesperrt.',
+        'Funktionsschalter',
+        'Community-Funktionen aktivieren (in Entwicklung)',
+        'Zeigt Community-Menüs, Galerie- & Danmaku-Einstellungen, Fusions-Showcase und Synchronisierung. Hilfe → Konto bleibt immer verfügbar.',
+        'Prüfe einen Entwicklerschlüssel mit Community-Berechtigung, um diese Funktion umzuschalten.',
+    ),
+    'fr': (
+        'Options développeur',
+        'Les options développeur contrôlent les fonctionnalités en cours de développement masquées par défaut. Le déverrouillage nécessite une clé développeur valide délivrée par la plateforme d’administration OpenFocus.',
+        'Clé développeur',
+        'Clé d’accès :',
+        'Saisir la clé développeur fournie par l’administrateur',
+        'Afficher',
+        'Masquer',
+        'Vérifier et déverrouiller',
+        'Vérification de la clé développeur…',
+        'Verrouiller et effacer la clé',
+        'Verrouillé',
+        'Déverrouillé',
+        'Aucune clé développeur active. Les fonctionnalités en développement restent masquées.',
+        'Clé {prefix} ({label}) · Portées : {features}',
+        'Clé {prefix} ({label}) · Portées : {features} · Expire le : {expires}',
+        'Veuillez saisir une clé développeur.',
+        'La clé développeur est invalide ou a été révoquée.',
+        'La clé développeur a expiré.',
+        'Impossible de joindre le serveur de vérification. Vérifiez votre réseau et réessayez.',
+        'Trop de tentatives de vérification. Veuillez patienter et réessayer.',
+        'Clé développeur vérifiée et déverrouillée.',
+        'Clé effacée. Les fonctionnalités en développement ont été verrouillées.',
+        'Interrupteurs de fonctionnalités',
+        'Activer les fonctionnalités Communauté (en développement)',
+        'Affiche les menus Communauté, les réglages Galerie et commentaires, la vitrine de fusion et la synchronisation. Aide → Compte reste toujours disponible.',
+        'Vérifiez une clé développeur disposant de l’accès Communauté pour modifier cette option.',
+    ),
+    'ru': (
+        'Параметры разработчика',
+        'Параметры разработчика управляют функциями в разработке, скрытыми по умолчанию. Для разблокировки требуется действующий ключ разработчика с платформы администрирования OpenFocus.',
+        'Ключ разработчика',
+        'Ключ доступа:',
+        'Введите выданный администратором ключ разработчика',
+        'Показать',
+        'Скрыть',
+        'Проверить и разблокировать',
+        'Проверка ключа разработчика…',
+        'Заблокировать и очистить ключ',
+        'Заблокировано',
+        'Разблокировано',
+        'Нет активного ключа разработчика. Функции в разработке остаются скрытыми.',
+        'Ключ {prefix} ({label}) · Доступ: {features}',
+        'Ключ {prefix} ({label}) · Доступ: {features} · Действует до: {expires}',
+        'Введите ключ разработчика.',
+        'Ключ разработчика недействителен или отозван.',
+        'Срок действия ключа разработчика истёк.',
+        'Не удалось связаться с сервером проверки. Проверьте сеть и повторите попытку.',
+        'Слишком много попыток проверки. Подождите и повторите попытку.',
+        'Ключ разработчика подтверждён и разблокирован.',
+        'Ключ очищен. Функции в разработке снова заблокированы.',
+        'Переключатели функций',
+        'Включить функции сообщества (в разработке)',
+        'Показывает меню сообщества, настройки галереи и комментариев, витрину слияния и синхронизацию. «Справка → Аккаунт» остаётся доступным всегда.',
+        'Подтвердите ключ разработчика с доступом к сообществу, чтобы переключить эту функцию.',
+    ),
+    'ko': (
+        '개발자 옵션',
+        '개발자 옵션은 기본적으로 숨겨진 개발 중 기능을 제어합니다. 잠금을 해제하려면 OpenFocus 관리 플랫폼에서 발급한 유효한 개발자 키가 필요합니다.',
+        '개발자 키',
+        '액세스 키:',
+        '관리자가 발급한 개발자 키 입력',
+        '표시',
+        '숨기기',
+        '확인 및 잠금 해제',
+        '개발자 키 확인 중…',
+        '잠그고 키 지우기',
+        '잠김',
+        '잠금 해제됨',
+        '활성화된 개발자 키가 없습니다. 개발 중인 기능은 숨겨진 상태로 유지됩니다.',
+        '키 {prefix} ({label}) · 권한: {features}',
+        '키 {prefix} ({label}) · 권한: {features} · 만료: {expires}',
+        '개발자 키를 입력해 주세요.',
+        '개발자 키가 유효하지 않거나 취소되었습니다.',
+        '개발자 키가 만료되었습니다.',
+        '인증 서버에 연결할 수 없습니다. 네트워크를 확인하고 다시 시도해 주세요.',
+        '인증 시도가 너무 많습니다. 잠시 후 다시 시도해 주세요.',
+        '개발자 키가 확인되어 잠금이 해제되었습니다.',
+        '개발자 키를 지우고 개발 중인 기능을 다시 잠갔습니다.',
+        '기능 스위치',
+        '커뮤니티 기능 사용(개발 중)',
+        '커뮤니티 메뉴, 갤러리 및 탄막 설정, 융합 쇼케이스, 커뮤니티 동기화를 표시합니다. 도움말 → 계정은 항상 사용할 수 있습니다.',
+        '이 기능을 전환하려면 커뮤니티 권한이 있는 개발자 키를 먼저 확인하세요.',
+    ),
+    'pt': (
+        'Opções de desenvolvedor',
+        'As opções de desenvolvedor controlam recursos em desenvolvimento ocultos por padrão. O desbloqueio exige uma chave válida emitida pela plataforma administrativa do OpenFocus.',
+        'Chave de desenvolvedor',
+        'Chave de acesso:',
+        'Digite a chave de desenvolvedor fornecida pelo administrador',
+        'Mostrar',
+        'Ocultar',
+        'Verificar e desbloquear',
+        'Verificando chave de desenvolvedor…',
+        'Bloquear e limpar chave',
+        'Bloqueado',
+        'Desbloqueado',
+        'Nenhuma chave de desenvolvedor ativa. Recursos em desenvolvimento permanecem ocultos.',
+        'Chave {prefix} ({label}) · Escopos: {features}',
+        'Chave {prefix} ({label}) · Escopos: {features} · Expira em: {expires}',
+        'Digite uma chave de desenvolvedor.',
+        'A chave de desenvolvedor é inválida ou foi revogada.',
+        'A chave de desenvolvedor expirou.',
+        'Não foi possível contatar o servidor de verificação. Verifique sua rede e tente novamente.',
+        'Muitas tentativas de verificação. Aguarde e tente novamente.',
+        'Chave de desenvolvedor verificada e desbloqueada.',
+        'Chave removida. Os recursos em desenvolvimento foram bloqueados.',
+        'Chaves de recursos',
+        'Ativar recursos da Comunidade (em desenvolvimento)',
+        'Exibe os menus da Comunidade, ajustes de galeria e comentários, vitrine de fusão e sincronização. Ajuda → Conta permanece sempre disponível.',
+        'Verifique uma chave de desenvolvedor com acesso à Comunidade para alternar este recurso.',
+    ),
+    'it': (
+        'Opzioni sviluppatore',
+        'Le opzioni sviluppatore controllano le funzionalità in sviluppo nascoste per impostazione predefinita. Lo sblocco richiede una chiave valida emessa dalla piattaforma di amministrazione OpenFocus.',
+        'Chiave sviluppatore',
+        'Chiave di accesso:',
+        'Inserisci la chiave sviluppatore fornita dall’amministratore',
+        'Mostra',
+        'Nascondi',
+        'Verifica e sblocca',
+        'Verifica chiave sviluppatore in corso…',
+        'Blocca e cancella chiave',
+        'Bloccato',
+        'Sbloccato',
+        'Nessuna chiave sviluppatore attiva. Le funzionalità in sviluppo restano nascoste.',
+        'Chiave {prefix} ({label}) · Ambiti: {features}',
+        'Chiave {prefix} ({label}) · Ambiti: {features} · Scadenza: {expires}',
+        'Inserisci una chiave sviluppatore.',
+        'La chiave sviluppatore non è valida o è stata revocata.',
+        'La chiave sviluppatore è scaduta.',
+        'Impossibile raggiungere il server di verifica. Controlla la rete e riprova.',
+        'Troppi tentativi di verifica. Attendi e riprova.',
+        'Chiave sviluppatore verificata e sbloccata.',
+        'Chiave cancellata. Le funzionalità in sviluppo sono state bloccate.',
+        'Interruttori funzionalità',
+        'Abilita funzionalità Community (in sviluppo)',
+        'Mostra i menu Community, le impostazioni Galleria e commenti, la vetrina di fusione e la sincronizzazione. Aiuto → Account rimane sempre disponibile.',
+        'Verifica una chiave sviluppatore con accesso Community per attivare questa opzione.',
+    ),
+    'nl': (
+        'Ontwikkelaarsopties',
+        'Ontwikkelaarsopties beheren functies in ontwikkeling die standaard verborgen zijn. Voor ontgrendeling is een geldige ontwikkelaarssleutel van het OpenFocus-beheerplatform vereist.',
+        'Ontwikkelaarssleutel',
+        'Toegangssleutel:',
+        'Voer de door de beheerder verstrekte sleutel in',
+        'Tonen',
+        'Verbergen',
+        'Verifiëren en ontgrendelen',
+        'Ontwikkelaarssleutel verifiëren…',
+        'Vergrendelen en sleutel wissen',
+        'Vergrendeld',
+        'Ontgrendeld',
+        'Geen actieve ontwikkelaarssleutel. Functies in ontwikkeling blijven verborgen.',
+        'Sleutel {prefix} ({label}) · Bereiken: {features}',
+        'Sleutel {prefix} ({label}) · Bereiken: {features} · Verloopt: {expires}',
+        'Voer een ontwikkelaarssleutel in.',
+        'De ontwikkelaarssleutel is ongeldig of ingetrokken.',
+        'De ontwikkelaarssleutel is verlopen.',
+        'Kan de verificatieserver niet bereiken. Controleer uw netwerk en probeer het opnieuw.',
+        'Te veel verificatiepogingen. Wacht even en probeer het opnieuw.',
+        'Ontwikkelaarssleutel geverifieerd en ontgrendeld.',
+        'Sleutel gewist. Functies in ontwikkeling zijn weer vergrendeld.',
+        'Functieschakelaars',
+        'Communityfuncties inschakelen (in ontwikkeling)',
+        'Toont Community-menu’s, galerij- en opmerkingsinstellingen, fusieshowcase en synchronisatie. Help → Account blijft altijd beschikbaar.',
+        'Verifieer een ontwikkelaarssleutel met Community-toegang om deze functie te schakelen.',
+    ),
+    'pl': (
+        'Opcje programisty',
+        'Opcje programisty sterują funkcjami w fazie rozwoju, domyślnie ukrytymi. Odblokowanie wymaga prawidłowego klucza programisty wydanego przez platformę administracyjną OpenFocus.',
+        'Klucz programisty',
+        'Klucz dostępu:',
+        'Wpisz klucz programisty wydany przez administratora',
+        'Pokaż',
+        'Ukryj',
+        'Zweryfikuj i odblokuj',
+        'Weryfikowanie klucza programisty…',
+        'Zablokuj i usuń klucz',
+        'Zablokowano',
+        'Odblokowano',
+        'Brak aktywnego klucza programisty. Funkcje w fazie rozwoju pozostają ukryte.',
+        'Klucz {prefix} ({label}) · Zakresy: {features}',
+        'Klucz {prefix} ({label}) · Zakresy: {features} · Wygasa: {expires}',
+        'Wpisz klucz programisty.',
+        'Klucz programisty jest nieprawidłowy lub został unieważniony.',
+        'Klucz programisty wygasł.',
+        'Nie można połączyć się z serwerem weryfikacji. Sprawdź sieć i spróbuj ponownie.',
+        'Zbyt wiele prób weryfikacji. Poczekaj chwilę i spróbuj ponownie.',
+        'Klucz programisty został zweryfikowany i odblokowany.',
+        'Usunięto klucz programisty. Funkcje w fazie rozwoju zostały zablokowane.',
+        'Przełączniki funkcji',
+        'Włącz funkcje Społeczności (w fazie rozwoju)',
+        'Wyświetla menu Społeczności, ustawienia galerii i komentarzy, prezentację podczas łączenia oraz synchronizację. Pomoc → Konto pozostaje zawsze dostępne.',
+        'Zweryfikuj klucz programisty z uprawnieniem Społeczności, aby przełączyć tę funkcję.',
+    ),
+}
+
 _GALLERY_PACKS_CACHE = None
+_RAW_DEVELOP_PACKS_CACHE = None
+_PRO_EXPORTS_PACKS_CACHE = None
+_WATCH_TEMPLATES_PACKS_CACHE = None
+_LIVE_PREVIEW_PACKS_CACHE = None
+_SUBSTACK_PACKS_CACHE = None
+_RENDER_QUEUE_PACKS_CACHE = None
+_EXPORT_3D_PACKS_CACHE = None
 
 
 def _gallery_pack(code: str):
@@ -386,6 +998,83 @@ def _gallery_pack(code: str):
         except Exception:
             _GALLERY_PACKS_CACHE = {}
     return _GALLERY_PACKS_CACHE.get(code)
+
+
+def _raw_develop_pack(code: str):
+    global _RAW_DEVELOP_PACKS_CACHE
+    if _RAW_DEVELOP_PACKS_CACHE is None:
+        try:
+            from .raw_develop_i18n import RAW_DEVELOP_TRANSLATIONS
+            _RAW_DEVELOP_PACKS_CACHE = RAW_DEVELOP_TRANSLATIONS
+        except Exception:
+            _RAW_DEVELOP_PACKS_CACHE = {}
+    return _RAW_DEVELOP_PACKS_CACHE.get(code)
+
+
+def _pro_exports_pack(code: str):
+    global _PRO_EXPORTS_PACKS_CACHE
+    if _PRO_EXPORTS_PACKS_CACHE is None:
+        try:
+            from .pro_exports_i18n import PRO_EXPORTS_TRANSLATIONS
+            _PRO_EXPORTS_PACKS_CACHE = PRO_EXPORTS_TRANSLATIONS
+        except Exception:
+            _PRO_EXPORTS_PACKS_CACHE = {}
+    return _PRO_EXPORTS_PACKS_CACHE.get(code)
+
+
+def _watch_templates_pack(code: str):
+    global _WATCH_TEMPLATES_PACKS_CACHE
+    if _WATCH_TEMPLATES_PACKS_CACHE is None:
+        try:
+            from .watch_templates_i18n import WATCH_TEMPLATES_TRANSLATIONS
+            _WATCH_TEMPLATES_PACKS_CACHE = WATCH_TEMPLATES_TRANSLATIONS
+        except Exception:
+            _WATCH_TEMPLATES_PACKS_CACHE = {}
+    return _WATCH_TEMPLATES_PACKS_CACHE.get(code)
+
+
+def _live_preview_pack(code: str):
+    global _LIVE_PREVIEW_PACKS_CACHE
+    if _LIVE_PREVIEW_PACKS_CACHE is None:
+        try:
+            from .live_preview_i18n import LIVE_PREVIEW_TRANSLATIONS
+            _LIVE_PREVIEW_PACKS_CACHE = LIVE_PREVIEW_TRANSLATIONS
+        except Exception:
+            _LIVE_PREVIEW_PACKS_CACHE = {}
+    return _LIVE_PREVIEW_PACKS_CACHE.get(code)
+
+
+def _substack_pack(code: str):
+    global _SUBSTACK_PACKS_CACHE
+    if _SUBSTACK_PACKS_CACHE is None:
+        try:
+            from .substack_i18n import SUBSTACK_TRANSLATIONS
+            _SUBSTACK_PACKS_CACHE = SUBSTACK_TRANSLATIONS
+        except Exception:
+            _SUBSTACK_PACKS_CACHE = {}
+    return _SUBSTACK_PACKS_CACHE.get(code)
+
+
+def _render_queue_pack(code: str):
+    global _RENDER_QUEUE_PACKS_CACHE
+    if _RENDER_QUEUE_PACKS_CACHE is None:
+        try:
+            from .render_queue_i18n import RENDER_QUEUE_TRANSLATIONS
+            _RENDER_QUEUE_PACKS_CACHE = RENDER_QUEUE_TRANSLATIONS
+        except Exception:
+            _RENDER_QUEUE_PACKS_CACHE = {}
+    return _RENDER_QUEUE_PACKS_CACHE.get(code)
+
+
+def _export_3d_pack(code: str):
+    global _EXPORT_3D_PACKS_CACHE
+    if _EXPORT_3D_PACKS_CACHE is None:
+        try:
+            from .export_3d_i18n import EXPORT_3D_TRANSLATIONS
+            _EXPORT_3D_PACKS_CACHE = EXPORT_3D_TRANSLATIONS
+        except Exception:
+            _EXPORT_3D_PACKS_CACHE = {}
+    return _EXPORT_3D_PACKS_CACHE.get(code)
 
 
 def _apply_pack_overlays(code: str, table: dict) -> dict:
@@ -420,6 +1109,36 @@ def _apply_pack_overlays(code: str, table: dict) -> dict:
     gallery_extra = _GALLERY_EXTRA_TEXT.get(code)
     if gallery_extra is not None:
         table.update(zip(_GALLERY_EXTRA_KEYS, gallery_extra))
+    align_controls = _ALIGNMENT_CONTROLS_TEXT.get(code)
+    if align_controls is not None:
+        table.update(zip(_ALIGNMENT_CONTROLS_KEYS, align_controls))
+    raw_develop = _raw_develop_pack(code)
+    if raw_develop:
+        table.update(raw_develop)
+    dev_opts = _DEVELOPER_OPTIONS_TEXT.get(code)
+    if dev_opts is not None:
+        table.update(zip(_DEVELOPER_OPTIONS_KEYS, dev_opts))
+    render_queue = _render_queue_pack(code)
+    if render_queue:
+        table.update(render_queue)
+    substack = _substack_pack(code)
+    if substack:
+        table.update(substack)
+    retouch_macro = RETOUCH_MACRO_TRANSLATIONS.get(code)
+    if retouch_macro:
+        table.update(retouch_macro)
+    live_preview = _live_preview_pack(code)
+    if live_preview:
+        table.update(live_preview)
+    watch_templates = _watch_templates_pack(code)
+    if watch_templates:
+        table.update(watch_templates)
+    pro_exports = _pro_exports_pack(code)
+    if pro_exports:
+        table.update(pro_exports)
+    export_3d = _export_3d_pack(code)
+    if export_3d:
+        table.update(export_3d)
     return table
 
 

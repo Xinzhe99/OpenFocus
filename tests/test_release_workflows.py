@@ -269,3 +269,22 @@ def test_summary_rejects_incomplete_release_suite(tmp_path, bash, suite, test_re
     result = subprocess.run([bash, '-e', '-c', step['run']], cwd=tmp_path,
                             env=environment, capture_output=True)
     assert (result.returncode == 0) is expected, (result.stdout, result.stderr)
+
+
+def test_workflows_target_python_312_and_preserve_wheel_matrix():
+    for name in ('pr-checks.yml', 'tests.yml', 'release.yml', 'pypi.yml'):
+        data = workflow(name)
+        setup_versions = []
+        for job_name, job in data['jobs'].items():
+            for step in job.get('steps') or ():
+                if str(step.get('uses', '')).startswith('actions/setup-python@'):
+                    version = str((step.get('with') or {}).get('python-version', ''))
+                    setup_versions.append((job_name, version))
+        assert setup_versions, f'{name} has no actions/setup-python steps'
+        assert all(version == '3.12' for _, version in setup_versions), (name, setup_versions)
+
+    pypi_wheels = workflow('pypi.yml')['jobs']['build-wheels']['steps']
+    cibw = next(step for step in pypi_wheels
+                if str(step.get('uses', '')).startswith('pypa/cibuildwheel@'))
+    targets = set(str(cibw['env']['CIBW_BUILD']).split())
+    assert {'cp310-*', 'cp311-*', 'cp312-*', 'cp313-*'} <= targets

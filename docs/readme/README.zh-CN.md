@@ -333,7 +333,7 @@ OpenFocus 应用以 [MIT 许可](../../LICENSE) 发布。
 从源码运行：
 
 ```bash
-conda create -n openfocus python=3.10
+conda create -n openfocus python=3.12
 conda activate openfocus
 pip install -r requirements.txt
 python main.py

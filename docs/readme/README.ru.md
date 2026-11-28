@@ -293,7 +293,7 @@ openfocus -i ./stack_folder -o ./result/fused.png
 Запуск из репозитория:
 
 ```bash
-conda create -n openfocus python=3.10
+conda create -n openfocus python=3.12
 conda activate openfocus
 pip install -r requirements.txt
 python main.py

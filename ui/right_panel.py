@@ -412,6 +412,7 @@ class _ConfigurationContents(QWidget):
 class _WorkspaceParameterPanel(AlgorithmParameterPanel):
     def __init__(self, layout, control_id, *, hidden_parameters=()):
         super().__init__(layout.parentWidget(), hidden_parameters=hidden_parameters)
+        self._extra_widgets = []
         self.disclosure = QToolButton(self.parentWidget())
         self.disclosure.setProperty('controlId', control_id)
         self.disclosure.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
@@ -422,6 +423,11 @@ class _WorkspaceParameterPanel(AlgorithmParameterPanel):
         layout.addWidget(self.disclosure, alignment=Qt.AlignmentFlag.AlignLeft)
         layout.addWidget(self)
         self.disclosure.toggled.connect(self._show_parameters)
+
+    def add_collapsible_widget(self, widget, layout):
+        widget.hide()
+        self._extra_widgets.append(widget)
+        layout.addWidget(widget)
 
     def set_parameters(self, specs, values=None, *, inline=True):
         super().set_parameters(specs, values)
@@ -439,7 +445,10 @@ class _WorkspaceParameterPanel(AlgorithmParameterPanel):
     def _show_parameters(self, expanded):
         self.disclosure.setArrowType(
             Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
-        self.setVisible(expanded and not self.disclosure.isHidden())
+        visible = expanded and not self.disclosure.isHidden()
+        self.setVisible(visible)
+        for widget in self._extra_widgets:
+            widget.setVisible(visible)
 
 
 @dataclass
@@ -449,6 +458,9 @@ class RightPanelComponents:
     config_scroll: QScrollArea
     btn_reset: QPushButton
     btn_render: QPushButton
+    btn_live_preview: QPushButton
+    btn_enqueue: QPushButton
+    btn_render_queue: QPushButton
     btn_compare: QPushButton
     btn_render_settings: QPushButton
     chk_quick_preview: QCheckBox
@@ -477,6 +489,9 @@ class RightPanelComponents:
     lbl_status_resolution: QLabel
     lbl_status_gpu: QLabel
     lbl_status_memory: QLabel
+    lbl_reg_align_area: QLabel = None
+    btn_reg_align_area: QPushButton = None
+    btn_reg_clear_align_area: QPushButton = None
 
     def schedule_fit_configuration(self) -> None:
         if sip.isdeleted(self.widget):
@@ -591,6 +606,29 @@ def create_right_panel() -> RightPanelComponents:
     registration_parameter_panel = _WorkspaceParameterPanel(
         registration_layout, 'registration_parameters_toggle', hidden_parameters=('failure_policy',))
 
+    align_area_row = QWidget(registration_group)
+    align_area_layout = QHBoxLayout(align_area_row)
+    align_area_layout.setContentsMargins(0, 2, 0, 0)
+    align_area_layout.setSpacing(6)
+    lbl_reg_align_area = QLabel(trans.t('label_align_area'), align_area_row)
+    lbl_reg_align_area.setToolTip(trans.t('btn_align_area_hint'))
+    btn_reg_align_area = ElidingButton(trans.t('btn_align_area'), align_area_row)
+    btn_reg_align_area.setObjectName("secondaryButton")
+    btn_reg_align_area.setCheckable(True)
+    btn_reg_align_area.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+    btn_reg_align_area.setToolTip(trans.t('btn_align_area_hint'))
+    btn_reg_align_area.setProperty("controlId", "btn_reg_align_area")
+    btn_reg_clear_align_area = ElidingButton(trans.t('btn_clear_align_area'), align_area_row)
+    btn_reg_clear_align_area.setObjectName("secondaryButton")
+    btn_reg_clear_align_area.setEnabled(False)
+    btn_reg_clear_align_area.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
+    btn_reg_clear_align_area.setToolTip(trans.t('btn_clear_align_area_hint'))
+    btn_reg_clear_align_area.setProperty("controlId", "btn_reg_clear_align_area")
+    align_area_layout.addWidget(lbl_reg_align_area)
+    align_area_layout.addWidget(btn_reg_align_area, 1)
+    align_area_layout.addWidget(btn_reg_clear_align_area)
+    registration_parameter_panel.add_collapsible_widget(align_area_row, registration_layout)
+
     # 融合/对齐并排时面板宽 375px，两个下拉各只剩 ~114px —— 比
     # "Alignment only (no fusion)" 需要的 ~190px 窄得多，文字被截成
     # "OpenFocus -" 且下拉箭头与 "?" 按钮重叠。改为上下两行：每个组
@@ -609,17 +647,41 @@ def create_right_panel() -> RightPanelComponents:
     btn_reset.setObjectName("secondaryButton")
     btn_render = ElidingButton(trans.t('btn_render'))
     btn_render.setObjectName("primaryButton")
+    btn_live_preview = ElidingButton(trans.t('btn_live_preview'))
+    btn_live_preview.setObjectName("secondaryButton")
+    btn_live_preview.setToolTip(
+        f"{trans.t('btn_live_preview')}\n{trans.t('btn_live_preview_hint')}")
+    btn_live_preview.setEnabled(False)
+    btn_enqueue = ElidingButton(trans.t('btn_enqueue'))
+    btn_enqueue.setObjectName("secondaryButton")
+    btn_enqueue.setToolTip(
+        f"{trans.t('btn_enqueue')}\n{trans.t('btn_enqueue_hint')}")
+    btn_render_queue = ElidingButton(trans.t('btn_render_queue'))
+    btn_render_queue.setObjectName("secondaryButton")
+    btn_render_queue.setToolTip(
+        f"{trans.t('btn_render_queue')}\n{trans.t('btn_render_queue_hint')}")
     btn_render_settings = ElidingButton(trans.t('render_settings_title'))
     btn_render_settings.setObjectName("secondaryButton")
     btn_compare = ElidingButton(trans.t('btn_compare_all'))
     btn_compare.setObjectName("secondaryButton")
     btn_compare.setToolTip(
         f"{trans.t('btn_compare_all')}\n{trans.t('btn_compare_all_hint')}")
-    for _btn in (btn_reset, btn_render, btn_render_settings, btn_compare):
+    for _btn in (btn_reset, btn_render, btn_live_preview, btn_enqueue, btn_render_queue,
+                 btn_render_settings, btn_compare):
         _btn.setSizePolicy(QSizePolicy.Policy.Ignored,
                            QSizePolicy.Policy.Fixed)
 
-    config_layout.addWidget(btn_render)
+    primary_bar = QHBoxLayout()
+    primary_bar.setSpacing(8)
+    primary_bar.addWidget(btn_render, 3)
+    primary_bar.addWidget(btn_live_preview, 2)
+    config_layout.addLayout(primary_bar)
+
+    queue_bar = QHBoxLayout()
+    queue_bar.setSpacing(8)
+    queue_bar.addWidget(btn_enqueue, 1)
+    queue_bar.addWidget(btn_render_queue, 1)
+    config_layout.addLayout(queue_bar)
     secondary_bar = QHBoxLayout()
     secondary_bar.setSpacing(8)
     secondary_bar.addWidget(btn_reset, 1)
@@ -738,6 +800,7 @@ def create_right_panel() -> RightPanelComponents:
     # Stable identifiers for agents, independent of QSS object names.
     for _control in ("combo_fusion", "combo_align", "fusion_parameter_panel",
                      "registration_parameter_panel", "btn_reset", "btn_render",
+                     "btn_live_preview", "btn_enqueue", "btn_render_queue",
                      "btn_render_settings", "btn_compare", "chk_quick_preview", "chk_reverse_order",
                      "chk_exposure_match", "chk_base_correct", "chk_sharpen_output", "file_list",
                      "output_list"):
@@ -751,6 +814,9 @@ def create_right_panel() -> RightPanelComponents:
         config_scroll=config_scroll,
         btn_reset=btn_reset,
         btn_render=btn_render,
+        btn_live_preview=btn_live_preview,
+        btn_enqueue=btn_enqueue,
+        btn_render_queue=btn_render_queue,
         btn_compare=btn_compare,
         btn_render_settings=btn_render_settings,
         chk_quick_preview=chk_quick_preview,
@@ -776,6 +842,9 @@ def create_right_panel() -> RightPanelComponents:
         lbl_status_resolution=lbl_status_resolution,
         lbl_status_gpu=lbl_status_gpu,
         lbl_status_memory=lbl_status_memory,
+        lbl_reg_align_area=lbl_reg_align_area,
+        btn_reg_align_area=btn_reg_align_area,
+        btn_reg_clear_align_area=btn_reg_clear_align_area,
     )
     config_widget.layoutChanged.connect(components.schedule_fit_configuration)
     return components
@@ -803,6 +872,10 @@ def bind_right_panel(window, components: RightPanelComponents) -> None:
         lambda values: window.set_fusion_parameters(window.current_fusion_method(), values))
     components.registration_parameter_panel.valuesChanged.connect(
         lambda values: window.set_registration_parameters(window.current_alignment_method(), values))
+    if components.btn_reg_align_area is not None and hasattr(window, "toggle_alignment_area_mode"):
+        components.btn_reg_align_area.toggled.connect(window.toggle_alignment_area_mode)
+    if components.btn_reg_clear_align_area is not None and hasattr(window, "clear_alignment_roi"):
+        components.btn_reg_clear_align_area.clicked.connect(window.clear_alignment_roi)
     components.combo_fusion.currentIndexChanged.connect(window._update_dynamic_status)
 
     # 基底校正开关（消除亮度漂移）：立即持久化，渲染时读取
@@ -830,6 +903,12 @@ def bind_right_panel(window, components: RightPanelComponents) -> None:
     # force_algorithm parameter, forcing need_fusion=True; drop the bool.
     components.btn_render.clicked.connect(
         lambda: window.render_manager.start_render())
+    components.btn_live_preview.clicked.connect(
+        lambda: getattr(window, 'open_live_preview', lambda: None)())
+    components.btn_enqueue.clicked.connect(
+        lambda: getattr(window, 'enqueue_render_job', lambda: None)())
+    components.btn_render_queue.clicked.connect(
+        lambda: getattr(window, 'show_render_queue_dialog', lambda: None)())
     components.btn_reset.clicked.connect(window.reset_to_default)
     def _show_render_settings():
         from dialogs.render_settings import RenderSettingsDialog

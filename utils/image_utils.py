@@ -81,8 +81,13 @@ def composite_transparent_for_display(image: np.ndarray, *, origin=(0, 0), scale
     return out
 
 
-def cv2_to_pixmap(cv2_img: np.ndarray) -> QPixmap:
-    """BGR ndarray -> QPixmap, with no channel-conversion copy.
+def cv2_to_pixmap(
+    cv2_img: np.ndarray,
+    *,
+    icc_profile: bytes = b"",
+    apply_icc: bool = True,
+) -> QPixmap:
+    """BGR ndarray -> QPixmap, with optional ICC -> display sRGB preview conversion.
 
     QImage.Format_BGR888 takes OpenCV's byte order directly, so a 12 MP
     frame costs 11 ms instead of 23 ms (cvtColor BGR->RGB + RGB888).
@@ -90,6 +95,9 @@ def cv2_to_pixmap(cv2_img: np.ndarray) -> QPixmap:
     try:
         if cv2_img.dtype != np.uint8:
             cv2_img = to_display_uint8(cv2_img)
+        if apply_icc and icc_profile and cv2_img.ndim == 3 and cv2_img.shape[2] in (3, 4):
+            from core.color_management import convert_bgr_to_srgb_preview
+            cv2_img = convert_bgr_to_srgb_preview(cv2_img, icc_profile, enabled=True)
         if cv2_img.ndim == 3 and cv2_img.shape[2] == 4:
             cv2_img = composite_transparent_for_display(cv2_img)
 
@@ -115,7 +123,7 @@ def get_imwrite_params(extension: str) -> list:
     """Get OpenCV imwrite parameters for maximum quality based on file extension.
 
     Args:
-        extension: File extension (e.g., '.jpg', '.png', '.tif', '.bmp')
+        extension: File extension (e.g., '.jpg', '.png', '.tif', '.bmp', '.jp2')
 
     Returns:
         List of parameter tuples for cv2.imwrite, or empty list if no special params needed
@@ -133,6 +141,10 @@ def get_imwrite_params(extension: str) -> list:
     elif ext in (".tif", ".tiff"):
         # TIFF: compression flag 1 = no compression
         return [cv2.IMWRITE_TIFF_COMPRESSION, 1]
+    elif ext in (".jp2",):
+        # JPEG 2000: 1000 = lossless compression ratio in OpenCV (Pillow uses irreversible=False)
+        flag = getattr(cv2, "IMWRITE_JPEG2000_COMPRESSION_X1000", None)
+        return [flag, 1000] if flag is not None else []
     elif ext in (".bmp",):
         # BMP: always lossless, no quality parameters
         return []
@@ -264,6 +276,142 @@ def imwrite_multi_tiff(path: str, images, *, icc_profile: bytes = b"", page_spec
     params = [cv2.IMWRITE_TIFF_COMPRESSION, 1 if icc_profile else 5]
     return imwrite_auto(path, pages=images, params=params, exif=b'', icc_profile=icc_profile,
                         page_specs=page_specs)
+
+
+def to_normalized_float32(image: np.ndarray) -> np.ndarray:
+    """Convert uint8/uint16/float pixels to normalized float32 in [0.0, 1.0]."""
+    arr = np.asarray(image)
+    if arr.dtype == np.uint8:
+        return arr.astype(np.float32) * np.float32(1.0 / 255.0)
+    if arr.dtype == np.uint16:
+        return arr.astype(np.float32) * np.float32(1.0 / 65535.0)
+    if arr.dtype == np.float32:
+        return arr
+    if np.issubdtype(arr.dtype, np.floating):
+        return arr.astype(np.float32)
+    info = np.iinfo(arr.dtype)
+    scale = 1.0 / float(info.max) if info.max > 0 else 1.0
+    return arr.astype(np.float32) * np.float32(scale)
+
+
+def imwrite_float32_tiff(
+    path: str,
+    image: np.ndarray,
+    *,
+    exif: Optional[bytes] = None,
+    icc_profile: bytes = b"",
+    strip_exif: bool = False,
+    should_cancel=None,
+) -> bool:
+    """Atomically write an image as an uncompressed 32-bit IEEE float TIFF."""
+    values = to_normalized_float32(image)
+    if values.ndim not in (2, 3) or not values.size:
+        return False
+    if values.ndim == 3 and values.shape[2] not in (3, 4):
+        return False
+    return imwrite_auto(
+        path,
+        values,
+        get_imwrite_params(".tif"),
+        exif=b"" if strip_exif else exif,
+        icc_profile=icc_profile,
+        strip_exif=strip_exif,
+        stream_tiff=True,
+        should_cancel=should_cancel,
+    )
+
+
+def jp2_codec_available() -> bool:
+    """Return True when Pillow OpenJPEG or OpenCV JPEG 2000 encoding is available."""
+    try:
+        from PIL import features
+        if features.check("jpg_2000"):
+            return True
+    except Exception:
+        pass
+    try:
+        ok, buf = cv2.imencode(".jp2", np.zeros((32, 32, 3), dtype=np.uint8))
+        return bool(ok and buf is not None and len(buf) > 0)
+    except Exception:
+        return False
+
+
+def _write_jp2(
+    handle,
+    image: np.ndarray,
+    params: Optional[list],
+    profile: bytes,
+    should_cancel,
+) -> None:
+    """Encode an image as JPEG 2000 (`.jp2`) via Pillow OpenJPEG with OpenCV fallback."""
+    _check_write_cancelled(should_cancel)
+    pil_ok = False
+    try:
+        from PIL import Image, features
+        pil_ok = bool(features.check("jpg_2000"))
+    except Exception:
+        pil_ok = False
+
+    if pil_ok:
+        from PIL import Image
+
+        work = image
+        if work.dtype == np.uint16 and work.ndim == 3:
+            # OpenCV handles 16-bit 3-channel JP2 for >=32px images when available;
+            # Pillow handles 8-bit RGB/RGBA/L and 16-bit L for all dimensions.
+            if min(work.shape[:2]) >= 32:
+                try:
+                    ok, encoded = cv2.imencode(".jp2", work, params or [])
+                    if ok and encoded is not None and len(encoded) > 0:
+                        _check_write_cancelled(should_cancel)
+                        handle.write(encoded)
+                        return
+                except Exception:
+                    pass
+            work = to_display_uint8(work)
+        elif work.dtype not in (np.uint8, np.uint16):
+            work = to_display_uint8(work)
+
+        if work.ndim == 3:
+            code = cv2.COLOR_BGRA2RGBA if work.shape[2] == 4 else cv2.COLOR_BGR2RGB
+            pil_img = Image.fromarray(cv2.cvtColor(work, code))
+        else:
+            pil_img = Image.fromarray(work)
+
+        options = dict(zip((params or [])[::2], (params or [])[1::2]))
+        flag = getattr(cv2, "IMWRITE_JPEG2000_COMPRESSION_X1000", None)
+        ratio = int(options.get(flag, 1000)) if flag is not None else 1000
+        save_kw = {"format": "JPEG2000"}
+        if ratio >= 1000 or ratio <= 0:
+            save_kw["irreversible"] = False
+        else:
+            save_kw["irreversible"] = True
+            save_kw["quality_mode"] = "rates"
+            save_kw["quality_layers"] = [max(1.0, 1000.0 / float(ratio))]
+        if profile:
+            save_kw["icc_profile"] = profile
+        try:
+            pil_img.save(handle, **save_kw)
+        finally:
+            pil_img.close()
+        return
+
+    # OpenCV OpenJPEG fallback when Pillow was built without OpenJPEG
+    try:
+        work = image
+        if work.dtype not in (np.uint8, np.uint16):
+            work = to_display_uint8(work)
+        ok, encoded = cv2.imencode(".jp2", work, params or [])
+        if ok and encoded is not None and len(encoded) > 0:
+            _check_write_cancelled(should_cancel)
+            handle.write(encoded)
+            return
+    except Exception:
+        pass
+    raise ImageWriteError(
+        "jp2_unavailable",
+        "JPEG 2000 codec is unavailable in this environment.",
+    )
 
 
 def imwrite_float_tiff(path: str, image: np.ndarray, metadata: dict, *, should_cancel=None) -> bool:
@@ -650,7 +798,7 @@ def _image_write_rows(image, *, scratch_factor=3, codec_scratch=0,
     if (image.ndim not in (2, 3)
             or image.ndim == 3 and image.shape[2] not in (3, 4)
             or (image.dtype not in (np.uint8, np.uint16)
-                and not (allow_float_gray and image.ndim == 2 and image.dtype == np.float32))
+                and not (allow_float_gray and image.dtype == np.float32))
             or min(image.shape[:2]) < 1):
         raise ValueError('Unsupported pixel layout or sample type for bounded export')
     samples = image.shape[2] if image.ndim == 3 else 1
@@ -752,7 +900,7 @@ def _tiff_header(shape, dtype, exif, icc_profile, rows_per_strip, *, bigtiff=Fal
     integers(257, (height,), 4)
     integers(258, (dtype.itemsize * 8,) * samples)
     if dtype == np.float32:
-        integers(339, (3,))  # SampleFormat: IEEE floating point, including NaN
+        integers(339, (3,) * samples)  # SampleFormat: IEEE floating point, including NaN
     integers(259, (compression,))
     integers(262, (2 if samples > 1 else 1,))
     integers(277, (samples,))
@@ -1307,7 +1455,8 @@ def imwrite_auto(path: str, image: Optional[np.ndarray] = None, params: Optional
                  exif: Optional[bytes] = None, icc_profile: bytes = b"",
                  linear_dng_metadata=None, should_cancel=None,
                  linear_dng_px_size_um=None, *, stream_tiff=False,
-                 pages: Optional[Iterable[np.ndarray]] = None, page_specs=None, raise_on_error=False) -> bool:
+                 pages: Optional[Iterable[np.ndarray]] = None, page_specs=None,
+                 raise_on_error=False, strip_exif: bool = False) -> bool:
     """Atomically save pixels; large TIFF/PNG/baseline JPEG select bounded codecs.
 
     ``pages`` accepts a lazy TIFF page iterator instead of ``image``. Known lists
@@ -1316,6 +1465,7 @@ def imwrite_auto(path: str, image: Optional[np.ndarray] = None, params: Optional
     forces the bounded writer for a small TIFF; metadata also uses that writer.
     ``raise_on_error`` propagates codec and filesystem exceptions to callers
     that report the reason for an individual export failure.
+    ``strip_exif=True`` omits all EXIF metadata across every supported format.
     """
     import tempfile
 
@@ -1324,9 +1474,9 @@ def imwrite_auto(path: str, image: Optional[np.ndarray] = None, params: Optional
     _check_write_cancelled(should_cancel)
     if stream_tiff and ext not in ('.tif', '.tiff'):
         raise ValueError('Streaming export requires TIFF')
-    embed = SOURCE_EXIF if exif is None else exif
+    embed = b"" if strip_exif else (SOURCE_EXIF if exif is None else exif)
     jpeg_exts = ('.jpg', '.jpeg', '.jpe', '.jfif')
-    meta = export_exif(embed) if ext in ('.png', '.tif', '.tiff') + jpeg_exts else None
+    meta = None if strip_exif else (export_exif(embed) if ext in ('.png', '.tif', '.tiff') + jpeg_exts else None)
     if pages is not None:
         if image is not None or ext not in ('.tif', '.tiff'):
             raise ValueError('TIFF pages require a TIFF destination and no single image')
@@ -1356,7 +1506,7 @@ def imwrite_auto(path: str, image: Optional[np.ndarray] = None, params: Optional
     if ext in jpeg_exts:
         _validate_jpeg_metadata(meta, profile)
     bounded = image.nbytes >= _BOUNDED_WRITE_THRESHOLD or should_cancel is not None
-    if ext in ('.tif', '.tiff') and (bounded or stream_tiff or meta is not None or profile):
+    if ext in ('.tif', '.tiff') and (bounded or stream_tiff or meta is not None or profile or image.dtype == np.float32):
         options = params
         if not options:
             # Retain OpenCV's ordinary LZW default and the existing uncompressed
@@ -1372,7 +1522,9 @@ def imwrite_auto(path: str, image: Optional[np.ndarray] = None, params: Optional
         webp_written = False
         fd, part = tempfile.mkstemp(suffix=ext, dir=os.path.dirname(os.path.abspath(path)))
         with os.fdopen(fd, 'wb') as handle:
-            if ext == '.png' and _try_fast_png_encode(handle, image, params or [], meta, profile, should_cancel):
+            if ext == '.jp2':
+                _write_jp2(handle, image, params, profile, should_cancel)
+            elif ext == '.png' and _try_fast_png_encode(handle, image, params or [], meta, profile, should_cancel):
                 pass
             elif bounded and ext == '.png':
                 _write_streamed_png(handle, image, params or [], meta, profile, should_cancel)

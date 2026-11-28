@@ -364,6 +364,7 @@ class _PinnedUploader:
 def _iter_prefetched(items, prepare_fn, *, enabled: bool, should_cancel=None,
                      max_in_flight: int = 1):
     """Yield (index, prepare_fn(index, item, cancelled)) with bounded background prefetch."""
+    from core.registration import deferred_alignment_pipeline
     from fusion_methods.openfocus_ab import _check_cancel
     from fusion_methods._openfocus_execution import _current, _worker_native_limit
 
@@ -388,36 +389,40 @@ def _iter_prefetched(items, prepare_fn, *, enabled: bool, should_cancel=None,
     def cancelled():
         return stop.is_set() or (should_cancel is not None and should_cancel())
 
-    def submit_item(pool, index):
-        ctx = contextvars.copy_context()
-        return pool.submit(ctx.run, prepare_fn, index, items[index], cancelled)
-
     _check_cancel(should_cancel)
     workers = min(slots, 3)
-    with ThreadPoolExecutor(max_workers=workers, initializer=_worker_native_limit) as pool:
-        pending = deque()
-        next_submit = 0
-        try:
-            while next_submit < min(slots, total):
-                pending.append(submit_item(pool, next_submit))
-                next_submit += 1
-            for index in range(total):
-                future = pending[0]
-                while not future.done():
-                    _check_cancel(should_cancel)
-                    wait((future,), timeout=0.05)
-                _check_cancel(should_cancel)
-                pending.popleft()
-                result = future.result()
-                while next_submit < total and len(pending) < slots:
-                    pending.append(submit_item(pool, next_submit))
+    with deferred_alignment_pipeline() as timing_pipeline:
+        wrapped_prepare = timing_pipeline.wrap_producer(prepare_fn)
+
+        def submit_wrapped(pool, index):
+            ctx = contextvars.copy_context()
+            return pool.submit(ctx.run, wrapped_prepare, index, items[index], cancelled)
+
+        with ThreadPoolExecutor(max_workers=workers, initializer=_worker_native_limit) as pool:
+            pending = deque()
+            next_submit = 0
+            try:
+                while next_submit < min(slots, total):
+                    pending.append(submit_wrapped(pool, next_submit))
                     next_submit += 1
-                yield index, result
-                del result
-        finally:
-            stop.set()
-            for future in pending:
-                future.cancel()
+                for index in range(total):
+                    future = pending[0]
+                    while not future.done():
+                        _check_cancel(should_cancel)
+                        with timing_pipeline.wait_scope():
+                            wait((future,), timeout=0.05)
+                    _check_cancel(should_cancel)
+                    pending.popleft()
+                    result = future.result()
+                    while next_submit < total and len(pending) < slots:
+                        pending.append(submit_wrapped(pool, next_submit))
+                        next_submit += 1
+                    yield index, result
+                    del result
+            finally:
+                stop.set()
+                for future in pending:
+                    future.cancel()
 
 
 def _device_cache_key(device):
@@ -1149,14 +1154,18 @@ class Merge:
                 resolution = max(resolution, frame.nbytes)
             raw_native = img_resize is None and getattr(frame, 'dtype', None) in (np.uint8, np.uint16)
             if raw_native:
+                from core.source_frames import SourceFrame
                 if isinstance(frame, np.ndarray):
                     packed = (frame.flags.c_contiguous
                               or (frame.ndim == 3 and frame.shape[2] == 3
                                   and frame[..., ::-1].flags.c_contiguous))
                     working = frame.nbytes * (1 if packed else 2)
+                elif type(frame) is SourceFrame:
+                    # Direct RGB TIFFs and decoded SourceFrames resolve to contiguous arrays.
+                    working = frame.nbytes
                 else:
-                    # Mapped descriptors may resolve to strided views requiring a copy.
-                    working = frame.nbytes * (1 if getattr(frame, '_rgb_tiff_offset', None) is not None else 2)
+                    # Mapped/processed descriptors may resolve to strided views requiring a copy.
+                    working = frame.nbytes * 2
             else:
                 channels = 1 if frame.ndim == 2 else int(frame.shape[2])
                 source_codes = int(frame.size) * 4

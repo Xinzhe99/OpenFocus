@@ -289,7 +289,7 @@ La aplicación OpenFocus se distribuye bajo la [licencia MIT](../../LICENSE).
 Ejecutar desde un clon:
 
 ```bash
-conda create -n openfocus python=3.10
+conda create -n openfocus python=3.12
 conda activate openfocus
 pip install -r requirements.txt
 python main.py

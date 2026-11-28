@@ -163,12 +163,79 @@ def _copyright_fields(enabled, position):
     return enabled, position
 
 
-def effective_text(config: WatermarkConfig) -> str:
+from core.exif_macros import expand_exif_macros, extract_exif_metadata, has_exif_macros
+
+
+def effective_text(config: WatermarkConfig, exif_meta=None, *, value=None) -> str:
+    raw = config.text
+    if has_exif_macros(raw):
+        expanded = expand_exif_macros(raw, exif_meta, value=value).strip()
+        raw = expanded if expanded else raw
     if not config.copyright_enabled:
-        return config.text
+        return raw
     if config.copyright_position == "suffix":
-        return config.text + " ©"
-    return "© " + config.text
+        return raw + " ©"
+    return "© " + raw
+
+
+def context_exif_meta(window, target: str = "output", record=None, frame_index: int = 0) -> dict[str, str]:
+    """Build normalized EXIF & render metadata dict for macro expansion."""
+    exif_bytes = b""
+    method = ""
+    frames_count = None
+
+    ctx = getattr(record, "context", None) if record is not None else None
+    if target == "output" and record is not None:
+        exif_bytes = (
+            getattr(ctx, "source_exif", b"")
+            or getattr(record, "source_exif", b"")
+            or b""
+        )
+        alg = getattr(ctx, "algorithm", "") or getattr(getattr(record, "fusion_details", None), "algorithm", "")
+        if alg and alg != "unknown":
+            try:
+                from core.algorithms import get_fusion
+                method = get_fusion(alg).display_name
+            except Exception:
+                method = str(alg)
+        if ctx is not None and getattr(ctx, "frames", None):
+            frames_count = len(ctx.frames)
+    elif target == "registered":
+        frame_exifs = ()
+        if ctx is not None and getattr(ctx, "frame_exif", None):
+            frame_exifs = tuple(ctx.frame_exif)
+        elif record is not None and getattr(record, "frame_exif", None):
+            frame_exifs = tuple(record.frame_exif)
+        if 0 <= frame_index < len(frame_exifs):
+            exif_bytes = frame_exifs[frame_index] or b""
+        elif record is not None:
+            exif_bytes = getattr(record, "source_exif", b"") or b""
+        if record is not None and getattr(record, "aligned_frames", None):
+            frames_count = len(record.aligned_frames)
+    if not exif_bytes and window is not None:
+        exifs = getattr(window, "image_source_exifs", None) or ()
+        if target in ("source", "input") and 0 <= frame_index < len(exifs):
+            exif_bytes = exifs[frame_index] or b""
+        elif exifs:
+            exif_bytes = next((e for e in exifs if e), b"")
+        if not exif_bytes:
+            loader = getattr(window, "image_loader", None)
+            exif_bytes = getattr(loader, "source_exif", b"") or b""
+    if not method and window is not None:
+        fn = getattr(window, "current_fusion_method", None)
+        if callable(fn):
+            try:
+                code = fn()
+                if code and code != "none":
+                    from core.algorithms import get_fusion
+                    method = get_fusion(code).display_name
+            except Exception:
+                pass
+    if frames_count is None and window is not None:
+        raw_imgs = getattr(window, "raw_images", None) or ()
+        if raw_imgs:
+            frames_count = len(raw_imgs)
+    return extract_exif_metadata(exif_bytes, method=method, frames=frames_count)
 
 
 def normalize_config(config) -> WatermarkConfig:
@@ -420,22 +487,45 @@ def _plan_cached(config: WatermarkConfig, width: int, height: int) -> Layout:
                   substituted=substituted)
 
 
-def plan(config, width: int, height: int) -> Layout:
+def _resolve_config_with_macros(config, exif_meta=None, value=None) -> WatermarkConfig:
+    cfg = normalize_config(config)
+    if exif_meta is None and value is None and not has_exif_macros(cfg.text):
+        return cfg
+    if not has_exif_macros(cfg.text):
+        return cfg
+    expanded = expand_exif_macros(cfg.text, exif_meta, value=value).strip()
+    if not expanded:
+        return cfg
+    expanded = expanded[:MAX_TEXT_CHARS]
+    return WatermarkConfig(
+        text=expanded,
+        font_family=cfg.font_family,
+        size_percent=cfg.size_percent,
+        opacity=cfg.opacity,
+        color=cfg.color,
+        angle=cfg.angle,
+        density=cfg.density,
+        copyright_enabled=cfg.copyright_enabled,
+        copyright_position=cfg.copyright_position,
+    )
+
+
+def plan(config, width: int, height: int, *, exif_meta=None, value=None) -> Layout:
     """Cached validated layout for a full canvas (throws WatermarkError)."""
-    return _plan_cached(normalize_config(config), int(width), int(height))
+    return _plan_cached(_resolve_config_with_macros(config, exif_meta, value), int(width), int(height))
 
 
-def analyze(config, width: int, height: int) -> dict:
+def analyze(config, width: int, height: int, *, exif_meta=None, value=None) -> dict:
     """Non-throwing geometry probe for dialogs/previews."""
     try:
-        cfg = normalize_config(config)
-        base = plan(cfg, int(width), int(height))
+        cfg = _resolve_config_with_macros(config, exif_meta, value)
+        base = _plan_cached(cfg, int(width), int(height))
     except WatermarkError as exc:
         return {"ok": False, "reason": exc.reason, "message_key": exc.message_key,
                 "detail": exc.detail}
     return {"ok": True, "layout": base, "font_px": base.font_px,
             "cells": len(base.cells), "actual_family": base.actual_family,
-            "substituted": base.substituted}
+            "substituted": base.substituted, "resolved_text": effective_text(cfg)}
 
 
 def _blend_patch(base: np.ndarray, ring: np.ndarray, fill: np.ndarray,
@@ -487,7 +577,9 @@ def _blend_patch(base: np.ndarray, ring: np.ndarray, fill: np.ndarray,
 def burn(image: np.ndarray, config, *, canvas_size: Optional[Sequence[int]] = None,
          origin: Sequence[float] = (0.0, 0.0),
          scale: Optional[float] = None,
-         should_cancel=None) -> np.ndarray:
+         should_cancel=None,
+         exif_meta=None,
+         value=None) -> np.ndarray:
     """Return a copy of ``image`` with the watermark burned in.
 
     ``canvas_size`` is the full (width, height) the image belongs to;
@@ -511,7 +603,7 @@ def burn(image: np.ndarray, config, *, canvas_size: Optional[Sequence[int]] = No
         if should_cancel is not None and should_cancel():
             raise WatermarkCancelled()
 
-    cfg = normalize_config(config)
+    cfg = _resolve_config_with_macros(config, exif_meta, value)
     if image.ndim not in (2, 3) or (image.ndim == 3 and image.shape[2] not in (1, 3, 4)):
         raise WatermarkError("bad_config", "image shape")
     if canvas_size is None:

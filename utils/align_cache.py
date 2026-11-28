@@ -508,11 +508,14 @@ def _validate_plan_request(plan, identity):
     if _plan_backend(identity) != 'openfocus-wide4d-v3':
         raise ValueError('OpenFocus plan backend differs from cache request')
     parameters = (identity or {}).get('effective_params', {})
+    req_roi = (identity or {}).get('alignment_roi')
+    req_roi_tuple = tuple(int(v) for v in req_roi) if req_roi is not None else None
     if ('max_shift_ratio' in parameters and float(parameters['max_shift_ratio']) != plan.max_shift_ratio
             or 'reference_frame' in parameters and int(parameters['reference_frame']) - 1 != plan.reference_index
             or 'rotation' in parameters and float(parameters['rotation']) != plan.rotation
             or 'magnification' in parameters and float(parameters['magnification']) != plan.magnification
-            or 'failure_policy' in parameters and parameters['failure_policy'] != plan.failure_policy):
+            or 'failure_policy' in parameters and parameters['failure_policy'] != plan.failure_policy
+            or req_roi_tuple != plan.alignment_roi):
         raise ValueError('Alignment plan parameters differ from the cache request')
 
 

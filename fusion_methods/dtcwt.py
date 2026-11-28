@@ -79,7 +79,7 @@ class _MonotonicProgress:
 
 # Activity transforms are the only parallel layer. Each worker owns its
 # transform and pyramid; channel reconstruction remains serial.
-_DTCWT_MAX_WORKERS = min(4, max(1, (os.cpu_count() or 4) - 1))
+_DTCWT_MAX_WORKERS = min(8, max(1, (os.cpu_count() or 4) - 1))
 _DTCWT_ACTIVITY_WORKERS = 2
 
 
@@ -130,7 +130,7 @@ def estimate_working_set(height: int, width: int, nlevels: int,
              + 3 * weights + pyramid + (3 + channels) * plane)
     # A live worker holds two plane-sized transform buffers plus compact
     # strip/activity scratch without full-stack float32 RGB copies.
-    per_worker = 3 * plane + activity
+    per_worker = 2 * plane + activity
     return int(fixed), int(per_worker)
 
 
@@ -328,7 +328,8 @@ def _use_native_cpu(nlevels: int):
     return get_native_dtcwt()
 
 
-def _choose_channel_groups(all_gray: bool, plans, execution_plan, has_lazy: bool = False):
+def _choose_channel_groups(all_gray: bool, plans, execution_plan,
+                           has_lazy: bool = False, single_workspace: bool = False):
     """Process 1 channel for grayscale, 3 together when RAM fits, or stream 1x3."""
     if all_gray:
         return ((0,),)
@@ -341,11 +342,12 @@ def _choose_channel_groups(all_gray: bool, plans, execution_plan, has_lazy: bool
     if budget <= 0:
         snap = policy.probe_memory()
         budget = policy.ram_ceiling(snap) if snap.ram_known else 0
-    cap_bytes = (
-        min(256 * 1024 * 1024, max(0, budget // 4))
-        if has_lazy
-        else min(96 * 1024 * 1024, max(0, budget // 6))
-    )
+    if has_lazy and single_workspace:
+        cap_bytes = min(1600 * 1024 * 1024, max(0, (budget * 3) // 5))
+    elif has_lazy:
+        cap_bytes = min(1600 * 1024 * 1024, max(0, budget // 3))
+    else:
+        cap_bytes = min(96 * 1024 * 1024, max(0, budget // 6))
     if extra_2ch <= cap_bytes:
         return ((0, 1, 2),)
     return ((0,), (1,), (2,))
@@ -373,9 +375,76 @@ def _extract_legacy_channel(image, channel):
     return plane.astype(np.float32) / 255.0
 
 
+def _dtcwt_prefetch_slots(images, has_lazy: bool, execution_plan) -> int:
+    """Choose bounded decode prefetch depth for row-parallel CPU streaming."""
+    if not has_lazy or len(images) < 2:
+        return 0
+    from core import resource_policy as policy
+
+    snap = policy.probe_memory()
+    budget = int(getattr(execution_plan, "ram_budget", 0) or 0)
+    avail = policy.ram_ceiling(snap) if snap.ram_known else budget
+    if avail <= 0:
+        return 0
+    h, w = images[0].shape[:2]
+    ch = images[0].shape[2] if images[0].ndim == 3 else 1
+    frame_bytes = max(1, h * w * ch * np.dtype(images[0].dtype).itemsize)
+    headroom = min(avail // 4, 400 * 1024 * 1024)
+    return max(0, min(2, headroom // frame_bytes))
+
+
+def _iter_prefetched_frames(images, indices, slots: int, should_cancel):
+    """Yield ``(index, resolved_image)`` with optional bounded background decode."""
+    from collections import deque
+    from core.registration import carry_warp_accelerator
+    from core.source_frames import resolve_frame, without_source_cache_growth
+
+    def _decode(idx):
+        _check_cancelled(should_cancel)
+        with without_source_cache_growth():
+            return idx, resolve_frame(images[idx], should_cancel=should_cancel)
+
+    if slots <= 0 or len(indices) <= 1:
+        for idx in indices:
+            yield _decode(idx)
+        return
+
+    scratch = capture_scratch()
+    run_decode = carry_warp_accelerator(_decode)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(2, slots)) as pool:
+        window = deque()
+        it = iter(indices)
+        try:
+            for _ in range(min(slots, len(indices))):
+                _check_cancelled(should_cancel)
+                idx = next(it, None)
+                if idx is None:
+                    break
+                window.append(pool.submit(run_with_scratch, scratch, run_decode, idx))
+            while window:
+                _check_cancelled(should_cancel)
+                fut = window[0]
+                if not fut.done():
+                    concurrent.futures.wait((fut,), timeout=0.05)
+                    continue
+                window.popleft()
+                result = fut.result()
+                del fut
+                next_idx = next(it, None)
+                if next_idx is not None:
+                    window.append(pool.submit(run_with_scratch, scratch, run_decode, next_idx))
+                yield result
+                del result
+        finally:
+            for fut in window:
+                fut.cancel()
+            window.clear()
+
+
 def _dtcwt_native_cpu(engine, images, N, workers, should_cancel,
-                      execution_plan, progress, device_callback):
-    from core.source_frames import resolve_frame
+                      execution_plan, progress, device_callback,
+                      row_workers: int = 1):
+    from core.source_frames import resolve_frame, without_source_cache_growth
     from fusion_methods._dtcwt_kernels import consistent_vote
 
     def _check_cancel():
@@ -385,6 +454,7 @@ def _dtcwt_native_cpu(engine, images, N, workers, should_cancel,
     h, w = images[0].shape[:2]
     n_frames = len(images)
     plans = engine.build_level_plans(h, w, N)
+    has_lazy = any(not isinstance(img, np.ndarray) for img in images)
 
     seen_sigs = set()
     all_gray = True
@@ -402,258 +472,388 @@ def _dtcwt_native_cpu(engine, images, N, workers, should_cancel,
     if progress is not None:
         progress(0, total_steps)
 
-    # 1. Streaming luminance activity + max-filter argmax
-    serial_ws = engine.make_workspace(h, w, N) if workers == 1 else None
-
-    def _get_ws(state=None):
-        if state is None:
-            return serial_ws
-        ws = getattr(state, "ws", None)
-        if ws is None:
-            ws = engine.make_workspace(h, w, N)
-            state.ws = ws
-        return ws
-
-    def _pass1_worker(index, state=None):
-        _check_cancel()
-        ws = _get_ws(state)
-        image = resolve_frame(images[index], should_cancel=should_cancel)
-        nonfinite = engine.extract_luma(image, ws.buf_a)
-        if nonfinite:
-            luma = _extract_legacy_luma(image)
-            pyr = dtcwt.Transform2d().forward(luma, nlevels=N)
-            acts = [
-                maximum_filter(
-                    _focus_activity(pyr.highpasses[lvl]),
-                    size=3, mode="reflect",
-                )
-                for lvl in range(N)
-            ]
-            return index, True, acts
-        mags = engine.forward_activity_into(ws, N)
-        return index, False, mags
-
-    best_activity = [create_transient_frame((sp.hp_h, sp.hp_w), np.float32) for sp in plans]
-    frame_indices = [create_transient_frame((sp.hp_h, sp.hp_w), np.int32) for sp in plans]
-    frame_nonfinite = [False] * n_frames
-
-    pass1_iter = _iter_ordered(
-        _pass1_worker, range(n_frames), workers=workers, should_cancel=should_cancel,
+    use_row_parallel = row_workers > 1 and h * w >= 512 * 512
+    row_pool = (
+        concurrent.futures.ThreadPoolExecutor(max_workers=row_workers)
+        if use_row_parallel else None
     )
+
     try:
-        for i, nonfinite, maps in pass1_iter:
-            frame_nonfinite[i] = nonfinite
-            for lvl in range(N):
-                _check_cancel()
-                if nonfinite:
-                    act = maps[lvl]
-                    if i == 0:
-                        np.copyto(best_activity[lvl], act)
-                        frame_indices[lvl][...] = 0
-                    else:
-                        win = act > best_activity[lvl]
-                        best_activity[lvl][win] = act[win]
-                        frame_indices[lvl][win] = i
-                        del win
-                else:
-                    engine.max3x3_update(
-                        maps[lvl], best_activity[lvl], frame_indices[lvl], i, i == 0,
-                    )
-            del maps
-            if progress is not None:
-                progress(i + 1, total_steps)
-    finally:
-        pass1_iter.close()
-    del best_activity, serial_ws
-    has_nonfinite = any(frame_nonfinite)
+        # 1. Streaming luminance activity + max-filter argmax
+        best_activity = [create_transient_frame((sp.hp_h, sp.hp_w), np.float32) for sp in plans]
+        frame_indices = [create_transient_frame((sp.hp_h, sp.hp_w), np.int32) for sp in plans]
+        frame_nonfinite = [False] * n_frames
 
-    # 2. Exact stack-size-independent 3x3 consistency vote + active pixel scan
-    vote = consistent_vote()
-    decisions = []
-    win_counts = np.zeros((n_frames, N), dtype=np.int32)
-    counts_col = np.empty(n_frames, dtype=np.int32)
-    for lvl in range(N):
-        _check_cancel()
-        labels = np.asarray(frame_indices[lvl])
-        decision = create_transient_frame(labels.shape, np.int32)
-        output = np.asarray(decision)
-        for start in range(0, labels.shape[0], 128):
-            _check_cancel()
-            vote(labels, output, start, min(start + 128, labels.shape[0]))
-        counts_col.fill(0)
-        engine.scan_count_decisions(output, counts_col)
-        win_counts[:, lvl] = counts_col
-        del labels, output
-        decisions.append(decision)
-        frame_indices[lvl] = None
-    del frame_indices, counts_col
-
-    active_lp = [bool(win_counts[k, N - 1] > 0) or frame_nonfinite[k] for k in range(n_frames)]
-    max_level = [0] * n_frames
-    for k in range(n_frames):
-        if frame_nonfinite[k] or active_lp[k]:
-            max_level[k] = N
-        else:
-            for lvl in range(N - 1, -1, -1):
-                if win_counts[k, lvl] > 0:
-                    max_level[k] = lvl + 1
-                    break
-
-    # 3. Low-pass weights only for frames active in the coarsest decision plane
-    coarse_idx = decisions[-1]
-    lp_h, lp_w = plans[-1].lolo_r, plans[-1].lolo_c
-    lp_size = (lp_w, lp_h)
-    lp_weights = [None] * n_frames
-    total_weight = create_transient_frame((lp_h, lp_w), np.float32)
-    total_weight[...] = 0
-    total_w_arr = np.asarray(total_weight)
-    for k in range(n_frames):
-        if not active_lp[k]:
-            continue
-        _check_cancel()
-        m = cv2.resize(
-            (coarse_idx == k).astype(np.float32),
-            lp_size,
-            interpolation=cv2.INTER_LINEAR,
-        )
-        weight = store_frame(cv2.GaussianBlur(m, (0, 0), 1.5))
-        lp_weights[k] = weight
-        total_w_arr += weight
-        del m, weight
-    np.maximum(total_w_arr, 1e-6, out=total_w_arr)
-    for k in range(n_frames):
-        weight = lp_weights[k]
-        if weight is not None:
-            _check_cancel()
-            np.divide(weight, total_w_arr, out=weight)
-    del total_weight, total_w_arr, coarse_idx
-
-    # 4. Sparse Pass 2 channel reconstruction + exact native inverse
-    has_lazy = any(not isinstance(img, np.ndarray) for img in images)
-    channel_groups = _choose_channel_groups(all_gray, plans, execution_plan, has_lazy)
-    active_indices = [i for i in range(n_frames) if max_level[i] > 0 or frame_nonfinite[i]]
-    is_packed = workers > 1
-    fused_img = create_frame((h, w, 3), out_dtype)
-
-    n_groups = len(channel_groups)
-    for g_idx, group in enumerate(channel_groups):
-        _check_cancel()
-        fused_highs = [
-            [np.zeros((sp.hp_h, sp.hp_w, 6), dtype=np.complex64) for sp in plans]
-            for _ in group
-        ]
-        lps = [np.zeros((lp_h, lp_w), dtype=np.float32) for _ in group]
-        pass2_ws = engine.make_workspace(h, w, N, for_pass2=True) if workers == 1 else None
-
-        def _get_p2_ws(state=None):
-            if state is None:
-                return pass2_ws
-            ws = getattr(state, "ws", None)
-            if ws is None:
-                ws = engine.make_workspace(h, w, N, for_pass2=True)
-                state.ws = ws
-            return ws
-
-        def _pass2_worker(index, state=None, _group=group):
-            _check_cancel()
-            image = resolve_frame(images[index], should_cancel=should_cancel)
-            if frame_nonfinite[index]:
-                tr = dtcwt.Transform2d()
-                pyrs = [tr.forward(_extract_legacy_channel(image, ch), nlevels=N) for ch in _group]
-                return index, True, pyrs
-            ws = _get_p2_ws(state)
-            active_row = win_counts[index]
-            need_lp_i = active_lp[index]
-            max_lvl_i = max_level[index]
-            results = []
-            for c_pos, ch in enumerate(_group):
-                _check_cancel()
-                engine.extract_channel(image, ch, ws.buf_a)
-                if is_packed:
-                    targets = [
-                        np.empty((win_counts[index, lvl], 1, 6), dtype=np.complex64)
-                        if win_counts[index, lvl] > 0 else _EMPTY_PACKED_HP
-                        for lvl in range(N)
-                    ]
-                    lp_cur = engine.forward_select_into(
-                        ws, N, max_lvl_i, need_lp_i, active_row, decisions, index,
-                        targets, is_packed=True,
-                    )
-                    results.append((targets, lp_cur))
-                else:
-                    lp_cur = engine.forward_select_into(
-                        ws, N, max_lvl_i, need_lp_i, active_row, decisions, index,
-                        fused_highs[c_pos], is_packed=False,
-                    )
-                    results.append(lp_cur)
-            return index, False, results
-
-        if active_indices:
-            pass2_iter = _iter_ordered(
-                _pass2_worker, active_indices, workers=workers, should_cancel=should_cancel,
+        if use_row_parallel:
+            # Single workspace (~358 MB at 8K) with multi-core row-band parallelism
+            # plus bounded background decode prefetch saturates CPU without blowing RAM.
+            ws = engine.make_workspace(h, w, N, for_pass2=True)
+            p1_scratches = engine.make_pass1_scratches(h, w, N, row_workers, strip_pairs=16)
+            prefetch_slots = _dtcwt_prefetch_slots(images, has_lazy, execution_plan)
+            frame_iter = _iter_prefetched_frames(
+                images, list(range(n_frames)), prefetch_slots, should_cancel,
             )
             try:
-                for idx, nonfinite, payload in pass2_iter:
+                for i, image in frame_iter:
                     _check_cancel()
-                    w_i = lp_weights[idx]
+                    nonfinite = engine.extract_luma_parallel(image, ws.buf_a, row_pool, row_workers)
+                    frame_nonfinite[i] = nonfinite
                     if nonfinite:
-                        for c_pos, pyr in enumerate(payload):
-                            for lvl in range(N):
-                                sel = decisions[lvl] == idx
-                                fused_highs[c_pos][lvl][sel] = pyr.highpasses[lvl][sel]
-                                del sel
-                            if w_i is not None:
-                                lps[c_pos] += w_i * pyr.lowpass
-                    elif not is_packed:
-                        for c_pos, lp_cur in enumerate(payload):
-                            if lp_cur is not None and w_i is not None:
-                                engine.acc_weighted_lp(lps[c_pos], w_i, lp_cur)
+                        luma = _extract_legacy_luma(image)
+                        pyr = dtcwt.Transform2d().forward(luma, nlevels=N)
+                        maps = [
+                            maximum_filter(
+                                _focus_activity(pyr.highpasses[lvl]),
+                                size=3, mode="reflect",
+                            )
+                            for lvl in range(N)
+                        ]
+                        del image
+                        for lvl in range(N):
+                            _check_cancel()
+                            act = maps[lvl]
+                            if i == 0:
+                                np.copyto(best_activity[lvl], act)
+                                frame_indices[lvl][...] = 0
+                            else:
+                                win = act > best_activity[lvl]
+                                best_activity[lvl][win] = act[win]
+                                frame_indices[lvl][win] = i
+                                del win
+                        del maps
                     else:
-                        for c_pos, (targets, lp_cur) in enumerate(payload):
-                            for lvl in range(N):
-                                if win_counts[idx, lvl] > 0:
-                                    engine.scatter_hp(
-                                        decisions[lvl], idx, targets[lvl],
-                                        fused_highs[c_pos][lvl],
-                                    )
-                            if lp_cur is not None and w_i is not None:
-                                engine.acc_weighted_lp(lps[c_pos], w_i, lp_cur)
-                    del payload
+                        del image
+                        maps = engine.forward_activity_parallel(
+                            ws, N, row_pool, row_workers, p1_scratches,
+                        )
+                        for lvl in range(N):
+                            _check_cancel()
+                            engine.max3x3_update_parallel(
+                                maps[lvl], best_activity[lvl], frame_indices[lvl],
+                                i, i == 0, row_pool, row_workers,
+                            )
+                        del maps
                     if progress is not None:
-                        if n_groups == 1:
-                            step = n_frames + idx + 1
-                        else:
-                            step = n_frames + ((g_idx * n_frames + idx + 1) * n_frames) // (3 * n_frames)
-                        progress(step, total_steps)
+                        progress(i + 1, total_steps)
             finally:
-                pass2_iter.close()
-        del pass2_ws
-        if g_idx == n_groups - 1:
-            decisions = None
-            lp_weights = None
+                frame_iter.close()
+                del p1_scratches, ws
+        else:
+            serial_ws = engine.make_workspace(h, w, N) if workers == 1 else None
 
-        for c_pos, ch in enumerate(group):
-            _check_cancel()
-            fused_hi = fused_highs[c_pos]
-            fused_highs[c_pos] = None
-            lp_c = lps[c_pos]
-            lps[c_pos] = None
-            rec = (
-                dtcwt.Transform2d().inverse(dtcwt.Pyramid(lp_c, tuple(fused_hi)))
-                if has_nonfinite else engine.inverse(lp_c, fused_hi, plans)
-            )
-            del lp_c, fused_hi
-            for start in range(0, h, 128):
+            def _get_ws(state=None):
+                if state is None:
+                    return serial_ws
+                ws_loc = getattr(state, "ws", None)
+                if ws_loc is None:
+                    ws_loc = engine.make_workspace(h, w, N)
+                    state.ws = ws_loc
+                return ws_loc
+
+            def _pass1_worker(index, state=None):
                 _check_cancel()
-                rows = slice(start, min(h, start + 128))
-                vals = np.clip(rec[rows, :w] * 255.0, 0, 255)
-                if all_gray:
-                    fused_img[rows, :, 0] = vals
-                    fused_img[rows, :, 1] = vals
-                    fused_img[rows, :, 2] = vals
+                ws_loc = _get_ws(state)
+                with without_source_cache_growth():
+                    image = resolve_frame(images[index], should_cancel=should_cancel)
+                nonfinite = engine.extract_luma(image, ws_loc.buf_a)
+                if nonfinite:
+                    luma = _extract_legacy_luma(image)
+                    pyr = dtcwt.Transform2d().forward(luma, nlevels=N)
+                    acts = [
+                        maximum_filter(
+                            _focus_activity(pyr.highpasses[lvl]),
+                            size=3, mode="reflect",
+                        )
+                        for lvl in range(N)
+                    ]
+                    return index, True, acts
+                mags = engine.forward_activity_into(ws_loc, N)
+                return index, False, mags
+
+            pass1_iter = _iter_ordered(
+                _pass1_worker, range(n_frames), workers=workers, should_cancel=should_cancel,
+            )
+            try:
+                for i, nonfinite, maps in pass1_iter:
+                    frame_nonfinite[i] = nonfinite
+                    for lvl in range(N):
+                        _check_cancel()
+                        if nonfinite:
+                            act = maps[lvl]
+                            if i == 0:
+                                np.copyto(best_activity[lvl], act)
+                                frame_indices[lvl][...] = 0
+                            else:
+                                win = act > best_activity[lvl]
+                                best_activity[lvl][win] = act[win]
+                                frame_indices[lvl][win] = i
+                                del win
+                        else:
+                            engine.max3x3_update(
+                                maps[lvl], best_activity[lvl], frame_indices[lvl], i, i == 0,
+                            )
+                    del maps
+                    if progress is not None:
+                        progress(i + 1, total_steps)
+            finally:
+                pass1_iter.close()
+                del serial_ws
+
+        del best_activity
+        has_nonfinite = any(frame_nonfinite)
+
+        # 2. Exact stack-size-independent 3x3 consistency vote + active pixel scan
+        vote = consistent_vote()
+        decisions = []
+        win_counts = np.zeros((n_frames, N), dtype=np.int32)
+        counts_col = np.empty(n_frames, dtype=np.int32)
+        for lvl in range(N):
+            _check_cancel()
+            labels = np.asarray(frame_indices[lvl])
+            decision = create_transient_frame(labels.shape, np.int32)
+            output = np.asarray(decision)
+            if use_row_parallel and labels.shape[0] >= 256:
+                chunk = max(64, (labels.shape[0] + row_workers - 1) // row_workers)
+                futs = [
+                    row_pool.submit(vote, labels, output, s, min(s + chunk, labels.shape[0]))
+                    for s in range(0, labels.shape[0], chunk)
+                ]
+                for fut in futs:
+                    fut.result()
+            else:
+                for start in range(0, labels.shape[0], 128):
+                    _check_cancel()
+                    vote(labels, output, start, min(start + 128, labels.shape[0]))
+            counts_col.fill(0)
+            engine.scan_count_decisions(output, counts_col)
+            win_counts[:, lvl] = counts_col
+            del labels, output
+            decisions.append(decision)
+            frame_indices[lvl] = None
+        del frame_indices, counts_col
+
+        active_lp = [bool(win_counts[k, N - 1] > 0) or frame_nonfinite[k] for k in range(n_frames)]
+        max_level = [0] * n_frames
+        for k in range(n_frames):
+            if frame_nonfinite[k] or active_lp[k]:
+                max_level[k] = N
+            else:
+                for lvl in range(N - 1, -1, -1):
+                    if win_counts[k, lvl] > 0:
+                        max_level[k] = lvl + 1
+                        break
+
+        # 3. Low-pass weights only for frames active in the coarsest decision plane
+        coarse_idx = decisions[-1]
+        lp_h, lp_w = plans[-1].lolo_r, plans[-1].lolo_c
+        lp_size = (lp_w, lp_h)
+        lp_weights = [None] * n_frames
+        total_weight = create_transient_frame((lp_h, lp_w), np.float32)
+        total_weight[...] = 0
+        total_w_arr = np.asarray(total_weight)
+        for k in range(n_frames):
+            if not active_lp[k]:
+                continue
+            _check_cancel()
+            m = cv2.resize(
+                (coarse_idx == k).astype(np.float32),
+                lp_size,
+                interpolation=cv2.INTER_LINEAR,
+            )
+            weight = store_frame(cv2.GaussianBlur(m, (0, 0), 1.5))
+            lp_weights[k] = weight
+            total_w_arr += weight
+            del m, weight
+        np.maximum(total_w_arr, 1e-6, out=total_w_arr)
+        for k in range(n_frames):
+            weight = lp_weights[k]
+            if weight is not None:
+                _check_cancel()
+                np.divide(weight, total_w_arr, out=weight)
+        del total_weight, total_w_arr, coarse_idx
+
+        # 4. Sparse Pass 2 channel reconstruction + exact native inverse
+        channel_groups = _choose_channel_groups(
+            all_gray, plans, execution_plan, has_lazy, use_row_parallel,
+        )
+        active_indices = [i for i in range(n_frames) if max_level[i] > 0 or frame_nonfinite[i]]
+        is_packed = (not use_row_parallel) and (workers > 1)
+        fused_img = create_frame((h, w, 3), out_dtype)
+
+        n_groups = len(channel_groups)
+        for g_idx, group in enumerate(channel_groups):
+            _check_cancel()
+            fused_highs = [
+                [np.zeros((sp.hp_h, sp.hp_w, 6), dtype=np.complex64) for sp in plans]
+                for _ in group
+            ]
+            lps = [np.zeros((lp_h, lp_w), dtype=np.float32) for _ in group]
+
+            if active_indices:
+                if use_row_parallel:
+                    ws = engine.make_workspace(h, w, N, for_pass2=True)
+                    p2_scratches = engine.make_pass2_scratches(h, w, N, row_workers)
+                    prefetch_slots = _dtcwt_prefetch_slots(images, has_lazy, execution_plan)
+                    frame_iter = _iter_prefetched_frames(
+                        images, active_indices, prefetch_slots, should_cancel,
+                    )
+                    try:
+                        for idx, image in frame_iter:
+                            _check_cancel()
+                            w_i = lp_weights[idx]
+                            if frame_nonfinite[idx]:
+                                tr = dtcwt.Transform2d()
+                                for c_pos, ch in enumerate(group):
+                                    pyr = tr.forward(_extract_legacy_channel(image, ch), nlevels=N)
+                                    for lvl in range(N):
+                                        sel = decisions[lvl] == idx
+                                        fused_highs[c_pos][lvl][sel] = pyr.highpasses[lvl][sel]
+                                        del sel
+                                    if w_i is not None:
+                                        lps[c_pos] += w_i * pyr.lowpass
+                            else:
+                                active_row = win_counts[idx]
+                                need_lp_i = active_lp[idx]
+                                max_lvl_i = max_level[idx]
+                                for c_pos, ch in enumerate(group):
+                                    _check_cancel()
+                                    engine.extract_channel_parallel(
+                                        image, ch, ws.buf_a, row_pool, row_workers,
+                                    )
+                                    lp_cur = engine.forward_select_parallel(
+                                        ws, N, max_lvl_i, need_lp_i, active_row, decisions, idx,
+                                        fused_highs[c_pos], row_pool, row_workers, p2_scratches,
+                                    )
+                                    if lp_cur is not None and w_i is not None:
+                                        engine.acc_weighted_lp(lps[c_pos], w_i, lp_cur)
+                            del image
+                            if progress is not None:
+                                if n_groups == 1:
+                                    step = n_frames + idx + 1
+                                else:
+                                    step = n_frames + ((g_idx * n_frames + idx + 1) * n_frames) // (3 * n_frames)
+                                progress(step, total_steps)
+                    finally:
+                        frame_iter.close()
+                        del p2_scratches, ws
                 else:
-                    fused_img[rows, :, 2 - ch] = vals
-            del rec
+                    pass2_ws = engine.make_workspace(h, w, N, for_pass2=True) if workers == 1 else None
+
+                    def _get_p2_ws(state=None):
+                        if state is None:
+                            return pass2_ws
+                        ws_loc = getattr(state, "ws", None)
+                        if ws_loc is None:
+                            ws_loc = engine.make_workspace(h, w, N, for_pass2=True)
+                            state.ws = ws_loc
+                        return ws_loc
+
+                    def _pass2_worker(index, state=None, _group=group):
+                        _check_cancel()
+                        with without_source_cache_growth():
+                            image = resolve_frame(images[index], should_cancel=should_cancel)
+                        if frame_nonfinite[index]:
+                            tr = dtcwt.Transform2d()
+                            pyrs = [tr.forward(_extract_legacy_channel(image, ch), nlevels=N) for ch in _group]
+                            return index, True, pyrs
+                        ws_loc = _get_p2_ws(state)
+                        active_row = win_counts[index]
+                        need_lp_i = active_lp[index]
+                        max_lvl_i = max_level[index]
+                        results = []
+                        for c_pos, ch in enumerate(_group):
+                            _check_cancel()
+                            engine.extract_channel(image, ch, ws_loc.buf_a)
+                            if is_packed:
+                                targets = [
+                                    np.empty((win_counts[index, lvl], 1, 6), dtype=np.complex64)
+                                    if win_counts[index, lvl] > 0 else _EMPTY_PACKED_HP
+                                    for lvl in range(N)
+                                ]
+                                lp_cur = engine.forward_select_into(
+                                    ws_loc, N, max_lvl_i, need_lp_i, active_row, decisions, index,
+                                    targets, is_packed=True,
+                                )
+                                results.append((targets, lp_cur))
+                            else:
+                                lp_cur = engine.forward_select_into(
+                                    ws_loc, N, max_lvl_i, need_lp_i, active_row, decisions, index,
+                                    fused_highs[c_pos], is_packed=False,
+                                )
+                                results.append(lp_cur)
+                        return index, False, results
+
+                    pass2_iter = _iter_ordered(
+                        _pass2_worker, active_indices, workers=workers, should_cancel=should_cancel,
+                    )
+                    try:
+                        for idx, nonfinite, payload in pass2_iter:
+                            _check_cancel()
+                            w_i = lp_weights[idx]
+                            if nonfinite:
+                                for c_pos, pyr in enumerate(payload):
+                                    for lvl in range(N):
+                                        sel = decisions[lvl] == idx
+                                        fused_highs[c_pos][lvl][sel] = pyr.highpasses[lvl][sel]
+                                        del sel
+                                    if w_i is not None:
+                                        lps[c_pos] += w_i * pyr.lowpass
+                            elif not is_packed:
+                                for c_pos, lp_cur in enumerate(payload):
+                                    if lp_cur is not None and w_i is not None:
+                                        engine.acc_weighted_lp(lps[c_pos], w_i, lp_cur)
+                            else:
+                                for c_pos, (targets, lp_cur) in enumerate(payload):
+                                    for lvl in range(N):
+                                        if win_counts[idx, lvl] > 0:
+                                            engine.scatter_hp(
+                                                decisions[lvl], idx, targets[lvl],
+                                                fused_highs[c_pos][lvl],
+                                            )
+                                    if lp_cur is not None and w_i is not None:
+                                        engine.acc_weighted_lp(lps[c_pos], w_i, lp_cur)
+                            del payload
+                            if progress is not None:
+                                if n_groups == 1:
+                                    step = n_frames + idx + 1
+                                else:
+                                    step = n_frames + ((g_idx * n_frames + idx + 1) * n_frames) // (3 * n_frames)
+                                progress(step, total_steps)
+                    finally:
+                        pass2_iter.close()
+                        del pass2_ws
+
+            if g_idx == n_groups - 1:
+                decisions = None
+                lp_weights = None
+
+            for c_pos, ch in enumerate(group):
+                _check_cancel()
+                fused_hi = fused_highs[c_pos]
+                fused_highs[c_pos] = None
+                lp_c = lps[c_pos]
+                lps[c_pos] = None
+                if has_nonfinite:
+                    rec = dtcwt.Transform2d().inverse(dtcwt.Pyramid(lp_c, tuple(fused_hi)))
+                elif use_row_parallel:
+                    rec = engine.inverse_parallel(lp_c, fused_hi, plans, row_pool, row_workers)
+                else:
+                    rec = engine.inverse(lp_c, fused_hi, plans)
+                del lp_c, fused_hi
+                for start in range(0, h, 128):
+                    _check_cancel()
+                    rows = slice(start, min(h, start + 128))
+                    vals = np.clip(rec[rows, :w] * 255.0, 0, 255)
+                    if all_gray:
+                        fused_img[rows, :, 0] = vals
+                        fused_img[rows, :, 1] = vals
+                        fused_img[rows, :, 2] = vals
+                    else:
+                        fused_img[rows, :, 2 - ch] = vals
+                del rec
+    finally:
+        if row_pool is not None:
+            row_pool.shutdown(wait=True)
 
     if progress is not None:
         progress(total_steps, total_steps)
@@ -715,15 +915,38 @@ def _dtcwt_impl_planned(input_source, img_resize, N, thread_count,
     engine = _use_native_cpu(N)
     if engine is not None:
         native_workers = max(1, min(_DTCWT_MAX_WORKERS, cap, n_frames))
+        row_workers = 1
+        if h * w >= 512 * 512:
+            if execution_plan is not None:
+                # MultiFocusFusion passes plan.workers (frame-parallel memory cap)
+                # as thread_count and sets native_threads=1 whenever workers > 1.
+                # Use row-band parallelism on one workspace unless this is a tiled
+                # child plan or an explicit serial (user_threads=1) run.
+                reasons = tuple(getattr(execution_plan, "reasons", ()) or ())
+                is_tiled_child = "tiled child" in reasons
+                plan_workers = int(getattr(execution_plan, "workers", 1) or 1)
+                plan_nt = int(getattr(execution_plan, "native_threads", 1) or 1)
+                memory_capped = any(str(r).startswith("memory:") for r in reasons)
+                if not is_tiled_child and (plan_workers > 1 or plan_nt > 1 or memory_capped):
+                    cpu_cap = min(12, max(2, (os.cpu_count() or 4) // 2))
+                    if thread_count is not None and not memory_capped and cap > 1:
+                        row_workers = max(1, min(cpu_cap, max(cap, plan_nt)))
+                    else:
+                        row_workers = max(1, cpu_cap)
+            elif thread_count is None:
+                row_workers = min(12, max(2, (os.cpu_count() or 4) // 2))
+            else:
+                row_workers = max(1, min(12, cap))
         return _dtcwt_native_cpu(
             engine, images, N, native_workers, should_cancel,
             execution_plan, progress, device_callback,
+            row_workers=row_workers,
         )
 
     activity_workers = max(1, min(_DTCWT_ACTIVITY_WORKERS, _DTCWT_MAX_WORKERS, cap))
     channel_workers = max(1, min(_DTCWT_MAX_WORKERS, cap, n_frames))
 
-    from core.source_frames import resolve_frame
+    from core.source_frames import resolve_frame, without_source_cache_growth
 
     total_steps = 2 * n_frames + 1  # final inverse transform and packing
     if progress is not None:
@@ -731,7 +954,8 @@ def _dtcwt_impl_planned(input_source, img_resize, N, thread_count,
 
     def prepare_frame(index):
         _check_cancel()
-        image = resolve_frame(images[index], should_cancel=should_cancel)
+        with without_source_cache_growth():
+            image = resolve_frame(images[index], should_cancel=should_cancel)
         if image.ndim == 3 and image.shape[2] == 1:
             image = image[:, :, 0]
         image = _ensure_color_image(image)
@@ -821,7 +1045,8 @@ def _dtcwt_impl_planned(input_source, img_resize, N, thread_count,
 
         def prepare_channel(index, _channel=c):
             _check_cancel()
-            image = resolve_frame(images[index], should_cancel=should_cancel)
+            with without_source_cache_growth():
+                image = resolve_frame(images[index], should_cancel=should_cancel)
             # BGR->RGB is a channel permutation. Select the plane before
             # float conversion so a view cannot pin a full RGB float frame.
             if image.ndim == 2:
@@ -902,7 +1127,7 @@ def _load_images(input_source: Union[str, List[np.ndarray]], img_resize: Optiona
 
         if not os.path.exists(input_source):
              raise ValueError(f"Input path does not exist: {input_source}")
-             
+
         from fusion_methods.openfocus_ab import _collect_directory_sources
         images, _ = _collect_directory_sources(input_source, should_cancel)
     else:
@@ -911,7 +1136,7 @@ def _load_images(input_source: Union[str, List[np.ndarray]], img_resize: Optiona
                 from core.registration import RegistrationCancelled
                 raise RegistrationCancelled()
             images.append(img)
-            
+
     if img_resize:
         images = [process_frame(img, lambda image: cv2.resize(image, img_resize),
                                 shape=(img_resize[1], img_resize[0]) + (img.shape[2:]

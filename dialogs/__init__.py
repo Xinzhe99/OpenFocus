@@ -29,6 +29,9 @@ _LAZY_EXPORTS = {
     'BatchProcessingDialog': 'batch',
     'FolderImportDialog': 'batch',
     'ROIRenderOptionsDialog': 'roi',
+    'RawDevelopDialog': 'raw_develop',
+    'RenderSubstacksDialog': 'render_substacks',
+    'HtmlAnimationDialog': 'html_animation',
 }
 
 
