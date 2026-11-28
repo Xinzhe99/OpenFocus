@@ -350,3 +350,78 @@ def test_cached_transform_tooltip_and_log_show_nonzero_alignment_time(
     assert finished_events
     assert finished_events[-1]["alignment_seconds"] == pytest.approx(18.42, abs=0.01)
     assert finished_events[-1]["fusion_seconds"] == pytest.approx(52.72, abs=0.01)
+
+
+def test_pipelined_deferred_alignment_preserves_overlapped_fusion_time():
+    """Overlapped background producer warps must not erase consumer fusion time."""
+    from concurrent.futures import ThreadPoolExecutor, wait as wait_futures
+    from fusion_methods.openfocus_ab import _ordered_frame_results
+
+    # 1. Consumer-bound overlapped pipeline: consumer spends 0.05s per frame while
+    # background producers run 0.02s decode + 0.04s warp concurrently.
+    count = 8
+    consumer_per_frame = 0.05
+    with registration.deferred_alignment_timer() as timer:
+        t0 = time.monotonic()
+        with registration.deferred_alignment_pipeline() as pipeline:
+            def producer(idx):
+                time.sleep(0.02)
+                with registration.measure_deferred_alignment():
+                    time.sleep(0.04)
+                return idx
+
+            wrapped = pipeline.wrap_producer(producer)
+            with ThreadPoolExecutor(max_workers=3) as pool:
+                futures = [pool.submit(wrapped, i) for i in range(count)]
+                for fut in futures:
+                    while not fut.done():
+                        with pipeline.wait_scope():
+                            wait_futures((fut,), timeout=0.02)
+                    fut.result()
+                    time.sleep(consumer_per_frame)
+        raw_wall = time.monotonic() - t0
+    fusion_time = raw_wall - timer.elapsed
+    assert timer.warps == count
+    assert timer.elapsed < raw_wall
+    assert fusion_time >= count * consumer_per_frame * 0.70
+
+    # 2. Producer-bound pipeline with 0s consumer compute and mixed decode + warp:
+    # alignment attribution captures only the warp share of blocking wait time.
+    with registration.deferred_alignment_timer() as timer_pb:
+        t0 = time.monotonic()
+        with registration.deferred_alignment_pipeline() as pipeline:
+            def producer_mixed(idx):
+                time.sleep(0.03)
+                with registration.measure_deferred_alignment():
+                    time.sleep(0.06)
+                return idx
+
+            wrapped = pipeline.wrap_producer(producer_mixed)
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                futures = [pool.submit(wrapped, i) for i in range(4)]
+                for fut in futures:
+                    while not fut.done():
+                        with pipeline.wait_scope():
+                            wait_futures((fut,), timeout=0.02)
+                    fut.result()
+        wall_pb = time.monotonic() - t0
+    assert timer_pb.warps == 4
+    assert 0.35 * wall_pb <= timer_pb.elapsed <= 0.85 * wall_pb
+
+    # 3. End-to-end _ordered_frame_results(..., workers=2) preserves overlapped consumer time.
+    def ordered_producer(index, _cancelled):
+        time.sleep(0.015)
+        with registration.measure_deferred_alignment():
+            time.sleep(0.035)
+        return index
+
+    seen = []
+    with registration.deferred_alignment_timer() as timer_ord:
+        t0 = time.monotonic()
+        for idx, val in _ordered_frame_results(6, ordered_producer, 2, None):
+            seen.append((idx, val))
+            time.sleep(0.04)
+        wall_ord = time.monotonic() - t0
+    assert seen == [(i, i) for i in range(6)]
+    assert timer_ord.warps == 6
+    assert (wall_ord - timer_ord.elapsed) >= 6 * 0.04 * 0.70
