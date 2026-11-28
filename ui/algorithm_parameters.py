@@ -288,8 +288,8 @@ class AlgorithmParameterPanel(QWidget):
                 editor.setSizeAdjustPolicy(
                     QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
                 editor.setMinimumContentsLength(8)
-                editor.setMinimumWidth(0)
-                editor.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+                editor.setMinimumWidth(92)
+                editor.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
                 for index, choice in enumerate(spec.choices):
                     text = trans.t(spec.choice_labels[index]) if spec.choice_labels else str(choice)
                     editor.addItem(text, choice)

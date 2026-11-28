@@ -33,6 +33,7 @@ from PyQt6.QtWidgets import (
 )
 
 from core.image_loader import RAW_FORMATS, is_raw_source
+from ui.context_help import register_help_target
 from core.raw_develop import (
     DEMOSAIC_ALGORITHMS,
     EXPOSURE_EV_MAX,
@@ -234,6 +235,7 @@ class RawDevelopDialog(QDialog):
         # --- Left Pane: Live Preview Card ---
         preview_card = QFrame(self.splitter)
         preview_card.setObjectName("rawPreviewCard")
+        register_help_target(preview_card, "raw_preview")
         preview_lay = QVBoxLayout(preview_card)
         preview_lay.setContentsMargins(SPACE["md"], SPACE["md"], SPACE["md"], SPACE["md"])
         preview_lay.setSpacing(SPACE["sm"])
@@ -372,6 +374,7 @@ class RawDevelopDialog(QDialog):
 
     def _build_wb_card(self) -> QGroupBox:
         card, form = self._make_card("raw_develop_group_wb")
+        register_help_target(card, "raw_wb_exposure")
 
         self.combo_wb_mode = QComboBox(card)
         self.combo_wb_mode.setProperty("controlId", "combo_raw_wb_mode")
@@ -407,23 +410,21 @@ class RawDevelopDialog(QDialog):
 
     def _build_highlight_card(self) -> QGroupBox:
         card, form = self._make_card("raw_develop_group_highlight")
+        register_help_target(card, "raw_wb_exposure")
 
         self.combo_highlight = QComboBox(card)
         self.combo_highlight.setProperty("controlId", "combo_raw_highlight")
         self.combo_highlight.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.combo_highlight.setToolTip(trans.t("raw_develop_highlight_hint"))
         for mode in HIGHLIGHT_MODES:
             self.combo_highlight.addItem(trans.t(f"raw_develop_hl_{mode}"), mode)
         self.combo_highlight.currentIndexChanged.connect(self._on_discrete_param_changed)
         form.addRow(trans.t("raw_develop_highlight_mode"), self.combo_highlight)
-
-        hint = QLabel(trans.t("raw_develop_highlight_hint"), card)
-        hint.setObjectName("mutedLabel")
-        hint.setWordWrap(True)
-        form.addRow(hint)
         return card
 
     def _build_demosaic_card(self) -> QGroupBox:
         card, form = self._make_card("raw_develop_group_demosaic")
+        register_help_target(card, "raw_demosaic_color")
 
         self.combo_demosaic = QComboBox(card)
         self.combo_demosaic.setProperty("controlId", "combo_raw_demosaic")
@@ -436,6 +437,7 @@ class RawDevelopDialog(QDialog):
 
     def _build_tone_color_card(self) -> QGroupBox:
         card, form = self._make_card("raw_develop_group_tone")
+        register_help_target(card, "raw_wb_exposure")
 
         exp_row, self.slider_exposure, self.lbl_exposure_val = self._make_slider_row(
             card,
@@ -453,25 +455,25 @@ class RawDevelopDialog(QDialog):
         for space in OUTPUT_COLOR_SPACES:
             self.combo_output_color.addItem(trans.t(f"raw_develop_color_{space}"), space)
         self.combo_output_color.currentIndexChanged.connect(self._on_discrete_param_changed)
+        register_help_target(self.combo_output_color, "raw_demosaic_color")
         form.addRow(trans.t("raw_develop_output_color"), self.combo_output_color)
 
         self.chk_auto_bright = QCheckBox(trans.t("raw_develop_auto_bright"), card)
         self.chk_auto_bright.setProperty("controlId", "chk_raw_auto_bright")
+        self.chk_auto_bright.setToolTip(trans.t("raw_develop_auto_bright_hint"))
         self.chk_auto_bright.toggled.connect(self._on_discrete_param_changed)
         form.addRow(self.chk_auto_bright)
-
-        hint = QLabel(trans.t("raw_develop_auto_bright_hint"), card)
-        hint.setObjectName("mutedLabel")
-        hint.setWordWrap(True)
-        form.addRow(hint)
         return card
 
     def _build_dng_converter_card(self) -> QGroupBox:
         card, form = self._make_card("raw_develop_group_dng")
+        register_help_target(card, "adv_raw_decode")
+        dng_hint = trans.t("raw_develop_dng_hint")
 
         self.edit_dng_path = QLineEdit(card)
         self.edit_dng_path.setProperty("controlId", "edit_raw_dng_path")
         self.edit_dng_path.setPlaceholderText(trans.t("raw_develop_dng_placeholder"))
+        self.edit_dng_path.setToolTip(dng_hint)
         self.edit_dng_path.textChanged.connect(self._update_dng_status)
         form.addRow(trans.t("raw_develop_dng_path"), self.edit_dng_path)
 
@@ -482,11 +484,13 @@ class RawDevelopDialog(QDialog):
 
         self.btn_browse_dng = QPushButton(trans.t("raw_develop_dng_browse"), btn_row)
         self.btn_browse_dng.setProperty("controlId", "btn_raw_dng_browse")
+        self.btn_browse_dng.setToolTip(dng_hint)
         self.btn_browse_dng.clicked.connect(self._browse_dng_converter)
         btn_lay.addWidget(self.btn_browse_dng)
 
         self.btn_detect_dng = QPushButton(trans.t("raw_develop_dng_detect"), btn_row)
         self.btn_detect_dng.setProperty("controlId", "btn_raw_dng_detect")
+        self.btn_detect_dng.setToolTip(dng_hint)
         self.btn_detect_dng.clicked.connect(self._auto_detect_dng_converter)
         btn_lay.addWidget(self.btn_detect_dng)
 
@@ -498,11 +502,6 @@ class RawDevelopDialog(QDialog):
         self.lbl_dng_status.setProperty("controlId", "lbl_raw_dng_status")
         self.lbl_dng_status.setWordWrap(True)
         form.addRow(self.lbl_dng_status)
-
-        hint = QLabel(trans.t("raw_develop_dng_hint"), card)
-        hint.setObjectName("mutedLabel")
-        hint.setWordWrap(True)
-        form.addRow(hint)
         return card
 
     def _make_slider_row(

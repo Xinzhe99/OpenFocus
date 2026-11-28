@@ -1228,7 +1228,8 @@ class ProcessedFrame:
                     and (direct_tiff or transform.source.digest_kind == 'file')):
                 merged = _merge_cancel_callbacks(cancelled, kw.get('should_cancel'))
                 return _oa._apply_alignment_for_source(
-                    self.source, image, transform, should_cancel=merged)
+                    self.source, image, transform, should_cancel=merged,
+                    interpolation=kw.get('interpolation'))
             if (self.processor.func is _oa._ORIGINAL_APPLY_TRANSLATION
                     and isinstance(transform, _oa.TranslationTransform)
                     and (direct_tiff or transform.source.digest_kind == 'file')):
@@ -1570,15 +1571,17 @@ def _try_resolve_region_direct(frame, x, y, width, height, *, channels=None,
         region = processor.warp_region(
             target.source, tx, ty, tw, th, channels=tc, should_cancel=should_cancel)
     elif isinstance(processor, partial):
+        extra = {}
         if processor.func is _oa.apply_alignment and _oa.apply_alignment is _oa._ORIGINAL_APPLY_ALIGNMENT:
             warp = _oa.apply_alignment_region
+            extra['interpolation'] = processor.keywords.get('interpolation')
         elif processor.func is _oa.apply_translation and _oa.apply_translation is _oa._ORIGINAL_APPLY_TRANSLATION:
             warp = _oa.apply_translation_region
         else:
             return None
         should_cancel = _merge_cancel_callbacks(should_cancel, processor.keywords.get('should_cancel'))
         region = warp(target.source, processor.keywords['transform'], tx, ty, tw, th,
-                      channels=tc, should_cancel=should_cancel)
+                      channels=tc, should_cancel=should_cancel, **extra)
     else:
         return None
     _check_resolution_cancel(should_cancel)

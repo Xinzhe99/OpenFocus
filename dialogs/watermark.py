@@ -31,6 +31,7 @@ from PyQt6.QtWidgets import (
 )
 
 from locales import trans
+from ui.context_help import register_help_target
 from ui.styles import tokens
 from utils.design_tokens import SPACE
 from utils import watermark
@@ -83,6 +84,7 @@ class WatermarkDialog(QDialog):
         workspace = WorkspaceSplitter()
         workspace.addWidget(scroll)
         root.addWidget(workspace, 1)
+        register_help_target(self, "watermark")
 
         self._text_form = text_form = self._group(form_col, "watermark_section_text")
 

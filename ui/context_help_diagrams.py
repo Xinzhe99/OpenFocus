@@ -267,12 +267,80 @@ def render_help_diagram(kind: str, theme: str = "light") -> QImage:
             for x, y, txt in cards:
                 box(x, y, 110, 30, surface, border_strong, 4.0)
                 label(x + 4, y + 5, 102, 20, txt, accent_text if "GPU" in txt else text_col, 8, "GPU" in txt)
-        elif kind == "render_action":
+        elif kind in ("render_action", "batch_methods"):
             for i, (x, txt, active) in enumerate(((22, "Align", False), (108, "Fuse", True), (194, "Output", False))):
                 box(x, 32, 66, 44, accent_soft if active else surface, accent if active else border_strong, 5.0)
                 label(x, 44, 66, 20, txt, accent_text if active else text_col, 8, True)
                 if i < 2:
                     arrow(x + 68, 54, x + 84, 54)
+        elif kind in ("depth_map", "depth_source_method", "depth_postprocess", "depth_3d_surface", "depth_3d_lighting", "depth_export", "stereo_3d", "html_animation"):
+            # Layered elevation profile + 3D isometric relief prism.
+            box(24, 18, 96, 76, surface, border_strong, 4.0)
+            for idx, (col, bh) in enumerate(((accent_soft, 28), (_alpha(colors["accent"], 140), 46), (accent, 60))):
+                box(34 + idx * 28, 86 - bh, 20, bh, col, None, 2.0)
+            box(144, 18, 112, 76, surface, border_strong, 4.0)
+            p.setPen(QPen(accent, 1.8))
+            p.setBrush(accent_soft)
+            poly = QPainterPath()
+            poly.moveTo(160, 74)
+            poly.lineTo(190, 32)
+            poly.lineTo(222, 46)
+            poly.lineTo(242, 74)
+            poly.closeSubpath()
+            p.drawPath(poly)
+            label(144, 78, 112, 16, "Depth / 3D", accent_text, 7, True)
+        elif kind in ("raw_develop", "raw_preview", "raw_wb_exposure", "raw_demosaic_color", "adv_raw_decode"):
+            # Bayer sensor grid -> RGB curve pipeline.
+            bayer = ((accent, accent_soft), (_alpha(colors["accent"], 170), muted))
+            for r_i in range(4):
+                for c_i in range(4):
+                    box(30 + c_i * 18, 20 + r_i * 18, 15, 15, bayer[r_i % 2][c_i % 2], border, 2.0)
+            arrow(112, 56, 138, 56)
+            box(146, 20, 108, 72, surface, border_strong, 4.0)
+            p.setPen(QPen(accent, 2.0))
+            p.drawLine(QPointF(158, 78), QPointF(196, 56))
+            p.drawLine(QPointF(196, 56), QPointF(242, 32))
+            label(146, 74, 108, 16, "RAW -> 16-bit", accent_text, 7, True)
+        elif kind in ("mosaic", "mosaic_layout", "mosaic_align", "mosaic_control_points", "mosaic_mask", "mosaic_export"):
+            # Overlapping tiles with tie-point markers.
+            box(34, 22, 92, 60, accent_soft, border_strong, 4.0)
+            box(106, 30, 92, 60, _alpha(colors["accent"], 90), accent, 4.0)
+            box(156, 22, 90, 60, accent_soft, border_strong, 4.0)
+            for px, py in ((114, 46), (114, 68), (166, 44), (166, 66)):
+                p.setBrush(accent)
+                p.setPen(QPen(surface, 1.2))
+                p.drawEllipse(QPointF(px, py), 4.0, 4.0)
+            label(44, 88, 192, 16, "Grid / Tie Points", accent_text, 7, True)
+        elif kind in ("compare", "compare_methods", "compare_view", "compare_adopt"):
+            # Side-by-side method comparison cards with winning highlight.
+            for idx, (x, cap, win) in enumerate(((26, "A", False), (108, "B", True), (190, "C", False))):
+                box(x, 20, 64, 72, accent_soft if win else surface, accent if win else border_strong, 4.0)
+                label(x, 42, 64, 22, cap, accent_text if win else text_col, 10, True)
+                label(x, 68, 64, 16, "Adopt" if win else "Compare", accent_text if win else muted, 7, win)
+        elif kind in ("sensor_cleanup", "dust_map"):
+            # Sensor flat-field gain map + dust spot removal.
+            box(28, 20, 96, 72, surface, border_strong, 4.0)
+            for dx, dy in ((56, 44), (92, 68), (74, 52)):
+                p.setBrush(danger)
+                p.setPen(Qt.PenStyle.NoPen)
+                p.drawEllipse(QPointF(dx, dy), 4.5, 4.5)
+            arrow(132, 56, 152, 56)
+            box(158, 20, 96, 72, accent_soft, accent, 4.0)
+            label(158, 46, 96, 20, "Clean Field", accent_text, 8, True)
+        elif kind in ("scalebar", "watermark", "retouch_export", "roi_options"):
+            # Framed output canvas with corner overlay badge.
+            box(44, 18, 192, 76, surface, border_strong, 4.0)
+            box(56, 28, 72, 46, accent_soft, accent, 3.0)
+            box(164, 74, 60, 12, accent, None, 2.0)
+            label(158, 56, 72, 16, "Overlay / ROI", accent_text, 7, True)
+        elif kind in ("adv_settings", "adv_experimental", "adv_legacy", "adv_privacy", "adv_storage", "adv_naming", "adv_export_color", "adv_resources", "adv_startup", "adv_gallery", "adv_developer", "font_size", "batch_folders", "batch_grouping", "watch_settle", "substacks", "batch_converter"):
+            # Clean settings rows with toggle pill & accent indicator.
+            box(30, 16, 220, 80, surface, border_strong, 5.0)
+            for i in range(3):
+                ry = 25 + i * 23
+                box(44, ry, 14, 14, accent if i < 2 else surface, accent if i < 2 else border_strong, 3.0)
+                box(68, ry + 3, 120 - i * 16, 8, accent_soft if i == 0 else border, None, 2.0)
+                box(204, ry + 1, 32, 12, accent if i == 0 else border, None, 6.0)
         else:
             box(24, 16, 148, 80, surface, border_strong, 4.0)
             box(180, 16, 76, 80, surface, border_strong, 4.0)

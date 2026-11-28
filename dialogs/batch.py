@@ -2,6 +2,7 @@
 """Batch processing dialogs."""
 
 import os
+from typing import Optional, Tuple
 from PyQt6.QtCore import Qt, QSize, QSignalBlocker
 from PyQt6.QtGui import QFont, QIcon, QTextOption, QShortcut, QKeySequence
 from utils.file_dialogs import FileDialog
@@ -326,7 +327,7 @@ class BatchProcessingDialog(QDialog):
         format_row.addWidget(self.format_combo)
         register_help_target(self.split_method_combo, "batch_split")
         register_help_target(self.single_folder_group, "batch_split")
-        register_help_target(self.folder_group, "source_list")
+        register_help_target(self.folder_group, "batch_folders")
         register_help_target(self.format_combo, "batch_output_format")
         register_help_target(format_card, "batch_output_format")
 
@@ -441,6 +442,11 @@ class BatchProcessingDialog(QDialog):
         self._fill_method_combo(self.align_combo, registration_algorithms())
         align_row.addWidget(self.align_combo, 1)
         method_card_layout.addLayout(align_row)
+        register_help_target(method_card, "batch_methods")
+        register_help_target(self.fusion_combo, "batch_methods")
+        register_help_target(self.align_combo, "batch_methods")
+        register_help_target(location_card, "batch_output_format")
+        register_help_target(self.save_aligned_cb, "batch_output_format")
         options_layout.addWidget(method_card)
 
         # --- Parameters --------------------------------------------------
@@ -482,6 +488,7 @@ class BatchProcessingDialog(QDialog):
         self._grouping_pref = False
         self.chk_grouping = QCheckBox(trans.t('batch_group_enable'))
         self.chk_grouping.setToolTip(trans.t('batch_group_hint'))
+        register_help_target(self.chk_grouping, "batch_grouping")
         legacy_layout.addWidget(self.chk_grouping)
         self.group_controls = QWidget()
         group_row = QHBoxLayout(self.group_controls)
@@ -1938,10 +1945,46 @@ def _is_writable_dir(path: str) -> bool:
         return False
 
 
+def _inspect_folder_import_counts(
+    folder_path: str, excluded_path: str = ""
+) -> Optional[Tuple[int, int]]:
+    """Return immediate supported image count and visible subfolder count for ``folder_path``."""
+    if not folder_path or not os.path.isdir(folder_path):
+        return None
+    from core.image_loader import ImageStackLoader
+    from utils.path_identity import same_path
+
+    loader = ImageStackLoader()
+    files = []
+    subfolders = 0
+    try:
+        with os.scandir(folder_path) as entries:
+            for entry in entries:
+                if entry.is_file():
+                    if (
+                        os.path.splitext(entry.name)[1].lower() in loader.SUPPORTED_FORMATS
+                        and not (excluded_path and same_path(entry.path, excluded_path))
+                    ):
+                        files.append((entry.name, entry.path))
+                elif entry.is_dir() and not entry.name.startswith("."):
+                    subfolders += 1
+    except OSError:
+        return None
+    image_count = len(loader._drop_derived_aligned_copies(files))
+    return image_count, subfolders
+
+
 class FolderImportDialog(QDialog):
     """文件夹导入选择对话框 - 让用户选择是单组图像栈还是多组图像栈"""
-    
-    def __init__(self, folder_path: str, parent=None):
+
+    def __init__(
+        self,
+        folder_path: str,
+        parent=None,
+        *,
+        image_count: Optional[int] = None,
+        subfolder_count: Optional[int] = None,
+    ):
         super().__init__(parent)
         self.folder_path = folder_path
         self.parent_window = parent
@@ -1951,8 +1994,45 @@ class FolderImportDialog(QDialog):
         layout.addWidget(QLabel(trans.t('import_choice_label')))
         path = QLineEdit(folder_path)
         path.setReadOnly(True)
+        path.setToolTip(folder_path)
         path.setAccessibleName(trans.t('import_folder_display').format(os.path.basename(folder_path)))
         layout.addWidget(path)
+
+        if image_count is None:
+            excluded = getattr(parent, "defect_mask_path", "") or ""
+            counts = _inspect_folder_import_counts(folder_path, excluded_path=excluded)
+            if counts is not None:
+                image_count, scanned_subfolders = counts
+                if subfolder_count is None:
+                    subfolder_count = scanned_subfolders
+        self.image_count = image_count
+        self.subfolder_count = subfolder_count
+
+        self.summary_label = QLabel()
+        self.summary_label.setObjectName("mutedLabel")
+        self.summary_label.setWordWrap(True)
+        if self.image_count is None:
+            self.summary_label.hide()
+        elif self.image_count > 0 and (self.subfolder_count or 0) > 0:
+            self.summary_label.setText(
+                trans.t('import_folder_summary_images_and_subfolders').format(
+                    images=self.image_count,
+                    subfolders=self.subfolder_count,
+                )
+            )
+        elif self.image_count > 0:
+            self.summary_label.setText(
+                trans.t('import_folder_summary_images').format(images=self.image_count)
+            )
+        elif (self.subfolder_count or 0) > 0:
+            self.summary_label.setText(
+                trans.t('import_folder_summary_subfolders_only').format(
+                    subfolders=self.subfolder_count,
+                )
+            )
+        else:
+            self.summary_label.setText(trans.t('import_folder_summary_empty'))
+        layout.addWidget(self.summary_label)
 
         self.rb_single = QRadioButton(trans.t('import_option_single'))
         self.rb_single.setChecked(True)

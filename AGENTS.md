@@ -79,3 +79,12 @@ and text tokens across Light, Dark, and Neutral Gray themes.
   colors.
 - Reserve `warning` and `danger` colors strictly for genuine destructive
   actions, blocking errors, or explicit failure states.
+- Do not add static inline explanatory subtitles, helper paragraphs, or footnote
+  captions under checkboxes, inputs, or sections in desktop dialogs and panels
+  to explain what an option does. Place concise explanations in hover tooltips
+  (`setToolTip`) and register interactive illustrated context-help topics
+  (`register_help_target` in `ui/context_help.py` and bilingual entries in
+  `locales/context_help_i18n.py`) so users can inspect any setting via the `?`
+  beacon or by holding `H`. Keep inline muted labels strictly for live dynamic
+  state (such as resolved filename previews, active tiling/cache usage readouts,
+  or contextual warning/error states).
