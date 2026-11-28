@@ -56,21 +56,45 @@ def test_advanced_registration_help_preserves_the_draft(qapp, monkeypatch):
 
 
 def test_algorithm_help_translates_and_does_not_change_the_choice(qapp, monkeypatch):
+    from ui.context_help import resolve_help_target, show_context_help
+
     monkeypatch.setattr(trans, 'current_lang', 'en')
     panel = AlgorithmParameterPanel()
     specs = get_fusion('stackmffv3').parameters
     panel.set_parameters(specs, {'mode': 'hard'})
     panel.show()
-    button = panel.findChild(QPushButton, 'helpButton')
+    # Inline scattered '?' buttons are intentionally removed from AlgorithmParameterPanel.
+    assert panel.findChild(QPushButton, 'helpButton') is None
     changes = []
     panel.valuesChanged.connect(changes.append)
     monkeypatch.setattr(trans, 'current_lang', 'zh')
     panel.set_parameters(specs, {'mode': 'hard'})
     try:
-        title, text = _read_help(panel, button)
-        assert title == trans.t('label_ai_mode')
-        assert title in button.accessibleName()
-        assert trans.t('parameter_help_ai_mode') in text
+        editor = panel.editors['mode']
+        target, topic = resolve_help_target(editor)
+        assert target is editor
+        assert topic == 'ai_mode'
+
+        shown = []
+
+        def capture():
+            dialog = panel.findChild(HelpDialog)
+            if dialog is None:
+                return
+            document = dialog.text_browser.document()
+            image = document.resource(QTextDocument.ResourceType.ImageResource.value,
+                                      QUrl('parameter-help.png'))
+            shown.append((dialog.windowTitle(), document.toPlainText(), image))
+            dialog.accept()
+
+        QTimer.singleShot(0, capture)
+        show_context_help(topic, panel)
+        assert len(shown) == 1
+        title, text, image = shown[0]
+        assert isinstance(image, QImage) and not image.isNull()
+        assert image.pixelColor(0, 0) != image.pixelColor(60, 37)
+        assert trans.t('ctx_help_ai_mode_title') == title
+        assert trans.t('ctx_help_ai_mode_body') in text
         assert panel.values() == {'mode': 'hard', 'inference_scale': 'single'}
         assert not changes
     finally:

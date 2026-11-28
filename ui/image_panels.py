@@ -22,6 +22,7 @@ from widgets.magnifier_label import MagnifierLabel
 from widgets.sharpness_curve import SharpnessCurveWidget
 from widgets.wipe_compare import WipeCompareWidget
 from locales import trans
+from ui.context_help import register_help_target
 from ui.right_panel import ElidingLabel
 from utils.design_tokens import RADIUS, SPACE, WEIGHT, palette
 
@@ -619,6 +620,13 @@ def create_source_panel() -> SourcePanel:
     layout.addWidget(sharpness_curve)
     layout.addWidget(control_bar)
 
+    register_help_target(align_area_btn, "align_area")
+    register_help_target(clear_align_area_btn, "align_area")
+    register_help_target(show_aligned_btn, "align_preview")
+    register_help_target(image_label, "source_canvas")
+    register_help_target(control_bar, "source_canvas")
+    register_help_target(sharpness_curve, "sharpness_curve")
+
     return SourcePanel(
         widget=container,
         title=title,
@@ -766,6 +774,12 @@ def create_result_panel() -> ResultPanel:
     layout.addWidget(title_bar)
     layout.addWidget(view_stack, 1)
     layout.addWidget(control_bar)
+
+    register_help_target(wipe_btn, "wipe_compare")
+    register_help_target(wipe_widget, "wipe_compare")
+    register_help_target(wipe_bar, "wipe_compare")
+    register_help_target(image_label, "result_canvas")
+    register_help_target(zoom_bar, "result_canvas")
 
     return ResultPanel(
         widget=container,

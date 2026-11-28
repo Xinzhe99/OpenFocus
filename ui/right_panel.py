@@ -1,8 +1,10 @@
 from dataclasses import dataclass
+import math
+from typing import Optional
 
 from PyQt6 import sip
-from PyQt6.QtCore import QEvent, QTimer, Qt, QSize, pyqtSignal
-from PyQt6.QtGui import QKeySequence, QPainter, QShortcut
+from PyQt6.QtCore import QEvent, QPoint, QPointF, QRectF, QSize, QTimer, Qt, pyqtSignal
+from PyQt6.QtGui import QColor, QFont, QKeySequence, QPainter, QPainterPath, QPalette, QPen, QPolygonF, QShortcut
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -14,6 +16,7 @@ from PyQt6.QtWidgets import (
     QGridLayout,
     QLabel,
     QListWidget,
+    QMenu,
     QPushButton,
     QRadioButton,
     QSizePolicy,
@@ -36,6 +39,8 @@ from ui.styles import (
 from locales import trans
 from core.algorithms import FUSION_DEFAULT, fusion_algorithms, registration_algorithms, get_fusion
 from ui.algorithm_parameters import AlgorithmParameterPanel
+from ui.context_help import ContextHelpBeacon, register_help_target
+from utils.design_tokens import palette
 
 # Widest text column that fits a 375 px panel. This is an upper bound: the
 # real width is read from the panel and its option labels are re-elided when
@@ -409,19 +414,150 @@ class _ConfigurationContents(QWidget):
         return handled
 
 
+class IconActionButton(ElidingButton):
+    """Fixed square 34x34 action button that paints crisp vector glyphs and preserves full_text()."""
+
+    def __init__(self, icon_kind: str, text: str = "", parent=None):
+        super().__init__(text, parent)
+        self._icon_kind = icon_kind
+        self._badge_count = 0
+        self._active_indicator = False
+        self.setObjectName("iconActionButton")
+        self.setStyleSheet("")
+        self.setFixedSize(34, 34)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+
+    def set_badge_count(self, count: int) -> None:
+        count = max(0, int(count))
+        if count != self._badge_count:
+            self._badge_count = count
+            self.update()
+
+    def set_active_indicator(self, active: bool) -> None:
+        flag = bool(active)
+        if flag != self._active_indicator:
+            self._active_indicator = flag
+            self.setProperty("activeIndicator", "true" if flag else "false")
+            self.style().unpolish(self)
+            self.style().polish(self)
+            self.update()
+
+    def sizeHint(self):  # noqa: N802
+        return QSize(34, 34)
+
+    def minimumSizeHint(self):  # noqa: N802
+        return QSize(34, 34)
+
+    def _refresh_display(self) -> None:
+        self._elided_text = self._full_text
+        self._update_tooltip()
+
+    def paintEvent(self, _event):  # noqa: N802
+        painter = QStylePainter(self)
+        try:
+            option = QStyleOptionButton()
+            self.initStyleOption(option)
+            option.text = ""
+            painter.drawControl(QStyle.ControlElement.CE_PushButton, option)
+
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            fg = option.palette.color(
+                QPalette.ColorGroup.Normal if self.isEnabled() else QPalette.ColorGroup.Disabled,
+                QPalette.ColorRole.ButtonText,
+            )
+            cx, cy = self.width() * 0.5, self.height() * 0.5
+            pen = QPen(fg, 1.65, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+
+            if self._icon_kind == "live_preview":
+                # Overlapping dual play triangles representing real-time stack preview.
+                back = QPolygonF([
+                    QPointF(cx - 2.0, cy - 6.5),
+                    QPointF(cx + 6.5, cy - 1.5),
+                    QPointF(cx - 2.0, cy + 3.5),
+                ])
+                front = QPolygonF([
+                    QPointF(cx - 5.5, cy - 3.5),
+                    QPointF(cx + 3.0, cy + 1.5),
+                    QPointF(cx - 5.5, cy + 6.5),
+                ])
+                painter.drawPolygon(back)
+                bg = option.palette.color(QPalette.ColorRole.Button)
+                painter.setBrush(bg)
+                painter.drawPolygon(front)
+            elif self._icon_kind == "render_settings":
+                # Compact diagonal wrench / tool pliers glyph.
+                painter.translate(cx, cy)
+                painter.rotate(-42.0)
+                painter.drawLine(QPointF(-7.0, 0.0), QPointF(2.5, 0.0))
+                head = QPainterPath()
+                head.moveTo(2.0, -3.5)
+                head.lineTo(7.2, -3.5)
+                head.lineTo(5.0, -1.3)
+                head.lineTo(5.0, 1.3)
+                head.lineTo(7.2, 3.5)
+                head.lineTo(2.0, 3.5)
+                painter.drawPath(head)
+                painter.drawEllipse(QPointF(-7.2, 0.0), 1.6, 1.6)
+                painter.resetTransform()
+            elif self._icon_kind == "reset":
+                # Circular counter-clockwise reset arrow.
+                arc_rect = QRectF(cx - 6.8, cy - 6.8, 13.6, 13.6)
+                painter.drawArc(arc_rect, 115 * 16, -290 * 16)
+                tip = QPointF(cx - 3.2, cy - 5.8)
+                arrow = QPolygonF([
+                    tip,
+                    QPointF(tip.x() - 3.5, tip.y() - 0.5),
+                    QPointF(tip.x() + 0.3, tip.y() - 3.7),
+                ])
+                painter.setBrush(fg)
+                painter.drawPolygon(arrow)
+            else:
+                # Stacked queue lines + subtle dropdown chevron.
+                for dy in (-4.8, -0.5, 3.8):
+                    painter.drawLine(QPointF(cx - 6.5, cy + dy), QPointF(cx + 3.0, cy + dy))
+                chev = QPainterPath()
+                chev.moveTo(cx + 4.0, cy + 1.5)
+                chev.lineTo(cx + 6.4, cy + 4.3)
+                chev.lineTo(cx + 8.8, cy + 1.5)
+                painter.drawPath(chev)
+
+            if self._badge_count > 0 or self._active_indicator:
+                win = self.window()
+                t = palette(getattr(win, "ui_theme", "light") if win is not None else "light")
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QColor(t["accent"]))
+                if self._badge_count > 0:
+                    badge_rect = QRectF(self.width() - 15.0, 2.0, 13.0, 13.0)
+                    painter.drawRoundedRect(badge_rect, 6.5, 6.5)
+                    f = painter.font()
+                    f.setPointSize(7)
+                    f.setBold(True)
+                    painter.setFont(f)
+                    painter.setPen(QColor(t["textOnAccent"]))
+                    txt = "9+" if self._badge_count > 9 else str(self._badge_count)
+                    painter.drawText(badge_rect, Qt.AlignmentFlag.AlignCenter, txt)
+                else:
+                    painter.drawEllipse(QPointF(self.width() - 6.5, 6.5), 3.2, 3.2)
+        finally:
+            painter.end()
+
+
 class _WorkspaceParameterPanel(AlgorithmParameterPanel):
-    def __init__(self, layout, control_id, *, hidden_parameters=()):
-        super().__init__(layout.parentWidget(), hidden_parameters=hidden_parameters)
+    def __init__(self, group_layout, header_row_layout, control_id, *, hidden_parameters=()):
+        super().__init__(group_layout.parentWidget(), hidden_parameters=hidden_parameters)
         self._extra_widgets = []
         self.disclosure = QToolButton(self.parentWidget())
+        self.disclosure.setObjectName('paramDisclosureButton')
         self.disclosure.setProperty('controlId', control_id)
         self.disclosure.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.disclosure.setCheckable(True)
         self.disclosure.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.disclosure.hide()
         self.hide()
-        layout.addWidget(self.disclosure, alignment=Qt.AlignmentFlag.AlignLeft)
-        layout.addWidget(self)
+        header_row_layout.addWidget(self.disclosure)
+        group_layout.addWidget(self)
         self.disclosure.toggled.connect(self._show_parameters)
 
     def add_collapsible_widget(self, widget, layout):
@@ -464,8 +600,6 @@ class RightPanelComponents:
     btn_compare: QPushButton
     btn_render_settings: QPushButton
     chk_quick_preview: QCheckBox
-    btn_method_help: QPushButton
-    btn_reg_help: QPushButton
     combo_fusion: QComboBox
     combo_align: QComboBox
     chk_base_correct: QCheckBox
@@ -489,6 +623,10 @@ class RightPanelComponents:
     lbl_status_resolution: QLabel
     lbl_status_gpu: QLabel
     lbl_status_memory: QLabel
+    btn_method_help: Optional[QPushButton] = None
+    btn_reg_help: Optional[QPushButton] = None
+    btn_context_help: Optional[ContextHelpBeacon] = None
+    btn_render_more: Optional[IconActionButton] = None
     lbl_reg_align_area: QLabel = None
     btn_reg_align_area: QPushButton = None
     btn_reg_clear_align_area: QPushButton = None
@@ -558,11 +696,22 @@ def create_right_panel() -> RightPanelComponents:
     # Configuration group ----------------------------------
     config_widget = _ConfigurationContents()
     config_layout = QVBoxLayout(config_widget)
-    config_layout.setContentsMargins(10, 10, 10, 10)
+    config_layout.setContentsMargins(10, 6, 10, 8)
+    config_layout.setSpacing(6)
+
+    # Top-right interactive help beacon: click to pick, drag '?' onto any target, or hold H.
+    beacon_row = QHBoxLayout()
+    beacon_row.setContentsMargins(0, 0, 0, 0)
+    beacon_row.addStretch(1)
+    btn_context_help = ContextHelpBeacon(config_widget)
+    beacon_row.addWidget(btn_context_help)
+    config_layout.addLayout(beacon_row)
 
     method_group = QGroupBox(trans.t('group_fusion'))
     method_layout = QVBoxLayout(method_group)
-    # 融合算法：下拉单选（一项永远选中，与 CLI -m 的单选语义一致）
+    method_layout.setContentsMargins(8, 8, 8, 8)
+    method_layout.setSpacing(6)
+    # 融合算法：下拉单选 + 同行参数展开开关
     from ui.algorithm_combo import fill_fusion_combo
     combo_fusion = QComboBox()
     fill_fusion_combo(combo_fusion, none_label="radio_no_fusion",
@@ -570,41 +719,33 @@ def create_right_panel() -> RightPanelComponents:
     label_recommended(combo_fusion, FUSION_DEFAULT)
     idx = combo_fusion.findData(FUSION_DEFAULT)
     combo_fusion.setCurrentIndex(max(0, idx))
-    # "?" sits on the dropdown's row: a row of its own wasted half the
-    # group's height and got squeezed to 1 px under the light theme padding
-    method_help_layout = QHBoxLayout()
-    method_help_layout.setSpacing(6)
-    method_help_layout.addWidget(combo_fusion, 1)
-    btn_method_help = QPushButton("?")
-    btn_method_help.setFixedSize(26, 26)
-    btn_method_help.setStyleSheet(help_button_style())
-    btn_method_help.setObjectName("helpButton")
-    method_help_layout.addWidget(btn_method_help)
-    method_layout.addLayout(method_help_layout)
+    method_row_layout = QHBoxLayout()
+    method_row_layout.setSpacing(6)
+    method_row_layout.addWidget(combo_fusion, 1)
+    method_layout.addLayout(method_row_layout)
 
-    fusion_parameter_panel = _WorkspaceParameterPanel(method_layout, 'fusion_parameters_toggle')
+    fusion_parameter_panel = _WorkspaceParameterPanel(
+        method_layout, method_row_layout, 'fusion_parameters_toggle'
+    )
 
     registration_group = QGroupBox(trans.t('group_registration'))
     registration_layout = QVBoxLayout(registration_group)
-    # 对齐算法：下拉单选（none / 单应性 / ECC / OpenFocus 快速）
+    registration_layout.setContentsMargins(8, 8, 8, 8)
+    registration_layout.setSpacing(6)
+    # 对齐算法：下拉单选 + 同行参数展开开关
     combo_align = QComboBox()
     _fill_combo(combo_align, alignment_items())
     label_recommended(combo_align, ALIGN_DEFAULT)
     idx = combo_align.findData(ALIGN_DEFAULT)
     combo_align.setCurrentIndex(max(0, idx))
-    # "?" sits on the dropdown's row: a row of its own wasted half the
-    # group's height and got squeezed to 1 px under the light theme padding
-    reg_help_layout = QHBoxLayout()
-    reg_help_layout.setSpacing(6)
-    reg_help_layout.addWidget(combo_align, 1)
-    btn_reg_help = QPushButton("?")
-    btn_reg_help.setFixedSize(26, 26)
-    btn_reg_help.setStyleSheet(help_button_style())
-    btn_reg_help.setObjectName("helpButton")
-    reg_help_layout.addWidget(btn_reg_help)
-    registration_layout.addLayout(reg_help_layout)
+    reg_row_layout = QHBoxLayout()
+    reg_row_layout.setSpacing(6)
+    reg_row_layout.addWidget(combo_align, 1)
+    registration_layout.addLayout(reg_row_layout)
     registration_parameter_panel = _WorkspaceParameterPanel(
-        registration_layout, 'registration_parameters_toggle', hidden_parameters=('failure_policy',))
+        registration_layout, reg_row_layout, 'registration_parameters_toggle',
+        hidden_parameters=('failure_policy',),
+    )
 
     align_area_row = QWidget(registration_group)
     align_area_layout = QHBoxLayout(align_area_row)
@@ -629,65 +770,86 @@ def create_right_panel() -> RightPanelComponents:
     align_area_layout.addWidget(btn_reg_clear_align_area)
     registration_parameter_panel.add_collapsible_widget(align_area_row, registration_layout)
 
-    # 融合/对齐并排时面板宽 375px，两个下拉各只剩 ~114px —— 比
-    # "Alignment only (no fusion)" 需要的 ~190px 窄得多，文字被截成
-    # "OpenFocus -" 且下拉箭头与 "?" 按钮重叠。改为上下两行：每个组
-    # 独占一行，下拉始终显示完整算法名。
     for _combo in (combo_fusion, combo_align):
         _combo.setSizeAdjustPolicy(
             QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
-        _combo.setMinimumContentsLength(12)
+        _combo.setMinimumContentsLength(10)
 
     config_layout.addWidget(registration_group)
     config_layout.addWidget(method_group)
 
-
-    # Keep the main render action separate from the secondary actions.
-    btn_reset = ElidingButton(trans.t('btn_reset'))
-    btn_reset.setObjectName("secondaryButton")
-    btn_render = ElidingButton(trans.t('btn_render'))
+    # Single-row action bar: primary Render + crisp icon controls + Queue/Compare overflow menu.
+    btn_render = ElidingButton(trans.t('btn_render'), config_widget)
     btn_render.setObjectName("primaryButton")
-    btn_live_preview = ElidingButton(trans.t('btn_live_preview'))
-    btn_live_preview.setObjectName("secondaryButton")
+    btn_render.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+    btn_render.setFixedHeight(34)
+
+    btn_live_preview = IconActionButton("live_preview", trans.t('btn_live_preview'), config_widget)
     btn_live_preview.setToolTip(
         f"{trans.t('btn_live_preview')}\n{trans.t('btn_live_preview_hint')}")
     btn_live_preview.setEnabled(False)
-    btn_enqueue = ElidingButton(trans.t('btn_enqueue'))
+
+    btn_render_settings = IconActionButton("render_settings", trans.t('render_settings_title'), config_widget)
+    btn_render_settings.setToolTip(trans.t('render_settings_title'))
+
+    btn_reset = IconActionButton("reset", trans.t('btn_reset'), config_widget)
+    btn_reset.setToolTip(trans.t('btn_reset'))
+
+    btn_render_more = IconActionButton("render_more", trans.t('ctx_help_btn_menu_more'), config_widget)
+    btn_render_more.setToolTip(
+        f"{trans.t('ctx_help_btn_menu_more')}\n{trans.t('ctx_help_btn_menu_more_hint')}")
+
+    # Hidden backing buttons keep existing test, queue, and control-channel hooks intact.
+    btn_enqueue = ElidingButton(trans.t('btn_enqueue'), config_widget)
     btn_enqueue.setObjectName("secondaryButton")
     btn_enqueue.setToolTip(
         f"{trans.t('btn_enqueue')}\n{trans.t('btn_enqueue_hint')}")
-    btn_render_queue = ElidingButton(trans.t('btn_render_queue'))
+    btn_enqueue.hide()
+
+    btn_render_queue = ElidingButton(trans.t('btn_render_queue'), config_widget)
     btn_render_queue.setObjectName("secondaryButton")
     btn_render_queue.setToolTip(
         f"{trans.t('btn_render_queue')}\n{trans.t('btn_render_queue_hint')}")
-    btn_render_settings = ElidingButton(trans.t('render_settings_title'))
-    btn_render_settings.setObjectName("secondaryButton")
-    btn_compare = ElidingButton(trans.t('btn_compare_all'))
+    btn_render_queue.hide()
+
+    btn_compare = ElidingButton(trans.t('btn_compare_all'), config_widget)
     btn_compare.setObjectName("secondaryButton")
     btn_compare.setToolTip(
         f"{trans.t('btn_compare_all')}\n{trans.t('btn_compare_all_hint')}")
-    for _btn in (btn_reset, btn_render, btn_live_preview, btn_enqueue, btn_render_queue,
-                 btn_render_settings, btn_compare):
-        _btn.setSizePolicy(QSizePolicy.Policy.Ignored,
-                           QSizePolicy.Policy.Fixed)
+    btn_compare.hide()
 
-    primary_bar = QHBoxLayout()
-    primary_bar.setSpacing(8)
-    primary_bar.addWidget(btn_render, 3)
-    primary_bar.addWidget(btn_live_preview, 2)
-    config_layout.addLayout(primary_bar)
+    more_menu = QMenu(btn_render_more)
 
-    queue_bar = QHBoxLayout()
-    queue_bar.setSpacing(8)
-    queue_bar.addWidget(btn_enqueue, 1)
-    queue_bar.addWidget(btn_render_queue, 1)
-    config_layout.addLayout(queue_bar)
-    secondary_bar = QHBoxLayout()
-    secondary_bar.setSpacing(8)
-    secondary_bar.addWidget(btn_reset, 1)
-    secondary_bar.addWidget(btn_render_settings, 1)
-    secondary_bar.addWidget(btn_compare, 1)
-    config_layout.addLayout(secondary_bar)
+    def _populate_more_menu():
+        more_menu.clear()
+        for src_btn in (btn_enqueue, btn_render_queue):
+            act = more_menu.addAction(src_btn.full_text())
+            act.setEnabled(src_btn.isEnabled())
+            if src_btn.toolTip():
+                act.setToolTip(src_btn.toolTip())
+            act.triggered.connect(src_btn.click)
+        more_menu.addSeparator()
+        act_cmp = more_menu.addAction(btn_compare.full_text())
+        act_cmp.setEnabled(btn_compare.isEnabled())
+        if btn_compare.toolTip():
+            act_cmp.setToolTip(btn_compare.toolTip())
+        act_cmp.triggered.connect(btn_compare.click)
+
+    more_menu.aboutToShow.connect(_populate_more_menu)
+    btn_render_more._popup_menu = more_menu
+    btn_render_more.clicked.connect(
+        lambda: more_menu.exec(btn_render_more.mapToGlobal(QPoint(0, btn_render_more.height() + 2)))
+    )
+
+    action_bar = QHBoxLayout()
+    action_bar.setContentsMargins(0, 2, 0, 0)
+    action_bar.setSpacing(6)
+    action_bar.addWidget(btn_render, 1)
+    action_bar.addWidget(btn_live_preview)
+    action_bar.addWidget(btn_render_settings)
+    action_bar.addWidget(btn_reset)
+    action_bar.addWidget(btn_render_more)
+    config_layout.addLayout(action_bar)
 
     # The same checkbox instances remain owned by the panel until the dialog
     # adopts them; their signals and per-method state continue to work.
@@ -800,13 +962,28 @@ def create_right_panel() -> RightPanelComponents:
     # Stable identifiers for agents, independent of QSS object names.
     for _control in ("combo_fusion", "combo_align", "fusion_parameter_panel",
                      "registration_parameter_panel", "btn_reset", "btn_render",
-                     "btn_live_preview", "btn_enqueue", "btn_render_queue",
+                     "btn_live_preview", "btn_render_more", "btn_enqueue", "btn_render_queue",
                      "btn_render_settings", "btn_compare", "chk_quick_preview", "chk_reverse_order",
                      "chk_exposure_match", "chk_base_correct", "chk_sharpen_output", "file_list",
                      "output_list"):
         _widget = locals().get(_control)
         if _widget is not None:
             _widget.setProperty("controlId", _control)
+
+    for _help_w, _help_topic in (
+        (registration_group, "registration"),
+        (method_group, "fusion"),
+        (align_area_row, "align_area"),
+        (btn_render, "render_action"),
+        (btn_live_preview, "live_preview"),
+        (btn_render_settings, "render_settings"),
+        (btn_reset, "reset_defaults"),
+        (btn_render_more, "render_queue"),
+        (source_list_widget, "source_list"),
+        (output_list_widget, "output_list"),
+        (status_widget, "status_panel"),
+    ):
+        register_help_target(_help_w, _help_topic)
 
     components = RightPanelComponents(
         widget=right_panel,
@@ -820,8 +997,6 @@ def create_right_panel() -> RightPanelComponents:
         btn_compare=btn_compare,
         btn_render_settings=btn_render_settings,
         chk_quick_preview=chk_quick_preview,
-        btn_method_help=btn_method_help,
-        btn_reg_help=btn_reg_help,
         combo_fusion=combo_fusion,
         combo_align=combo_align,
         chk_base_correct=chk_base_correct,
@@ -842,6 +1017,8 @@ def create_right_panel() -> RightPanelComponents:
         lbl_status_resolution=lbl_status_resolution,
         lbl_status_gpu=lbl_status_gpu,
         lbl_status_memory=lbl_status_memory,
+        btn_context_help=btn_context_help,
+        btn_render_more=btn_render_more,
         lbl_reg_align_area=lbl_reg_align_area,
         btn_reg_align_area=btn_reg_align_area,
         btn_reg_clear_align_area=btn_reg_clear_align_area,
@@ -896,8 +1073,10 @@ def bind_right_panel(window, components: RightPanelComponents) -> None:
         from dialogs.help import RegistrationHelpDialog
         RegistrationHelpDialog(window).exec()
 
-    components.btn_method_help.clicked.connect(_show_method_help)
-    components.btn_reg_help.clicked.connect(_show_reg_help)
+    if components.btn_method_help is not None:
+        components.btn_method_help.clicked.connect(_show_method_help)
+    if components.btn_reg_help is not None:
+        components.btn_reg_help.clicked.connect(_show_reg_help)
 
     # clicked(bool) would deliver checked=False into start_render's
     # force_algorithm parameter, forcing need_fusion=True; drop the bool.

@@ -19,25 +19,27 @@ import cv2
 import numpy as np
 from PyQt6.QtCore import (QEasingCurve, QEvent, QPointF, QPropertyAnimation,
                           QRect, QRectF, QSize, Qt, QThread, QTimer, pyqtSignal)
-from PyQt6.QtGui import (QBrush, QColor, QIcon, QImage, QPainter, QPainterPath, QPen, QPixmap)
+from PyQt6.QtGui import (QBrush, QColor, QIcon, QImage, QPainter, QPainterPath, QPen, QPixmap,
+                         QPolygonF)
 from utils.file_dialogs import FileDialog
 from PyQt6.QtWidgets import (
     QAbstractItemView, QAbstractSpinBox, QApplication, QButtonGroup, QCheckBox, QDialog,
     QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMessageBox, QProgressBar, QPushButton, QRadioButton, QScrollArea, QSizePolicy,
-    QSlider, QSpinBox, QSplitter, QStyle, QVBoxLayout, QWidget,
+    QSlider, QSpinBox, QSplitter, QStyle, QStyleOptionButton, QStylePainter, QVBoxLayout,
+    QWidget,
 )
 
 from locales import trans
+from ui.context_help import ContextHelpBeacon, ContextHelpManager, register_help_target
 from ui.styles import tokens
-from utils.design_tokens import SPACE
+from utils.design_tokens import SPACE, palette
 from utils.image_utils import thumbnail_bgr, to_display_uint8
 from utils.path_identity import same_path
 from utils.platform_utils import configure_native_worker_stack
 from utils.retouch import RetouchDocument, adjust_tones, prepare_retouch_document
 from core.source_frames import display_image
 from utils.frame_pixels import is_qobject_alive, run_pixel_worker, safe_disconnect
-from widgets.flow_layout import FlowPanel
 from widgets.wipe_compare import WipeCompareWidget
 from dialogs.render_settings import _OptionLabel
 
@@ -312,6 +314,147 @@ class _ViewState:
         self.fit = True
 
 
+class _RetouchIconButton(QPushButton):
+    """Compact icon-only action or tool button with crisp monochrome vector art."""
+
+    def __init__(self, kind: str, accessible_name: str = "", *,
+                 checkable: bool = False, size: int = 32, parent=None):
+        super().__init__(parent)
+        self._kind = kind
+        self.setObjectName("iconActionButton")
+        self.setAutoDefault(False)
+        self.setCheckable(checkable)
+        if accessible_name:
+            self.setAccessibleName(accessible_name)
+        self.setFixedSize(size, size)
+
+    def _current_theme(self) -> str:
+        cur = self.window()
+        while cur is not None:
+            theme = getattr(cur, "ui_theme", None)
+            if isinstance(theme, str) and theme:
+                return theme
+            cur = cur.parentWidget()
+        return "light"
+
+    def paintEvent(self, _event) -> None:  # noqa: N802
+        colors = palette(self._current_theme())
+        p = QStylePainter(self)
+        try:
+            opt = QStyleOptionButton()
+            self.initStyleOption(opt)
+            opt.text = ""
+            p.drawControl(QStyle.ControlElement.CE_PushButton, opt)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            if not self.isEnabled():
+                fg = QColor(colors["textFaint"])
+            elif self.isChecked():
+                fg = QColor(colors["accentSoftText"])
+            else:
+                fg = QColor(colors["text"])
+            p.setPen(QPen(fg, 1.65, Qt.PenStyle.SolidLine,
+                          Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            r = QRectF(self.rect()).adjusted(8.0, 8.0, -8.0, -8.0)
+            cx, cy = r.center().x(), r.center().y()
+            w, h = r.width(), r.height()
+            k = self._kind
+            if k in ("undo", "redo"):
+                d = -1.0 if k == "undo" else 1.0
+                tip = QPointF(cx + d * w * 0.40, cy - h * 0.14)
+                tail = QPointF(cx - d * w * 0.28, cy + h * 0.34)
+                arc = QPainterPath()
+                arc.moveTo(tip)
+                arc.cubicTo(
+                    QPointF(cx - d * w * 0.10, cy - h * 0.42),
+                    QPointF(cx - d * w * 0.42, cy - h * 0.05),
+                    tail,
+                )
+                p.drawPath(arc)
+                p.drawLine(tip, QPointF(tip.x() - d * 4.2, tip.y() - 1.5))
+                p.drawLine(tip, QPointF(tip.x() - d * 1.4, tip.y() + 4.0))
+            elif k == "save_checkpoint":
+                box = QRectF(r.left() + 1.0, r.top() + 1.0, w - 2.0, h - 2.0)
+                p.drawRoundedRect(box, 2.5, 2.5)
+                p.drawRect(QRectF(box.left() + 3.0, box.top(), w * 0.42, h * 0.34))
+                p.drawLine(QPointF(cx, cy + 0.5), QPointF(cx, box.bottom() - 2.5))
+                p.drawLine(QPointF(cx - 3.0, box.bottom() - 5.2), QPointF(cx, box.bottom() - 2.2))
+                p.drawLine(QPointF(cx + 3.0, box.bottom() - 5.2), QPointF(cx, box.bottom() - 2.2))
+            elif k == "load_checkpoint":
+                folder = QPainterPath()
+                folder.moveTo(r.left() + 1.0, r.top() + h * 0.24)
+                folder.lineTo(r.left() + w * 0.38, r.top() + h * 0.24)
+                folder.lineTo(r.left() + w * 0.50, r.top() + h * 0.36)
+                folder.lineTo(r.right() - 1.0, r.top() + h * 0.36)
+                folder.lineTo(r.right() - 1.0, r.bottom() - 1.5)
+                folder.lineTo(r.left() + 1.0, r.bottom() - 1.5)
+                folder.closeSubpath()
+                p.drawPath(folder)
+                p.drawLine(QPointF(cx, r.top() + 1.5), QPointF(cx, cy + 3.5))
+                p.drawLine(QPointF(cx - 2.8, r.top() + 4.3), QPointF(cx, r.top() + 1.5))
+                p.drawLine(QPointF(cx + 2.8, r.top() + 4.3), QPointF(cx, r.top() + 1.5))
+            elif k == "before":
+                box = QRectF(r.left() + 1.0, r.top() + 1.5, w - 2.0, h - 3.0)
+                p.drawRoundedRect(box, 2.5, 2.5)
+                p.drawLine(QPointF(cx, box.top()), QPointF(cx, box.bottom()))
+                p.setBrush(QColor(fg.red(), fg.green(), fg.blue(), 65))
+                p.setPen(Qt.PenStyle.NoPen)
+                p.drawRect(QRectF(box.left() + 1.5, box.top() + 1.5, box.width() * 0.5 - 2.0, box.height() - 3.0))
+            elif k == "locate_frame":
+                ring = QRectF(cx - w * 0.30, cy - h * 0.30, w * 0.60, h * 0.60)
+                p.drawEllipse(ring)
+                p.drawLine(QPointF(cx, r.top()), QPointF(cx, ring.top() + 1.5))
+                p.drawLine(QPointF(cx, ring.bottom() - 1.5), QPointF(cx, r.bottom()))
+                p.drawLine(QPointF(r.left(), cy), QPointF(ring.left() + 1.5, cy))
+                p.drawLine(QPointF(ring.right() - 1.5, cy), QPointF(r.right(), cy))
+                p.setBrush(fg)
+                p.drawEllipse(QPointF(cx, cy), 1.6, 1.6)
+            elif k == "shortcuts":
+                kb = QRectF(r.left() + 0.5, cy - h * 0.34, w - 1.0, h * 0.68)
+                p.drawRoundedRect(kb, 2.5, 2.5)
+                for kx in (kb.left() + 3.2, cx - 1.2, kb.right() - 5.2):
+                    p.drawLine(QPointF(kx, kb.top() + 3.4), QPointF(kx + 2.0, kb.top() + 3.4))
+                p.drawLine(QPointF(kb.left() + 3.5, kb.bottom() - 3.4),
+                           QPointF(kb.right() - 3.5, kb.bottom() - 3.4))
+            elif k == "source":
+                # Paint brush stroke representing source painting
+                p.drawLine(QPointF(r.left() + 2.0, r.bottom() - 2.0),
+                           QPointF(r.right() - 2.5, r.top() + 2.5))
+                tip = QPainterPath()
+                tip.moveTo(r.left() + 1.0, r.bottom() - 0.5)
+                tip.lineTo(r.left() + 2.0, r.bottom() - 5.2)
+                tip.lineTo(r.left() + 5.6, r.bottom() - 1.8)
+                tip.closeSubpath()
+                p.setBrush(fg)
+                p.drawPath(tip)
+            elif k == "restore":
+                # Eraser parallelogram
+                body = QPolygonF([
+                    QPointF(r.left() + 4.5, r.top() + 2.0),
+                    QPointF(r.right() - 1.5, r.top() + 2.0),
+                    QPointF(r.right() - 4.5, r.bottom() - 2.0),
+                    QPointF(r.left() + 1.5, r.bottom() - 2.0),
+                ])
+                p.drawPolygon(body)
+                p.drawLine(QPointF(r.left() + 3.0, cy + 1.0), QPointF(r.right() - 3.0, cy + 1.0))
+            elif k == "exposure":
+                core = QRectF(cx - w * 0.22, cy - h * 0.22, w * 0.44, h * 0.44)
+                p.drawEllipse(core)
+                for dx, dy in ((0, -1), (0, 1), (-1, 0), (1, 0),
+                               (-0.7, -0.7), (0.7, -0.7), (-0.7, 0.7), (0.7, 0.7)):
+                    p.drawLine(
+                        QPointF(cx + dx * w * 0.34, cy + dy * h * 0.34),
+                        QPointF(cx + dx * w * 0.47, cy + dy * h * 0.47),
+                    )
+            elif k == "clone":
+                # Twin overlapping circles representing source + stamped destination
+                p.drawEllipse(QRectF(r.left() + 1.0, r.top() + 1.5, w * 0.54, h * 0.54))
+                p.drawEllipse(QRectF(r.right() - w * 0.54 - 1.0, r.bottom() - h * 0.54 - 1.5,
+                                     w * 0.54, h * 0.54))
+        finally:
+            p.end()
+
+
 class _NumberRow(QWidget):
     """A labelled slider plus a numeric input, kept in sync."""
 
@@ -326,13 +469,14 @@ class _NumberRow(QWidget):
         self.slider = QSlider(Qt.Orientation.Horizontal)
         self.slider.setRange(minimum, maximum)
         self.spin = QSpinBox()
+        self.spin.setProperty("compactSpin", True)
         self.spin.setRange(minimum, maximum)
         self.spin.setKeyboardTracking(False)
         self.spin.ensurePolished()
         metrics = self.spin.fontMetrics()
         text_width = max(metrics.horizontalAdvance(str(minimum)),
                          metrics.horizontalAdvance(str(maximum)))
-        self.spin.setMinimumWidth(max(self.spin.sizeHint().width(), text_width + 54))
+        self.spin.setFixedWidth(max(self.spin.minimumSizeHint().width(), text_width + 38))
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(6)
@@ -1613,26 +1757,40 @@ class RetouchDialog(QDialog):
         top.addLayout(title_column, 1)
         top.addWidget(self.lbl_unsaved)
 
-        toolbar = FlowPanel(h_spacing=4, v_spacing=4)
-        self.btn_undo = QPushButton(trans.t("retouch_undo"))
+        toolbar = QWidget()
+        toolbar_layout = QHBoxLayout(toolbar)
+        toolbar_layout.setContentsMargins(0, 0, 0, 0)
+        toolbar_layout.setSpacing(4)
+        no_key = trans.t("retouch_no_shortcut")
+        self.btn_undo = _RetouchIconButton("undo", trans.t("retouch_undo"), parent=toolbar)
         self.btn_undo.clicked.connect(self._undo)
-        self.btn_redo = QPushButton(trans.t("retouch_redo"))
+        self.btn_redo = _RetouchIconButton("redo", trans.t("retouch_redo"), parent=toolbar)
         self.btn_redo.clicked.connect(self._redo)
-        self.btn_save_checkpoint = QPushButton(trans.t("retouch_checkpoint_save"))
+        self.btn_save_checkpoint = _RetouchIconButton(
+            "save_checkpoint", trans.t("retouch_checkpoint_save"), parent=toolbar)
         self.btn_save_checkpoint.clicked.connect(self._save_checkpoint)
-        self.btn_load_checkpoint = QPushButton(trans.t("retouch_checkpoint_load"))
+        self.btn_load_checkpoint = _RetouchIconButton(
+            "load_checkpoint", trans.t("retouch_checkpoint_load"), parent=toolbar)
         self.btn_load_checkpoint.clicked.connect(self._load_checkpoint)
-        self.btn_before = QPushButton(trans.t("retouch_before_short"))
-        self.btn_before.setToolTip(trans.t("retouch_view_before"))
+        self.btn_before = _RetouchIconButton(
+            "before", trans.t("retouch_before_short"), parent=toolbar)
         self.btn_before.pressed.connect(lambda: self._press_preview("before"))
         self.btn_before.released.connect(lambda: self._release_preview("before"))
-        self.btn_locate_frame = QPushButton(trans.t("retouch_locate_frame_short"))
-        self.btn_locate_frame.setAutoDefault(False)
+        self.btn_locate_frame = _RetouchIconButton(
+            "locate_frame", trans.t("retouch_locate_frame_short"), parent=toolbar)
         self.btn_locate_frame.clicked.connect(self._locate_contributing_frame)
-        self.btn_shortcuts = ElidingButton(trans.t("retouch_open_shortcuts"))
-        self.btn_shortcuts.setAutoDefault(False)
+        self.btn_shortcuts = _RetouchIconButton(
+            "shortcuts", trans.t("retouch_open_shortcuts"), parent=toolbar)
         self.btn_shortcuts.clicked.connect(self._show_shortcuts)
-        no_key = trans.t("retouch_no_shortcut")
+        self.btn_context_help = ContextHelpBeacon(toolbar)
+        parent_mgr = getattr(self.parent(), "_context_help_manager", None)
+        if parent_mgr is not None:
+            self._owned_help_manager = None
+            self.btn_context_help._manager = parent_mgr
+        else:
+            self._owned_help_manager = ContextHelpManager(self)
+            self.btn_context_help._manager = self._owned_help_manager
+
         self.btn_undo.setToolTip(trans.t("retouch_tip_undo") + " (Ctrl+Z)")
         self.btn_redo.setToolTip(trans.t("retouch_tip_redo") + " (Ctrl+Y / Ctrl+Shift+Z)")
         self.btn_save_checkpoint.setToolTip(trans.t("retouch_tip_save") + "\n" + no_key)
@@ -1641,10 +1799,27 @@ class RetouchDialog(QDialog):
                                    + trans.t("retouch_shortcut_scope"))
         self.btn_locate_frame.setToolTip(trans.t("retouch_locate_frame_hint") + " (F9)")
         self.btn_shortcuts.setToolTip(trans.t("retouch_tip_shortcuts") + "\n" + no_key)
-        for widget in (self.btn_undo, self.btn_redo, self.btn_save_checkpoint,
-                       self.btn_load_checkpoint, self.btn_before,
-                       self.btn_locate_frame, self.btn_shortcuts):
-            toolbar.add(widget)
+
+        def _make_divider() -> QFrame:
+            sep = QFrame(toolbar)
+            sep.setFrameShape(QFrame.Shape.VLine)
+            sep.setFrameShadow(QFrame.Shadow.Sunken)
+            sep.setFixedHeight(20)
+            return sep
+
+        for widget in (self.btn_undo, self.btn_redo):
+            toolbar_layout.addWidget(widget)
+        toolbar_layout.addWidget(_make_divider())
+        for widget in (self.btn_save_checkpoint, self.btn_load_checkpoint):
+            toolbar_layout.addWidget(widget)
+        toolbar_layout.addWidget(_make_divider())
+        for widget in (self.btn_before, self.btn_locate_frame):
+            toolbar_layout.addWidget(widget)
+        toolbar_layout.addStretch(1)
+        toolbar_layout.addWidget(self.btn_shortcuts)
+        toolbar_layout.addWidget(self.btn_context_help)
+        register_help_target(toolbar, "retouch_toolbar")
+        register_help_target(self, "retouch_tools")
 
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
         self.splitter.setChildrenCollapsible(False)
@@ -1690,26 +1865,41 @@ class RetouchDialog(QDialog):
         self.side_scroll.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.side_scroll.setMinimumWidth(240)
-        self.side_scroll.setMaximumWidth(360)
+        self.side_scroll.setMaximumWidth(340)
         self.side_panel = QWidget()
         side = QVBoxLayout(self.side_panel)
-        # Leave room for the vertical scrollbar: with widgetResizable and
-        # the scrollbar hidden until needed, a cramped window used to clip
-        # the right edge of every numeric input.
-        side.setContentsMargins(8, 0, 18, 0)
-        side.setSpacing(3)
+        side.setContentsMargins(6, 0, 12, 4)
+        side.setSpacing(6)
 
-
+        tools_card = QFrame()
+        tools_card.setObjectName("card")
+        tools_layout = QVBoxLayout(tools_card)
+        tools_layout.setContentsMargins(SPACE["sm"], SPACE["sm"], SPACE["sm"], SPACE["sm"])
+        tools_layout.setSpacing(SPACE["xs"])
+        tools_hdr = QHBoxLayout()
+        tools_hdr.setContentsMargins(0, 0, 0, 0)
+        tools_hdr.setSpacing(6)
         lbl_tools = QLabel(trans.t("retouch_tools"))
         font = lbl_tools.font()
         font.setBold(True)
         lbl_tools.setFont(font)
-        side.addWidget(lbl_tools)
-        self.rb_source = QRadioButton(trans.t("retouch_tool_source"))
-        self.rb_restore = QRadioButton(trans.t("retouch_tool_restore"))
-        self.rb_exposure = QRadioButton(trans.t("retouch_tool_exposure"))
-        self.rb_clone = QRadioButton(trans.t("retouch_tool_clone"))
+        self.lbl_active_tool = QLabel(trans.t("retouch_tool_source"))
+        self.lbl_active_tool.setObjectName("mutedLabel")
+        self.lbl_active_tool.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        tools_hdr.addWidget(lbl_tools)
+        tools_hdr.addWidget(self.lbl_active_tool, 1)
+        tools_layout.addLayout(tools_hdr)
+
+        self.rb_source = _RetouchIconButton(
+            "source", trans.t("retouch_tool_source"), checkable=True, size=34)
+        self.rb_restore = _RetouchIconButton(
+            "restore", trans.t("retouch_tool_restore"), checkable=True, size=34)
+        self.rb_exposure = _RetouchIconButton(
+            "exposure", trans.t("retouch_tool_exposure"), checkable=True, size=34)
+        self.rb_clone = _RetouchIconButton(
+            "clone", trans.t("retouch_tool_clone"), checkable=True, size=34)
         self.tool_group = QButtonGroup(self)
+        self.tool_group.setExclusive(True)
         self.tool_group.addButton(self.rb_source, 0)
         self.tool_group.addButton(self.rb_restore, 1)
         self.tool_group.addButton(self.rb_exposure, 2)
@@ -1726,15 +1916,26 @@ class RetouchDialog(QDialog):
         self.rb_restore.setToolTip(trans.t("retouch_help_restore") + " (E)")
         self.rb_exposure.setToolTip(trans.t("retouch_exposure_hint") + "\n" + no_key)
         self.rb_clone.setToolTip(trans.t("retouch_clone_hint") + " (S)")
-        _add_wrapped_option(side, self.rb_source)
-        _add_wrapped_option(side, self.rb_restore)
-        _add_wrapped_option(side, self.rb_exposure)
-        _add_wrapped_option(side, self.rb_clone)
+        tool_strip = QHBoxLayout()
+        tool_strip.setContentsMargins(0, 0, 0, 0)
+        tool_strip.setSpacing(6)
+        for btn in (self.rb_source, self.rb_restore, self.rb_exposure, self.rb_clone):
+            tool_strip.addWidget(btn)
+        tool_strip.addStretch(1)
+        tools_layout.addLayout(tool_strip)
+        side.addWidget(tools_card)
+        register_help_target(tools_card, "retouch_tools")
+
+        brush_card = QFrame()
+        brush_card.setObjectName("card")
+        brush_layout = QVBoxLayout(brush_card)
+        brush_layout.setContentsMargins(SPACE["sm"], SPACE["sm"], SPACE["sm"], SPACE["sm"])
+        brush_layout.setSpacing(SPACE["xs"])
         self.num_exposure = _NumberRow(trans.t("retouch_exposure_amount"),
                                        -200, 200, 50)
         self.num_exposure.setToolTip(trans.t("retouch_exposure_hint") + "\n" + no_key)
         self.num_exposure.valueChanged.connect(self._on_exposure_changed)
-        side.addWidget(self.num_exposure)
+        brush_layout.addWidget(self.num_exposure)
 
         self.num_diameter = _NumberRow(trans.t("retouch_diameter"),
                                        1, 2048, self.doc.diameter)
@@ -1750,7 +1951,9 @@ class RetouchDialog(QDialog):
                 child.setToolTip(row.toolTip())
         for control in (self.num_diameter, self.num_hardness, self.num_opacity):
             control.valueChanged.connect(self._on_brush_changed)
-            side.addWidget(control)
+            brush_layout.addWidget(control)
+        side.addWidget(brush_card)
+        register_help_target(brush_card, "retouch_brush_params")
 
         # Tool-specific precision options for the Source Brush (hidden for other tools)
         self.source_options_box = QFrame()
@@ -1788,17 +1991,19 @@ class RetouchDialog(QDialog):
         offset_row.setContentsMargins(0, 0, 0, 0)
         offset_row.setSpacing(SPACE["xs"])
         self.spin_offset_x = QSpinBox()
+        self.spin_offset_x.setProperty("compactSpin", True)
         self.spin_offset_x.setRange(-self.doc.MAX_SOURCE_OFFSET, self.doc.MAX_SOURCE_OFFSET)
         self.spin_offset_x.setPrefix("X ")
-        self.spin_offset_x.setMinimumWidth(72)
+        self.spin_offset_x.setMinimumWidth(68)
         self.spin_offset_x.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.spin_offset_x.setKeyboardTracking(False)
         self.spin_offset_x.setToolTip(trans.t("retouch_local_offset_hint"))
         self.spin_offset_x.valueChanged.connect(self._on_source_offset_changed)
         self.spin_offset_y = QSpinBox()
+        self.spin_offset_y.setProperty("compactSpin", True)
         self.spin_offset_y.setRange(-self.doc.MAX_SOURCE_OFFSET, self.doc.MAX_SOURCE_OFFSET)
         self.spin_offset_y.setPrefix("Y ")
-        self.spin_offset_y.setMinimumWidth(72)
+        self.spin_offset_y.setMinimumWidth(68)
         self.spin_offset_y.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.spin_offset_y.setKeyboardTracking(False)
         self.spin_offset_y.setToolTip(trans.t("retouch_local_offset_hint"))
@@ -1822,6 +2027,7 @@ class RetouchDialog(QDialog):
         offset_btns.addWidget(self.btn_reset_offset, 1)
         src_opts.addLayout(offset_btns)
         side.addWidget(self.source_options_box)
+        register_help_target(self.source_options_box, "retouch_source_options")
 
         # Tool-specific options for the Clone Stamp (hidden for other tools)
         self.clone_options_box = QFrame()
@@ -1854,49 +2060,57 @@ class RetouchDialog(QDialog):
         self.lbl_clone_origin.setWordWrap(True)
         clone_opts.addWidget(self.lbl_clone_origin)
         side.addWidget(self.clone_options_box)
+        register_help_target(self.clone_options_box, "retouch_clone_options")
 
+        overlays_card = QFrame()
+        overlays_card.setObjectName("card")
+        ov_layout = QVBoxLayout(overlays_card)
+        ov_layout.setContentsMargins(SPACE["sm"], SPACE["sm"], SPACE["sm"], SPACE["sm"])
+        ov_layout.setSpacing(SPACE["xs"])
         self.chk_sharp = QCheckBox(trans.t("retouch_show_sharpness"))
         self.chk_sharp.setToolTip(trans.t("retouch_show_sharpness_hint") + "\n"
                                   + trans.t("retouch_sharpness_legend") + "\n" + no_key)
         self.chk_sharp.toggled.connect(self._toggle_sharpness)
-        _add_wrapped_option(side, self.chk_sharp)
+        _add_wrapped_option(ov_layout, self.chk_sharp)
         self.lbl_sharp_state = QLabel("")
         self.lbl_sharp_state.setObjectName("mutedLabel")
         self.lbl_sharp_state.setWordWrap(True)
         self.lbl_sharp_state.setVisible(False)
-        side.addWidget(self.lbl_sharp_state)
+        ov_layout.addWidget(self.lbl_sharp_state)
 
         self.chk_depth_map = QCheckBox(trans.t("retouch_show_depth_map"))
         self.chk_depth_map.setToolTip(trans.t("retouch_show_depth_map_hint") + "\n" + no_key)
         self.chk_depth_map.toggled.connect(self._toggle_depth_map)
-        _add_wrapped_option(side, self.chk_depth_map)
+        _add_wrapped_option(ov_layout, self.chk_depth_map)
         self.lbl_depth_state = QLabel("")
         self.lbl_depth_state.setObjectName("mutedLabel")
         self.lbl_depth_state.setWordWrap(True)
         self.lbl_depth_state.setVisible(False)
-        side.addWidget(self.lbl_depth_state)
+        ov_layout.addWidget(self.lbl_depth_state)
 
         self.btn_auto_bg = ElidingButton(trans.t("retouch_auto_bg") + "…")
         self.btn_auto_bg.setToolTip(trans.t("retouch_auto_bg_hint") + "\n" + no_key)
         self.btn_auto_bg.clicked.connect(self._auto_background)
-        side.addWidget(self.btn_auto_bg)
+        ov_layout.addWidget(self.btn_auto_bg)
         self.chk_missing = QCheckBox(trans.t("retouch_missing_show"))
         self.chk_missing.setToolTip(trans.t("retouch_missing_legend") + "\n" + no_key)
         self.chk_missing.toggled.connect(self._toggle_missing)
-        self.missing_option_row = _add_wrapped_option(side, self.chk_missing)
+        self.missing_option_row = _add_wrapped_option(ov_layout, self.chk_missing)
         self.btn_save_missing = ElidingButton(trans.t("retouch_missing_save"))
         self.btn_save_missing.setToolTip(trans.t("retouch_missing_save") + "\n"
                                          + trans.t("retouch_missing_legend") + "\n" + no_key)
         self.btn_save_missing.clicked.connect(self._save_missing)
         self.btn_save_missing.setVisible(False)
-        side.addWidget(self.btn_save_missing)
+        ov_layout.addWidget(self.btn_save_missing)
         self.btn_tones = ElidingButton(trans.t("retouch_tones_title") + "…")
         self.btn_tones.setToolTip(trans.t("retouch_tones_hint") + "\n" + no_key)
         self.btn_tones.clicked.connect(self._adjust_tones)
-        side.addWidget(self.btn_tones)
+        ov_layout.addWidget(self.btn_tones)
         self.btn_restore_all = ElidingButton(trans.t("retouch_restore_all"))
         self.btn_restore_all.setToolTip(trans.t("retouch_restore_all_confirm") + "\n" + no_key)
         self.btn_restore_all.clicked.connect(self._restore_all)
+        side.addWidget(overlays_card)
+        register_help_target(overlays_card, "retouch_overlays")
         side.addStretch(1)
 
         self.btn_apply = ElidingButton(trans.t("retouch_apply"))
@@ -1920,23 +2134,23 @@ class RetouchDialog(QDialog):
         side_outer.addWidget(self.side_scroll, 1)
         footer = QWidget()
         footer_layout = QVBoxLayout(footer)
-        footer_layout.setContentsMargins(8, 0, 8, 0)
+        footer_layout.setContentsMargins(6, 0, 12, 0)
         footer_layout.setSpacing(4)
         footer_layout.addWidget(self.btn_restore_all)
         footer_actions = QHBoxLayout()
         footer_actions.setContentsMargins(0, 0, 0, 0)
-        footer_actions.setSpacing(4)
+        footer_actions.setSpacing(6)
+        footer_actions.addWidget(self.btn_apply, 2)
         footer_actions.addWidget(self.btn_cancel, 1)
-        footer_actions.addWidget(self.btn_apply, 1)
         footer_layout.addLayout(footer_actions)
         side_outer.addWidget(footer)
         self.side_container.setMinimumWidth(240)
-        self.side_container.setMaximumWidth(360)
+        self.side_container.setMaximumWidth(340)
         self.splitter.addWidget(self.side_container)
         self.splitter.setStretchFactor(0, 1)
         self.splitter.setStretchFactor(1, 1)
         self.splitter.setStretchFactor(2, 0)
-        self.splitter.setSizes([460, 460, 292])
+        self.splitter.setSizes([470, 470, 276])
 
         strip = QWidget()
         strip_layout = QVBoxLayout(strip)
@@ -1945,7 +2159,7 @@ class RetouchDialog(QDialog):
         strip_row = QHBoxLayout()
         strip_row.setSpacing(4)
         self.btn_prev = QPushButton("◀")
-        self.btn_prev.setFixedWidth(32)
+        self.btn_prev.setFixedWidth(28)
         self.btn_prev.clicked.connect(self._prev_frame)
         self.frame_list = QListWidget()
         self.frame_list.setViewMode(QListWidget.ViewMode.IconMode)
@@ -1953,19 +2167,21 @@ class RetouchDialog(QDialog):
         self.frame_list.setWrapping(False)
         self.frame_list.setResizeMode(QListWidget.ResizeMode.Adjust)
         self.frame_list.setMovement(QListWidget.Movement.Static)
-        self.frame_list.setIconSize(QSize(64, 64))
-        self.frame_list.setGridSize(QSize(80, 84))
-        self.frame_list.setFixedHeight(84)
+        self.frame_list.setIconSize(QSize(56, 42))
+        self.frame_list.setGridSize(QSize(66, 62))
+        self.frame_list.setFixedHeight(80)
         self.frame_list.setSelectionMode(
             QListWidget.SelectionMode.SingleSelection)
         self.frame_list.currentRowChanged.connect(self._on_frame_selected)
         self.btn_next = QPushButton("▶")
-        self.btn_next.setFixedWidth(32)
+        self.btn_next.setFixedWidth(28)
         self.btn_next.clicked.connect(self._next_frame)
         self.frame_spin = QSpinBox()
+        self.frame_spin.setProperty("compactSpin", True)
         self.frame_spin.setRange(1, 1)
         self.frame_spin.setKeyboardTracking(False)
-        self.frame_spin.setMinimumWidth(self.frame_spin.sizeHint().width())
+        self.frame_spin.ensurePolished()
+        self.frame_spin.setFixedWidth(self.frame_spin.minimumSizeHint().width())
         self.frame_spin.valueChanged.connect(self._on_frame_spin)
         strip_row.addWidget(self.btn_prev)
         strip_row.addWidget(self.frame_list, 1)
@@ -1979,7 +2195,8 @@ class RetouchDialog(QDialog):
         self.frame_slider.setToolTip(trans.t("retouch_stack_hint"))
         self.frame_slider.valueChanged.connect(self._on_frame_slider)
         strip_layout.addWidget(self.frame_slider)
-        strip.setFixedHeight(112)
+        strip.setFixedHeight(106)
+        register_help_target(strip, "retouch_filmstrip")
 
         status = QHBoxLayout()
         status.setContentsMargins(6, 0, 6, 0)
@@ -2064,20 +2281,22 @@ class RetouchDialog(QDialog):
             image = self.doc.source_previews[index]
             item = QListWidgetItem(str(index + 1))
             if image is not None:
-                thumb = thumbnail_bgr(image, 64)
+                thumb = thumbnail_bgr(image, 56)
                 item.setIcon(QIcon(QPixmap.fromImage(_qimage_from_bgr(thumb))))
             item.setToolTip(frame.name)
-            item.setSizeHint(QSize(76, 82))
+            item.setSizeHint(QSize(64, 60))
             item.setTextAlignment(Qt.AlignmentFlag.AlignHCenter
                                   | Qt.AlignmentFlag.AlignBottom)
             self.frame_list.addItem(item)
         self.frame_list.blockSignals(False)
         self.frame_spin.setRange(1, max(1, self.doc.frame_count))
         self.frame_spin.setSuffix(f" / {max(1, self.doc.frame_count)}")
-        self.frame_spin.setMinimumWidth(max(
-            self.frame_spin.sizeHint().width(),
-            self.frame_spin.fontMetrics().horizontalAdvance(
-                f"{max(1, self.doc.frame_count)} / {max(1, self.doc.frame_count)}") + 54))
+        self.frame_spin.ensurePolished()
+        spin_text_w = self.frame_spin.fontMetrics().horizontalAdvance(
+            f"{max(1, self.doc.frame_count)} / {max(1, self.doc.frame_count)}")
+        self.frame_spin.setFixedWidth(max(
+            self.frame_spin.minimumSizeHint().width(),
+            spin_text_w + 38))
         self.frame_slider.blockSignals(True)
         self.frame_slider.setRange(0, max(0, self.doc.frame_count - 1))
         self.frame_slider.setValue(self.doc.frame_index)
@@ -2694,6 +2913,14 @@ class RetouchDialog(QDialog):
         self.rb_clone.setChecked(self.doc.tool == "clone")
         self.rb_clone_area.setChecked(self.doc.clone_mode == "area")
         self.rb_clone_pattern.setChecked(self.doc.clone_mode == "pattern")
+        if hasattr(self, "lbl_active_tool"):
+            tool_key = {
+                "source": "retouch_tool_source",
+                "restore": "retouch_tool_restore",
+                "exposure": "retouch_tool_exposure",
+                "clone": "retouch_tool_clone",
+            }.get(self.doc.tool, "retouch_tool_source")
+            self.lbl_active_tool.setText(trans.t(tool_key))
         self._syncing_tools = False
 
     def _on_exposure_changed(self, value: int) -> None:
@@ -3606,6 +3833,9 @@ class RetouchDialog(QDialog):
 
     def _finish_close(self) -> None:
         self._closing = True
+        if getattr(self, "_owned_help_manager", None) is not None:
+            self._owned_help_manager.uninstall()
+            self._owned_help_manager = None
         self._save_geometry()
         self._source_timer.stop()
         if self._notice_timer is not None:

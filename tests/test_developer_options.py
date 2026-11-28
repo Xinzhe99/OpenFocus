@@ -348,9 +348,12 @@ def test_main_window_default_locked_hides_all_community_and_keeps_help_account(
     window, _settings, remote_calls = default_locked_window
     gc = window.gallery_controller
 
-    # Top-level Community & Account menus MUST be hidden from menubar.
+    # Top-level Community & Account menus MUST be hidden from menubar;
+    # disabled placeholder `menu_community_dev` is shown instead.
     assert window.ui_objs["menu_gallery"].menuAction().isVisible() is False
     assert window.ui_objs["menu_account"].menuAction().isVisible() is False
+    assert window.ui_objs["menu_community_dev"].menuAction().isVisible() is True
+    assert window.ui_objs["menu_community_dev"].isEnabled() is False
     assert window.ui_objs["action_open_gallery"].isVisible() is False
     assert window.ui_objs["action_my_account"].isVisible() is False
 
@@ -534,6 +537,7 @@ def test_developer_options_dialog_async_unlock_enable_and_lock_live(
     assert is_community_enabled() is True
     assert window.ui_objs["menu_gallery"].menuAction().isVisible() is True
     assert window.ui_objs["menu_account"].menuAction().isVisible() is True
+    assert window.ui_objs["menu_community_dev"].menuAction().isVisible() is False
     assert window.ui_objs["action_account"].isVisible() is True
     assert gc._started is True
     assert gc.state_store._poll_timer.isActive() is True

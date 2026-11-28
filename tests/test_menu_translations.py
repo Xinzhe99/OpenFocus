@@ -342,3 +342,82 @@ def test_staged_update_menu_keeps_its_version_after_a_language_sweep(qapp):
 
     assert action.text() == trans.t('menu_install_update').format(version="v9.9")
     assert "{version}" not in action.text()
+
+
+def test_check_updates_shows_current_version_across_languages(qapp):
+    from constants import app_display_version
+    from ui.menus import format_check_updates_label, setup_menus, update_development_actions
+
+    previous = trans.current_lang
+    window = _menu_window(qapp)
+    try:
+        trans.set_language('zh')
+        setup_menus(window)
+        update_act = window.ui_objs['menu_check_updates']
+        expected_zh = f"{trans.t('menu_check_updates')} (v{app_display_version()})"
+        assert update_act.text() == expected_zh
+        assert f"(v{app_display_version()})" in update_act.text()
+
+        trans.set_language('en')
+        update_act.setText(trans.t('menu_check_updates'))
+        update_development_actions(window)
+        assert update_act.text() == format_check_updates_label()
+        assert f"(v{app_display_version()})" in update_act.text()
+    finally:
+        trans.set_language(previous)
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()
+
+
+def test_ai_pack_menu_action_reflects_installed_state(qapp, monkeypatch):
+    from core import inference_pack
+    from ui.menus import refresh_ai_pack_action, setup_menus
+
+    installed = {"value": False}
+    monkeypatch.setattr(
+        inference_pack,
+        "worker_command",
+        lambda: ["python", "worker.py"] if installed["value"] else None,
+    )
+    opened = []
+    window = _menu_window(qapp)
+    window.accelerator_banner = type("B", (), {"open_settings": lambda _s: opened.append(True)})()
+    try:
+        setup_menus(window)
+        act = window.ui_objs['action_ai_pack']
+        assert act.isCheckable() is True
+        assert act.isChecked() is False
+
+        # Triggering when uninstalled opens settings without flipping the checkmark on.
+        act.trigger()
+        assert opened == [True]
+        assert act.isChecked() is False
+
+        installed["value"] = True
+        refresh_ai_pack_action(window)
+        assert act.isChecked() is True
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()
+
+
+def test_community_dev_placeholder_visible_when_locked(qapp):
+    from ui.menus import apply_community_menu_visibility, setup_menus
+
+    window = _menu_window(qapp)
+    try:
+        setup_menus(window)
+        apply_community_menu_visibility(window, False)
+        dev_menu = window.ui_objs['menu_community_dev']
+        assert dev_menu.menuAction().isVisible() is True
+        assert dev_menu.isEnabled() is False
+        assert dev_menu.menuAction().isEnabled() is False
+
+        apply_community_menu_visibility(window, True)
+        assert dev_menu.menuAction().isVisible() is False
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()

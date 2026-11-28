@@ -34,7 +34,7 @@ _COMMUNITY_ACTION_KEYS = (
 
 
 def apply_community_menu_visibility(window: QMainWindow, enabled: bool) -> None:
-    """Show or hide top-level Community menus while keeping Help -> Account intact."""
+    """Show/hide live Community menus while displaying disabled placeholder when locked."""
     visible = bool(enabled)
     ui_objs = getattr(window, 'ui_objs', None) or {}
     for key in _COMMUNITY_MENU_KEYS:
@@ -50,19 +50,59 @@ def apply_community_menu_visibility(window: QMainWindow, enabled: bool) -> None:
         if action is not None:
             action.setVisible(visible)
             action.setEnabled(visible)
+    community_dev = ui_objs.get('menu_community_dev')
+    if community_dev is not None:
+        community_dev.setEnabled(False)
+        dev_action = community_dev.menuAction()
+        if dev_action is not None:
+            dev_action.setVisible(not visible)
+            dev_action.setEnabled(False)
     help_account = ui_objs.get('action_account')
     if help_account is not None:
         help_account.setVisible(True)
 
 
+def format_check_updates_label() -> str:
+    """Return localized Check for Updates label suffixed with the current version."""
+    from constants import app_display_version
+    return f"{trans.t('menu_check_updates')} (v{app_display_version()})"
+
+
+def is_ai_accelerator_pack_installed(window=None) -> bool:
+    """Return True when the optional AI inference accelerator pack is installed."""
+    banner = getattr(window, 'accelerator_banner', None) if window is not None else None
+    status = getattr(banner, 'status', None)
+    if status is not None and hasattr(status, 'installed'):
+        return bool(status.installed)
+    try:
+        from core import inference_pack
+        return inference_pack.worker_command() is not None
+    except Exception:
+        return False
+
+
+def refresh_ai_pack_action(window: QMainWindow) -> None:
+    """Sync the AI Accelerator Pack menu checkmark with actual installation state."""
+    action = (getattr(window, 'ui_objs', None) or {}).get('action_ai_pack')
+    if action is not None:
+        if not action.isCheckable():
+            action.setCheckable(True)
+        action.setChecked(is_ai_accelerator_pack_installed(window))
+
+
 def update_development_actions(window: QMainWindow) -> None:
-    """Retranslate the unavailable tools after the standard menu sweep."""
+    """Retranslate unavailable tools and formatted menu labels after the standard sweep."""
+    ui_objs = getattr(window, 'ui_objs', None) or {}
     for key in ('mosaic_title', 'menu_dust_map'):
-        action = getattr(window, 'ui_objs', {}).get(key)
+        action = ui_objs.get(key)
         if action is not None:
             action.setText(f"{trans.t(key)} ({trans.t('development_label')})")
             action.setEnabled(False)
             action.setToolTip(trans.t('development_unavailable_hint'))
+    update_action = ui_objs.get('menu_check_updates')
+    if update_action is not None:
+        update_action.setText(format_check_updates_label())
+    refresh_ai_pack_action(window)
 
 
 def _show_support_dialog(window):
@@ -591,10 +631,20 @@ def setup_menus(window: QMainWindow) -> None:
     settings_menu.addAction(icc_preview_action)
     window.ui_objs['action_ui_icc_preview'] = icc_preview_action
     pack_action = QAction(trans.t('ai_pack_title'), window)
+    pack_action.setCheckable(True)
     pack_action.setProperty('trans_key', 'ai_pack_title')
-    pack_action.triggered.connect(lambda: window.accelerator_banner.open_settings())
+
+    def _open_ai_pack_settings(_checked=False):
+        refresh_ai_pack_action(window)
+        banner = getattr(window, 'accelerator_banner', None)
+        if banner is not None:
+            banner.open_settings()
+
+    pack_action.triggered.connect(_open_ai_pack_settings)
     settings_menu.addAction(pack_action)
     window.ui_objs['action_ai_pack'] = pack_action
+    refresh_ai_pack_action(window)
+    settings_menu.aboutToShow.connect(lambda: refresh_ai_pack_action(window))
     # Resolve the backend in the background when the user opens Settings.
     # Device probing must never delay menu construction.
     if (_opencl is None or (_gpu_kind is None and _runtime_installed)) and hasattr(
@@ -787,7 +837,7 @@ def setup_menus(window: QMainWindow) -> None:
     help_menu.addAction(manual_action)
     window.ui_objs['menu_github_manual'] = manual_action
 
-    update_action = QAction(trans.t('menu_check_updates'), window)
+    update_action = QAction(format_check_updates_label(), window)
     update_action.triggered.connect(window.check_for_updates)
     help_menu.addAction(update_action)
     window.ui_objs['menu_check_updates'] = update_action
@@ -806,6 +856,16 @@ def setup_menus(window: QMainWindow) -> None:
     install_action.setVisible(False)
     help_menu.addAction(install_action)
     window.ui_objs['action_install_update'] = install_action
+
+    community_dev_menu = QMenu(trans.t('menu_community_dev'), menubar)
+    community_dev_menu.setEnabled(False)
+    community_dev_menu.setProperty('trans_key', 'menu_community_dev')
+    community_unavailable = community_dev_menu.addAction(trans.t('development_unavailable_hint'))
+    community_unavailable.setEnabled(False)
+    community_unavailable.setProperty('trans_key', 'development_unavailable_hint')
+    menubar.addMenu(community_dev_menu)
+    window.ui_objs['menu_community_dev'] = community_dev_menu
+    window.ui_objs['community_development_unavailable_hint'] = community_unavailable
 
     extensions_menu = QMenu(trans.t('menu_extensions'), menubar)
     extensions_menu.setEnabled(False)

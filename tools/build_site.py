@@ -93,10 +93,10 @@ def render_downloads(locale: dict) -> str:
     return "".join(cards)
 
 
-def render_lang_menu(current: dict) -> str:
+def render_lang_menu(current: dict, suffix: str = "") -> str:
     links = []
     for code, locale in LOCALES.items():
-        href = f"/{locale['path']}?lang={code}"
+        href = f"/{locale['path']}{suffix}?lang={code}"
         current_attr = ' aria-current="page"' if code == current["code"] else ""
         links.append(
             f'<a href="{href}" hreflang="{code}" lang="{locale["html_lang"]}"'
@@ -105,20 +105,22 @@ def render_lang_menu(current: dict) -> str:
     return "".join(links)
 
 
-def render_alternates() -> str:
+def render_alternates(suffix: str = "") -> str:
     rows = [
-        f'<link rel="alternate" hreflang="{code}" href="{ORIGIN}/{locale["path"]}">'
+        f'<link rel="alternate" hreflang="{code}" href="{ORIGIN}/{locale["path"]}{suffix}">'
         for code, locale in LOCALES.items()
     ]
-    rows.append(f'<link rel="alternate" hreflang="x-default" href="{ORIGIN}/">')
+    rows.append(f'<link rel="alternate" hreflang="x-default" href="{ORIGIN}/{suffix}">')
     return "\n".join(rows)
 
 
-def render_footer_links(locale: dict) -> str:
-    return "".join(
-        f'<a href="{esc(url)}" rel="noopener">{esc(label)}</a>'
-        for label, url in locale["footer"]["links"]
-    )
+def render_footer_links(locale: dict, hash_prefix: str = "") -> str:
+    out = []
+    for label, url in locale["footer"]["links"]:
+        href = f"{hash_prefix}{url}" if hash_prefix and url.startswith("#") else url
+        attrs = ' rel="noopener"' if href.startswith("http") else ""
+        out.append(f'<a href="{esc(href)}"{attrs}>{esc(label)}</a>')
+    return "".join(out)
 
 
 def render_cli(lines: list[str]) -> str:
@@ -278,10 +280,139 @@ def not_found(css: str) -> str:
 """
 
 
+def load_contributors() -> list[dict]:
+    data = json.loads((SITE / "contributors.json").read_text(encoding="utf-8"))
+    excluded = {item.strip().lower() for item in data.get("excluded_authors", [])}
+    contributors = data.get("contributors", [])
+    seen_handles = set()
+    for person in contributors:
+        handle = str(person.get("handle", "")).strip()
+        if not handle:
+            raise ValueError("contributors.json: empty handle")
+        lowered = handle.lower()
+        if lowered in excluded or lowered.endswith("[bot]"):
+            raise ValueError(f"contributors.json: excluded contributor {handle!r}")
+        if lowered in seen_handles:
+            raise ValueError(f"contributors.json: duplicate contributor {handle!r}")
+        seen_handles.add(lowered)
+        entries = person.get("contributions") or []
+        if not entries:
+            raise ValueError(f"contributors.json: {handle!r} has no contributions")
+        for entry in entries:
+            int(entry["issue"])
+            for field in ("version", "date", "en", "zh"):
+                if not str(entry.get(field, "")).strip():
+                    raise ValueError(f"contributors.json: missing {field} on issue #{entry.get('issue')}")
+    return contributors
+
+
+def render_contributor_items(entries: list[dict], locale: dict) -> str:
+    page = locale["contributors_page"]
+    code = locale["code"]
+    out = []
+    for entry in entries:
+        ver = str(entry["version"]).strip()
+        issue = int(entry["issue"])
+        if ver == "next":
+            ver_label = page["next_version"]
+            ver_href = f"{REPO}/commits/main"
+            ver_cls = "contrib-ver is-next"
+        else:
+            ver_label = ver
+            ver_href = f"{REPO}/releases/tag/{ver}"
+            ver_cls = "contrib-ver"
+        text = str(entry[code]).strip()
+        out.append(
+            '<li class="contrib-item">'
+            f'<a class="{ver_cls}" href="{esc(ver_href)}" rel="noopener">{esc(ver_label)}</a>'
+            f'<span class="contrib-text">{esc(text)}</span>'
+            f'<a class="contrib-issue" href="{REPO}/issues/{issue}" rel="noopener">#{issue}</a>'
+            "</li>"
+        )
+    return "".join(out)
+
+
+def render_contributor_rows(contributors: list[dict], locale: dict) -> str:
+    page = locale["contributors_page"]
+    rows = []
+    for person in contributors:
+        handle = esc(person["handle"].strip())
+        platform = esc(person.get("platform", "GitHub").strip())
+        profile = esc(person["url"].strip())
+        entries = person["contributions"]
+        head = entries[:3]
+        tail = entries[3:]
+        body = f'<ul class="contrib-items">{render_contributor_items(head, locale)}</ul>'
+        if tail:
+            more = esc(page["more_fmt"].format(n=len(tail)))
+            body += (
+                f'<details class="contrib-more"><summary>{more}</summary>'
+                f'<ul class="contrib-items">{render_contributor_items(tail, locale)}</ul>'
+                "</details>"
+            )
+        rows.append(
+            '<div class="contrib-row">'
+            '<div class="contrib-who">'
+            f'<a class="contrib-handle" href="{profile}" rel="noopener">@{handle}</a>'
+            f'<span class="contrib-tag">{platform}</span>'
+            "</div>"
+            f'<div class="contrib-changes">{body}</div>'
+            "</div>"
+        )
+    return "".join(rows)
+
+
+def contributors_json_ld(locale: dict, canonical: str) -> str:
+    page = locale["contributors_page"]
+    data = {
+        "@context": "https://schema.org",
+        "@type": "WebPage",
+        "name": page["title"],
+        "description": page["desc"],
+        "url": canonical,
+        "inLanguage": locale["html_lang"],
+        "isPartOf": {"@type": "WebSite", "name": "OpenFocus", "url": f"{ORIGIN}/"},
+    }
+    return json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+
+
+def contributors_context_for(locale: dict, contributors: list[dict]) -> dict:
+    canonical = f"{ORIGIN}/{locale['path']}contributors/"
+    ctx = flatten(locale)
+    total_changes = sum(len(person["contributions"]) for person in contributors)
+    ctx.update(
+        {
+            "css": (SITE / "style.css").read_text(encoding="utf-8"),
+            "js": (SITE / "app.js").read_text(encoding="utf-8"),
+            "canonical": canonical,
+            "alternates": render_alternates("contributors/"),
+            "jsonld": contributors_json_ld(locale, canonical),
+            "origin": ORIGIN,
+            "skip": locale["skip"],
+            "repo": REPO,
+            "manual": MANUAL[locale["code"]],
+            "dl_windows": RELEASE["windows_setup"],
+            "dl_macos": RELEASE["macos_dmg"],
+            "lang_menu": render_lang_menu(locale, "contributors/"),
+            "footer_links": render_footer_links(locale, f"/{locale['path']}"),
+            "contributors_stats": esc(
+                locale["contributors_page"]["stats_fmt"].format(
+                    people=len(contributors),
+                    changes=total_changes,
+                )
+            ),
+            "contributor_rows": render_contributor_rows(contributors, locale),
+        }
+    )
+    return ctx
+
+
 def main() -> int:
     shutil.rmtree(DIST, ignore_errors=True)
     ASSETS.mkdir(parents=True, exist_ok=True)
     template = (SITE / "template.html").read_text(encoding="utf-8")
+    contributors_template = (SITE / "contributors_template.html").read_text(encoding="utf-8")
+    contributors = load_contributors()
 
     pages = []
     for code, locale in LOCALES.items():
@@ -291,6 +422,13 @@ def main() -> int:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(page, encoding="utf-8", newline="\n")
         pages.append((target, len(page.encode("utf-8"))))
+
+        c_ctx = contributors_context_for(locale, contributors)
+        c_page = render(contributors_template, c_ctx, f"{code}-contributors")
+        c_target = DIST / locale["path"] / "contributors" / "index.html"
+        c_target.parent.mkdir(parents=True, exist_ok=True)
+        c_target.write_text(c_page, encoding="utf-8", newline="\n")
+        pages.append((c_target, len(c_page.encode("utf-8"))))
 
     assets = build_assets()
 
@@ -305,10 +443,15 @@ def main() -> int:
         f"User-agent: *\nAllow: /\n\nSitemap: {ORIGIN}/sitemap.xml\n",
         encoding="utf-8", newline="\n",
     )
-    urls = "\n".join(
-        f"  <url><loc>{ORIGIN}/{locale['path']}</loc>"
-        f"<lastmod>{date.today().isoformat()}</lastmod></url>"
+    sitemap_entries = [
+        f"{ORIGIN}/{locale['path']}{suffix}"
         for locale in LOCALES.values()
+        for suffix in ("", "contributors/")
+    ]
+    urls = "\n".join(
+        f"  <url><loc>{loc}</loc>"
+        f"<lastmod>{date.today().isoformat()}</lastmod></url>"
+        for loc in sitemap_entries
     )
     (DIST / "sitemap.xml").write_text(
         '<?xml version="1.0" encoding="UTF-8"?>\n'
@@ -327,6 +470,13 @@ def main() -> int:
         "  Vary: Accept-Language, Cookie\n"
         "\n"
         "/zh/\n"
+        "  Cache-Control: public, max-age=0, must-revalidate\n"
+        "\n"
+        "/contributors/\n"
+        "  Cache-Control: public, max-age=0, must-revalidate\n"
+        "  Vary: Accept-Language, Cookie\n"
+        "\n"
+        "/zh/contributors/\n"
         "  Cache-Control: public, max-age=0, must-revalidate\n"
         "\n"
         "/404.html\n"

@@ -7,6 +7,7 @@ from PyQt6.QtCore import QObject, pyqtSignal
 
 from .en import EN
 from ._retouch_macro import RETOUCH_MACRO_TRANSLATIONS
+from .ui_polish_i18n import get_ui_polish_pack
 from .stackmff_v4_i18n import get_stackmff_v4_pack
 
 
@@ -1078,6 +1079,14 @@ def _export_3d_pack(code: str):
     return _EXPORT_3D_PACKS_CACHE.get(code)
 
 
+def _context_help_pack(code: str):
+    try:
+        from .context_help_i18n import _context_help_pack as _load_pack
+        return _load_pack(code)
+    except Exception:
+        return None
+
+
 def _apply_pack_overlays(code: str, table: dict) -> dict:
     """Apply runtime overrides to a loaded pack without touching other packs."""
     title = _MANUAL_TITLES.get(code)
@@ -1140,6 +1149,10 @@ def _apply_pack_overlays(code: str, table: dict) -> dict:
     export_3d = _export_3d_pack(code)
     if export_3d:
         table.update(export_3d)
+    context_help = _context_help_pack(code)
+    if context_help:
+        table.update(context_help)
+    table.update(get_ui_polish_pack(code))
     table.update(get_stackmff_v4_pack(code))
     return table
 
