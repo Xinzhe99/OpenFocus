@@ -21,6 +21,7 @@ from utils.settings_store import get_converter_output_format, set_converter_outp
 from utils.sorting import natural_sort_key
 from utils.logging_setup import get_logger
 from locales import trans
+from ui.context_help import register_help_target
 
 
 class ConverterWorker(QThread):
@@ -125,6 +126,7 @@ class BatchConverterDialog(QDialog):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         outer.addWidget(scroll)
+        register_help_target(self, "batch_converter")
         body = QWidget()
         scroll.setWidget(body)
         layout = QVBoxLayout(body)

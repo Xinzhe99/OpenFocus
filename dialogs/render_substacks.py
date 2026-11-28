@@ -35,6 +35,7 @@ from core.substack_utils import (
     partition_substacks,
 )
 from locales import trans
+from ui.context_help import register_help_target
 from ui import styles as ui_styles
 from utils.design_tokens import FONT, RADIUS, SPACE, WEIGHT, palette
 
@@ -214,6 +215,10 @@ class RenderSubstacksDialog(QDialog):
         self.spin_count.valueChanged.connect(self._on_split_changed)
         self.spin_overlap.valueChanged.connect(self._update_preview)
         self._sync_spin_enabled()
+        register_help_target(self._split_group, "substacks")
+        register_help_target(self._preview_group, "substacks")
+        register_help_target(self.chk_auto_restack, "substacks")
+        register_help_target(self.btn_render, "substacks")
 
     def _method_display(self) -> tuple[str, str]:
         try:

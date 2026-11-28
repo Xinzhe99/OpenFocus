@@ -864,7 +864,7 @@ HTML_3D_VIEWER_I18N: Dict[str, Dict[str, str]] = {
         "modeTexWire": "Teks.+Siatka",
         "play": "Odtwórz",
         "pause": "Pauza",
-        "playTitle": "Odtwórz / Pauza obrotu (Spacja)",
+        "playTitle": "Odtwórz / Wstrzymaj obrót (Spacja)",
         "hudBtn": "HUD",
         "hudTitle": "Ukryj HUD (H)",
         "footer": "Wyeksportowano za pomocą OpenFocus",

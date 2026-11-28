@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
 )
 
 from locales import trans
+from ui.context_help import register_help_target
 from widgets.stepper import StepperSpinBox
 from utils.dust_map import (DEFAULT_SIGMA, compute_flat_field, apply_flat_field,
                             load_flat_field_reference)
@@ -277,6 +278,7 @@ class DustMapDialog(QDialog):
 
         self.rb_file.toggled.connect(self._source_changed)
         self.rb_stack.toggled.connect(self._source_changed)
+        register_help_target(self, "dust_map")
         self._fill_stack_combo()
         self.combo_stack.currentIndexChanged.connect(self._source_changed)
         self.combo_target.currentIndexChanged.connect(self._invalidate_gain)

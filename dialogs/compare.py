@@ -15,6 +15,7 @@ from core.compare_worker import AlignmentWorker, PreviewWorker, DisplayWorker
 from core.source_previews import DISPLAY_REGION_MAX_SIDE, SourcePreviewWorker, SourceRegionWorker
 from core.source_frames import PREVIEW_EDGE, ProcessedFrame, SourceFrame, display_image, preview_ready
 from locales import trans
+from ui.context_help import register_help_target
 from utils.frame_pixels import BoundedPreviewWorker
 from utils.image_utils import cv2_to_pixmap
 from utils.output_sharpen import DEFAULT_SHARPEN_STRENGTH
@@ -539,6 +540,21 @@ class CompareDialog(QDialog):
         primary_actions.add(close_button)
         actions_row.addWidget(primary_actions)
         outer.addLayout(actions_row)
+        register_help_target(methods_host, "compare_methods")
+        register_help_target(self.btn_run, "compare_methods")
+        register_help_target(self.align_combo, "compare_methods")
+        register_help_target(self.registration_parameter_panel, "registration")
+        register_help_target(self.param_scroll, "compare_methods")
+        register_help_target(self.mode_combo, "compare_view")
+        register_help_target(self.view_combo, "compare_view")
+        register_help_target(self.ref_canvas, "compare_view")
+        register_help_target(self.preview_size_slider, "compare_view")
+        register_help_target(self.preview_size_spin, "compare_view")
+        register_help_target(self.result_scroll, "compare_view")
+        register_help_target(self.btn_verify, "compare_adopt")
+        register_help_target(self.btn_retry, "compare_adopt")
+        register_help_target(self.btn_adopt_params, "compare_adopt")
+        register_help_target(self.btn_adopt_output, "compare_adopt")
         self._layout_timer.start(0)
 
     def _initial_params(self, method):

@@ -24,6 +24,7 @@ from dialogs.mosaic_mask import MosaicMaskDialog
 from core.registration import RegistrationCancelled
 from core.resource_policy import heavy_job, require_memory
 from locales import trans
+from ui.context_help import register_help_target
 from utils.image_utils import cv2_to_pixmap, imwrite_auto
 from utils.memory import InsufficientMemoryError
 from utils.settings_store import (get_last_dialog_dir, image_save_dir, image_save_filter,
@@ -466,6 +467,14 @@ class MosaicDialog(QDialog):
         self.add_outputs.clicked.connect(self._add_outputs)
         self.remove.clicked.connect(self._remove_selected)
         self.grid_apply.clicked.connect(self._apply_grid)
+        register_help_target(panel, "mosaic_layout")
+        register_help_target(assistant, "mosaic_align")
+        register_help_target(self.canvas, "mosaic_align")
+        register_help_target(self.auto, "mosaic_align")
+        register_help_target(self.cp_button, "mosaic_control_points")
+        register_help_target(self.mask_button, "mosaic_mask")
+        register_help_target(self.preview_button, "mosaic_export")
+        register_help_target(self.save, "mosaic_export")
         for control in (self.grid_rows, self.grid_cols):
             control.valueChanged.connect(self._refresh_controls)
         self.auto.clicked.connect(self._auto_align)

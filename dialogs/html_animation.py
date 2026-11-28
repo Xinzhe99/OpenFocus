@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
 
 from core.html_animation_export import HtmlAnimationOptions
 from locales import trans
+from ui.context_help import register_help_target
 from widgets.stepper import StepperSpinBox
 
 
@@ -125,6 +126,7 @@ class HtmlAnimationDialog(QDialog):
         btn_row.addWidget(cancel_btn)
         btn_row.addWidget(ok_btn)
         layout.addLayout(btn_row)
+        register_help_target(self, "html_animation")
 
     def selected_source(self) -> str:
         return str(self.source_combo.currentData() or "input")

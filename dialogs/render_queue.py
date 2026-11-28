@@ -29,6 +29,7 @@ from core.render_queue import (
     STATUS_RUNNING,
 )
 from locales import trans
+from ui.context_help import register_help_target
 from utils.design_tokens import FONT, RADIUS, SPACE, WEIGHT, palette
 
 
@@ -553,6 +554,7 @@ class RenderQueueDialog(QDialog):
 
         self.apply_theme(self._theme)
         self.retranslate()
+        register_help_target(self, "render_queue")
 
     def _resolve_theme(self, explicit: Optional[str]) -> str:
         if explicit:
