@@ -451,3 +451,48 @@ def test_subdialogs_resolve_specific_help_topics(qapp, tmp_path, monkeypatch):
             d.close()
             d.deleteLater()
         dust_host.deleteLater()
+
+
+def test_help_overlay_paints_without_name_error(qapp):
+    from PyQt6.QtCore import QRect
+    from ui.context_help import _HelpTargetOverlay
+
+    host = QWidget()
+    host.resize(640, 420)
+    overlay = _HelpTargetOverlay(host, "light")
+    try:
+        overlay.update_highlight(QRect(24, 64, 160, 40), "Source List", "Help Mode Banner")
+        pm = overlay.grab()
+        assert not pm.isNull()
+    finally:
+        host.close()
+        host.deleteLater()
+
+
+def test_illustrated_help_dialog_centers_on_window_for_child_target(qapp):
+    host = QWidget()
+    host.move(320, 220)
+    host.resize(900, 650)
+    child = QPushButton("Target", host)
+    child.setGeometry(12, 12, 100, 30)
+    host.show()
+    qapp.processEvents()
+
+    dlg = IllustratedHelpDialog("source_list", child)
+    try:
+        assert dlg.parentWidget() is host
+        screen = host.screen() or dlg.screen()
+        avail = screen.availableGeometry()
+        geom = dlg.geometry()
+        assert avail.contains(geom)
+        host_center = host.frameGeometry().center()
+        dlg_center = geom.center()
+        expected_x = max(avail.left(), min(avail.right() - geom.width() + 1, host_center.x() - geom.width() // 2))
+        expected_y = max(avail.top(), min(avail.bottom() - geom.height() + 1, host_center.y() - geom.height() // 2))
+        assert abs(geom.x() - expected_x) <= 2
+        assert abs(geom.y() - expected_y) <= 2
+    finally:
+        dlg.close()
+        dlg.deleteLater()
+        host.close()
+        host.deleteLater()

@@ -270,12 +270,12 @@ class IllustratedHelpDialog(HelpDialog):
     """Themed illustrated help dialog generated from a context-help topic."""
 
     def __init__(self, topic_id: str, parent: Optional[QWidget] = None, *, title_override: Optional[str] = None):
-        owner = parent.window() if parent is not None else None
+        owner = parent.window() if (parent is not None and not sip.isdeleted(parent)) else None
         theme = getattr(owner, "ui_theme", "light") if owner is not None else "light"
         title, diagram_kind, body, tips, _ = _topic_title_and_diagram(topic_id, parent)
         if title_override:
             title = title_override
-        super().__init__(title, "", parent)
+        super().__init__(title, "", owner)
         self.setProperty("controlId", "illustrated_help_dialog")
         colors = palette(theme)
 
@@ -315,6 +315,7 @@ class IllustratedHelpDialog(HelpDialog):
         )
         self.text_browser.setHtml(html)
         self.resize(580, 520 if registry_html else 430)
+        self._center_on_host(owner)
 
     @staticmethod
     def _algorithm_reference_html(topic_id: str, colors: dict) -> str:
@@ -394,6 +395,12 @@ def _make_help_cursor(theme: str = "light") -> QCursor:
     return QCursor(pm, size // 2, size // 2)
 
 
+def _alpha(color_hex: str, alpha: int) -> QColor:
+    color = QColor(color_hex)
+    color.setAlpha(max(0, min(255, int(alpha))))
+    return color
+
+
 class _HelpTargetOverlay(QWidget):
     """Click-transparent overlay showing hovered help target and mode instructions."""
 
@@ -458,7 +465,7 @@ class _HelpTargetOverlay(QWidget):
             p.drawRoundedRect(r, 6.0, 6.0)
 
             if self._target_title:
-                pill_text = f"?  {self._target_title}"
+                pill_text = self._target_title
                 font = p.font()
                 font.setPointSize(9)
                 font.setWeight(QFont.Weight.DemiBold)
