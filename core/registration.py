@@ -1921,7 +1921,7 @@ def apply_alignment_plan(sources, plan, *, defer_warps=False, should_cancel=None
             raise ValueError('Registration transforms have no common valid crop')
     _record_grouped_crop(top, bottom, left, right)
     plan_interp = getattr(plan, 'interpolation', None)
-    use_direct_region = apply_alignment is _ORIGINAL_APPLY_ALIGNMENT and plan_interp is None
+    use_direct_region = apply_alignment is _ORIGINAL_APPLY_ALIGNMENT
     result = []
     for source, transform in zip(sources, plan.transforms):
         _check_cancel(should_cancel)
@@ -1941,7 +1941,7 @@ def apply_alignment_plan(sources, plan, *, defer_warps=False, should_cancel=None
         elif use_direct_region:
             image = apply_alignment_region(
                 source, transform, left, top, right - left, bottom - top,
-                should_cancel=should_cancel,
+                should_cancel=should_cancel, interpolation=plan_interp,
             )
             aligned = store_frame(image)
         else:
@@ -2775,6 +2775,7 @@ class ImageRegistration:
         self.alignment_roi = alignment_roi
         self.max_shift_x_ratio = max_shift_x_ratio
         self.max_shift_y_ratio = max_shift_y_ratio
+        self._explicit_auto_crop = None if auto_crop is None else bool(auto_crop)
         self.auto_crop = True if auto_crop is None else bool(auto_crop)
         self.openfocus_interpolation = interpolation
 
@@ -2784,37 +2785,15 @@ class ImageRegistration:
             else:
                 raw_params.pop('alignment_roi')
 
-        if 'max_shift_ratio' in spec_keys:
-            if 'max_shift_x_ratio' in raw_params:
-                val = float(raw_params.pop('max_shift_x_ratio'))
-                if self.max_shift_x_ratio is None:
-                    self.max_shift_x_ratio = val
-            if 'max_shift_y_ratio' in raw_params:
-                val = float(raw_params.pop('max_shift_y_ratio'))
-                if self.max_shift_y_ratio is None:
-                    self.max_shift_y_ratio = val
-            if 'max_rotation_deg' in raw_params:
-                val = float(raw_params.pop('max_rotation_deg'))
-                raw_params.setdefault('rotation', val)
-            if 'max_scale_change' in raw_params:
-                val = float(raw_params.pop('max_scale_change'))
-                raw_params.setdefault('magnification', val * 100.0)
-            if 'auto_crop' in raw_params:
-                val = bool(raw_params.pop('auto_crop'))
-                if auto_crop is None:
-                    self.auto_crop = val
-            if 'interpolation' in raw_params:
-                val = raw_params.pop('interpolation')
-                if self.openfocus_interpolation is None:
-                    self.openfocus_interpolation = val
+        if 'rotation' in spec_keys and 'max_rotation_deg' in raw_params:
+            raw_params.setdefault('rotation', float(raw_params.pop('max_rotation_deg')))
+        if 'magnification' in spec_keys and 'max_scale_change' in raw_params:
+            raw_params.setdefault('magnification', float(raw_params.pop('max_scale_change')) * 100.0)
 
         values = resolve_registration_parameters(method, raw_params)
-        if max_shift_ratio is not None:
-            if 'max_shift_ratio' in spec_keys:
-                values['max_shift_ratio'] = max_shift_ratio
-            elif 'max_shift_x_ratio' in spec_keys and 'max_shift_y_ratio' in spec_keys:
-                values['max_shift_x_ratio'] = max_shift_ratio
-                values['max_shift_y_ratio'] = max_shift_ratio
+        if max_shift_ratio is not None and 'max_shift_x_ratio' in spec_keys and 'max_shift_y_ratio' in spec_keys:
+            values['max_shift_x_ratio'] = max_shift_ratio
+            values['max_shift_y_ratio'] = max_shift_ratio
         if max_shift_x_ratio is not None and 'max_shift_x_ratio' in spec_keys:
             values['max_shift_x_ratio'] = max_shift_x_ratio
         if max_shift_y_ratio is not None and 'max_shift_y_ratio' in spec_keys:
@@ -2835,6 +2814,8 @@ class ImageRegistration:
             values['interpolation'] = interpolation
 
         self.parameters = resolve_registration_parameters(method, values)
+        if auto_crop is None and 'auto_crop' in self.parameters:
+            self.auto_crop = bool(self.parameters['auto_crop'])
         if self.openfocus_interpolation is not None:
             interpolation_flag(self.openfocus_interpolation)
         self.downscale_width = int(downscale_width) if downscale_width is not None else 1024

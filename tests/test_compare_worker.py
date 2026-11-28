@@ -335,7 +335,9 @@ def test_alignment_runs_real_registration_on_background_thread(monkeypatch):
 
     def observe(self, input_source, *args, **kwargs):
         observations.append((get_ident(), self.downscale_width,
-                             self.parameters['max_shift_ratio'], self.brightness_reference,
+                             self.parameters['max_shift_x_ratio'],
+                             self.parameters['max_shift_y_ratio'],
+                             self.brightness_reference,
                              kwargs["thread_count"], callable(kwargs["should_cancel"])))
         return original(self, input_source, *args, **kwargs)
 
@@ -346,7 +348,7 @@ def test_alignment_runs_real_registration_on_background_thread(monkeypatch):
     aligned = results[0]
     assert all(frame.dtype == np.uint16 for frame in aligned)
     assert observations[0][0] != main_thread
-    assert observations[0][1:] == (96, 0.1, "first", 0, True)
+    assert observations[0][1:] == (96, 0.1, 0.1, "first", 0, True)
     before = np.mean(np.abs(frames[0].astype(float) - frames[1]))
     after = np.mean(np.abs(resolve_frame(aligned[0]).astype(float) - resolve_frame(aligned[1])))
     assert after < before * 0.5
