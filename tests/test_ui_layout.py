@@ -61,6 +61,7 @@ def test_option_checkboxes_flow_and_wrap(qapp):
     finally:
         panel.close()
         panel.deleteLater()
+        app.processEvents()
 
 
 

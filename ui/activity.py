@@ -261,7 +261,12 @@ class _ActivityLogger(QObject):
             elif kind == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
                 pressed = obj in self._pressed
                 self._pressed.discard(obj)
-                if pressed and obj.isEnabled() and obj.hitButton(event.position().toPoint()):
+                pos = event.position().toPoint()
+                try:
+                    hit = obj.hitButton(pos)
+                except RuntimeError:
+                    hit = obj.rect().contains(pos)
+                if pressed and obj.isEnabled() and hit:
                     self._connect(obj)
                     self._prelogged.add(obj)
                     value = obj.isChecked() if obj.isChecked() and obj.autoExclusive() else not obj.isChecked()

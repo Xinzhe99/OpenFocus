@@ -9,6 +9,7 @@ This container measures each widget's real width and packs as many per row as
 fit, re-flowing on resize. Long options still take a whole row by themselves,
 so no translation is ever clipped.
 """
+from PyQt6 import sip
 from PyQt6.QtCore import QPoint, QRect, QSize, Qt
 from PyQt6.QtWidgets import QLayout, QSizePolicy, QWidget
 
@@ -71,6 +72,11 @@ class FlowLayout(QLayout):
         widest = 0
         tallest = 0
         for item in self._items:
+            if item is None or sip.isdeleted(item):
+                continue
+            widget = item.widget()
+            if widget is not None and sip.isdeleted(widget):
+                continue
             if item.isEmpty():
                 continue
             hint = item.sizeHint()
@@ -95,6 +101,11 @@ class FlowLayout(QLayout):
         width = max(1, area.width())
 
         for item in self._items:
+            if item is None or sip.isdeleted(item):
+                continue
+            widget = item.widget()
+            if widget is not None and sip.isdeleted(widget):
+                continue
             if item.isEmpty():
                 continue
             hint = item.sizeHint()

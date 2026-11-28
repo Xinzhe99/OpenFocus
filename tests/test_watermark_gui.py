@@ -531,6 +531,7 @@ def test_numeric_controls_reserve_suffix_width(qapp, theme, font_delta):
     old_theme = styles.CURRENT_THEME
     dialog = None
     try:
+        qapp.processEvents()
         font = QFont(old_font)
         font.setPointSizeF(max(1, font.pointSizeF() + font_delta))
         qapp.setFont(font)
@@ -558,6 +559,7 @@ def test_numeric_controls_reserve_suffix_width(qapp, theme, font_delta):
         if dialog is not None:
             dialog.close()
             dialog.deleteLater()
+            qapp.processEvents()
         styles.set_current_theme(old_theme)
         qapp.setStyleSheet(old_style)
         qapp.setFont(old_font)
