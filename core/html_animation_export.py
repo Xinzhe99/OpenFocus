@@ -406,7 +406,7 @@ def build_html_animation(
         '    <footer class="footer">'
         '<span>OpenFocus Interactive Focus Stack</span>'
         '<span class="sep">&middot;</span>'
-        '<span>Drag, scroll wheel, scrub slider, or use &larr; / &rarr; / Space</span>'
+        '<span>Drag, wheel, or &larr;/&rarr;/Space to scrub &middot; M or hold Right-Click/Alt for Loupe (wheel=zoom, Ctrl+wheel=size)</span>'
         "</footer>\n"
         if opts.show_footer
         else ""
@@ -516,6 +516,7 @@ def build_html_animation(
       -webkit-user-select: none;
       touch-action: pan-y;
     }}
+    .stage-wrap.loupe-on {{ cursor: crosshair; touch-action: none; }}
     .stage-wrap.dragging {{ cursor: grabbing; }}
     .stage-canvas {{
       display: block;
@@ -667,7 +668,7 @@ def build_html_animation(
     <section id="stage" class="stage-wrap" aria-label="Interactive focus stack viewer">
       <canvas id="viewerCanvas" class="stage-canvas" width="{max(1, width)}" height="{max(1, height)}" aria-label="Focus stack frame"></canvas>
       <div id="frameBadge" class="badge hud">1 / {len(encoded_frames)}</div>
-      <div id="dragHint" class="hint-pill hud">&larr; Drag or scroll wheel to focus &rarr;</div>
+      <div id="dragHint" class="hint-pill hud">&larr; Drag or wheel to focus &middot; M or Right-Click for Loupe &rarr;</div>
     </section>
 
     <section class="controls" aria-label="Playback controls">
@@ -682,6 +683,8 @@ def build_html_animation(
           <button id="btnNext" class="btn" type="button" title="Next focus plane (Right Arrow)">&rarr;</button>
         </div>
         <div class="btn-group">
+          <button id="btnLoupe" class="btn" type="button" title="Toggle Magnifier Loupe (M) or hold Right-Click / Alt (Wheel: zoom, Ctrl+Wheel or [ ]: size, Shift+Wheel: focus)" aria-pressed="false">Loupe</button>
+          <button id="btnLoupeShape" class="btn" type="button" title="Toggle Square / Circle Loupe (L)" hidden>Square</button>
           <button id="btnMode" class="btn" type="button" title="Toggle Ping-Pong / Loop playback">Ping-Pong</button>
           <select id="fpsSelect" class="select" aria-label="Playback speed (FPS)">
 {fps_options_html}
@@ -724,10 +727,82 @@ def build_html_animation(
     var btnMode = document.getElementById("btnMode");
     var btnFused = document.getElementById("btnFused");
     var btnTheme = document.getElementById("btnTheme");
+    var btnLoupe = document.getElementById("btnLoupe");
+    var btnLoupeShape = document.getElementById("btnLoupeShape");
     var fpsSelect = document.getElementById("fpsSelect");
 
     var nativeW = Math.max(1, Number(DATA.width) || 1);
     var nativeH = Math.max(1, Number(DATA.height) || 1);
+
+    // Desktop-parity Magnifier Loupe state
+    var LOUPE_MIN_SIZE = 120;
+    var LOUPE_MAX_SIZE = 520;
+    var LOUPE_MIN_ZOOM = 0.5;
+    var LOUPE_MAX_ZOOM = 16.0;
+    var loupePinned = false;
+    var loupePeek = false;
+    var loupeRightDown = false;
+    var loupeShape = "square";
+    var loupeSize = 280;
+    var loupeZoom = 2.0;
+    var loupeZoomInitialized = false;
+    var loupeHasPos = false;
+    var loupeCssX = 0;
+    var loupeCssY = 0;
+    var lastPointerClientX = null;
+    var lastPointerClientY = null;
+
+    function isLoupeActive() {{
+      return loupePinned || loupePeek;
+    }}
+
+    function ensureNativeLoupe(srcImg) {{
+      if (loupeZoomInitialized || !srcImg || !srcImg.naturalWidth) return;
+      var cssW = (canvas && (canvas.clientWidth || canvas.width)) || nativeW;
+      var fitScale = cssW / srcImg.naturalWidth;
+      var nativeFloor = 1.0 / Math.max(1e-6, fitScale);
+      loupeZoom = Math.min(Math.max(loupeZoom, nativeFloor), LOUPE_MAX_ZOOM);
+      loupeZoomInitialized = true;
+    }}
+
+    function syncLoupePosition(clientX, clientY) {{
+      if (!canvas) return;
+      var rect = canvas.getBoundingClientRect();
+      if (!rect || rect.width <= 0 || rect.height <= 0) return;
+      loupeCssX = clientX - rect.left;
+      loupeCssY = clientY - rect.top;
+      loupeHasPos = true;
+    }}
+
+    function updateLoupeUi() {{
+      var active = isLoupeActive();
+      stage.classList.toggle("loupe-on", active);
+      if (btnLoupe) {{
+        btnLoupe.classList.toggle("active", loupePinned);
+        btnLoupe.setAttribute("aria-pressed", loupePinned ? "true" : "false");
+      }}
+      if (btnLoupeShape) {{
+        btnLoupeShape.hidden = !loupePinned;
+        btnLoupeShape.textContent = loupeShape === "circle" ? "Circle" : "Square";
+      }}
+      if (dragHint && active) {{
+        dragHint.textContent = "Loupe: Wheel=Zoom \u00b7 Ctrl+Wheel=Size \u00b7 Shift+Wheel=Focus \u00b7 L=Shape \u00b7 M/Esc=Exit";
+      }} else if (dragHint) {{
+        dragHint.textContent = "\u2190 Drag or wheel to focus \u00b7 M or Right-Click for Loupe \u2192";
+      }}
+    }}
+
+    function setLoupePinned(next) {{
+      loupePinned = !!next;
+      if (loupePinned && !loupeHasPos && canvas) {{
+        var r = canvas.getBoundingClientRect();
+        loupeCssX = (r.width || canvas.width) * 0.5;
+        loupeCssY = (r.height || canvas.height) * 0.5;
+        loupeHasPos = true;
+      }}
+      updateLoupeUi();
+      schedulePaint();
+    }}
 
     function resizeCanvas() {{
       if (!canvas) return;
@@ -784,6 +859,116 @@ def build_html_animation(
       }});
     }}
 
+    function drawLoupe(srcImg) {{
+      if (!ctx || !srcImg || !srcImg.complete || !srcImg.naturalWidth || !isLoupeActive() || !loupeHasPos) return;
+      var dispW = Math.max(1, canvas.clientWidth || canvas.width);
+      var dispH = Math.max(1, canvas.clientHeight || canvas.height);
+      var dpr = canvas.width / dispW;
+      var lensCss = Math.min(loupeSize, Math.max(96, Math.min(dispW, dispH) * 0.92));
+      if (loupeCssX < -lensCss * 0.35 || loupeCssY < -lensCss * 0.35 ||
+          loupeCssX > dispW + lensCss * 0.35 || loupeCssY > dispH + lensCss * 0.35) {{
+        return;
+      }}
+      ensureNativeLoupe(srcImg);
+
+      var natW = srcImg.naturalWidth;
+      var natH = srcImg.naturalHeight;
+      var fitScale = dispW / natW;
+      var srcCx = (loupeCssX / dispW) * natW;
+      var srcCy = (loupeCssY / dispH) * natH;
+      var patchSrc = lensCss / (loupeZoom * fitScale);
+      var sx = srcCx - patchSrc * 0.5;
+      var sy = srcCy - patchSrc * 0.5;
+
+      var lensPx = lensCss * dpr;
+      var tx = loupeCssX * dpr - lensPx * 0.5;
+      var ty = loupeCssY * dpr - lensPx * 0.5;
+      var nativeScalePx = lensPx / Math.max(1e-6, patchSrc);
+      var deviceScale = nativeScalePx;
+
+      ctx.save();
+      if (loupeShape === "circle") {{
+        ctx.beginPath();
+        ctx.arc(tx + lensPx * 0.5, ty + lensPx * 0.5, lensPx * 0.5, 0, Math.PI * 2);
+        ctx.clip();
+      }} else {{
+        ctx.beginPath();
+        ctx.rect(tx, ty, lensPx, lensPx);
+        ctx.clip();
+      }}
+
+      ctx.fillStyle = "#181818";
+      ctx.fillRect(tx, ty, lensPx, lensPx);
+
+      var cx0 = Math.max(0, sx);
+      var cy0 = Math.max(0, sy);
+      var cx1 = Math.min(natW, sx + patchSrc);
+      var cy1 = Math.min(natH, sy + patchSrc);
+      if (cx1 > cx0 && cy1 > cy0) {{
+        var dx = tx + (cx0 - sx) * nativeScalePx;
+        var dy = ty + (cy0 - sy) * nativeScalePx;
+        var dw = (cx1 - cx0) * nativeScalePx;
+        var dh = (cy1 - cy0) * nativeScalePx;
+        ctx.imageSmoothingEnabled = deviceScale < 1.0;
+        if (ctx.imageSmoothingEnabled) ctx.imageSmoothingQuality = "high";
+        ctx.drawImage(srcImg, cx0, cy0, cx1 - cx0, cy1 - cy0, dx, dy, dw, dh);
+      }}
+
+      // Subtle center crosshair matching desktop inspection loupe
+      var mx = loupeCssX * dpr;
+      var my = loupeCssY * dpr;
+      var arm = 6 * dpr;
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.55)";
+      ctx.lineWidth = Math.max(1, dpr);
+      ctx.beginPath();
+      ctx.moveTo(mx - arm, my);
+      ctx.lineTo(mx + arm, my);
+      ctx.moveTo(mx, my - arm);
+      ctx.lineTo(mx, my + arm);
+      ctx.stroke();
+
+      // Bottom magnification readout caption inside lens
+      var caption = Math.round(deviceScale * 100) + "% (" + loupeZoom.toFixed(1) + "\u00d7)";
+      var fontPx = Math.round(11 * dpr);
+      ctx.font = "600 " + fontPx + "px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      var tw = ctx.measureText(caption).width;
+      var padX = 8 * dpr;
+      var pillW = tw + padX * 2;
+      var pillH = 20 * dpr;
+      var pillX = tx + (lensPx - pillW) * 0.5;
+      var pillY = ty + lensPx - pillH - 6 * dpr;
+      ctx.fillStyle = "rgba(18, 20, 26, 0.84)";
+      if (ctx.roundRect) {{
+        ctx.beginPath();
+        ctx.roundRect(pillX, pillY, pillW, pillH, 999);
+        ctx.fill();
+      }} else {{
+        ctx.fillRect(pillX, pillY, pillW, pillH);
+      }}
+      ctx.fillStyle = "#ffffff";
+      ctx.fillText(caption, pillX + pillW * 0.5, pillY + pillH * 0.52);
+
+      ctx.restore();
+
+      // Crisp border ring
+      ctx.save();
+      ctx.beginPath();
+      if (loupeShape === "circle") {{
+        ctx.arc(tx + lensPx * 0.5, ty + lensPx * 0.5, lensPx * 0.5 - dpr, 0, Math.PI * 2);
+      }} else {{
+        ctx.rect(tx + dpr * 0.5, ty + dpr * 0.5, lensPx - dpr, lensPx - dpr);
+      }}
+      ctx.strokeStyle = "rgba(0, 0, 0, 0.45)";
+      ctx.lineWidth = 3 * dpr;
+      ctx.stroke();
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.92)";
+      ctx.lineWidth = 1.75 * dpr;
+      ctx.stroke();
+      ctx.restore();
+    }}
+
     function drawCurrentFrame() {{
       paintRaf = 0;
       if (!ctx || count === 0) return;
@@ -792,6 +977,7 @@ def build_html_animation(
       ctx.imageSmoothingEnabled = true;
       ctx.imageSmoothingQuality = "high";
       ctx.drawImage(srcImg, 0, 0, canvas.width, canvas.height);
+      drawLoupe(srcImg);
     }}
 
     function schedulePaint() {{
@@ -923,12 +1109,45 @@ def build_html_animation(
       root.setAttribute("data-theme", isLight ? "dark" : "light");
     }});
 
-    // Mouse-wheel focus scrubbing (Ctrl/Cmd preserves browser zoom)
+    if (btnLoupe) {{
+      btnLoupe.addEventListener("click", function() {{
+        wakeHud();
+        setLoupePinned(!loupePinned);
+      }});
+    }}
+    if (btnLoupeShape) {{
+      btnLoupeShape.addEventListener("click", function() {{
+        wakeHud();
+        loupeShape = (loupeShape === "square") ? "circle" : "square";
+        updateLoupeUi();
+        schedulePaint();
+      }});
+    }}
+
+    // Mouse-wheel: zoom/resize loupe when active, otherwise scrub focus planes (Shift+wheel always scrubs focus)
     var wheelAccum = 0;
     stage.addEventListener("wheel", function(e) {{
-      if (count <= 1 || e.ctrlKey || e.metaKey) return;
+      var activeLoupe = isLoupeActive();
+      if (!activeLoupe && (e.ctrlKey || e.metaKey)) return;
       e.preventDefault();
       wakeHud();
+      syncLoupePosition(e.clientX, e.clientY);
+
+      if (activeLoupe && !e.shiftKey) {{
+        var rawDelta = Math.abs(e.deltaY) >= Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
+        var normSteps = e.deltaMode === 1 ? (rawDelta / 3.0) : (rawDelta / 120.0);
+        if (normSteps === 0) return;
+        normSteps = Math.max(-4.0, Math.min(4.0, normSteps));
+        if (e.ctrlKey || e.metaKey) {{
+          loupeSize = Math.max(LOUPE_MIN_SIZE, Math.min(LOUPE_MAX_SIZE, loupeSize * Math.pow(1.1, -normSteps)));
+        }} else {{
+          loupeZoom = Math.max(LOUPE_MIN_ZOOM, Math.min(LOUPE_MAX_ZOOM, loupeZoom * Math.pow(1.2, -normSteps)));
+        }}
+        schedulePaint();
+        return;
+      }}
+
+      if (count <= 1) return;
       setPlaying(false);
       var dy = Math.abs(e.deltaY) >= Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
       var threshold = e.deltaMode === 1 ? 1 : 28;
@@ -940,7 +1159,7 @@ def build_html_animation(
       }}
     }}, {{ passive: false }});
 
-    // Pointer & touch horizontal scrub with gesture axis lock
+    // Pointer & touch horizontal scrub with gesture axis lock + right-click / pinned Loupe tracking
     var dragging = false;
     var dragStartX = 0;
     var dragStartY = 0;
@@ -980,8 +1199,33 @@ def build_html_animation(
       stage.classList.remove("dragging");
     }}
 
+    stage.addEventListener("contextmenu", function(e) {{
+      if (isLoupeActive() || loupeRightDown) {{
+        e.preventDefault();
+      }}
+    }});
     stage.addEventListener("pointerdown", function(e) {{
       if (e.pointerType === "touch") return;
+      lastPointerClientX = e.clientX;
+      lastPointerClientY = e.clientY;
+      syncLoupePosition(e.clientX, e.clientY);
+      if (e.button === 2) {{
+        e.preventDefault();
+        loupeRightDown = true;
+        loupePeek = true;
+        updateLoupeUi();
+        wakeHud();
+        schedulePaint();
+        if (stage.setPointerCapture) {{
+          try {{ stage.setPointerCapture(e.pointerId); }} catch (_err) {{}}
+        }}
+        return;
+      }}
+      if (loupePinned) {{
+        wakeHud();
+        schedulePaint();
+        return;
+      }}
       if (e.button !== 0 && e.pointerType === "mouse") return;
       beginDrag(e.clientX, e.clientY);
       if (stage.setPointerCapture) {{
@@ -989,18 +1233,58 @@ def build_html_animation(
       }}
     }});
     stage.addEventListener("pointermove", function(e) {{
-      if (e.pointerType !== "touch") wakeHud();
+      if (e.pointerType !== "touch") {{
+        wakeHud();
+        lastPointerClientX = e.clientX;
+        lastPointerClientY = e.clientY;
+        if (isLoupeActive()) {{
+          syncLoupePosition(e.clientX, e.clientY);
+          schedulePaint();
+        }}
+      }}
       if (dragging && e.pointerType !== "touch") moveDrag(e.clientX);
     }});
-    stage.addEventListener("pointerup", endDrag);
-    stage.addEventListener("pointercancel", endDrag);
+    function endPointer(e) {{
+      if (e && e.button === 2 && loupeRightDown) {{
+        loupeRightDown = false;
+        loupePeek = !!(e.altKey);
+        updateLoupeUi();
+        schedulePaint();
+      }}
+      endDrag();
+    }}
+    stage.addEventListener("pointerup", endPointer);
+    stage.addEventListener("pointercancel", endPointer);
+    stage.addEventListener("pointerleave", function() {{
+      lastPointerClientX = null;
+      lastPointerClientY = null;
+      loupeHasPos = false;
+      if (loupePeek && !loupeRightDown) {{
+        loupePeek = false;
+        updateLoupeUi();
+      }}
+      if (isLoupeActive() || loupeRightDown) schedulePaint();
+    }});
 
     stage.addEventListener("touchstart", function(e) {{
       if (e.touches && e.touches.length === 1) {{
+        if (loupePinned) {{
+          syncLoupePosition(e.touches[0].clientX, e.touches[0].clientY);
+          wakeHud();
+          schedulePaint();
+          return;
+        }}
         beginDrag(e.touches[0].clientX, e.touches[0].clientY);
       }}
     }}, {{ passive: true }});
     stage.addEventListener("touchmove", function(e) {{
+      if (loupePinned && e.touches && e.touches.length === 1) {{
+        e.preventDefault();
+        syncLoupePosition(e.touches[0].clientX, e.touches[0].clientY);
+        wakeHud();
+        schedulePaint();
+        return;
+      }}
       if (!dragging || !e.touches || e.touches.length !== 1) return;
       var tx = e.touches[0].clientX;
       var ty = e.touches[0].clientY;
@@ -1021,11 +1305,45 @@ def build_html_animation(
     stage.addEventListener("touchend", endDrag, {{ passive: true }});
     stage.addEventListener("touchcancel", endDrag, {{ passive: true }});
 
-    // Keyboard navigation
+    // Keyboard navigation & Loupe shortcuts
     window.addEventListener("keydown", function(e) {{
       var tag = (e.target && e.target.tagName) ? e.target.tagName.toLowerCase() : "";
       if (tag === "select" || tag === "input" || tag === "textarea") return;
-      if (e.key === "ArrowLeft") {{
+      if (e.key === "Alt" && !loupePeek) {{
+        if (lastPointerClientX !== null && lastPointerClientY !== null) {{
+          syncLoupePosition(lastPointerClientX, lastPointerClientY);
+          loupePeek = true;
+          updateLoupeUi();
+          schedulePaint();
+        }}
+        return;
+      }}
+      if (e.key === "m" || e.key === "M") {{
+        e.preventDefault();
+        wakeHud();
+        setLoupePinned(!loupePinned);
+      }} else if (e.key === "l" || e.key === "L") {{
+        e.preventDefault();
+        loupeShape = (loupeShape === "square") ? "circle" : "square";
+        updateLoupeUi();
+        schedulePaint();
+      }} else if (e.key === "Escape" && (loupePinned || loupePeek)) {{
+        e.preventDefault();
+        loupePinned = false;
+        loupePeek = false;
+        loupeRightDown = false;
+        updateLoupeUi();
+        schedulePaint();
+      }} else if (isLoupeActive() && (e.key === "[" || e.key === "]")) {{
+        e.preventDefault();
+        loupeSize = Math.max(LOUPE_MIN_SIZE, Math.min(LOUPE_MAX_SIZE, loupeSize * (e.key === "]" ? 1.1 : 1 / 1.1)));
+        schedulePaint();
+      }} else if (isLoupeActive() && (e.key === "+" || e.key === "=" || e.key === "-" || e.key === "_")) {{
+        e.preventDefault();
+        var zoomIn = (e.key === "+" || e.key === "=");
+        loupeZoom = Math.max(LOUPE_MIN_ZOOM, Math.min(LOUPE_MAX_ZOOM, loupeZoom * (zoomIn ? 1.2 : 1 / 1.2)));
+        schedulePaint();
+      }} else if (e.key === "ArrowLeft") {{
         e.preventDefault();
         wakeHud();
         setPlaying(false);
@@ -1057,6 +1375,13 @@ def build_html_animation(
         render();
       }}
     }});
+    window.addEventListener("keyup", function(e) {{
+      if (e.key === "Alt" && loupePeek && !loupeRightDown) {{
+        loupePeek = false;
+        updateLoupeUi();
+        schedulePaint();
+      }}
+    }});
 
     window.addEventListener("resize", resizeCanvas);
     if (window.ResizeObserver) {{
@@ -1066,6 +1391,7 @@ def build_html_animation(
     }}
 
     updateModeButton();
+    updateLoupeUi();
     resizeCanvas();
     render();
     wakeHud();
