@@ -335,9 +335,9 @@ def _build_dialog_stylesheet(theme: str) -> str:
         font-weight: {WEIGHT['semibold']};
     }}
     QLabel#statusPill_cancelled {{
-        background-color: {p['warningSoft']};
-        color: {p['warning']};
-        border: 1px solid {p['warning']};
+        background-color: {p['surfaceActive']};
+        color: {p['textMuted']};
+        border: 1px solid {p['border']};
         border-radius: {RADIUS['md']}px;
         padding: 2px 10px;
         font-size: {FONT['caption'] + 1}pt;

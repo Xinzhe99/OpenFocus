@@ -33,7 +33,7 @@ jobs:
 
       - uses: actions/setup-python@v6
         with:
-          python-version: '3.10'
+          python-version: '3.12'
 
       - name: Resolve version and build label
         id: identity
@@ -59,7 +59,7 @@ jobs:
 
       - uses: actions/setup-python@v6
         with:
-          python-version: '3.10'
+          python-version: '3.12'
           cache: 'pip'
 
       - name: Install dependencies
@@ -276,7 +276,7 @@ jobs:
 
       - uses: actions/setup-python@v6
         with:
-          python-version: '3.10'
+          python-version: '3.12'
           cache: 'pip'
 
       - name: Install dependencies
@@ -435,7 +435,7 @@ jobs:
           ref: ${{ needs.prepare.outputs.sha }}
       - uses: actions/setup-python@v6
         with:
-          python-version: '3.10'
+          python-version: '3.12'
           cache: 'pip'
       - name: Install system and Python dependencies
         run: |
