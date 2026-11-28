@@ -927,6 +927,12 @@ def test_registered_parameters_cross_dialogs_and_adoption(qapp, extra_algorithms
     saved = {'dialog_extra': {'lift': 7, 'selection': 'last'}}
     openfocus = {'max_shift_ratio': .17, 'rotation': 2.5, 'magnification': 4.5,
                  'reference_frame': 2, 'failure_policy': 'fail'}
+    expected_openfocus = {
+        'max_shift_x_ratio': .17, 'max_shift_y_ratio': .17,
+        'rotation': 2.5, 'magnification': 4.5,
+        'auto_crop': True, 'interpolation': 'lanczos',
+        'reference_frame': 2, 'failure_policy': 'fail',
+    }
     registration = {'dialog_shift': {'shift': 3}, 'openfocus': openfocus}
     window.fusion_parameters_for = lambda method, depth=False: extra_algorithms.resolve_fusion_parameters(
         method, None if depth else saved.get(method), depth=depth)
@@ -972,9 +978,9 @@ def test_registered_parameters_cross_dialogs_and_adoption(qapp, extra_algorithms
         for dialog in (batch, compare, depth):
             dialog.align_combo.setCurrentIndex(dialog.align_combo.findData('openfocus'))
             assert dialog.registration_parameter_panel.isHidden()
-            assert dialog.registration_parameter_panel.values() == openfocus
-        assert batch.get_processing_settings()['registration_parameters'] == openfocus
-        assert compare._shared['registration_parameters'] == openfocus
+            assert dialog.registration_parameter_panel.values() == expected_openfocus
+        assert batch.get_processing_settings()['registration_parameters'] == expected_openfocus
+        assert compare._shared['registration_parameters'] == expected_openfocus
         captured = []
         def capture_alignment(images, method, settings, should_cancel, *, reverse_registration=False):
             captured.append((method, dict(settings['registration_parameters'])))
@@ -986,7 +992,7 @@ def test_registered_parameters_cross_dialogs_and_adoption(qapp, extra_algorithms
             _until(qapp, lambda: _finished(compare) and compare._results)
             depth._compute()
             _until(qapp, lambda: depth._worker is None)
-        assert captured == [('openfocus', openfocus), ('openfocus', openfocus)]
+        assert captured == [('openfocus', expected_openfocus), ('openfocus', expected_openfocus)]
         for dialog in (batch, compare, depth):
             dialog.align_combo.setCurrentIndex(dialog.align_combo.findData('dialog_shift'))
             assert not dialog.registration_parameter_panel.isHidden()
@@ -1046,11 +1052,11 @@ def test_registered_parameters_cross_dialogs_and_adoption(qapp, extra_algorithms
         compare._adopt_params()
         assert saved['dialog_extra'] == {'lift': 13, 'selection': 'last'}
         assert registration['dialog_shift'] == {'shift': 3}
-        assert registration['openfocus'] == openfocus
+        assert registration['openfocus'] == expected_openfocus
         assert undo[0]['fusion']['dialog_extra'] == {'lift': 7, 'selection': 'last'}
         assert len(persisted) == 1
         assert persisted[0]['fusion']['dialog_extra'] == saved['dialog_extra']
-        assert persisted[0]['registration']['openfocus'] == openfocus
+        assert persisted[0]['registration']['openfocus'] == expected_openfocus
     finally:
         batch.reject()
         if not sip.isdeleted(compare):
