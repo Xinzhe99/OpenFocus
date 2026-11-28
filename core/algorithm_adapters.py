@@ -191,19 +191,31 @@ def registration_ecc(registration, images, thread_count=4, should_cancel=None, *
 def registration_openfocus(registration, images, thread_count=4, should_cancel=None, **parameters):
     from core.registration import _align_openfocus_impl, deferred_warp_threads
 
+    rx = float(parameters['max_shift_x_ratio'])
+    ry = float(parameters['max_shift_y_ratio'])
+    auto_crop = bool(parameters['auto_crop'])
+    interp = parameters['interpolation']
+    if getattr(registration, 'max_shift_x_ratio', None) is not None:
+        rx = float(registration.max_shift_x_ratio)
+    if getattr(registration, 'max_shift_y_ratio', None) is not None:
+        ry = float(registration.max_shift_y_ratio)
+    if getattr(registration, '_explicit_auto_crop', None) is not None:
+        auto_crop = bool(registration._explicit_auto_crop)
+    if getattr(registration, 'openfocus_interpolation', None) is not None:
+        interp = registration.openfocus_interpolation
     with deferred_warp_threads(thread_count if thread_count and thread_count > 0 else None):
         return _align_openfocus_impl(
             images, should_cancel=should_cancel,
-            max_shift_ratio=parameters['max_shift_ratio'],
-            max_shift_x_ratio=getattr(registration, 'max_shift_x_ratio', None),
-            max_shift_y_ratio=getattr(registration, 'max_shift_y_ratio', None),
+            max_shift_ratio=max(rx, ry),
+            max_shift_x_ratio=rx,
+            max_shift_y_ratio=ry,
             failure_policy=parameters['failure_policy'],
             reference_frame=parameters['reference_frame'],
             rotation=parameters['rotation'],
             magnification=parameters['magnification'],
             alignment_roi=getattr(registration, 'alignment_roi', None),
-            auto_crop=getattr(registration, 'auto_crop', True),
-            interpolation=getattr(registration, 'openfocus_interpolation', None),
+            auto_crop=auto_crop,
+            interpolation=interp,
             defer_warps=registration.defer_warps,
             output_path=parameters.get('output_path'),
             plan_callback=lambda plan: setattr(registration, 'alignment_plan', plan),

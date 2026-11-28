@@ -1503,11 +1503,10 @@ def align_pair_wide(ref_u16, test_u16, h_pct=12.0, v_pct=12.0, rot_deg=6.0,
         if lvl == n - 1:
             shift_frac = [F32(h_pct) / F32(100.0), F32(v_pct) / F32(100.0)]
         else:
-            # FIX 2026-11-07: the old expression mis-parenthesised max()
-            # (max(<int>) -> TypeError) and passed 0.0 into F32();
-            # only shift_frac[0] is consumed below.
-            shift_frac = [F32(1.5 / max(float(A_pyr[0].shape[1]),
-                                        float(A_pyr[0].shape[0])))] * 2
+            fine_step = F32(1.5 / max(float(A_pyr[0].shape[1]),
+                                      float(A_pyr[0].shape[0])))
+            shift_frac = [F32(0.0) if h_pct == 0 else fine_step,
+                          F32(0.0) if v_pct == 0 else fine_step]
         # Rotation and magnification ranges scale with the level, remaining
         # tiny at coarse levels (no shift aliasing on
         # small textures), full user range at lvl0 where rotation is
@@ -1715,6 +1714,14 @@ class AlignmentPlan:
     def reference(self):
         return self.transforms[self.reference_index].source
 
+    @property
+    def effective_max_shift_x_ratio(self) -> float:
+        return self.max_shift_ratio if self.max_shift_x_ratio is None else self.max_shift_x_ratio
+
+    @property
+    def effective_max_shift_y_ratio(self) -> float:
+        return self.max_shift_ratio if self.max_shift_y_ratio is None else self.max_shift_y_ratio
+
     def validate_sources(self, sources, *, should_cancel=None):
         _validate_plan_sources(sources, self.transforms, _alignment_geometry, should_cancel)
 
@@ -1852,20 +1859,55 @@ def _warp_alignment(image, f8, should_cancel, *, spillable: bool = False):
     return output
 
 
-def _warp_alignment_cv(image, transform, interpolation, should_cancel):
+def _warp_cv_band(src, dst, m3, flags, start, stop):
+    import cv2
+
+    band_m = m3.copy()
+    if start:
+        band_m[0, 2] += m3[0, 1] * float(start)
+        band_m[1, 2] += m3[1, 1] * float(start)
+    cv2.warpPerspective(
+        src, band_m, (dst.shape[1], stop - start), dst=dst[start:stop],
+        flags=flags, borderMode=cv2.BORDER_CONSTANT,
+    )
+
+
+def _warp_alignment_cv_region(image, transform, x, y, width, height, interpolation,
+                              should_cancel, *, src_y0=0, bgr_rev=False):
     import cv2
     from core.registration import interpolation_flag
 
     _check_cancel(should_cancel)
-    h, w = image.shape[:2]
-    bgr_rev = _is_bgr_rev(image)
-    src = image[..., ::-1] if bgr_rev else image
+    if height <= 0 or width <= 0:
+        out_shape = (height, width) if image.ndim == 2 else (height, width, image.shape[2])
+        return np.empty(out_shape, dtype=image.dtype)
+    is_bgr_rev = bool(bgr_rev or _is_bgr_rev(image))
+    src = image[..., ::-1] if is_bgr_rev else image
+    singleton = src.ndim == 3 and src.shape[2] == 1
+    work_src = src[:, :, 0] if singleton else src
+
+    m3 = transform.inverse_matrix.astype(np.float64, copy=True)
+    if x or y:
+        m3[0, 2] += m3[0, 0] * float(x) + m3[0, 1] * float(y)
+        m3[1, 2] += m3[1, 0] * float(x) + m3[1, 1] * float(y)
+    if src_y0:
+        m3[1, 2] -= float(src_y0)
+
+    out_shape = (height, width) if work_src.ndim == 2 else (height, width, work_src.shape[2])
+    output = np.empty(out_shape, dtype=work_src.dtype)
     flags = interpolation_flag(interpolation) | cv2.WARP_INVERSE_MAP
-    warped = cv2.warpPerspective(
-        src, transform.inverse_matrix.astype(np.float64), (w, h),
-        flags=flags, borderMode=cv2.BORDER_CONSTANT,
-    )
-    if bgr_rev and warped.ndim == 3 and warped.shape[2] == 3:
+    if should_cancel is None or height <= 512:
+        cv2.warpPerspective(
+            work_src, m3, (width, height), dst=output,
+            flags=flags, borderMode=cv2.BORDER_CONSTANT,
+        )
+    else:
+        _run_row_bands(
+            height, 512, should_cancel, _warp_cv_band, work_src, output, m3, flags,
+            parallel_pixels=0, workers=1,
+        )
+    warped = output[:, :, None] if singleton else output
+    if is_bgr_rev and warped.ndim == 3 and warped.shape[2] == 3:
         if _native_kernels.available() and warped.dtype in (np.uint8, np.uint16):
             swap_fn = (_native_kernels.swap_bgr_inplace_rows_u8 if warped.dtype == np.uint8
                        else _native_kernels.swap_bgr_inplace_rows_u16)
@@ -1877,6 +1919,11 @@ def _warp_alignment_cv(image, transform, interpolation, should_cancel):
             warped = np.ascontiguousarray(warped[..., ::-1])
     _check_cancel(should_cancel)
     return warped
+
+
+def _warp_alignment_cv(image, transform, interpolation, should_cancel):
+    h, w = image.shape[:2]
+    return _warp_alignment_cv_region(image, transform, 0, 0, w, h, interpolation, should_cancel)
 
 
 def apply_alignment(image, transform, *, should_cancel=None, interpolation=None):
@@ -1949,7 +1996,7 @@ def _warp_alignment_region_np(band, x, y, width, height, src_h, src_w, src_y0, f
 
 
 def apply_alignment_region(source_or_image, transform, x, y, width, height, *,
-                           channels=None, should_cancel=None):
+                           channels=None, should_cancel=None, interpolation=None):
     """Compute a single rectangular similarity-warped crop bit-identical to apply_alignment."""
     from core.source_frames import is_direct_rgb_tiff
 
@@ -1968,12 +2015,13 @@ def apply_alignment_region(source_or_image, transform, x, y, width, height, *,
     with _measure_deferred_alignment():
         return _apply_alignment_region_resolved(
             source_or_image, image, direct_tiff, transform, x, y, width, height,
-            channels=channels, should_cancel=should_cancel,
+            channels=channels, should_cancel=should_cancel, interpolation=interpolation,
         )
 
 
 def _apply_alignment_region_resolved(source_or_image, image, direct_tiff, transform,
-                                     x, y, width, height, *, channels=None, should_cancel=None):
+                                     x, y, width, height, *, channels=None, should_cancel=None,
+                                     interpolation=None):
     from core.source_frames import _read_direct_rgb_tiff_region
 
     src_h, src_w = transform.source.shape[:2]
@@ -2025,19 +2073,41 @@ def _apply_alignment_region_resolved(source_or_image, image, direct_tiff, transf
     u_c, v_c = map_coords(fields, cx_corners, cy_corners)
     u_lo, u_hi = float(np.min(u_c)), float(np.max(u_c))
     v_lo, v_hi = float(np.min(v_c)), float(np.max(v_c))
-    if u_hi < 0.0 or u_lo >= src_w or v_hi < 0.0 or v_lo >= src_h:
+    pad = (5 if interpolation == 'lanczos' else 4 if interpolation == 'cubic' else 2)
+    if u_hi < -pad or u_lo >= src_w + pad or v_hi < -pad or v_lo >= src_h + pad:
         resource_policy.require_memory(math.prod(out_shape) * src_dtype.itemsize)
         return np.zeros(out_shape, dtype=src_dtype)
 
-    src_y0 = max(0, int(math.floor(v_lo)) - 2)
-    src_y1 = min(src_h, int(math.ceil(v_hi)) + 3)
+    src_y0 = max(0, int(math.floor(v_lo)) - pad)
+    src_y1 = min(src_h, int(math.ceil(v_hi)) + pad + 1)
     full_out_shape = (height, width) if len(src_shape) == 2 else (height, width, src_shape[2])
     out_bytes = math.prod(full_out_shape) * src_dtype.itemsize
     band_bytes = ((src_y1 - src_y0) * src_w * (src_shape[2] if len(src_shape) == 3 else 1) * src_dtype.itemsize
                   if direct_tiff else 0)
     resource_policy.require_memory(out_bytes + band_bytes)
 
-    if direct_tiff:
+    if interpolation is not None:
+        if direct_tiff:
+            with source_or_image._open_direct_tiff() as stream:
+                with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+                    rgb_full = np.ndarray(
+                        src_shape, dtype=src_dtype,
+                        buffer=mm, offset=source_or_image._rgb_tiff_offset,
+                    )
+                    rgb_band = rgb_full[src_y0:src_y1]
+                    try:
+                        output = _warp_alignment_cv_region(
+                            rgb_band[..., ::-1], transform, x, y, width, height,
+                            interpolation, should_cancel, src_y0=src_y0, bgr_rev=True,
+                        )
+                    finally:
+                        del rgb_band, rgb_full
+        else:
+            output = _warp_alignment_cv_region(
+                image, transform, x, y, width, height,
+                interpolation, should_cancel,
+            )
+    elif direct_tiff:
         output = np.empty(full_out_shape, dtype=src_dtype)
         with source_or_image._open_direct_tiff() as stream:
             with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as mm:
