@@ -511,6 +511,10 @@ def _validate_plan_request(plan, identity):
     req_roi = (identity or {}).get('alignment_roi')
     req_roi_tuple = tuple(int(v) for v in req_roi) if req_roi is not None else None
     if ('max_shift_ratio' in parameters and float(parameters['max_shift_ratio']) != plan.max_shift_ratio
+            or 'max_shift_x_ratio' in parameters and float(parameters['max_shift_x_ratio']) != plan.effective_max_shift_x_ratio
+            or 'max_shift_y_ratio' in parameters and float(parameters['max_shift_y_ratio']) != plan.effective_max_shift_y_ratio
+            or 'auto_crop' in parameters and bool(parameters['auto_crop']) != plan.auto_crop
+            or 'interpolation' in parameters and parameters['interpolation'] != plan.interpolation
             or 'reference_frame' in parameters and int(parameters['reference_frame']) - 1 != plan.reference_index
             or 'rotation' in parameters and float(parameters['rotation']) != plan.rotation
             or 'magnification' in parameters and float(parameters['magnification']) != plan.magnification

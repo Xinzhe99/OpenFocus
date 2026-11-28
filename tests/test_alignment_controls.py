@@ -539,3 +539,221 @@ def test_alignment_area_button_uses_panel_toggle_consistent_theme(qapp):
             assert "warningSoft" not in qss
     finally:
         panel.widget.deleteLater()
+
+
+def test_openfocus_parameter_parity_and_legacy_migration():
+    defaults = resolve_registration_parameters("openfocus")
+    assert defaults == {
+        "max_shift_x_ratio": 0.03,
+        "max_shift_y_ratio": 0.03,
+        "rotation": 0.0,
+        "magnification": 5.0,
+        "auto_crop": True,
+        "interpolation": "lanczos",
+        "failure_policy": "continue",
+        "reference_frame": 1,
+    }
+    legacy = resolve_registration_parameters("openfocus", {"max_shift_ratio": 0.14})
+    assert legacy["max_shift_x_ratio"] == pytest.approx(0.14)
+    assert legacy["max_shift_y_ratio"] == pytest.approx(0.14)
+
+    mixed = resolve_registration_parameters(
+        "openfocus", {"max_shift_ratio": 0.14, "max_shift_y_ratio": 0.02}
+    )
+    assert mixed["max_shift_x_ratio"] == pytest.approx(0.14)
+    assert mixed["max_shift_y_ratio"] == pytest.approx(0.02)
+
+    from utils.report_bundle import _numeric_fields
+
+    sanitized = _numeric_fields({
+        "max_shift_x_ratio": 0.1,
+        "max_shift_y_ratio": 0.05,
+        "auto_crop": False,
+        "interpolation": "cubic",
+    })
+    assert sanitized == {
+        "max_shift_x_ratio": 0.1,
+        "max_shift_y_ratio": 0.05,
+        "auto_crop": False,
+        "interpolation": "cubic",
+    }
+
+
+def test_openfocus_asymmetric_xy_locks_zero_axis_across_multilevel_pyramid():
+    base = _textured_base(256, 256, seed=91)
+    shifted_x = _warp_synthetic(base, dx=12.0, dy=0.0)
+    gray_ref = oa._alignment_gray16(base, None)
+    gray_x = oa._alignment_gray16(shifted_x, None)
+    f8_x, _ = oa.align_pair_wide(
+        gray_ref, gray_x, h_pct=12.0, v_pct=0.0, rot_deg=0.0, mag_pct=0.0
+    )
+    dx = f8_x[0] - f8_x[2]
+    dy = f8_x[1] - f8_x[3]
+    assert dy == pytest.approx(0.0, abs=1e-6)
+    assert abs(abs(dx) - 12.0) < 1.0
+
+    shifted_y = _warp_synthetic(base, dx=0.0, dy=11.0)
+    reg = ImageRegistration(
+        method="openfocus",
+        parameters={
+            "max_shift_x_ratio": 0.0,
+            "max_shift_y_ratio": 0.12,
+            "rotation": 0.0,
+            "magnification": 0.0,
+            "auto_crop": False,
+            "interpolation": "cubic",
+        },
+    )
+    aligned = reg.process([base, shifted_y], thread_count=1)
+    assert len(aligned) == 2
+    assert reg.alignment_plan.effective_max_shift_x_ratio == pytest.approx(0.0)
+    assert reg.alignment_plan.effective_max_shift_y_ratio == pytest.approx(0.12)
+    f8_y = reg.alignment_plan.transforms[1].f8
+    assert abs(f8_y[0] - f8_y[2]) < 1e-6
+    assert abs(abs(f8_y[1] - f8_y[3]) - 11.0) < 1.0
+
+
+@pytest.mark.parametrize("dtype", [np.uint8, np.uint16])
+def test_openfocus_interpolation_modes_and_region_warp_parity(dtype):
+    from core.source_frames import borrow_frame_region, resolve_frame, resolve_region
+
+    base_u8 = _textured_base(192, 224, seed=67)
+    if dtype == np.uint16:
+        base = base_u8.astype(np.uint16) * np.uint16(257) + np.uint16(37)
+        base_f = base.astype(np.float32)
+        m = cv2.getRotationMatrix2D((112.0, 96.0), 1.2, 1.015)
+        m[0, 2] += 4.37
+        m[1, 2] -= 3.62
+        shifted = np.clip(
+            cv2.warpAffine(base_f, m, (224, 192), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT),
+            0, 65535,
+        ).astype(np.uint16)
+    else:
+        base = base_u8
+        m = cv2.getRotationMatrix2D((112.0, 96.0), 1.2, 1.015)
+        m[0, 2] += 4.37
+        m[1, 2] -= 3.62
+        shifted = cv2.warpAffine(base, m, (224, 192), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+
+    outputs = {}
+    for interp in ("lanczos", "cubic", "linear"):
+        reg_eager = ImageRegistration(
+            method="openfocus",
+            parameters={
+                "max_shift_x_ratio": 0.10,
+                "max_shift_y_ratio": 0.10,
+                "rotation": 3.0,
+                "magnification": 5.0,
+                "auto_crop": True,
+                "interpolation": interp,
+            },
+            defer_warps=False,
+        )
+        eager = reg_eager.process([base, shifted], thread_count=2)
+        outputs[interp] = eager[1]
+        assert eager[0].dtype == eager[1].dtype == dtype
+        assert eager[0].shape[0] < base.shape[0] and eager[0].shape[1] < base.shape[1]
+
+        reg_deferred = ImageRegistration(
+            method="openfocus",
+            parameters=reg_eager.parameters,
+            defer_warps=True,
+        )
+        deferred = reg_deferred.process([base, shifted], thread_count=2)
+        for e_img, d_frame in zip(eager, deferred):
+            np.testing.assert_array_equal(resolve_frame(d_frame), e_img)
+        ch, cw = eager[1].shape[:2]
+        reg_actual = resolve_region(deferred[1], 12, 10, min(64, cw - 12), min(64, ch - 10))
+        reg_expected = eager[1][10:10 + min(64, ch - 10), 12:12 + min(64, cw - 12)]
+        assert int(np.max(np.abs(reg_actual.astype(np.int32) - reg_expected.astype(np.int32)))) <= (1 if dtype == np.uint16 else 0)
+        with borrow_frame_region(deferred[1], np.s_[8:32, 8:32]) as slice_view:
+            assert int(np.max(np.abs(slice_view.astype(np.int32) - eager[1][8:32, 8:32].astype(np.int32)))) <= (1 if dtype == np.uint16 else 0)
+
+        # Singleton channel & BGR-reversed view parity
+        tf = reg_eager.alignment_plan.transforms[1]
+        single = np.ascontiguousarray(shifted[:, :, :1])
+        single_fp = oa.SourceFingerprint(single.shape, single.dtype.str, oa._hash_pixels(single, None))
+        single_tf = oa.AlignmentTransform(1, tf.f8, tf.pair_f8, single_fp, 0)
+        full_single = oa.apply_alignment(single, single_tf, interpolation=interp)
+        reg_single = oa.apply_alignment_region(single, single_tf, 16, 14, 72, 60, interpolation=interp)
+        assert full_single.shape == single.shape
+        assert int(np.max(np.abs(reg_single.astype(np.int32) - full_single[14:74, 16:88].astype(np.int32)))) <= (1 if dtype == np.uint16 else 0)
+
+    assert not np.array_equal(outputs["lanczos"], outputs["linear"])
+    assert not np.array_equal(outputs["lanczos"], outputs["cubic"])
+
+
+def test_openfocus_plan_cache_distinguishes_parity_parameters(tmp_path, monkeypatch):
+    from core.source_frames import scratch_source_headers
+    from utils import align_cache
+
+    cache_root = tmp_path / "cache"
+    monkeypatch.setattr(align_cache, "cache_dir", lambda: str(cache_root))
+    base = _textured_base(64, 64, seed=21)
+    names = ["a.png", "b.png"]
+    for name in names:
+        assert cv2.imwrite(str(tmp_path / name), base)
+    sources = scratch_source_headers([str(tmp_path / name) for name in names])
+    plan = oa.estimate_alignment_plan(
+        sources,
+        max_shift_x_ratio=0.08,
+        max_shift_y_ratio=0.04,
+        auto_crop=True,
+        interpolation="lanczos",
+    )
+    identity = {
+        "effective_params": {
+            "max_shift_x_ratio": 0.08,
+            "max_shift_y_ratio": 0.04,
+            "rotation": 0.0,
+            "magnification": 3.0,
+            "auto_crop": True,
+            "interpolation": "lanczos",
+            "failure_policy": "fail",
+            "reference_frame": 1,
+        }
+    }
+    align_cache.save_alignment_plan(str(tmp_path), names, plan, sources, identity=identity)
+    assert align_cache.load_alignment_plan(str(tmp_path), names, sources, identity=identity) == plan
+
+    for key, val in (
+        ("max_shift_x_ratio", 0.12),
+        ("max_shift_y_ratio", 0.09),
+        ("auto_crop", False),
+        ("interpolation", "cubic"),
+    ):
+        changed = {**identity, "effective_params": {**identity["effective_params"], key: val}}
+        assert align_cache.load_alignment_plan(str(tmp_path), names, sources, identity=changed) is None
+
+
+def test_ui_openfocus_panel_shows_parity_controls(qapp, tmp_path, monkeypatch):
+    pytest.importorskip("PyQt6")
+    from PyQt6.QtWidgets import QCheckBox, QComboBox
+    from tests.test_control_channel import _destroy_main_window, _new_main_window
+
+    window = _new_main_window(qapp, tmp_path, monkeypatch)
+    try:
+        window.experimental_features = True
+        window.set_alignment_method("openfocus")
+        assert window.current_alignment_method() == "openfocus"
+        panel = window.registration_parameter_panel
+        panel.disclosure.click()
+        qapp.processEvents()
+        for key in (
+            "max_shift_x_ratio",
+            "max_shift_y_ratio",
+            "rotation",
+            "magnification",
+            "auto_crop",
+            "interpolation",
+            "reference_frame",
+        ):
+            assert key in panel.editors, f"Missing OpenFocus editor: {key}"
+        assert isinstance(panel.editors["auto_crop"], QCheckBox)
+        assert isinstance(panel.editors["interpolation"], QComboBox)
+        assert panel.editors["auto_crop"].isChecked() is True
+        assert panel.editors["interpolation"].currentData() == "lanczos"
+        assert panel.editors["max_shift_x_ratio"].value() == pytest.approx(0.03)
+        assert panel.editors["max_shift_y_ratio"].value() == pytest.approx(0.03)
+    finally:
+        _destroy_main_window(qapp, window)
