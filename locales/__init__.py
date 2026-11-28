@@ -7,6 +7,7 @@ from PyQt6.QtCore import QObject, pyqtSignal
 
 from .en import EN
 from ._retouch_macro import RETOUCH_MACRO_TRANSLATIONS
+from .ui_polish_i18n import get_ui_polish_pack
 
 
 def __getattr__(name):
@@ -1150,6 +1151,7 @@ def _apply_pack_overlays(code: str, table: dict) -> dict:
     context_help = _context_help_pack(code)
     if context_help:
         table.update(context_help)
+    table.update(get_ui_polish_pack(code))
     return table
 
 

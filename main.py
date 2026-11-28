@@ -935,6 +935,8 @@ class OpenFocus(QMainWindow):
         from ui.accelerator_setup import AcceleratorBanner
         self.accelerator_banner = AcceleratorBanner(self)
         self.accelerator_banner.installed.connect(self._update_dynamic_status)
+        from ui.menus import refresh_ai_pack_action
+        self.accelerator_banner.installed.connect(lambda: refresh_ai_pack_action(self))
         main_layout.addWidget(self.accelerator_banner)
         main_layout.addWidget(self.main_splitter, 1)
 

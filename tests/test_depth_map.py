@@ -818,3 +818,29 @@ def test_parallel_depth_runners_cancel_promptly(runner_name):
     runner = getattr(depth_map, runner_name)
     with pytest.raises(DepthMapCancelled):
         runner(frames, None, should_cancel, thread_count=4)
+
+
+def test_depth_map_export_tab_cards_icons_and_compact_mesh_spinbox(qapp):
+    from dialogs.depthmap import DepthMapDialog
+
+    dlg = DepthMapDialog(None)
+    try:
+        dlg._side_controls.setCurrentIndex(2)
+        qapp.processEvents()
+        assert dlg._export_maps_card is not None
+        assert dlg._export_mesh_card is not None
+        assert dlg.mesh_size.maximumWidth() <= 140
+        for btn_name in (
+            "btn_save_color",
+            "btn_save_raw",
+            "btn_save_indices",
+            "btn_save_render",
+            "btn_save_contrast",
+            "btn_save_physical",
+            "btn_save_3d",
+        ):
+            btn = getattr(dlg, btn_name)
+            assert not btn.icon().isNull(), f"{btn_name} should display an icon"
+    finally:
+        dlg.reject()
+        qapp.processEvents()
