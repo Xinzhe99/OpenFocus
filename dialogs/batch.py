@@ -319,7 +319,7 @@ class BatchProcessingDialog(QDialog):
         format_row = QHBoxLayout()
         format_row.addWidget(QLabel(trans.t('batch_format_label')))
         self.format_combo = QComboBox()
-        self.format_combo.addItems(["JPG", "PNG", "BMP", "TIFF"])
+        self.format_combo.addItems(["JPG", "PNG", "BMP", "TIFF", "DNG"])
         self.format_combo.setCurrentText('PNG')
         self.format_combo.setToolTip(trans.t('export_depth_hint'))
         self.format_combo.currentTextChanged.connect(self.on_format_changed)

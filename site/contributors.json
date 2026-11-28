@@ -1,0 +1,155 @@
+{
+  "excluded_authors": [
+    "Xinzhe99"
+  ],
+  "opt_out_authors": [],
+  "excluded_issues": [],
+  "contributors": [
+    {
+      "handle": "AlanRockefeller",
+      "platform": "GitHub",
+      "url": "https://github.com/AlanRockefeller",
+      "contributions": [
+        {
+          "issue": 329,
+          "version": "next",
+          "date": "2026-11-28",
+          "kind": "bug",
+          "en": "Fixed five test regressions on main introduced after #316, #318, #319, and #322.",
+          "zh": "修复 #316、#318、#319、#322 合入后 main 分支上的五项测试回归。"
+        },
+        {
+          "issue": 308,
+          "version": "next",
+          "date": "2026-11-28",
+          "kind": "infra",
+          "en": "Upgraded CI build and test workflows from Python 3.10 to Python 3.12.",
+          "zh": "将 CI 构建与测试工作流从 Python 3.10 升级至 Python 3.12。"
+        },
+        {
+          "issue": 287,
+          "version": "next",
+          "date": "2026-11-26",
+          "kind": "bug",
+          "en": "Eliminated undefined-behavior negative left shifts in the C++ alignment kernel (cpp/openfocus_ab.cpp).",
+          "zh": "消除 C++ 对齐内核（cpp/openfocus_ab.cpp）中在 UBSan 下触发未定义行为的负数左移。"
+        },
+        {
+          "issue": 286,
+          "version": "next",
+          "date": "2026-11-26",
+          "kind": "bug",
+          "en": "Aligned AVX2 and scalar C++ kernel outputs when working buffers partially overlap.",
+          "zh": "统一 C++ 内核缓冲区部分重叠时 AVX2 与标量路径的计算结果。"
+        },
+        {
+          "issue": 60,
+          "version": "v2.0.0",
+          "date": "2026-11-11",
+          "kind": "bug",
+          "en": "Stopped GUI startup from automatically opening a browser sign-in tab on every launch, including headless and automated runs.",
+          "zh": "修复桌面端每次启动（含无头与自动化运行场景）都会自动弹出浏览器登录页的问题。"
+        },
+        {
+          "issue": 33,
+          "version": "v2.0.0",
+          "date": "2026-11-10",
+          "kind": "bug",
+          "en": "Fixed retouch replay source fallback, soft-blend stabiliser axis, prototype tool invocation, and unavailable temp-folder feedback.",
+          "zh": "修复修饰重放源帧回退、柔和融合稳定器轴向、原型工具调用以及临时目录不可用时的交互提示。"
+        },
+        {
+          "issue": 42,
+          "version": "v2.0.0",
+          "date": "2026-11-09",
+          "kind": "bug",
+          "en": "Clipped watermark previews to opaque regions instead of drawing over transparent areas of transparent outputs.",
+          "zh": "修复透明输出图像中水印预览错误绘制到透明区域的问题。"
+        },
+        {
+          "issue": 27,
+          "version": "v2.0.0",
+          "date": "2026-11-08",
+          "kind": "feature",
+          "en": "Moved renders into a crash-isolated worker process so a native fault no longer closes the main application window.",
+          "zh": "将渲染任务隔离到独立工作进程，避免底层原生故障导致主窗口闪退。"
+        }
+      ]
+    },
+    {
+      "handle": "m1ll3t",
+      "platform": "GitHub",
+      "url": "https://github.com/m1ll3t",
+      "contributions": [
+        {
+          "issue": 294,
+          "version": "next",
+          "date": "2026-11-26",
+          "kind": "bug",
+          "en": "Bundled certifi CA certificates across macOS desktop HTTPS clients so TLS verification succeeds out of the box.",
+          "zh": "为 macOS 桌面端所有 HTTPS 客户端统一打包 certifi 根证书库，解决缺少 CA 证书导致的请求失败。"
+        }
+      ]
+    },
+    {
+      "handle": "taraskin45-glitch",
+      "platform": "GitHub",
+      "url": "https://github.com/taraskin45-glitch",
+      "contributions": [
+        {
+          "issue": 246,
+          "version": "next",
+          "date": "2026-11-25",
+          "kind": "bug",
+          "en": "Fixed macOS v2.0.0 desktop sign-in remaining stuck on the sign-in screen after a successful browser OAuth callback.",
+          "zh": "修复 macOS v2.0.0 在浏览器完成 OAuth 回调后桌面端仍停留在登录界面的问题。"
+        }
+      ]
+    },
+    {
+      "handle": "hzweifei",
+      "platform": "GitHub",
+      "url": "https://github.com/hzweifei",
+      "contributions": [
+        {
+          "issue": 5,
+          "version": "v1.52",
+          "date": "2026-10-15",
+          "kind": "algorithm",
+          "en": "Implemented the paper's Gaussian-like four-neighborhood gradient (GFG) operator in GFG-FGF instead of simple mean difference.",
+          "zh": "将 GFG-FGF 算法从均值差分修正为论文中的类高斯四邻域梯度（GFG）算子。"
+        }
+      ]
+    },
+    {
+      "handle": "Phreemann",
+      "platform": "GitHub",
+      "url": "https://github.com/Phreemann",
+      "contributions": [
+        {
+          "issue": 4,
+          "version": "v1.26",
+          "date": "2026-10-01",
+          "kind": "bug",
+          "en": "Fixed packaged windowed builds crashing with \"I/O operation on closed file\" during rendering when stdout/stderr are closed.",
+          "zh": "修复无控制台打包版本在渲染时因标准输出关闭导致的 \"I/O operation on closed file\" 崩溃。"
+        }
+      ]
+    },
+    {
+      "handle": "pixelsurium",
+      "platform": "GitHub",
+      "url": "https://github.com/pixelsurium",
+      "contributions": [
+        {
+          "issue": 2,
+          "version": "v1.9",
+          "date": "2026-09-22",
+          "kind": "bug",
+          "en": "Fixed packaged-build Stack-MFF-V4 rendering crash (\"NoneType object has no attribute 'write'\").",
+          "zh": "修复打包版本运行 Stack-MFF-V4 时触发 \"NoneType object has no attribute 'write'\" 的崩溃问题。"
+        }
+      ]
+    }
+  ]
+}

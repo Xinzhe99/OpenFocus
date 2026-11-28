@@ -191,7 +191,7 @@ class WatchFolderDialog(QDialog):
         self.lbl_format = QLabel(trans.t("watch_folder_format_label"))
         self.format_combo = QComboBox()
         self.format_combo.setProperty("controlId", "watch_format_combo")
-        self.format_combo.addItems(["PNG", "TIFF", "JPG", "BMP"])
+        self.format_combo.addItems(["PNG", "TIFF", "JPG", "BMP", "DNG"])
         self.format_combo.setCurrentText("PNG")
         settings_grid.addWidget(self.lbl_format, 1, 0)
         settings_grid.addWidget(self.format_combo, 1, 1)

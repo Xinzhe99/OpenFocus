@@ -1712,6 +1712,7 @@ class BatchWorker(QThread):
         self._task_failures = []
         self._source_exif = b""
         self._source_icc_profile = b""
+        self._linear_dng_metadata = None
         self.is_cancelled = False
         self.import_mode = import_mode
         self.split_method = split_method
@@ -1788,10 +1789,16 @@ class BatchWorker(QThread):
                             should_cancel=lambda: self.is_cancelled)
                     except watermark.WatermarkCancelled as exc:
                         raise RegistrationCancelled() from exc
+                is_dng = extension.lower().lstrip('.') == 'dng'
+                linear_meta = self._linear_dng_metadata if is_dng else None
+                linear_px = getattr(self.image_loader, 'px_size_um', None) if is_dng else None
                 path = publish_unique(
                     path,
-                    lambda staging: imwrite_auto(staging, image, params, exif=self._source_exif,
-                                                 icc_profile=self._source_icc_profile),
+                    lambda staging: imwrite_auto(
+                        staging, image, params, exif=self._source_exif,
+                        icc_profile=(b"" if is_dng else self._source_icc_profile),
+                        linear_dng_metadata=linear_meta,
+                        linear_dng_px_size_um=linear_px),
                     should_cancel=lambda: self.is_cancelled)
                 ok = True
             except RegistrationCancelled:
@@ -1849,6 +1856,7 @@ class BatchWorker(QThread):
                         continue
                     self._task_artifacts = task['artifacts']
                     self._task_failures = task['failures']
+                    self._linear_dng_metadata = None
                     self._task_progress = (index, total)
                     self.progress_updated.emit(index, total, trans_batch_progress(index + 1, total, name))
                     with log_operation("batch_folder", task_name=name, folder=source if split else data,
@@ -2006,6 +2014,26 @@ class BatchWorker(QThread):
                 method = self.processing_settings.get('fusion_method')
                 if method and method != 'none' and len(images) < 2:
                     raise ValueError('Fusion requires at least two frames')
+                output_format = self.processing_settings.get('format', 'png').lstrip('.').lower()
+                if output_format == 'dng' and self._linear_dng_metadata is None:
+                    if not original_paths or any(not p for p in original_paths):
+                        raise ValueError('Linear DNG export requires matching camera RAW source files')
+                    self.image_loader.should_cancel = lambda: self.is_cancelled
+                    scale = float(self.processing_settings.get('load_scale_factor', 1.0))
+                    ok, msg, linear_images, linear_names = self.image_loader.load_linear_raw_stack(
+                        original_paths, scale_factor=scale,
+                        thread_count=self.thread_count,
+                        resource_preference=getattr(self, 'resource_preference', 'balanced'))
+                    if self.is_cancelled:
+                        raise RegistrationCancelled()
+                    if not ok or not linear_images or getattr(self.image_loader, 'linear_dng_metadata', None) is None:
+                        raise ValueError(msg or 'Linear DNG export requires matching camera RAW frames')
+                    images = linear_images
+                    if linear_names and len(linear_names) == len(export_names):
+                        export_names = linear_names
+                    self._linear_dng_metadata = self.image_loader.linear_dng_metadata
+                    self._source_exif = getattr(self.image_loader, 'source_exif', b'') or b''
+                    self._source_icc_profile = b''
         
                 alignment = self.processing_settings.get('alignment', self.processing_settings.get('reg_methods', ()))
                 steps = alignment_steps(alignment)
@@ -2204,27 +2232,65 @@ class BatchWorker(QThread):
             parameters=resolve_fusion_parameters(fusion_method, fusion_params),
             thread_count=self.thread_count, should_cancel=lambda: self.is_cancelled)
 
+    def _collect_folder_image_paths(self, folder_path):
+        from utils.path_identity import same_path
+        from utils.sorting import natural_sort_key
+
+        if not os.path.isdir(folder_path):
+            raise ValueError("Selected path is not a valid directory")
+        excluded = [self.processing_settings.get('flat_field_path', ''),
+                    self.processing_settings.get('defect_mask_path', '')]
+        image_files = []
+        for filename in os.listdir(folder_path):
+            ext = os.path.splitext(filename)[1].lower()
+            full_path = os.path.join(folder_path, filename)
+            if ext in self.image_loader.SUPPORTED_FORMATS and not any(
+                    same_path(full_path, item) for item in excluded if item):
+                image_files.append((filename, full_path))
+        image_files = self.image_loader._drop_derived_aligned_copies(image_files)
+        if not image_files:
+            raise ValueError("No supported image files found in the folder")
+        image_files.sort(key=lambda x: natural_sort_key(x[0]))
+        return [path for _, path in image_files]
+
     def process_single_folder(self, folder_path):
         """Both entry points share the same registration/fusion/write pipeline."""
         if self.processing_settings.get('group_size', 0):
             return self._process_grouped_folder(folder_path)
         scale = float(self.processing_settings.get('load_scale_factor', 1.0))
         self.image_loader.should_cancel = lambda: self.is_cancelled
-        success, message, images, filenames = self.image_loader.load_from_folder(
-            folder_path, scale_factor=scale,
-            thread_count=self.thread_count,
-            resource_preference=getattr(self, 'resource_preference', 'balanced'),
-            exclude_paths=[self.processing_settings.get('flat_field_path', ''),
-                           self.processing_settings.get('defect_mask_path', '')])
-        if self.is_cancelled:
-            raise RegistrationCancelled()
-        if getattr(self.image_loader, 'failed_count', 0):
-            raise ValueError(message)
-        if not success or not images:
-            raise ValueError(message)
-        self._source_exif = getattr(self.image_loader, 'source_exif', b'') or b''
-        self._source_icc_profile = getattr(self.image_loader, 'source_icc_profile', b'')
-        source_paths = getattr(self.image_loader, 'image_paths', None) or []
+        output_format = self.processing_settings.get('format', 'png').lstrip('.').lower()
+        if output_format == 'dng':
+            raw_paths = self._collect_folder_image_paths(folder_path)
+            success, message, images, filenames = self.image_loader.load_linear_raw_stack(
+                raw_paths, scale_factor=scale,
+                thread_count=self.thread_count,
+                resource_preference=getattr(self, 'resource_preference', 'balanced'))
+            if self.is_cancelled:
+                raise RegistrationCancelled()
+            if not success or not images or getattr(self.image_loader, 'linear_dng_metadata', None) is None:
+                raise ValueError(message or 'Linear DNG export requires matching camera RAW frames')
+            self._linear_dng_metadata = self.image_loader.linear_dng_metadata
+            self._source_exif = getattr(self.image_loader, 'source_exif', b'') or b''
+            self._source_icc_profile = b''
+            source_paths = raw_paths
+        else:
+            self._linear_dng_metadata = None
+            success, message, images, filenames = self.image_loader.load_from_folder(
+                folder_path, scale_factor=scale,
+                thread_count=self.thread_count,
+                resource_preference=getattr(self, 'resource_preference', 'balanced'),
+                exclude_paths=[self.processing_settings.get('flat_field_path', ''),
+                               self.processing_settings.get('defect_mask_path', '')])
+            if self.is_cancelled:
+                raise RegistrationCancelled()
+            if getattr(self.image_loader, 'failed_count', 0):
+                raise ValueError(message)
+            if not success or not images:
+                raise ValueError(message)
+            self._source_exif = getattr(self.image_loader, 'source_exif', b'') or b''
+            self._source_icc_profile = getattr(self.image_loader, 'source_icc_profile', b'')
+            source_paths = getattr(self.image_loader, 'image_paths', None) or []
         if len(source_paths) != len(images):
             source_paths = ([None] * len(images) if self.processing_settings.get('defect_mask_path')
                             else [os.path.join(folder_path, name) for name in filenames])
@@ -2242,6 +2308,8 @@ class BatchWorker(QThread):
         from utils.sorting import natural_sort_key
 
         settings = self.processing_settings
+        if settings.get('format', 'png').lstrip('.').lower() == 'dng':
+            raise ValueError('Grouped fusion does not support Linear DNG export')
         size = settings.get('group_size', 0)
         overlap = settings.get('group_overlap', 0)
         method = settings.get('fusion_method')
