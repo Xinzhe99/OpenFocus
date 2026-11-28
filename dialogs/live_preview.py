@@ -57,6 +57,7 @@ from PyQt6.QtWidgets import (
 
 from core.algorithms import get_fusion, resolve_fusion_parameters
 from locales import trans
+from ui.context_help import register_help_target
 from ui.styles import CURRENT_THEME, build_stylesheet
 from utils.design_tokens import FONT, RADIUS, SPACE, WEIGHT, palette
 from utils.image_utils import cv2_to_pixmap
@@ -1766,6 +1767,21 @@ class LivePreviewDialog(QDialog):
         self.btn_close.setProperty("controlId", "live_preview_btn_close")
         self.btn_close.clicked.connect(self.close)
         footer_lay.addWidget(self.btn_close)
+
+        for _w, _topic in (
+            (self.lbl_size, "live_preview_size"),
+            (self.combo_size, "live_preview_size"),
+            (self.btn_split_compare, "live_preview_split"),
+            (method_card, "fusion"),
+            (self.row_radius, "radius"),
+            (self.row_smoothing, "smoothing"),
+            (self.row_feather, "feather"),
+            (stack_card, "live_preview_stack"),
+            (hist_card, "live_preview_histogram"),
+            (self.btn_enqueue, "render_queue"),
+            (self.btn_apply_render, "render_action"),
+        ):
+            register_help_target(_w, _topic)
 
         outer.addWidget(footer)
 

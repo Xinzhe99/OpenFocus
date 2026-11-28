@@ -37,6 +37,7 @@ from core.algorithms import (alignment_steps, fusion_algorithms, get_fusion,
     desktop_registration_parameters)
 from ui.algorithm_parameters import AlgorithmParameterPanel
 from ui.algorithm_combo import apply_method_availability, selected_item_enabled
+from ui.context_help import register_help_target
 from locales import trans
 from utils.output_sharpen import DEFAULT_SHARPEN_STRENGTH, MAX_SHARPEN_STRENGTH
 from widgets.stepper import StepperSpinBox
@@ -258,6 +259,7 @@ class BatchProcessingDialog(QDialog):
         self.split_method_combo.addItem(trans.t('batch_split_time'), 'time_threshold')
         self.split_method_combo.addItem(trans.t('batch_split_exposure'), 'exposure')
         self.split_method_combo.setCurrentIndex(0)
+        self.split_method_combo.setToolTip(trans.t('batch_adaptive_hint'))
         self.split_method_combo.currentIndexChanged.connect(self.on_split_method_changed)
         split_method_layout.addWidget(self.split_method_combo, 1)
         single_folder_layout.addLayout(split_method_layout)
@@ -265,6 +267,7 @@ class BatchProcessingDialog(QDialog):
         self.adaptive_hint_label = QLabel(trans.t('batch_adaptive_hint'))
         self.adaptive_hint_label.setObjectName("mutedLabel")
         self.adaptive_hint_label.setWordWrap(True)
+        self.adaptive_hint_label.hide()
         single_folder_layout.addWidget(self.adaptive_hint_label)
 
         self.param_row_widget = QWidget()
@@ -321,6 +324,11 @@ class BatchProcessingDialog(QDialog):
         self.format_combo.setToolTip(trans.t('export_depth_hint'))
         self.format_combo.currentTextChanged.connect(self.on_format_changed)
         format_row.addWidget(self.format_combo)
+        register_help_target(self.split_method_combo, "batch_split")
+        register_help_target(self.single_folder_group, "batch_split")
+        register_help_target(self.folder_group, "source_list")
+        register_help_target(self.format_combo, "batch_output_format")
+        register_help_target(format_card, "batch_output_format")
 
         self.quality_label = QLabel(trans.t('batch_quality_label'))
         self.quality_slider = QSlider(Qt.Orientation.Horizontal)
@@ -1199,7 +1207,7 @@ class BatchProcessingDialog(QDialog):
         method = self._current_split_method()
         is_adaptive = (method == 'adaptive')
         self.param_row_widget.setVisible(not is_adaptive)
-        self.adaptive_hint_label.setVisible(is_adaptive)
+        self.adaptive_hint_label.hide()
         if method != self._last_split_method:
             with QSignalBlocker(self.param_spinbox):
                 if method == 'count':
@@ -1236,7 +1244,7 @@ class BatchProcessingDialog(QDialog):
         self.quality_label.setVisible(is_jpg)
         self.quality_slider.setVisible(is_jpg)
         self.quality_value_label.setVisible(is_jpg)
-        self.depth_hint.setVisible(format_text.upper() in ("JPG", "BMP"))
+        self.depth_hint.hide()
 
     def _effective_single_folder_entries(self):
         from utils.path_identity import same_path

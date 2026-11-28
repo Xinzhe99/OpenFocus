@@ -672,6 +672,79 @@ QPushButton#secondaryButton:pressed {{ background-color: {t['surfaceActive']}; }
 QPushButton#secondaryButton:disabled {{
     background-color: {t['controlDisabled']}; color: {t['textFaint']};
 }}
+QPushButton#iconActionButton {{
+    background-color: {t['surface']};
+    color: {t['text']};
+    border: 1px solid {t['controlBorder']};
+    border-radius: {r['sm']}px;
+    padding: 0px;
+    min-width: 34px; max-width: 34px;
+    min-height: 34px; max-height: 34px;
+}}
+QPushButton#iconActionButton:hover {{
+    background-color: {t['surfaceHover']};
+    border-color: {t['borderStrong']};
+}}
+QPushButton#iconActionButton:pressed {{
+    background-color: {t['surfaceActive']};
+}}
+QPushButton#iconActionButton:checked,
+QPushButton#iconActionButton[activeIndicator="true"] {{
+    background-color: {t['accentSoft']};
+    color: {t['accentSoftText']};
+    border-color: {t['accent']};
+}}
+QPushButton#iconActionButton:disabled {{
+    background-color: {t['controlDisabled']};
+    color: {t['textFaint']};
+    border-color: {t['border']};
+}}
+QToolButton#paramDisclosureButton {{
+    background-color: {t['controlBg']};
+    color: {t['textMuted']};
+    border: 1px solid {t['controlBorder']};
+    border-radius: {r['sm']}px;
+    padding: 4px 8px;
+    min-height: 22px;
+    font-size: {f['caption']}pt;
+    font-weight: {WEIGHT['medium']};
+}}
+QToolButton#paramDisclosureButton:hover {{
+    background-color: {t['surfaceHover']};
+    color: {t['text']};
+    border-color: {t['borderStrong']};
+}}
+QToolButton#paramDisclosureButton:checked {{
+    background-color: {t['accentSoft']};
+    color: {t['accentSoftText']};
+    border-color: {t['accent']};
+}}
+QPushButton#contextHelpBeacon {{
+    background-color: {t['surface']};
+    color: {t['textMuted']};
+    border: 1px solid {t['controlBorder']};
+    border-radius: 12px;
+    padding: 2px 10px;
+    min-height: 22px;
+    max-height: 24px;
+    font-size: {f['caption']}pt;
+    font-weight: {WEIGHT['semibold']};
+}}
+QPushButton#contextHelpBeacon:hover {{
+    background-color: {t['accentSoft']};
+    color: {t['accentSoftText']};
+    border-color: {t['accent']};
+}}
+QPushButton#contextHelpBeacon:checked {{
+    background-color: {t['accent']};
+    color: {t['textOnAccent']};
+    border-color: {t['accent']};
+}}
+QSpinBox[compactSpin="true"], QDoubleSpinBox[compactSpin="true"] {{
+    padding: 2px 3px 2px 6px;
+    min-height: 18px;
+    max-height: 26px;
+}}
 /* Lists sit inside a bordered card: Qt draws a QListWidget's own border
    beneath its viewport, so a QSS border on the list itself never shows. The
    card carries the border/radius, the list stays transparent. */

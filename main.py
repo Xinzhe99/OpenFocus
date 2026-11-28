@@ -775,11 +775,13 @@ class OpenFocus(QMainWindow):
         self._live_preview_dialog = None
         self.btn_enqueue = right_panel_components.btn_enqueue
         self.btn_render_queue = right_panel_components.btn_render_queue
+        self.btn_render_more = right_panel_components.btn_render_more
         self.btn_compare_all = right_panel_components.btn_compare
         self.btn_compare_all.clicked.connect(self.render_manager.start_compare_all)
         self.chk_quick_preview = right_panel_components.chk_quick_preview
         self.btn_method_help = right_panel_components.btn_method_help
         self.btn_reg_help = right_panel_components.btn_reg_help
+        self.btn_context_help = right_panel_components.btn_context_help
         # 融合/对齐算法均为下拉单选；window.current_fusion_method() /
         # current_alignment_method() 是统一的读取入口
         self.combo_fusion = right_panel_components.combo_fusion
@@ -836,6 +838,10 @@ class OpenFocus(QMainWindow):
         self.output_list.currentRowChanged.connect(self.render_manager.inspect_previous_output)
         self.output_list.itemClicked.connect(self.render_manager.inspect_previous_output)
         bind_right_panel(self, right_panel_components)
+        from ui.context_help import ContextHelpManager
+        self._context_help_manager = ContextHelpManager(self)
+        if getattr(self, "btn_context_help", None) is not None:
+            self._context_help_manager.attach_beacon(self.btn_context_help)
         self._refresh_live_preview_availability()
         if hasattr(self, "gallery_controller"):
             self.gallery_controller.attach_ui()
@@ -5128,10 +5134,13 @@ class OpenFocus(QMainWindow):
 
     def _refresh_render_queue_badge(self) -> None:
         button = getattr(self, "btn_render_queue", None)
-        if button is None or sip.isdeleted(button):
-            return
         queue = getattr(self, "render_queue", None)
         active_count = queue.active_and_pending_count() if queue is not None else 0
+        more_btn = getattr(self, "btn_render_more", None)
+        if more_btn is not None and not sip.isdeleted(more_btn) and hasattr(more_btn, "set_badge_count"):
+            more_btn.set_badge_count(active_count)
+        if button is None or sip.isdeleted(button):
+            return
         if active_count > 0:
             button.setText(trans.t("btn_render_queue_count").format(count=active_count))
         else:
@@ -5591,6 +5600,8 @@ class OpenFocus(QMainWindow):
             get_logger(__name__).exception('Could not start error reporting')
         for dialog in self.findChildren(AccountDialog):
             dialog.reject()
+        if getattr(self, '_context_help_manager', None) is not None:
+            self._context_help_manager.uninstall()
         super().closeEvent(event)
 
     # --- Language ---
@@ -5870,7 +5881,15 @@ class OpenFocus(QMainWindow):
         self.refresh_algorithm_parameters()
         self.refresh_registration_parameters()
         c.btn_reset.setText(trans.t('btn_reset'))
+        c.btn_reset.setToolTip(trans.t('btn_reset'))
         c.btn_render_settings.setText(trans.t('render_settings_title'))
+        c.btn_render_settings.setToolTip(trans.t('render_settings_title'))
+        if getattr(c, 'btn_context_help', None) is not None:
+            c.btn_context_help.retranslate()
+        if getattr(c, 'btn_render_more', None) is not None:
+            c.btn_render_more.setText(trans.t('ctx_help_btn_menu_more'))
+            c.btn_render_more.setToolTip(
+                f"{trans.t('ctx_help_btn_menu_more')}\n{trans.t('ctx_help_btn_menu_more_hint')}")
         if getattr(c, 'btn_live_preview', None) is not None:
             c.btn_live_preview.setText(trans.t('btn_live_preview'))
             c.btn_live_preview.setToolTip(
