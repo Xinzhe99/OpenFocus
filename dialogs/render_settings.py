@@ -6,6 +6,7 @@ from PyQt6.QtWidgets import (
 )
 
 from locales import trans
+from ui.context_help import register_help_target
 from utils.design_tokens import SPACE
 from utils.output_sharpen import DEFAULT_SHARPEN_STRENGTH, MAX_SHARPEN_STRENGTH
 from utils.ui_utils import size_dialog_to_content
@@ -55,6 +56,13 @@ class RenderSettingsDialog(QDialog):
         options_layout.setContentsMargins(0, 0, SPACE['sm'], 0)
         options_layout.setSpacing(SPACE['md'])
         options_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        _option_topics = {
+            window.chk_quick_preview: "opt_quick_preview",
+            window.chk_reverse_order: "opt_reverse_order",
+            window.chk_exposure_match: "opt_exposure_match",
+            window.chk_base_correct: "opt_base_correct",
+            self._sharpen: "opt_sharpen_output",
+        }
         for title_key, *options in sections:
             group = QGroupBox()
             self._sections.append((group, title_key))
@@ -67,12 +75,18 @@ class RenderSettingsDialog(QDialog):
                 label = _OptionLabel(option)
                 option._dialog_label = label
                 option.refit()
+                topic = _option_topics.get(option)
+                if topic:
+                    register_help_target(option, topic)
+                    register_help_target(label, topic)
                 row.addWidget(option, 0, Qt.AlignmentFlag.AlignTop)
                 row.addWidget(label, 1)
                 group_layout.addLayout(row)
                 option.show()
             if options[0] is self._sharpen:
-                group_layout.addWidget(self._make_sharpen_controls())
+                sharpen_box = self._make_sharpen_controls()
+                register_help_target(sharpen_box, "opt_sharpen_output")
+                group_layout.addWidget(sharpen_box)
         scroll.setWidget(page)
         self._scroll = scroll
         root.addWidget(scroll, 1)

@@ -728,6 +728,9 @@ class RenderManager:
             button.setToolTip(
                 f"{trans.t('btn_compare_all')}\n"
                 f"{trans.t('btn_compare_all_hint')}")
+        more_btn = getattr(self.window, "btn_render_more", None)
+        if more_btn is not None and hasattr(more_btn, "set_active_indicator"):
+            more_btn.set_active_indicator(mode in ("cancel", "cancelling"))
 
     def _alignment_lock_reason(self):
         method = getattr(self.window, 'current_alignment_method', lambda: 'none')()

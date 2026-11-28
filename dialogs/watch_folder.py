@@ -33,6 +33,7 @@ from core.algorithms import (
 from core.watch_folder import FolderMonitorEngine, WatchFolderConfig
 from locales import trans
 from ui.algorithm_combo import apply_method_availability, fill_fusion_combo
+from ui.context_help import register_help_target
 from utils.design_tokens import RADIUS, palette
 from utils.file_dialogs import FileDialog
 from utils.settings_store import get_settings
@@ -90,11 +91,13 @@ class WatchFolderDialog(QDialog):
         title_font.setBold(True)
         self.lbl_title.setFont(title_font)
         self.lbl_title.setObjectName("watchTitleLabel")
+        self.lbl_title.setToolTip(trans.t("watch_folder_subtitle"))
         title_col.addWidget(self.lbl_title)
 
         self.lbl_subtitle = QLabel(trans.t("watch_folder_subtitle"))
         self.lbl_subtitle.setObjectName("mutedLabel")
         self.lbl_subtitle.setWordWrap(True)
+        self.lbl_subtitle.hide()
         title_col.addWidget(self.lbl_subtitle)
         header.addLayout(title_col, 1)
 
@@ -188,7 +191,7 @@ class WatchFolderDialog(QDialog):
         self.lbl_format = QLabel(trans.t("watch_folder_format_label"))
         self.format_combo = QComboBox()
         self.format_combo.setProperty("controlId", "watch_format_combo")
-        self.format_combo.addItems(["PNG", "TIFF", "JPG", "BMP"])
+        self.format_combo.addItems(["PNG", "TIFF", "JPG", "BMP", "DNG"])
         self.format_combo.setCurrentText("PNG")
         settings_grid.addWidget(self.lbl_format, 1, 0)
         settings_grid.addWidget(self.format_combo, 1, 1)
@@ -279,6 +282,10 @@ class WatchFolderDialog(QDialog):
 
         log_layout.addWidget(self.activity_table, 1)
         root.addWidget(self.log_group, 1)
+        register_help_target(self.dirs_group, "watch_folder")
+        register_help_target(self.settings_group, "watch_folder")
+        register_help_target(self.format_combo, "batch_output_format")
+        register_help_target(self.activity_table, "watch_folder")
 
     def _apply_method_availability(self) -> None:
         try:

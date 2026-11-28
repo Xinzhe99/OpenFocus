@@ -128,11 +128,27 @@ def test_first_launch_shows_render_controls_and_restores_custom_right_splitter(
     try:
         parts = window.right_panel_components
         viewport = parts.config_scroll.viewport()
-        for button in (parts.btn_render, parts.btn_render_settings, parts.btn_reset,
-                       parts.btn_compare, parts.btn_method_help, parts.btn_reg_help,
+        for button in (parts.btn_render, parts.btn_live_preview,
+                       parts.btn_render_settings, parts.btn_reset,
+                       parts.btn_render_more, parts.btn_context_help,
                        parts.fusion_parameter_panel.disclosure):
             corner = button.mapTo(viewport, QPoint(0, button.height() - 1))
             assert 0 <= corner.y() < viewport.height()
+        action_ys = [
+            button.mapTo(viewport, QPoint(0, 0)).y()
+            for button in (parts.btn_render, parts.btn_live_preview,
+                           parts.btn_render_settings, parts.btn_reset,
+                           parts.btn_render_more)
+        ]
+        assert max(action_ys) - min(action_ys) <= 4
+        assert abs(
+            parts.combo_align.mapTo(viewport, QPoint(0, 0)).y()
+            - parts.registration_parameter_panel.disclosure.mapTo(viewport, QPoint(0, 0)).y()
+        ) <= 6
+        assert abs(
+            parts.combo_fusion.mapTo(viewport, QPoint(0, 0)).y()
+            - parts.fusion_parameter_panel.disclosure.mapTo(viewport, QPoint(0, 0)).y()
+        ) <= 6
         first_run = parts.splitter.sizes()
         fusion = parts.fusion_parameter_panel
         assert not fusion.isVisible()
