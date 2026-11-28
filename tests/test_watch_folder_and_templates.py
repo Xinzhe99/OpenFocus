@@ -198,6 +198,10 @@ def test_advanced_settings_template_chips_and_sound_persistence(qapp, tmp_path, 
     store = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
     monkeypatch.setattr(settings_store, "get_settings", lambda: store)
 
+    fresh = SimpleNamespace()
+    settings_store.load_window_settings(fresh)
+    assert fresh.render_complete_sound is True
+
     window = QWidget()
     window.tile_enabled = True
     window.tile_block_size = 1024
@@ -207,7 +211,7 @@ def test_advanced_settings_template_chips_and_sound_persistence(qapp, tmp_path, 
     window.resource_preference = "balanced"
     window.output_name_prefix = ""
     window.output_filename_template = ""
-    window.render_complete_sound = False
+    window.render_complete_sound = True
     window.update_manager = SimpleNamespace(
         auto_download=True,
         include_beta=False,
@@ -218,7 +222,7 @@ def test_advanced_settings_template_chips_and_sound_persistence(qapp, tmp_path, 
 
     dialog = AdvancedSettingsDialog(window)
     try:
-        assert dialog.chk_render_complete_sound.isChecked() is False
+        assert dialog.chk_render_complete_sound.isChecked() is True
         assert len(dialog.template_token_buttons) == len(TEMPLATE_TOKENS)
 
         # Click two token chips and verify live preview updates
@@ -230,16 +234,16 @@ def test_advanced_settings_template_chips_and_sound_persistence(qapp, tmp_path, 
         dialog.output_prefix.setText("run1")
         assert dialog.output_prefix_preview.text() == "run1_Specimen_01_OpenFocusB.png"
 
-        dialog.chk_render_complete_sound.setChecked(True)
+        dialog.chk_render_complete_sound.setChecked(False)
         dialog._apply()
         assert dialog.result() == QDialog.DialogCode.Accepted
         assert window.output_filename_template == "[FOLDER]_[METHOD]"
-        assert window.render_complete_sound is True
+        assert window.render_complete_sound is False
 
         restored = SimpleNamespace()
         settings_store.load_window_settings(restored)
         assert restored.output_filename_template == "[FOLDER]_[METHOD]"
-        assert restored.render_complete_sound is True
+        assert restored.render_complete_sound is False
     finally:
         dialog.deleteLater()
         window.deleteLater()

@@ -304,7 +304,7 @@ class AdvancedSettingsDialog(QDialog):
 
         self.chk_render_complete_sound = QCheckBox(trans.t("render_complete_sound_label"))
         self.chk_render_complete_sound.setProperty("controlId", "chk_render_complete_sound")
-        self.chk_render_complete_sound.setChecked(bool(getattr(w, "render_complete_sound", False)))
+        self.chk_render_complete_sound.setChecked(bool(getattr(w, "render_complete_sound", True)))
         self.chk_render_complete_sound.setToolTip(trans.t("render_complete_sound_hint"))
         register_help_target(self.chk_render_complete_sound, "adv_naming")
         output.addRow(self.chk_render_complete_sound)
@@ -651,9 +651,8 @@ class AdvancedSettingsDialog(QDialog):
         self._update_gallery_cache_usage_label()
 
     def _build_developer_options(self, page_lay):
-        _note(page_lay, trans.t("dev_options_intro"))
-
         self.dev_status_card = QFrame()
+        self.dev_status_card.setToolTip(trans.t("dev_options_intro"))
         self.dev_status_card.setObjectName("devStatusCard")
         self.dev_status_card.setProperty("controlId", "dev_status_card")
         card_lay = QVBoxLayout(self.dev_status_card)
@@ -728,9 +727,9 @@ class AdvancedSettingsDialog(QDialog):
         self.chk_dev_community = QCheckBox(trans.t("dev_feature_community"))
         self.chk_dev_community.setObjectName("chk_developer_community")
         self.chk_dev_community.setProperty("controlId", "chk_developer_community")
+        self.chk_dev_community.setToolTip(trans.t("dev_feature_community_hint"))
         self.chk_dev_community.toggled.connect(self._on_dev_community_toggled)
         features.addRow(self.chk_dev_community)
-        self.lbl_dev_community_hint = _note(page_lay, trans.t("dev_feature_community_hint"))
 
         self._refresh_developer_ui(sync_checkbox=True)
 

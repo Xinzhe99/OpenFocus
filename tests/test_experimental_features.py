@@ -36,9 +36,9 @@ def test_experimental_default_toggle_and_stable_fallback(window):
     assert w.current_alignment_method() == 'ecc'
     assert {spec.id for spec in fusion_algorithms() if not spec.experimental} == {
         'openfocus_a', 'openfocus_b', 'openfocus_c',
-        'guided_filter', 'gfgfgf', 'dct', 'dtcwt', 'stackmffv4'}
+        'guided_filter', 'gfgfgf', 'dct', 'dtcwt'}
     assert {spec.id for spec in fusion_algorithms() if spec.experimental} == {
-        'stackmff', 'stackmffv2', 'stackmffv3'}
+        'stackmffv4', 'stackmff', 'stackmffv2', 'stackmffv3'}
     for spec in fusion_algorithms():
         index = w.combo_fusion.findData(spec.id)
         if spec.legacy and not w.legacy_features:
@@ -74,8 +74,9 @@ def test_experimental_default_toggle_and_stable_fallback(window):
     dialog.chk_experimental_features.setChecked(False)
     dialog._apply()
     assert not w.experimental_features and not settings.value('ui/experimental_features', type=bool)
-    # Turning off experimental features falls back to Stable defaults for experimental alignment while keeping non-experimental fusion.
-    assert w.current_fusion_method() == 'stackmffv4'
+    # Turning off experimental features falls back to Stable defaults for both experimental fusion and alignment.
+    assert w.current_fusion_method() == 'openfocus_b'
+    assert w._preferred_fusion_method == 'openfocus_b'
     assert w.current_alignment_method() == 'ecc'
     assert w._preferred_alignment_method == 'ecc'
     assert w.btn_render.isEnabled()
@@ -203,11 +204,13 @@ def test_batch_accepts_fusion_with_experiments_off(window):
     dialog = BatchProcessingDialog(w)
     try:
         for method in ('openfocus_a', 'openfocus_b', 'openfocus_c',
-                       'guided_filter', 'gfgfgf', 'dct', 'dtcwt', 'stackmffv4'):
+                       'guided_filter', 'gfgfgf', 'dct', 'dtcwt'):
             index = dialog.fusion_combo.findData(method)
             assert dialog.fusion_combo.model().item(index).isEnabled()
             dialog.fusion_combo.setCurrentIndex(index)
             assert dialog.get_processing_settings()['fusion_method'] == method
+        v4_index = dialog.fusion_combo.findData('stackmffv4')
+        assert v4_index >= 0 and not dialog.fusion_combo.model().item(v4_index).isEnabled()
         assert dialog.fusion_combo.findData('stackmffv3') < 0
     finally:
         dialog.close()

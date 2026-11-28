@@ -97,11 +97,7 @@ class RenderSubstacksDialog(QDialog):
         # Header
         self._title_label = QLabel()
         self._title_label.setObjectName("substackDialogTitle")
-        self._subtitle_label = QLabel()
-        self._subtitle_label.setObjectName("mutedLabel")
-        self._subtitle_label.setWordWrap(True)
         root.addWidget(self._title_label)
-        root.addWidget(self._subtitle_label)
 
         # Split strategy group
         self._split_group = QGroupBox()
@@ -140,10 +136,6 @@ class RenderSubstacksDialog(QDialog):
         self.spin_overlap.setMinimumWidth(96)
         self._overlap_label.setBuddy(self.spin_overlap)
 
-        self._overlap_hint = QLabel()
-        self._overlap_hint.setObjectName("mutedLabel")
-        self._overlap_hint.setWordWrap(True)
-
         split_grid.addWidget(self.radio_chunk_size, 0, 0)
         split_grid.addWidget(self.spin_chunk_size, 0, 1, Qt.AlignmentFlag.AlignRight)
         split_grid.addWidget(self.radio_count, 1, 0)
@@ -156,7 +148,6 @@ class RenderSubstacksDialog(QDialog):
 
         split_grid.addWidget(self._overlap_label, 3, 0)
         split_grid.addWidget(self.spin_overlap, 3, 1, Qt.AlignmentFlag.AlignRight)
-        split_grid.addWidget(self._overlap_hint, 4, 0, 1, 2)
         split_grid.setColumnStretch(0, 1)
         root.addWidget(self._split_group)
 
@@ -185,12 +176,7 @@ class RenderSubstacksDialog(QDialog):
         self.chk_auto_restack = QCheckBox()
         self.chk_auto_restack.setProperty("controlId", "substack_chk_auto_restack")
         self.chk_auto_restack.setChecked(False)
-        self._auto_restack_hint = QLabel()
-        self._auto_restack_hint.setObjectName("mutedLabel")
-        self._auto_restack_hint.setWordWrap(True)
-        self._auto_restack_hint.setContentsMargins(SPACE["xl"], 0, 0, 0)
         root.addWidget(self.chk_auto_restack)
-        root.addWidget(self._auto_restack_hint)
 
         # Footer action buttons
         btn_row = QHBoxLayout()
@@ -259,7 +245,9 @@ class RenderSubstacksDialog(QDialog):
 
     def _update_preview(self) -> None:
         max_ov = self._current_max_overlap()
-        self._overlap_hint.setText(trans.t("substack_overlap_hint").format(max_overlap=max_ov))
+        overlap_tip = trans.t("substack_overlap_hint").format(max_overlap=max_ov)
+        self._overlap_label.setToolTip(overlap_tip)
+        self.spin_overlap.setToolTip(overlap_tip)
         mode = self.selected_mode()
         self._ranges = partition_substacks(
             self._frame_count,
@@ -291,7 +279,7 @@ class RenderSubstacksDialog(QDialog):
         fusion_name, align_name = self._method_display()
         self.setWindowTitle(trans.t("substack_dialog_title"))
         self._title_label.setText(trans.t("substack_dialog_title"))
-        self._subtitle_label.setText(
+        self._split_group.setToolTip(
             trans.t("substack_dialog_subtitle").format(
                 frames=self._frame_count,
                 method=fusion_name,
@@ -304,7 +292,7 @@ class RenderSubstacksDialog(QDialog):
         self._overlap_label.setText(trans.t("substack_overlap_label"))
         self._preview_group.setTitle(trans.t("substack_group_preview"))
         self.chk_auto_restack.setText(trans.t("substack_auto_restack"))
-        self._auto_restack_hint.setText(trans.t("substack_auto_restack_hint"))
+        self.chk_auto_restack.setToolTip(trans.t("substack_auto_restack_hint"))
         self.btn_cancel.setText(trans.t("btn_cancel_generic"))
         self.btn_render.setText(trans.t("substack_btn_render"))
         self._update_preview()

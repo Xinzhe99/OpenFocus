@@ -83,7 +83,7 @@ jobs:
       - name: Verify the shipped AI models are present
         shell: pwsh
         run: |
-          foreach ($w in @("weights/stackmff_final.onnx", "weights/stackmff_v2_final.onnx", "weights/stackmff_v3_final.onnx", "weights/stackmff_final.pth", "weights/stackmff_v2_final.pth", "weights/stackmff_v3_final.pth")) {
+          foreach ($w in @("weights/stackmff_final.onnx", "weights/stackmff_v2_final.onnx", "weights/stackmff_v3_final.onnx", "weights/stackmff_v4_flash.onnx", "weights/stackmff_final.pth", "weights/stackmff_v2_final.pth", "weights/stackmff_v3_final.pth", "weights/stackmff_v4_flash.pth")) {
             if (-not (Test-Path $w)) { throw "Missing $w - the release would ship without an AI model." }
             $len = (Get-Item $w).Length
             if ($len -lt 600000) { throw "$w is only $len bytes (expected at least 600000)." }
@@ -305,7 +305,7 @@ jobs:
 
       - name: Verify the shipped AI models are present
         run: |
-          for w in weights/stackmff_final.onnx weights/stackmff_v2_final.onnx weights/stackmff_v3_final.onnx; do
+          for w in weights/stackmff_final.onnx weights/stackmff_v2_final.onnx weights/stackmff_v3_final.onnx weights/stackmff_v4_flash.onnx; do
             test -f "$w" || { echo "Missing $w - the release would ship without an AI model."; exit 1; }
             size=$(wc -c < "$w")
             if [ "$size" -lt 600000 ]; then echo "$w is only $size bytes"; exit 1; fi
@@ -448,7 +448,7 @@ jobs:
           python -c "import onnxruntime as ort; assert 'CPUExecutionProvider' in ort.get_available_providers()"
       - name: Verify AI models
         run: |
-          for w in weights/stackmff_final.onnx weights/stackmff_v2_final.onnx weights/stackmff_v3_final.onnx; do
+          for w in weights/stackmff_final.onnx weights/stackmff_v2_final.onnx weights/stackmff_v3_final.onnx weights/stackmff_v4_flash.onnx; do
             test -f "$w" && test "$(wc -c < "$w")" -ge 600000 || { echo "Missing or incomplete model: $w"; exit 1; }
           done
       - name: Write packaged build identity

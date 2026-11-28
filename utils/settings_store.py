@@ -94,7 +94,7 @@ _PERSISTED_FIELDS = {
     "strip_exif_on_export": ("export/strip_exif_on_export", False, "bool"),
     "enable_ui_icc_preview": ("ui/enable_ui_icc_preview", True, "bool"),
     "output_filename_template": ("export/filename_template", "", "str"),
-    "render_complete_sound": ("ui/render_complete_sound", False, "bool"),
+    "render_complete_sound": ("ui/render_complete_sound", True, "bool"),
     "restore_last_stack": ("ui/restore_last_stack", False, "bool"),
     "experimental_features": ("ui/experimental_features", False, "bool"),
     "legacy_features": ("ui/legacy_features", False, "bool"),

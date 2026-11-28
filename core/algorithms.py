@@ -459,7 +459,7 @@ register_fusion(FusionAlgorithm(
     neural=True, roi=_ADAPTER + 'roi_neural', promotes_color=True,
     tile_decider=_ADAPTER + 'neural_needs_tiles', tile_runner=_FUSION_CLASS + '_fuse_tiled_stackmffv4',
     depth_planner='core.depth_map:_plan_stackmffv4_depth', weights='weights/stackmff_v4_flash.onnx',
-    category='ai', family='stackmff', streaming_sources=True, experimental=False, legacy=False))
+    category='ai', family='stackmff', streaming_sources=True, experimental=True, legacy=False))
 register_fusion(FusionAlgorithm(
     'stackmffv3', 'radio_stackmff', 'StackMFF V3', 'StackMFFV3',
     _FUSION_CLASS + '_fuse_stackmffv3', (_MODE, _V3_SCALE),
