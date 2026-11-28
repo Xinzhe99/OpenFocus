@@ -143,4 +143,5 @@ class HtmlAnimationDialog(QDialog):
             title=self.title_edit.text().strip() or "OpenFocus Interactive Focus Stack",
             show_footer=self.footer_chk.isChecked(),
             theme="auto",
+            language=trans.current_lang,
         ).normalized()

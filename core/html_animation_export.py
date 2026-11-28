@@ -24,6 +24,12 @@ from typing import Callable, Optional, Sequence
 import cv2
 import numpy as np
 
+from core.html_viewer_i18n import (
+    HTML_ANIM_VIEWER_I18N,
+    VIEWER_LANG_NAMES,
+    normalize_viewer_lang,
+)
+
 
 _JPEG_EXTS = frozenset((".jpg", ".jpeg", ".jpe", ".jfif"))
 
@@ -46,6 +52,7 @@ class HtmlAnimationOptions:
     title: str = "OpenFocus Interactive Focus Stack"
     show_footer: bool = True
     theme: str = "auto"  # "auto", "dark", "light"
+    language: str = "en"
 
     def normalized(self) -> "HtmlAnimationOptions":
         fmt = str(self.image_format or "webp").strip().lower()
@@ -75,6 +82,7 @@ class HtmlAnimationOptions:
             title=title,
             show_footer=bool(self.show_footer),
             theme=theme,
+            language=normalize_viewer_lang(self.language),
         )
 
 
@@ -374,7 +382,7 @@ def build_html_animation(
 
     fused_payload = None
     if include_fused and fused_result is not None:
-        fused_payload = {"src": fused_result[0], "label": "Fused Result"}
+        fused_payload = {"src": fused_result[0]}
 
     safe_title = html.escape(opts.title)
     payload = {
@@ -386,6 +394,9 @@ def build_html_animation(
         "width": width,
         "height": height,
         "theme": opts.theme,
+        "lang": opts.language,
+        "langNames": VIEWER_LANG_NAMES,
+        "i18n": HTML_ANIM_VIEWER_I18N,
     }
     payload_json = _safe_json_for_script(payload)
 
@@ -397,23 +408,22 @@ def build_html_animation(
 
     fused_btn_html = (
         '        <button id="btnFused" class="btn" type="button" '
-        'title="Toggle Fused Result (F)" aria-pressed="false">Fused Result</button>\n'
+        'data-i18n="showFused" data-i18n-title="fusedTitle" '
+        'title="Compare against final stacked image" aria-pressed="false">Show Fused</button>\n'
         if fused_payload is not None
         else ""
     )
 
     footer_html = (
         '    <footer class="footer">'
-        '<span>OpenFocus Interactive Focus Stack</span>'
-        '<span class="sep">&middot;</span>'
-        '<span>Drag, wheel, or &larr;/&rarr;/Space to scrub &middot; M or hold Right-Click/Alt for Loupe (wheel=zoom, Ctrl+wheel=size)</span>'
+        '<span data-i18n="footer">OpenFocus Interactive Focus Stack</span>'
         "</footer>\n"
         if opts.show_footer
         else ""
     )
 
     return f"""<!DOCTYPE html>
-<html lang="en" data-theme="{html.escape(opts.theme)}">
+<html lang="{html.escape(opts.language)}" data-theme="{html.escape(opts.theme)}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
@@ -661,14 +671,15 @@ def build_html_animation(
       <h1 class="title">{safe_title}</h1>
       <div class="header-meta">
         <span id="metaDims">{width}&times;{height} &middot; {len(encoded_frames)} frames</span>
-        <button id="btnTheme" class="btn" type="button" title="Toggle light/dark theme">Theme</button>
+        <select id="selLang" class="select" aria-label="Language" data-i18n-title="langTip"></select>
+        <button id="btnTheme" class="btn" type="button" data-i18n="themeBtn" data-i18n-title="themeTitle" title="Toggle light/dark theme">Theme</button>
       </div>
     </header>
 
     <section id="stage" class="stage-wrap" aria-label="Interactive focus stack viewer">
       <canvas id="viewerCanvas" class="stage-canvas" width="{max(1, width)}" height="{max(1, height)}" aria-label="Focus stack frame"></canvas>
       <div id="frameBadge" class="badge hud">1 / {len(encoded_frames)}</div>
-      <div id="dragHint" class="hint-pill hud">&larr; Drag or wheel to focus &middot; M or Right-Click for Loupe &rarr;</div>
+      <div id="dragHint" class="hint-pill hud" data-i18n="hintDefault">&larr; Drag or wheel to focus &middot; M or Right-Click for Loupe &rarr;</div>
     </section>
 
     <section class="controls" aria-label="Playback controls">
@@ -678,15 +689,15 @@ def build_html_animation(
       </div>
       <div class="toolbar">
         <div class="btn-group">
-          <button id="btnPrev" class="btn" type="button" title="Previous focus plane (Left Arrow)">&larr;</button>
-          <button id="btnPlay" class="btn primary" type="button" title="Play / Pause (Space)">Play</button>
-          <button id="btnNext" class="btn" type="button" title="Next focus plane (Right Arrow)">&rarr;</button>
+          <button id="btnPrev" class="btn" type="button" data-i18n-title="prevTitle" title="Previous focus plane (Left Arrow)">&larr;</button>
+          <button id="btnPlay" class="btn primary" type="button" data-i18n="play" data-i18n-title="playTitle" title="Play / Pause (Space)">Play</button>
+          <button id="btnNext" class="btn" type="button" data-i18n-title="nextTitle" title="Next focus plane (Right Arrow)">&rarr;</button>
         </div>
         <div class="btn-group">
-          <button id="btnLoupe" class="btn" type="button" title="Toggle Magnifier Loupe (M) or hold Right-Click / Alt (Wheel: zoom, Ctrl+Wheel or [ ]: size, Shift+Wheel: focus)" aria-pressed="false">Loupe</button>
-          <button id="btnLoupeShape" class="btn" type="button" title="Toggle Square / Circle Loupe (L)" hidden>Square</button>
-          <button id="btnMode" class="btn" type="button" title="Toggle Ping-Pong / Loop playback">Ping-Pong</button>
-          <select id="fpsSelect" class="select" aria-label="Playback speed (FPS)">
+          <button id="btnLoupe" class="btn" type="button" data-i18n="loupeBtn" data-i18n-title="loupeTitle" title="Toggle Magnifier Loupe (M) or hold Right-Click / Alt (Wheel: zoom, Ctrl+Wheel or [ ]: size, Shift+Wheel: focus)" aria-pressed="false">Loupe</button>
+          <button id="btnLoupeShape" class="btn" type="button" data-i18n-title="loupeShapeTitle" title="Toggle Square / Circle Loupe (L)" hidden>Square</button>
+          <button id="btnMode" class="btn" type="button" data-i18n-title="modeTitle" title="Toggle Ping-Pong / Loop playback">Ping-Pong</button>
+          <select id="fpsSelect" class="select" aria-label="Playback speed (FPS)" data-i18n-title="fpsAria">
 {fps_options_html}
           </select>
 {fused_btn_html}        </div>
@@ -730,6 +741,48 @@ def build_html_animation(
     var btnLoupe = document.getElementById("btnLoupe");
     var btnLoupeShape = document.getElementById("btnLoupeShape");
     var fpsSelect = document.getElementById("fpsSelect");
+    var metaDims = document.getElementById("metaDims");
+    var selLang = document.getElementById("selLang");
+
+    var curLang = (DATA.i18n && DATA.i18n[DATA.lang]) ? DATA.lang : "en";
+    function t(k) {{
+      return (DATA.i18n && DATA.i18n[curLang] && DATA.i18n[curLang][k]) || (DATA.i18n && DATA.i18n.en && DATA.i18n.en[k]) || k;
+    }}
+    function initLangSelect() {{
+      if (!selLang) return;
+      var names = DATA.langNames || {{ en: "English" }};
+      var codes = Object.keys(names);
+      for (var c = 0; c < codes.length; c++) {{
+        var code = codes[c];
+        if (!DATA.i18n || !DATA.i18n[code]) continue;
+        var opt = document.createElement("option");
+        opt.value = code;
+        opt.textContent = names[code];
+        selLang.appendChild(opt);
+      }}
+      selLang.addEventListener("change", function() {{ applyLang(selLang.value); }});
+    }}
+    function applyLang(lang) {{
+      curLang = (DATA.i18n && DATA.i18n[lang]) ? lang : "en";
+      document.documentElement.setAttribute("lang", curLang);
+      if (selLang && selLang.value !== curLang) selLang.value = curLang;
+      if (metaDims) {{
+        metaDims.textContent = nativeW + "\u00d7" + nativeH + " \u00b7 " + count + " " + t("framesUnit");
+      }}
+      var nodes = document.querySelectorAll("[data-i18n]");
+      for (var n = 0; n < nodes.length; n++) {{
+        nodes[n].textContent = t(nodes[n].getAttribute("data-i18n"));
+      }}
+      var tips = document.querySelectorAll("[data-i18n-title]");
+      for (var j = 0; j < tips.length; j++) {{
+        tips[j].title = t(tips[j].getAttribute("data-i18n-title"));
+      }}
+      if (fpsSelect) fpsSelect.setAttribute("aria-label", t("fpsAria"));
+      updateModeButton();
+      updateLoupeUi();
+      setPlaying(playing);
+      render();
+    }}
 
     var nativeW = Math.max(1, Number(DATA.width) || 1);
     var nativeH = Math.max(1, Number(DATA.height) || 1);
@@ -783,12 +836,12 @@ def build_html_animation(
       }}
       if (btnLoupeShape) {{
         btnLoupeShape.hidden = !loupePinned;
-        btnLoupeShape.textContent = loupeShape === "circle" ? "Circle" : "Square";
+        btnLoupeShape.textContent = loupeShape === "circle" ? t("loupeCircle") : t("loupeSquare");
       }}
       if (dragHint && active) {{
-        dragHint.textContent = "Loupe: Wheel=Zoom \u00b7 Ctrl+Wheel=Size \u00b7 Shift+Wheel=Focus \u00b7 L=Shape \u00b7 M/Esc=Exit";
+        dragHint.textContent = t("hintLoupe");
       }} else if (dragHint) {{
-        dragHint.textContent = "\u2190 Drag or wheel to focus \u00b7 M or Right-Click for Loupe \u2192";
+        dragHint.textContent = t("hintDefault");
       }}
     }}
 
@@ -994,8 +1047,8 @@ def build_html_animation(
     function render() {{
       if (count === 0) return;
       if (showingFused && fused) {{
-        badge.textContent = fused.label || "Fused Result";
-        counter.textContent = "Fused";
+        badge.textContent = fused.label || t("showFused");
+        counter.textContent = t("fusedBadge");
       }} else {{
         var item = frames[currentIndex];
         var label = item.label ? (" \u00b7 " + item.label) : "";
@@ -1006,6 +1059,7 @@ def build_html_animation(
       if (btnFused) {{
         btnFused.classList.toggle("active", showingFused);
         btnFused.setAttribute("aria-pressed", showingFused ? "true" : "false");
+        btnFused.textContent = showingFused ? t("showStack") : t("showFused");
       }}
       schedulePaint();
     }}
@@ -1063,10 +1117,10 @@ def build_html_animation(
       if (playing) {{
         showingFused = false;
         lastTick = 0;
-        btnPlay.textContent = "Pause";
-        rafId = window.requestAnimationFrame(tick);
+        btnPlay.textContent = t("pause");
+        if (!rafId) rafId = window.requestAnimationFrame(tick);
       }} else {{
-        btnPlay.textContent = "Play";
+        btnPlay.textContent = t("play");
         if (rafId) {{
           window.cancelAnimationFrame(rafId);
           rafId = 0;
@@ -1075,7 +1129,7 @@ def build_html_animation(
     }}
 
     function updateModeButton() {{
-      btnMode.textContent = pingPong ? "Ping-Pong" : "Loop";
+      btnMode.textContent = pingPong ? t("modePingPong") : t("modeLoop");
       btnMode.classList.toggle("active", pingPong);
     }}
 
@@ -1390,10 +1444,9 @@ def build_html_animation(
       }} catch (_err) {{}}
     }}
 
-    updateModeButton();
-    updateLoupeUi();
+    initLangSelect();
+    applyLang(curLang);
     resizeCanvas();
-    render();
     wakeHud();
     if (DATA.autoplay && count > 1) {{
       setPlaying(true);
