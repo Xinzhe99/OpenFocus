@@ -10,8 +10,9 @@ import os
 
 import cv2
 import numpy as np
-from PyQt6.QtCore import QSignalBlocker, QThread, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QIcon, QImage, QPainter, QPixmap
+from PyQt6.QtCore import QPointF, QRectF, QSignalBlocker, QSize, QThread, Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QColor, QIcon, QImage, QPainter, QPen, QPixmap, QPolygonF
+from utils.design_tokens import SPACE, palette
 from utils.file_dialogs import FileDialog
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -56,6 +57,72 @@ from utils.platform_utils import configure_native_worker_stack
 from utils.layered_tiff import protect_sources, source_paths
 
 _DEFAULT_METHOD_COLORMAP = "turbo"
+
+
+def _draw_depth_export_pixmap(kind: str, color_hex: str) -> QPixmap:
+    """Render a crisp 16x16 (@2x) monochrome vector icon for depth export buttons."""
+    pm = QPixmap(32, 32)
+    pm.setDevicePixelRatio(2.0)
+    pm.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pm)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    col = QColor(color_hex)
+    pen = QPen(col, 1.4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+    painter.setPen(pen)
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+
+    if kind == "color":
+        for x, y in ((2.5, 2.5), (9.0, 2.5), (2.5, 9.0), (9.0, 9.0)):
+            painter.drawRoundedRect(QRectF(x, y, 4.5, 4.5), 1.0, 1.0)
+        painter.setBrush(col)
+        painter.drawRoundedRect(QRectF(9.0, 2.5, 4.5, 4.5), 1.0, 1.0)
+    elif kind == "raw":
+        for x, top in ((3.0, 9.0), (6.3, 5.5), (9.6, 3.0), (12.9, 7.0)):
+            painter.drawLine(QPointF(x, 13.0), QPointF(x, top))
+    elif kind == "indices":
+        for dy in (0.0, 3.3, 6.6):
+            painter.drawLine(QPointF(3.0, 5.2 + dy), QPointF(8.0, 2.7 + dy))
+            painter.drawLine(QPointF(8.0, 2.7 + dy), QPointF(13.0, 5.2 + dy))
+            if dy == 0.0:
+                painter.drawLine(QPointF(13.0, 5.2), QPointF(8.0, 7.7))
+                painter.drawLine(QPointF(8.0, 7.7), QPointF(3.0, 5.2))
+    elif kind == "render":
+        painter.drawRoundedRect(QRectF(2.2, 2.8, 11.6, 10.4), 1.5, 1.5)
+        painter.drawLine(QPointF(3.8, 11.4), QPointF(6.8, 7.8))
+        painter.drawLine(QPointF(6.8, 7.8), QPointF(9.2, 10.0))
+        painter.drawLine(QPointF(9.2, 10.0), QPointF(11.0, 8.2))
+        painter.drawLine(QPointF(11.0, 8.2), QPointF(12.6, 11.4))
+    elif kind == "contrast":
+        painter.drawEllipse(QRectF(2.5, 2.5, 11.0, 11.0))
+        painter.setBrush(col)
+        painter.drawPie(QRectF(2.5, 2.5, 11.0, 11.0), 90 * 16, 180 * 16)
+    elif kind == "physical":
+        painter.drawLine(QPointF(5.5, 2.5), QPointF(5.5, 13.5))
+        for y, w in ((3.5, 4.0), (6.5, 2.5), (9.5, 4.0), (12.5, 2.5)):
+            painter.drawLine(QPointF(5.5, y), QPointF(5.5 + w, y))
+        painter.drawLine(QPointF(12.2, 3.0), QPointF(12.2, 13.0))
+        painter.drawLine(QPointF(10.5, 4.7), QPointF(12.2, 3.0))
+        painter.drawLine(QPointF(13.9, 4.7), QPointF(12.2, 3.0))
+    elif kind == "mesh3d":
+        painter.drawPolygon(QPolygonF([
+            QPointF(8.0, 2.0), QPointF(13.4, 5.0), QPointF(13.4, 11.0),
+            QPointF(8.0, 14.0), QPointF(2.6, 11.0), QPointF(2.6, 5.0),
+        ]))
+        painter.drawLine(QPointF(8.0, 8.0), QPointF(8.0, 14.0))
+        painter.drawLine(QPointF(8.0, 8.0), QPointF(2.6, 5.0))
+        painter.drawLine(QPointF(8.0, 8.0), QPointF(13.4, 5.0))
+
+    painter.end()
+    return pm
+
+
+def _make_depth_export_icon(kind: str, theme: str = "light") -> QIcon:
+    """Build Normal/Disabled monochrome QIcon consistent with active theme tokens."""
+    t = palette(theme if theme in ("light", "dark", "gray") else "light")
+    icon = QIcon()
+    icon.addPixmap(_draw_depth_export_pixmap(kind, t["text"]), QIcon.Mode.Normal, QIcon.State.Off)
+    icon.addPixmap(_draw_depth_export_pixmap(kind, t["textFaint"]), QIcon.Mode.Disabled, QIcon.State.Off)
+    return icon
 
 
 # 对话框关闭时仍在跑的 worker 放这里保活：QThread 对象被销毁而线程仍在
@@ -1083,7 +1150,14 @@ class DepthMapDialog(QDialog):
         self._side_controls = QTabWidget()
         source_page, form = self._settings_form()
         appearance_page, appearance = self._settings_form()
-        export_page, exports = self._settings_form()
+        export_page = QScrollArea()
+        export_page.setFrameShape(QFrame.Shape.NoFrame)
+        export_page.setWidgetResizable(True)
+        export_content = QWidget()
+        export_lay = QVBoxLayout(export_content)
+        export_lay.setContentsMargins(10, 10, 10, 10)
+        export_lay.setSpacing(10)
+        export_page.setWidget(export_content)
         self._source_form = form
         self.source_combo = QComboBox()
         self.source_combo.addItem(trans.t("depth_source_current"), "current")
@@ -1191,7 +1265,7 @@ class DepthMapDialog(QDialog):
         appearance.addRow(self.physical_panel)
         self.mesh_size = StepperSpinBox(minimum=2, maximum=4096, decimals=0,
                                         step=20, value=600)
-        exports.addRow(trans.t("depth_mesh_size"), self.mesh_size)
+        self.mesh_size.setMaximumWidth(120)
         self.texture_combo = QComboBox()
         self.texture_combo.setToolTip(trans.t("depth_texture_hint"))
         self.texture_combo.setAccessibleName(trans.t("depth_texture"))
@@ -1274,10 +1348,73 @@ class DepthMapDialog(QDialog):
             button.setToolTip(trans.t("depth_products_hint"))
         self.btn_save_indices.clicked.connect(lambda: self._export_product(False))
         self.btn_save_render.clicked.connect(lambda: self._export_product(True))
-        for button in (self.btn_save_color, self.btn_save_raw, self.btn_save_indices,
-                       self.btn_save_render, self.btn_save_contrast,
-                       self.btn_save_physical, self.btn_save_3d):
-            exports.addRow(button)
+
+        theme_name = (getattr(self.window_main, "ui_theme", None)
+                      or getattr(self.window_main, "theme_mode", None) or "light")
+        export_buttons = (
+            (self.btn_save_color, "color"),
+            (self.btn_save_raw, "raw"),
+            (self.btn_save_indices, "indices"),
+            (self.btn_save_render, "render"),
+            (self.btn_save_contrast, "contrast"),
+            (self.btn_save_physical, "physical"),
+            (self.btn_save_3d, "mesh3d"),
+        )
+        for btn, icon_kind in export_buttons:
+            btn.setObjectName("secondaryButton")
+            btn.setIcon(_make_depth_export_icon(icon_kind, theme_name))
+            btn.setIconSize(QSize(16, 16))
+            btn.setMinimumHeight(34)
+
+        self._export_maps_card = QFrame(export_content)
+        self._export_maps_card.setObjectName("card")
+        maps_card_lay = QVBoxLayout(self._export_maps_card)
+        maps_card_lay.setContentsMargins(12, 10, 12, 12)
+        maps_card_lay.setSpacing(8)
+        maps_title = QLabel(trans.t("depth_export_maps_group"), self._export_maps_card)
+        maps_title.setObjectName("sectionLabel")
+        maps_card_lay.addWidget(maps_title)
+        maps_grid = QGridLayout()
+        maps_grid.setContentsMargins(0, 0, 0, 0)
+        maps_grid.setHorizontalSpacing(8)
+        maps_grid.setVerticalSpacing(8)
+        maps_grid.setColumnStretch(0, 1)
+        maps_grid.setColumnStretch(1, 1)
+        for idx, btn in enumerate((
+            self.btn_save_color,
+            self.btn_save_raw,
+            self.btn_save_indices,
+            self.btn_save_render,
+            self.btn_save_contrast,
+            self.btn_save_physical,
+        )):
+            btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            maps_grid.addWidget(btn, idx // 2, idx % 2)
+        maps_card_lay.addLayout(maps_grid)
+        export_lay.addWidget(self._export_maps_card)
+
+        self._export_mesh_card = QFrame(export_content)
+        self._export_mesh_card.setObjectName("card")
+        mesh_card_lay = QVBoxLayout(self._export_mesh_card)
+        mesh_card_lay.setContentsMargins(12, 10, 12, 12)
+        mesh_card_lay.setSpacing(8)
+        mesh_title = QLabel(trans.t("depth_export_mesh_group"), self._export_mesh_card)
+        mesh_title.setObjectName("sectionLabel")
+        mesh_card_lay.addWidget(mesh_title)
+        mesh_row = QHBoxLayout()
+        mesh_row.setContentsMargins(0, 0, 0, 0)
+        mesh_row.setSpacing(8)
+        mesh_lbl = QLabel(trans.t("depth_mesh_size"), self._export_mesh_card)
+        mesh_lbl.setBuddy(self.mesh_size)
+        mesh_row.addWidget(mesh_lbl)
+        mesh_row.addWidget(self.mesh_size)
+        mesh_row.addStretch(1)
+        mesh_card_lay.addLayout(mesh_row)
+        self.btn_save_3d.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        mesh_card_lay.addWidget(self.btn_save_3d)
+        export_lay.addWidget(self._export_mesh_card)
+        export_lay.addStretch(1)
+
         for button in (self.compute_btn, self.cancel_btn, close_btn):
             btns.add(button)
         layout.addWidget(btns)
