@@ -117,7 +117,7 @@ def test_main_window_close_persists_layout(qapp, tmp_path, monkeypatch):
 
 def test_first_launch_shows_render_controls_and_restores_custom_right_splitter(
         qapp, tmp_path, monkeypatch):
-    from PyQt6.QtCore import QPoint
+    from PyQt6.QtCore import QPoint, Qt
     from main import OpenFocus
     from tests.test_control_channel import _destroy_main_window, _new_main_window, wait_until
     from utils import settings_store
@@ -130,9 +130,21 @@ def test_first_launch_shows_render_controls_and_restores_custom_right_splitter(
         viewport = parts.config_scroll.viewport()
         for button in (parts.btn_render, parts.btn_live_preview,
                        parts.btn_render_settings, parts.btn_reset,
-                       parts.btn_render_more, parts.btn_context_help,
+                       parts.btn_render_more,
                        parts.fusion_parameter_panel.disclosure):
             corner = button.mapTo(viewport, QPoint(0, button.height() - 1))
+            assert 0 <= corner.y() < viewport.height()
+        menubar = window.menuBar()
+        if not menubar.isNativeMenuBar():
+            corner_widget = menubar.cornerWidget(Qt.Corner.TopRightCorner)
+            assert corner_widget is not None and corner_widget.isAncestorOf(parts.btn_context_help)
+            assert parts.btn_context_help.isVisible()
+            assert parts.context_help_host is not None and not parts.context_help_host.isVisible()
+            top_left = parts.btn_context_help.mapTo(menubar, QPoint(0, 0))
+            assert top_left.x() > menubar.width() // 2
+            assert 0 <= top_left.y() < menubar.height()
+        else:
+            corner = parts.btn_context_help.mapTo(viewport, QPoint(0, parts.btn_context_help.height() - 1))
             assert 0 <= corner.y() < viewport.height()
         action_ys = [
             button.mapTo(viewport, QPoint(0, 0)).y()

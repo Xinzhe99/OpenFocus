@@ -35,6 +35,7 @@ import cv2
 import numpy as np
 
 from locales import trans
+from ui.context_help import register_help_target
 from ui.styles import tokens
 from utils.design_tokens import SPACE
 from utils import scalebar
@@ -93,6 +94,7 @@ class ScaleBarDialog(QDialog):
         workspace = WorkspaceSplitter()
         workspace.addWidget(scroll)
         root.addWidget(workspace, 1)
+        register_help_target(self, "scalebar")
 
         self._target_form = self._group(form_col, "scalebar_target")
         self._calibration_form = form = self._group(form_col, "scalebar_section_calibration")

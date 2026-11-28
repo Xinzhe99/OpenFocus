@@ -89,6 +89,7 @@ def test_dropped_folder_choice_fits_screen_and_keeps_full_path(qapp):
         path_field = dialog.findChild(QLineEdit)
         path_field.selectAll()
         assert path_field.selectedText() == folder
+        assert dialog.summary_label.isHidden()
         dialog.rb_batch.click()
         dialog.ok_button.click()
         assert dialog.result() == dialog.DialogCode.Accepted and not dialog.is_single_stack()
@@ -872,3 +873,85 @@ def test_folder_thumbnail_queue_survives_active_import(qapp, monkeypatch):
         dialog.close()
         dialog.deleteLater()
         qapp.processEvents()
+
+
+def test_folder_import_dialog_shows_image_and_subfolder_counts(qapp, tmp_path, monkeypatch):
+    from locales import trans
+    from dialogs.batch import FolderImportDialog
+
+    summary_keys = (
+        "import_folder_summary_images",
+        "import_folder_summary_images_and_subfolders",
+        "import_folder_summary_subfolders_only",
+        "import_folder_summary_empty",
+    )
+    assert len(trans.PACK_ORDER) == 12
+    for code in trans.PACK_ORDER:
+        pack = trans.translations[code]
+        for key in summary_keys:
+            assert pack.get(key), f"{code}: missing {key}"
+
+    monkeypatch.setattr(trans, "current_lang", "zh")
+
+    # 1. Direct images only (ignores non-image files and derived *_registered copies)
+    direct = tmp_path / "direct_stack"
+    direct.mkdir()
+    (direct / "frame_01.jpg").write_bytes(b"a")
+    (direct / "frame_01_registered.jpg").write_bytes(b"dup")
+    (direct / "frame_02.png").write_bytes(b"b")
+    (direct / "notes.txt").write_text("ignore", encoding="utf-8")
+
+    dlg_direct = FolderImportDialog(str(direct))
+    try:
+        assert dlg_direct.image_count == 2
+        assert dlg_direct.subfolder_count == 0
+        assert not dlg_direct.summary_label.isHidden()
+        assert dlg_direct.summary_label.text() == "检测到 2 张图片"
+    finally:
+        dlg_direct.close()
+        dlg_direct.deleteLater()
+
+    # 2. Mixed images + visible subfolders (ignores hidden dirs)
+    mixed = tmp_path / "mixed_stack"
+    mixed.mkdir()
+    (mixed / "a.tif").write_bytes(b"a")
+    (mixed / "stack_sub1").mkdir()
+    (mixed / "stack_sub2").mkdir()
+    (mixed / ".git").mkdir()
+
+    monkeypatch.setattr(trans, "current_lang", "en")
+    dlg_mixed = FolderImportDialog(str(mixed))
+    try:
+        assert dlg_mixed.image_count == 1
+        assert dlg_mixed.subfolder_count == 2
+        assert dlg_mixed.summary_label.text() == "Found 1 images · 2 subfolders"
+    finally:
+        dlg_mixed.close()
+        dlg_mixed.deleteLater()
+
+    # 3. Subfolders only (no direct images)
+    sub_only = tmp_path / "batch_parent"
+    sub_only.mkdir()
+    (sub_only / "specimen_a").mkdir()
+
+    monkeypatch.setattr(trans, "current_lang", "zh")
+    dlg_sub = FolderImportDialog(str(sub_only))
+    try:
+        assert dlg_sub.image_count == 0
+        assert dlg_sub.subfolder_count == 1
+        assert dlg_sub.summary_label.text() == "当前目录无图片 · 含 1 个子文件夹"
+    finally:
+        dlg_sub.close()
+        dlg_sub.deleteLater()
+
+    # 4. Empty folder
+    empty_dir = tmp_path / "empty_dir"
+    empty_dir.mkdir()
+    dlg_empty = FolderImportDialog(str(empty_dir))
+    try:
+        assert dlg_empty.image_count == 0
+        assert dlg_empty.subfolder_count == 0
+        assert dlg_empty.summary_label.text() == "当前目录未检测到支持的图片"
+    finally:
+        dlg_empty.close()
+        dlg_empty.deleteLater()

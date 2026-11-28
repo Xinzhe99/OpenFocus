@@ -8,6 +8,7 @@ from PyQt6.QtCore import QThread, QTimer, pyqtSignal
 from PyQt6.QtWidgets import QDialog, QHBoxLayout, QLabel, QProgressBar, QPushButton, QVBoxLayout
 
 from locales import trans
+from ui.context_help import register_help_target
 
 
 class _MissingDataExportWorker(QThread):
@@ -145,6 +146,7 @@ class MissingDataExportDialog(QDialog):
         self.cancel_button.setProperty("controlId", "retouch_map_export_cancel")
         self.cancel_button.clicked.connect(self.reject)
         layout.addWidget(self.cancel_button)
+        register_help_target(self, "retouch_export")
         self.worker = _MissingDataExportWorker(image, missing, targets, self)
         self.worker.progressed.connect(self._progress)
         self.worker.finished.connect(self._finished)

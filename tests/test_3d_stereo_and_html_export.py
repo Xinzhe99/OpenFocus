@@ -773,3 +773,48 @@ def test_html_animation_includes_desktop_parity_loupe_and_valid_js(tmp_path):
         js_path.write_text(match.group(1), encoding="utf-8")
         proc = subprocess.run([node_exe, "--check", str(js_path)], capture_output=True, text=True)
         assert proc.returncode == 0, proc.stderr
+
+
+def test_html_animation_defaults_to_app_language_and_embeds_12_lang_switcher(qapp, tmp_path, monkeypatch):
+    import json
+    import re
+    import shutil
+    import subprocess
+    from core.html_animation_export import HtmlAnimationOptions, build_html_animation
+    from core.html_viewer_i18n import HTML_ANIM_VIEWER_I18N, SUPPORTED_VIEWER_LANGS
+    from dialogs.html_animation import HtmlAnimationDialog
+    from locales import trans
+
+    monkeypatch.setattr(trans, "current_lang", "zh")
+    dlg = HtmlAnimationDialog()
+    try:
+        opts = dlg.options()
+        assert opts.language == "zh"
+    finally:
+        dlg.deleteLater()
+
+    frames = _synthetic_stack(n=3, h=64, w=80)
+    fused = frames[0].copy()
+    html_doc = build_html_animation(
+        frames,
+        fused_image=fused,
+        options=HtmlAnimationOptions(max_width=80, include_fused_frame=True, language="zh_CN"),
+    )
+    assert '<html lang="zh"' in html_doc
+    assert 'id="selLang"' in html_doc
+    m = re.search(r"var DATA = (\{.*?\});", html_doc)
+    assert m is not None
+    payload = json.loads(m.group(1).replace("<\\/", "</"))
+    assert payload["lang"] == "zh"
+    assert set(payload["langNames"]) == set(SUPPORTED_VIEWER_LANGS)
+    assert set(payload["i18n"]) == set(SUPPORTED_VIEWER_LANGS)
+    assert payload["i18n"]["zh"]["loupeBtn"] == HTML_ANIM_VIEWER_I18N["zh"]["loupeBtn"]
+
+    match = re.search(r"<script>\s*(.*?)\s*</script>", html_doc, re.S)
+    assert match is not None
+    node_exe = shutil.which("node")
+    if node_exe is not None:
+        js_path = tmp_path / "viewer_i18n.js"
+        js_path.write_text(match.group(1), encoding="utf-8")
+        proc = subprocess.run([node_exe, "--check", str(js_path)], capture_output=True, text=True)
+        assert proc.returncode == 0, proc.stderr
