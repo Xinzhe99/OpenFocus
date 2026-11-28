@@ -489,7 +489,7 @@ _ZH_TOPICS: dict[str, tuple[str, str, str]] = {
 
 _EXTRA_KEYS: dict[str, dict[str, str]] = {
     "en": {
-        "ctx_help_beacon_label": "? Help (Drag / Hold H)",
+        "ctx_help_beacon_label": "Help (Drag / Hold H)",
         "ctx_help_beacon_tooltip": "Click to pick any UI element, drag '?' onto any control, or hold H anywhere and click to view illustrated help.",
         "ctx_help_pick_banner": "Help Mode: click any panel, button, or setting to view illustrated help (or drag '?' / hold H anywhere) · Press Esc to exit",
         "ctx_help_footer_tip": "Tip: Drag the '?' pill in the top-right corner onto any area, or hold the H key anywhere (even inside sub-dialogs) and click any item to inspect it.",
@@ -501,7 +501,7 @@ _EXTRA_KEYS: dict[str, dict[str, str]] = {
         "ctx_help_drag_chip": "? Drop onto control for help",
     },
     "zh": {
-        "ctx_help_beacon_label": "? 帮助（拖拽 / 按住 H）",
+        "ctx_help_beacon_label": "帮助（拖拽 / 按住 H）",
         "ctx_help_beacon_tooltip": "按住拖动到任意不懂的区域即可图文讲解；单击进入点选模式；在软件任意界面（含子窗口）按住 H 键并用鼠标点击也可随时呼出说明。",
         "ctx_help_pick_banner": "帮助模式已开启：点击任意功能区、按钮或参数即可查看图文说明（也可拖动右上角 ? 或按住 H 键点击）· 按 Esc 退出",
         "ctx_help_footer_tip": "提示：平时也可直接按住右上角“?”拖到任何区域，或在软件任意界面按住 H 键并点击目标控件直接呼出图文帮助。",

@@ -296,8 +296,8 @@ def test_right_panel_icon_action_tooltips_and_help_beacon_labels(qapp, monkeypat
     plain_btn.deleteLater()
 
     for lang, expected_beacon in (
-        ("zh", "? 帮助（拖拽 / 按住 H）"),
-        ("en", "? Help (Drag / Hold H)"),
+        ("zh", "帮助（拖拽 / 按住 H）"),
+        ("en", "Help (Drag / Hold H)"),
     ):
         monkeypatch.setattr(trans, "current_lang", lang)
         parts = create_right_panel()
@@ -337,13 +337,13 @@ def test_help_beacon_mounts_in_menubar_corner_and_retranslates_without_clipping(
             corner = menubar.cornerWidget(Qt.Corner.TopRightCorner)
             assert corner is not None and corner.isAncestorOf(beacon)
             assert not window.right_panel_components.context_help_host.isVisible()
-            assert beacon.text() == "? 帮助（拖拽 / 按住 H）"
+            assert beacon.text() == "帮助（拖拽 / 按住 H）"
             assert beacon.width() >= beacon.sizeHint().width()
 
             trans.current_lang = "en"
             window.update_ui_text()
             qapp.processEvents()
-            assert beacon.text() == "? Help (Drag / Hold H)"
+            assert beacon.text() == "Help (Drag / Hold H)"
             assert beacon.width() >= beacon.sizeHint().width()
     finally:
         _destroy_main_window(qapp, window)
