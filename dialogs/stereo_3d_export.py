@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
 
 from core.stereo_3d_export import LightingSettings, TurntableOptions
 from locales import trans
+from ui.context_help import register_help_target
 from widgets.stepper import StepperSpinBox
 
 
@@ -74,6 +75,7 @@ class AnaglyphExportDialog(QDialog):
         btns.addWidget(cancel_btn)
         btns.addWidget(ok_btn)
         layout.addLayout(btns)
+        register_help_target(self, "stereo_3d")
 
     def options(self) -> dict:
         return {
@@ -143,6 +145,7 @@ class StereoPairExportDialog(QDialog):
         btns.addWidget(cancel_btn)
         btns.addWidget(ok_btn)
         layout.addLayout(btns)
+        register_help_target(self, "stereo_3d")
 
     def options(self) -> dict:
         return {
@@ -213,6 +216,7 @@ class TurntableExportDialog(QDialog):
         btns.addWidget(cancel_btn)
         btns.addWidget(ok_btn)
         layout.addLayout(btns)
+        register_help_target(self, "stereo_3d")
 
     def _on_format_changed(self):
         fmt = self.format_combo.currentData()

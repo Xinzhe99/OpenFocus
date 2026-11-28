@@ -927,6 +927,12 @@ def test_registered_parameters_cross_dialogs_and_adoption(qapp, extra_algorithms
     saved = {'dialog_extra': {'lift': 7, 'selection': 'last'}}
     openfocus = {'max_shift_ratio': .17, 'rotation': 2.5, 'magnification': 4.5,
                  'reference_frame': 2, 'failure_policy': 'fail'}
+    expected_openfocus = {
+        'max_shift_x_ratio': .17, 'max_shift_y_ratio': .17,
+        'rotation': 2.5, 'magnification': 4.5,
+        'auto_crop': True, 'interpolation': 'lanczos',
+        'reference_frame': 2, 'failure_policy': 'fail',
+    }
     registration = {'dialog_shift': {'shift': 3}, 'openfocus': openfocus}
     window.fusion_parameters_for = lambda method, depth=False: extra_algorithms.resolve_fusion_parameters(
         method, None if depth else saved.get(method), depth=depth)
@@ -972,9 +978,9 @@ def test_registered_parameters_cross_dialogs_and_adoption(qapp, extra_algorithms
         for dialog in (batch, compare, depth):
             dialog.align_combo.setCurrentIndex(dialog.align_combo.findData('openfocus'))
             assert dialog.registration_parameter_panel.isHidden()
-            assert dialog.registration_parameter_panel.values() == openfocus
-        assert batch.get_processing_settings()['registration_parameters'] == openfocus
-        assert compare._shared['registration_parameters'] == openfocus
+            assert dialog.registration_parameter_panel.values() == expected_openfocus
+        assert batch.get_processing_settings()['registration_parameters'] == expected_openfocus
+        assert compare._shared['registration_parameters'] == expected_openfocus
         captured = []
         def capture_alignment(images, method, settings, should_cancel, *, reverse_registration=False):
             captured.append((method, dict(settings['registration_parameters'])))
@@ -986,7 +992,7 @@ def test_registered_parameters_cross_dialogs_and_adoption(qapp, extra_algorithms
             _until(qapp, lambda: _finished(compare) and compare._results)
             depth._compute()
             _until(qapp, lambda: depth._worker is None)
-        assert captured == [('openfocus', openfocus), ('openfocus', openfocus)]
+        assert captured == [('openfocus', expected_openfocus), ('openfocus', expected_openfocus)]
         for dialog in (batch, compare, depth):
             dialog.align_combo.setCurrentIndex(dialog.align_combo.findData('dialog_shift'))
             assert not dialog.registration_parameter_panel.isHidden()
@@ -1046,11 +1052,11 @@ def test_registered_parameters_cross_dialogs_and_adoption(qapp, extra_algorithms
         compare._adopt_params()
         assert saved['dialog_extra'] == {'lift': 13, 'selection': 'last'}
         assert registration['dialog_shift'] == {'shift': 3}
-        assert registration['openfocus'] == openfocus
+        assert registration['openfocus'] == expected_openfocus
         assert undo[0]['fusion']['dialog_extra'] == {'lift': 7, 'selection': 'last'}
         assert len(persisted) == 1
         assert persisted[0]['fusion']['dialog_extra'] == saved['dialog_extra']
-        assert persisted[0]['registration']['openfocus'] == openfocus
+        assert persisted[0]['registration']['openfocus'] == expected_openfocus
     finally:
         batch.reject()
         if not sip.isdeleted(compare):
@@ -1605,6 +1611,54 @@ def test_reused_workspace_output_enables_adopt_output_in_full_mode_only(qapp, mo
         dialog._adopt_output()
         assert len(records) == 1
         np.testing.assert_array_equal(records[0].image, expected)
+    finally:
+        if not sip.isdeleted(dialog):
+            dialog.reject()
+        _until(qapp, lambda: not dialog._has_workers())
+        host.deleteLater()
+
+
+def test_checkbox_toggle_back_preserves_workspace_reuse_and_combo_width(qapp, monkeypatch):
+    import numpy as np
+    from PyQt6.QtWidgets import QComboBox
+    from core.compare_worker import AlignmentWorker
+
+    host = _make_workspace_host(qapp, alignment='ecc', fusion_method='openfocus_b')
+    host.source_content_revision = 42
+    saved = np.full((160, 560, 3), (15, 190, 25), dtype=np.uint8)
+    # Emulate adding workspace result before a frame checkbox toggle bumped source_revision.
+    record = _add_workspace_fusion(
+        host, 'openfocus_b', 'Workspace B', saved, alignment_options=('ecc',), clear_frames=True,
+    )
+    record.context.source_content_revision = 42
+    # Toggling a checkbox off and back on bumps source_revision (5 -> 7) while keeping
+    # source_content_revision at 42 and restoring the same checked indices.
+    host.source_revision = 7
+
+    worker_starts = []
+    monkeypatch.setattr(AlignmentWorker, 'start', lambda self, *a, **kw: worker_starts.append('align'))
+    monkeypatch.setattr(PreviewWorker, 'start', lambda self, *a, **kw: worker_starts.append(('preview', self.methods)))
+
+    dialog = CompareDialog(host)
+    try:
+        dialog.show()
+        _until(qapp, lambda: _finished(dialog) and dialog._canvases['openfocus_b'].can_show_full())
+        assert worker_starts == []
+        assert dialog._results['openfocus_b']['record'] is record
+
+        # Combo boxes inside algorithm cards keep a usable horizontal width.
+        for widgets in dialog.param_widgets.values():
+            for widget in widgets.values():
+                if isinstance(widget, QComboBox):
+                    assert widget.minimumWidth() >= 90
+
+        # Stack resize / reload bumps source_content_revision and invalidates stale outputs.
+        host.source_content_revision = 43
+        assert not record.context.matches_stack(
+            host.source_revision,
+            list(range(len(host.raw_images))),
+            content_revision=host.source_content_revision,
+        )
     finally:
         if not sip.isdeleted(dialog):
             dialog.reject()

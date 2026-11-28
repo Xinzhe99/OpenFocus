@@ -327,7 +327,7 @@ class BatchProcessingDialog(QDialog):
         format_row.addWidget(self.format_combo)
         register_help_target(self.split_method_combo, "batch_split")
         register_help_target(self.single_folder_group, "batch_split")
-        register_help_target(self.folder_group, "source_list")
+        register_help_target(self.folder_group, "batch_folders")
         register_help_target(self.format_combo, "batch_output_format")
         register_help_target(format_card, "batch_output_format")
 
@@ -442,6 +442,11 @@ class BatchProcessingDialog(QDialog):
         self._fill_method_combo(self.align_combo, registration_algorithms())
         align_row.addWidget(self.align_combo, 1)
         method_card_layout.addLayout(align_row)
+        register_help_target(method_card, "batch_methods")
+        register_help_target(self.fusion_combo, "batch_methods")
+        register_help_target(self.align_combo, "batch_methods")
+        register_help_target(location_card, "batch_output_format")
+        register_help_target(self.save_aligned_cb, "batch_output_format")
         options_layout.addWidget(method_card)
 
         # --- Parameters --------------------------------------------------
@@ -483,6 +488,7 @@ class BatchProcessingDialog(QDialog):
         self._grouping_pref = False
         self.chk_grouping = QCheckBox(trans.t('batch_group_enable'))
         self.chk_grouping.setToolTip(trans.t('batch_group_hint'))
+        register_help_target(self.chk_grouping, "batch_grouping")
         legacy_layout.addWidget(self.chk_grouping)
         self.group_controls = QWidget()
         group_row = QHBoxLayout(self.group_controls)

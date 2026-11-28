@@ -443,6 +443,7 @@ class RenderContext:
     source_scale_factor: float = 1.0
     source_indices: Tuple[int, ...] = ()
     source_revision: int = 0
+    source_content_revision: Optional[int] = None
     parameters: dict = field(default_factory=dict)
     icc_profile: bytes = b""
     #: Raw EXIF of the first participating source, snapshotted at publish time.
@@ -472,8 +473,16 @@ class RenderContext:
     def iter_frames(self) -> Iterable[SourceFrame]:
         return iter(self.frames)
 
-    def matches_stack(self, revision, indices):
-        return self.source_revision == revision and self.source_indices == tuple(indices)
+    def matches_stack(self, revision, indices, *, content_revision=None):
+        if self.source_indices != tuple(indices):
+            return False
+        if self.source_revision == revision:
+            return True
+        return (
+            content_revision is not None
+            and self.source_content_revision is not None
+            and self.source_content_revision == content_revision
+        )
 
     def matches_registration(self, alignment, parameters, downscale, reverse):
         steps = alignment_steps(alignment)
@@ -553,6 +562,7 @@ def build_render_context(
     source_scale_factor: float = 1.0,
     source_indices: Optional[Sequence[int]] = None,
     source_revision: int = 0,
+    source_content_revision: Optional[int] = None,
     parameters: Optional[dict] = None,
     frame_ids: Optional[Sequence[str]] = None,
     icc_profile: bytes = b"",
@@ -681,6 +691,7 @@ def build_render_context(
         source_scale_factor=source_scale_factor,
         source_indices=tuple(source_indices or range(len(frames))),
         source_revision=source_revision,
+        source_content_revision=source_content_revision,
         parameters=dict(parameters or {}),
         icc_profile=icc_profile,
         source_exif=source_exif,
