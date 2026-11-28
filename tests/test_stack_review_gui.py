@@ -343,7 +343,7 @@ def test_cancel_discards_even_a_late_result(qapp, monkeypatch, start_from_menu):
         actions = [action for action in menu.actions() if not action.isSeparator()]
         review_key = 'stack_review_action' if start_from_menu else 'stack_review_cancel'
         assert [action.text() for action in actions] == [trans.t(key) for key in (
-            review_key, 'source_include_selected', 'source_exclude_selected', 'action_delete')]
+            review_key, 'action_render_substacks', 'source_include_selected', 'source_exclude_selected', 'action_delete')]
         assert actions[0].shortcut() == QKeySequence('Ctrl+Shift+F')
         assert actions[0].isShortcutVisibleInContextMenu()
         actions[0].trigger()

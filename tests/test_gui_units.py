@@ -723,7 +723,9 @@ def test_render_all_queues_only_stable_methods_without_opt_in(qapp, monkeypatch)
     monkeypatch.setattr(manager, 'start_render', lambda *, force_algorithm: started.append(force_algorithm))
     manager.start_compare_all()
     assert started == ['openfocus_a']
-    assert manager._compare_queue == ['openfocus_b', 'openfocus_c']
+    assert manager._compare_queue == [
+        'openfocus_b', 'guided_filter', 'gfgfgf', 'openfocus_c', 'dct', 'dtcwt'
+    ]
 
 
 def test_compare_all_second_click_cancels_the_run(qapp, monkeypatch):
