@@ -46,6 +46,7 @@ from ui.algorithm_parameters import AlgorithmParameterPanel
 from ui.algorithm_combo import apply_method_availability, selected_item_enabled
 from core.experimental import alignment_is_experimental, experimental_enabled
 from locales import trans
+from ui.context_help import register_help_target
 from widgets.flow_layout import FlowPanel
 from widgets.stepper import StepperSpinBox
 from widgets.workspace import WorkspaceSplitter
@@ -1442,7 +1443,36 @@ class DepthMapDialog(QDialog):
             if _widget is not None:
                 _widget.setProperty("controlId", _control)
         self._load_rendered_depth()
+        self._register_context_help()
         splitter.fit_dialog(980, 680)
+
+    def _register_context_help(self):
+        for name in (
+            "source_combo", "align_combo", "registration_parameter_panel",
+            "method_combo", "fusion_parameter_panel", "compute_btn",
+        ):
+            register_help_target(getattr(self, name, None), "depth_source_method")
+        for name in (
+            "map_combo", "invert_chk", "gamma_spin", "smooth_spin",
+            "physical_chk", "physical_panel", "texture_combo",
+            "overlay_chk", "opacity_spin",
+        ):
+            register_help_target(getattr(self, name, None), "depth_postprocess")
+        for name in (
+            "surface", "render_mode_combo", "relief_spin", "detail_slider",
+            "btn_surface_reset",
+        ):
+            register_help_target(getattr(self, name, None), "depth_3d_surface")
+        for name in ("lighting_group", "btn_light_reset"):
+            register_help_target(getattr(self, name, None), "depth_3d_lighting")
+        for name in (
+            "_export_maps_card", "_export_mesh_card", "mesh_size", "btn_save_3d",
+            "btn_save_color", "btn_save_raw", "btn_save_indices", "btn_save_render",
+            "btn_save_contrast", "btn_save_physical",
+            "btn_export_anaglyph", "btn_export_stereo_pair", "btn_export_turntable",
+            "btn_export_html_3d", "btn_save_html_3d",
+        ):
+            register_help_target(getattr(self, name, None), "depth_export")
 
     @staticmethod
     def _settings_form():

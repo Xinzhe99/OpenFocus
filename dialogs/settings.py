@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import (
 )
 from ui.styles import PRIMARY_BLUE, help_button_style
 from locales import trans
+from ui.context_help import register_help_target
 from widgets.stepper import StepperSpinBox, hide_spin_buttons
 from utils import resource_path
 import threading
@@ -153,6 +154,7 @@ class DurationDialog(QDialog):
 
         layout.addWidget(duration_group)
         layout.addLayout(button_layout)
+        register_help_target(self, "adv_startup")
 
     def get_duration(self):
         """返回用户设置的duration值（毫秒）"""
@@ -218,6 +220,7 @@ class DownsampleDialog(QDialog):
 
     def _build_layout(self):
         layout = QVBoxLayout(self)
+        register_help_target(self, "adv_startup")
 
         # 说明文字
         info_label = QLabel(trans.t('action_resize' if self._resize_source else 'ds_label'))
@@ -505,6 +508,7 @@ class TileSettingsDialog(QDialog):
         g_layout.addLayout(threshold_layout)
 
         layout.addWidget(group)
+        register_help_target(self, "tiles")
 
         # Buttons: help and OK/Cancel
         btn_layout = QHBoxLayout()
@@ -602,6 +606,7 @@ class RegistrationSettingsDialog(QDialog):
         g_layout.addStretch()
 
         layout.addWidget(group)
+        register_help_target(self, "registration_width")
 
         btn_layout = QHBoxLayout()
         help_btn = QPushButton("?")
@@ -680,6 +685,7 @@ class ThreadSettingsDialog(QDialog):
         g_layout.addStretch()
 
         layout.addWidget(group)
+        register_help_target(self, "adv_resources")
 
         # Buttons: help and OK/Cancel (match Tile/Registration style)
         btn_layout = QHBoxLayout()
@@ -757,6 +763,7 @@ class AIBatchSettingsDialog(QDialog):
         g_layout.addStretch()
 
         layout.addWidget(group)
+        register_help_target(self, "adv_resources")
 
         # Buttons: help and OK/Cancel
         btn_layout = QHBoxLayout()

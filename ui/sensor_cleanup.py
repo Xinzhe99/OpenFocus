@@ -7,6 +7,7 @@ from PyQt6.QtWidgets import (QCheckBox, QHBoxLayout, QLabel,
                              QLineEdit, QPushButton, QVBoxLayout, QWidget)
 
 from locales import trans
+from ui.context_help import register_help_target
 
 _INSPECTIONS = set()
 _RETIREMENTS = {}
@@ -91,6 +92,7 @@ class SensorCleanupControls(QWidget):
         self.denoise.setChecked(bool(denoise))
         self.path.textChanged.connect(self._text_changed)
         self.path.editingFinished.connect(self._inspect)
+        register_help_target(self, 'sensor_cleanup')
         self._inspect()
 
     def _browse(self):

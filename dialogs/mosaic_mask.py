@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (
 
 from dialogs.mosaic_control_points import _SourcePreview
 from locales import trans
+from ui.context_help import register_help_target
 from utils.file_dialogs import FileDialog
 from utils.image_utils import to_display_uint8
 
@@ -142,6 +143,7 @@ class MosaicMaskDialog(QDialog):
         self.buttons.button(QDialogButtonBox.StandardButton.Apply).clicked.connect(self.accept)
         self.buttons.rejected.connect(self.reject)
         outer.addWidget(self.buttons)
+        register_help_target(self, "mosaic_mask")
         self.canvas.strokeRecorded.connect(self._stroke)
         trans.languageChanged.connect(self._retranslate)
         self._retranslate()

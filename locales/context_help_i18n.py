@@ -242,6 +242,216 @@ _EN_TOPICS: dict[str, tuple[str, str, str]] = {
         "Step quickly through every slice in the stack using thumbnails, the slider, or the frame number box.",
         "• Use ',' and '.' keys (or scroll/drag the bottom slider) to hunt for the sharpest reference slice.",
     ),
+    "adv_experimental": (
+        "Experimental Features",
+        "Unlocks preview registration and fusion options (such as OpenFocusAlign) that are still evolving ahead of default release.",
+        "• Keep disabled for routine production stacks if you prefer locked defaults.|• Changes take effect after clicking OK.",
+    ),
+    "adv_legacy": (
+        "Legacy Neural Models (StackMFF V1–V3)",
+        "Restores older StackMFF V1–V3 fusion and depth models strictly for reproducing historical projects.",
+        "• For new stacks, StackMFF V4 Flash delivers faster inference and much lower memory usage on deep stacks.",
+    ),
+    "adv_privacy": (
+        "Crash Reports & Usage Telemetry",
+        "Controls whether OpenFocus submits anonymized crash diagnostics and lightweight feature-usage statistics.",
+        "• Crash reports help diagnose driver or decoder failures across GPUs and OS releases.|• You can toggle either option at any time.",
+    ),
+    "adv_storage": (
+        "Working File Storage",
+        "Sets the scratch folder used for decoded frame caches, aligned proxy buffers, and temporary render files.",
+        "• Choose a fast local NVMe/SSD drive with generous free space when stacking large 16-bit or 45MP+ sequences.",
+    ),
+    "adv_naming": (
+        "Output Naming & Completion Sound",
+        "Defines an optional prefix, custom filename template with dynamic tokens, and a completion chime after stacking finishes.",
+        "• Click any token chip to insert [METHOD], [ALIGN], [DATE], [FRAMES], or other metadata placeholders into the template.|• The live preview underneath updates immediately as you type.",
+    ),
+    "adv_export_color": (
+        "Export Metadata & Color Management",
+        "Controls EXIF metadata stripping on export and ICC profile conversion for color-accurate preview inside the OpenFocus workspace.",
+        "• Keep ICC Color-Managed Preview ON when working with AdobeRGB, Display P3, or ProPhoto images.|• Enable Strip EXIF only when sharing images that must omit camera/GPS metadata.",
+    ),
+    "adv_raw_decode": (
+        "Camera RAW Fallback Decoder",
+        "Points to an optional external DNG converter CLI used automatically only when built-in LibRaw cannot decode a brand-new camera model.",
+        "• Click Auto-Detect to locate an installed system converter, or click Open RAW Develop Settings to tune white balance, highlights, and exposure.",
+    ),
+    "adv_resources": (
+        "Resource Budget & Auto-Tiling",
+        "Selects CPU/GPU concurrency aggressiveness and configures optional tiled fusion bounds for memory-constrained or legacy neural workflows.",
+        "• Balanced suits most workstations; Responsive keeps UI scrubbing snappy during heavy batches.|• OpenFocus A/B/C manage tile memory automatically without manual tile tuning.",
+    ),
+    "adv_startup": (
+        "Startup, Loading & Updates",
+        "Controls restoring the previous stack on launch, prompting for downscale import size, and automatic update download preferences.",
+        "• Uncheck Prompt Import Scale only if you always load full-resolution 100% frames or reuse a fixed default scale.",
+    ),
+    "adv_gallery": (
+        "Community Gallery & Danmaku Settings",
+        "Configures overlay danmaku density, screen position, font size, opacity, auto-translation, and local download/cache disk limits.",
+        "• Clear Cache frees local thumbnail and preview storage without deleting exported works.",
+    ),
+    "adv_developer": (
+        "Developer Access & Pre-Release Toggles",
+        "Unlocks verified developer options and feature flags inside OpenFocus.",
+        "• Enter your developer key and click Verify; click Lock to clear local developer authorization.",
+    ),
+    "sensor_cleanup": (
+        "Sensor Defect Mask & Hot-Pixel Denoise",
+        "Applies a grayscale/binary dust or hot-pixel defect mask and optional raw-sensor denoising consistently across every slice before alignment.",
+        "• Changes save globally and apply on the next alignment or render.|• Generate a clean gain mask from Tool -> Dust Removal Map.",
+    ),
+    "dust_map": (
+        "Dust Removal Map (Flat-Field Gain Extraction)",
+        "Builds a reusable flat-field gain correction map from an out-of-focus reference frame or current slice to heal sensor dust spots and vignetting.",
+        "• Adjust Defect Scale (sigma) to capture actual dust halos without erasing fine texture noise.|• Preview Before/After side by side before applying to the stack.",
+    ),
+    "depth_source_method": (
+        "Depth Map Source & Estimation Method",
+        "Chooses whether depth is measured directly from your current input stack or recovered from a rendered Output record, then selects the focus-metric algorithm.",
+        "• When re-measuring raw input slices, OpenFocus first runs alignment before scoring depth.|• AI neural depth models produce smoother macro depth gradients with fewer blocky steps.",
+    ),
+    "depth_postprocess": (
+        "Depth Appearance, Smoothing & Physical Z Calibration",
+        "Customizes colormap, depth inversion, gamma contrast, median smoothing, canvas overlay opacity, and physical µm/mm Z calibration.",
+        "• Use Invert Depth if near and far planes are swapped for your capture order.|• Calibrate Z Start, Step, Unit, and Direction before exporting physical depth TIFFs or scaled meshes.",
+    ),
+    "depth_3d_surface": (
+        "Interactive 3D Surface Preview",
+        "Renders an interactive GPU heightfield mesh right inside the dialog: drag to orbit, scroll to zoom, and tune relief amplitude and grid resolution.",
+        "• Switch between Textured, Shaded Clay, Depth Color, and Wireframe modes from the top toolbar.|• Turn on Auto Motion or Capture Snapshot for quick inspection shots.",
+    ),
+    "depth_3d_lighting": (
+        "3D Studio Lighting Controls",
+        "Adjusts key light azimuth/elevation, key/fill intensities, and ambient bounce light to reveal subtle surface micro-relief.",
+        "• Lower elevation angles accentuate fine surface ridges and chitin textures.|• Click Reset Lighting to restore balanced studio defaults.",
+    ),
+    "depth_export": (
+        "Depth Map, Mesh & Interactive 3D Export",
+        "Saves colorized or raw 16-bit depth maps, slice indices, contrast maps, 3D meshes (OBJ/PLY/STL), anaglyph/stereo pairs, turntable videos, or offline HTML5 WebGL 3D viewers.",
+        "• Share Standalone HTML5 3D Viewer (.html) when recipients need drag-to-rotate 3D inspection in any browser with zero extra software installed.|• Adjust Mesh Grid Size before exporting OBJ/PLY/STL or HTML5 3D for finer geometry.",
+    ),
+    "stereo_3d": (
+        "Stereo 3D & Turntable Export Settings",
+        "Configures eye separation, zero-parallax convergence plane, parallel/cross-eyed/anaglyph mode, or turntable animation camera motion and FPS.",
+        "• Moderate Eye Separation (2%–4%) preserves comfortable depth without ghosting.|• Turn on Invert Depth if foreground pops backward in stereo glasses.",
+    ),
+    "html_animation": (
+        "Interactive HTML5 Focus Stack Exporter",
+        "Bundles aligned source slices (and optional fused frame) into one self-contained HTML5 viewer so clients can scrub through focus planes in any browser.",
+        "• WebP at 1280 px usually cuts file size dramatically with crisp web sharpness.|• Include Fused Frame adds an instant comparison toggle inside the browser viewer.",
+    ),
+    "raw_preview": (
+        "Live Camera RAW Preview",
+        "Previews demosaiced 16-bit RAW adjustments in real time on a chosen stack frame before batch decoding.",
+        "• Switch Sample Frame from the dropdown or browse any RAW file to check highlight and shadow recovery.",
+    ),
+    "raw_wb_exposure": (
+        "RAW White Balance & Exposure",
+        "Sets Camera/Auto/Custom white balance, Temp/Tint shifts, EV exposure compensation, highlight recovery mode, and optional auto-brightness.",
+        "• Highlights -> Rebuild recovers color details in partially clipped bright petals or metallic highlights.|• Keep Auto-Bright unchecked for consistent brightness across multi-frame focus stacks.",
+    ),
+    "raw_demosaic_color": (
+        "Demosaic Algorithm & Output Color Space",
+        "Selects Bayer demosaicing kernel (such as AHD/DCB/DHT) and 16-bit linear/working color space before alignment and fusion.",
+        "• AHD or DCB delivers clean fine-edge demosaicing without zipper artifacts on macro details.|• Choose sRGB for standard sharing or AdobeRGB / ProPhoto / WideGamut for grading.",
+    ),
+    "batch_folders": (
+        "Batch Stack Folder Queue",
+        "Lists focus stack folders queued for unattended batch processing. Supports multi-folder drag-and-drop or splitting one folder into multiple shoots.",
+        "• Add multiple shoot folders together or turn on Single-Folder Stack Splitting when all shoots share one directory.",
+    ),
+    "batch_methods": (
+        "Batch & Watch Fusion / Alignment Selection",
+        "Selects the focus stacking algorithm and registration mode shared across queued batch stacks or incoming watch-folder shoots.",
+        "• ECC + OpenFocus - B offers high alignment resilience and clean edges across unattended jobs.",
+    ),
+    "batch_grouping": (
+        "Grouped Large-Stack Processing",
+        "Processes extra-deep stacks in overlapping sub-groups before merging to keep peak memory bounded cleanly.",
+        "• Overlap 1–2 frames ensures continuous sharpness transitions between neighboring sub-groups.",
+    ),
+    "watch_settle": (
+        "Watch Folder Settle Delay",
+        "Waits this many seconds after the last file write stops before triggering alignment and fusion so tethered transfers never start on incomplete shots.",
+        "• Increase settle delay when shooting large RAW bursts over slower Wi-Fi or network shares.",
+    ),
+    "substacks": (
+        "Render Overlapping Substacks",
+        "Splits a deep stack into sequential slice chunks (by frames per chunk or total chunk count) with configurable overlap so you can compare depth strata or restack them cleanly.",
+        "• Overlap preserves continuity at depth handoffs.|• Check Auto-Restack to merge every chunk result automatically into a final stacked output.",
+    ),
+    "batch_converter": (
+        "Batch Image Format & Size Converter",
+        "Converts folders or files across PNG, TIFF, JPG, WebP, BMP, and camera RAW sources with optional long-edge or percentage resizing.",
+        "• Choose Sibling or Subfolder output to avoid overwriting original camera masters.|• Drag files directly onto the queue list or use Delete to remove selected entries.",
+    ),
+    "compare_methods": (
+        "Compare Algorithms Selection & Execution",
+        "Pick multiple fusion algorithms, adjust shared registration or per-method parameters, and run them side by side against the same stack.",
+        "• Switch between Full-Frame and ROI Compare when testing parameter tweaks rapidly on high-resolution stacks.",
+    ),
+    "compare_view": (
+        "Compare Result Grid & Detail Crop Inspector",
+        "Inspects synchronized 1:1 crop tiles across every candidate algorithm alongside the reference source frame.",
+        "• Drag on the left Reference Canvas or switch View Mode (Detail vs. Full) to jump across critical hairs and edges.",
+    ),
+    "compare_adopt": (
+        "Verify Full Resolution & Adopt Result",
+        "Verifies an ROI winner at full frame size, adopts its algorithm + parameters into the main workspace, or imports the rendered image straight into Outputs.",
+        "• Adopt Output reuses already-rendered pixels without waiting to re-stack if alignment matches.",
+    ),
+    "mosaic_layout": (
+        "Panorama / Tile Grid Sources & Layout",
+        "Imports tile frames or rendered stack outputs and arranges them manually or via row/column grid order and zigzag overlap parameters.",
+        "• Set Start Corner, Capture Order, and Overlap % before clicking Apply Grid to snap microscope/macro X-Y rail captures quickly.",
+    ),
+    "mosaic_align": (
+        "Mosaic Alignment & Canvas Controls",
+        "Runs automatic feature alignment, fits tiles to view, or fine-tunes individual tile X/Y position, scale, rotation, and preview opacity.",
+        "• Lower Preview Opacity briefly to visually inspect alignment seams against overlapping neighbors.",
+    ),
+    "mosaic_control_points": (
+        "Manual Mosaic Control Points",
+        "Lets you place matching point pairs between overlapping tiles and optimize global alignment when repetitive textures defeat automatic feature matching.",
+        "• Pick pairs near the overlap zone corners, then click Optimize Alignment and inspect RMS residual errors.",
+    ),
+    "mosaic_mask": (
+        "Mosaic Exclusion & Inclusion Brush Mask",
+        "Paints exclusion or forced-inclusion masks over overlapping tile regions to suppress sensor edge artifacts, moving dust, or unwanted seam ghosting.",
+        "• Paint Exclude over blurred tile borders so seam selection picks sharper neighbors cleanly.",
+    ),
+    "mosaic_export": (
+        "Mosaic Seam, Blending, Projection & HDR Options",
+        "Controls seam finder, multiband blending levels, photometric exposure/gain matching, spherical/planar projection, lens distortion, HDR bracketing, and final output depth/ICC.",
+        "• Multiband blending smooths residual brightness differences across stitched macro tiles.",
+    ),
+    "scalebar": (
+        "Calibrated Scale Bar Overlay",
+        "Adds a physically calibrated micrometer/millimeter scale bar to previews and exported images using lens EXIF metadata or manual µm/px calibration.",
+        "• Use Auto color to automatically pick crisp high-contrast black/white ink against the corner background.",
+    ),
+    "watermark": (
+        "Tiled Text Watermark & EXIF Macros",
+        "Composes semi-transparent diagonal or corner text watermarks supporting dynamic EXIF date, camera, and focal-length macros.",
+        "• Click macro chips below the text box to embed shooting metadata cleanly across batch exports.",
+    ),
+    "retouch_export": (
+        "Missing-Data Export Dialog",
+        "Shows live progress while writing auxiliary retouch or missing-pixel diagnostic layers safely in the background.",
+        "• Click Cancel at any point to abort cleanly without leaving partial output files.",
+    ),
+    "roi_options": (
+        "Region of Interest (ROI) Output Handling",
+        "Chooses whether an ROI render outputs only the cropped rectangle or pastes the sharply stacked patch back onto a chosen base frame.",
+        "• Paste onto Base Frame preserves full-frame dimensions while speeding up localized test renders.",
+    ),
+    "font_size": (
+        "Interface Text Size",
+        "Adjusts global desktop UI font size (in points) with live side-by-side comparison against the default system scale.",
+        "• Helpful on high-DPI 4K monitors when compact labels feel too small.",
+    ),
 }
 
 _ZH_TOPICS: dict[str, tuple[str, str, str]] = {
@@ -484,6 +694,216 @@ _ZH_TOPICS: dict[str, tuple[str, str, str]] = {
         "底部源切片胶片条与帧跳转",
         "用缩略图、滑块或右下角页码框快速切换源图像栈中的每一帧，方便挑选最合焦的那张作为画笔来源。",
         "• 快捷键逗号 `,` / 句号 `.` 或滚动/拖动滑块，可逐帧微调比对左右画面。",
+    ),
+    "adv_experimental": (
+        "启用实验性功能",
+        "解锁仍在持续演进中的实验性配准与融合选项（例如 OpenFocusAlign），点击“确定”保存后立即生效。",
+        "• 常规日常生产如果希望保持稳定默认算法集合，保持关闭即可。",
+    ),
+    "adv_legacy": (
+        "启用遗留功能（StackMFF V1–V3）",
+        "仅用于复现历史工程时恢复旧版 StackMFF V1–V3 模型；新工程推荐使用推理更快、深栈显存更低的 StackMFF V4。",
+        "• 不必为了常规新堆栈开启此项；关闭时主界面与深度图选择器会保持简洁。",
+    ),
+    "adv_privacy": (
+        "隐私、错误报告与使用统计",
+        "控制是否在遇到异常崩溃时自动上报诊断日志，以及是否分享匿名功能使用统计。",
+        "• 错误报告有助于定位特定显卡驱动或解码器的兼容性问题；可随时按需关闭。",
+    ),
+    "adv_storage": (
+        "工作文件临时目录",
+        "设置解码帧缓存、对齐代理与临时渲染文件的磁盘存放位置。",
+        "• 处理数十张 45MP 以上 16-bit 大图时，建议指向空间充裕的高速本地 SSD/NVMe 目录。",
+    ),
+    "adv_naming": (
+        "输出命名模板与完成提示音",
+        "配置可选文件名前缀、支持动态标签的输出文件名模板，以及全栈渲染完成时的声音提示。",
+        "• 点击 [METHOD]、[ALIGN]、[DATE] 等标签按钮可直接插入模板，下方示例会实时刷新最终文件名。",
+    ),
+    "adv_export_color": (
+        "导出元数据与色彩管理",
+        "控制导出时是否移除 EXIF 拍摄/定位信息，以及是否在工作区预览时将内嵌 ICC 色域实时转换为 sRGB 显示。",
+        "• 使用 AdobeRGB、Display P3 或 ProPhoto 素材时建议开启“ICC 色彩管理预览”，避免画面发灰。",
+    ),
+    "adv_raw_decode": (
+        "相机 RAW 外部转换器回退与解码参数",
+        "配置系统 DNG 转换器路径（仅在内置 LibRaw 暂不支持最新相机型号 RAW 时自动回退调用），并可快速进入 RAW 解码参数设置。",
+        "• 可点击“自动检测”寻找已安装的 DNG 转换器，或打开“RAW 解码参数”调整白平衡、高光重建与色域。",
+    ),
+    "adv_resources": (
+        "资源偏好与分块设置",
+        "调节运算并发资源策略（平衡 / 响应优先 / 极致性能），以及特定算法在超大尺寸下的分块与重叠参数。",
+        "• “响应优先”适合后台批量处理时仍需流畅查看窗口；OpenFocus A/B/C 会自动管理内存分块无需手调。",
+    ),
+    "adv_startup": (
+        "启动加载与自动更新",
+        "配置启动时是否恢复上次堆栈、导入图像时是否弹出降采样缩放提示，以及更新包自动下载与测试版通道选项。",
+        "• 若总是以 100% 原分辨率或固定缩放导入，可取消“每次询问加载缩放”。",
+    ),
+    "adv_gallery": (
+        "社区画廊弹幕与缓存设置",
+        "自定义画廊弹幕开关、显示位置、字号、透明度、跨语言翻译策略，以及本地作品下载目录与缓存空间上限。",
+        "• 点击“清理缓存”可立即释放画廊缩略图与临时预览缓存，不影响已导出成品。",
+    ),
+    "adv_developer": (
+        "开发者选项与钥匙管理",
+        "验证开发者密钥以解锁内部开发/社区测试功能入口。",
+        "• 输入密钥后点击“验证并解锁”；不再需要时点击“锁定并清除”即可恢复普通模式。",
+    ),
+    "sensor_cleanup": (
+        "传感器坏点/灰尘掩膜与降噪",
+        "在对齐与融合之前，按传感器灰尘坏点掩膜文件自动修复污点，并可选开启传感器空间降噪。",
+        "• 该设置全局保存并对所有后续堆栈生效；可通过“工具 → 生成灰尘修复图”快速提取掩膜。",
+    ),
+    "dust_map": (
+        "传感器灰尘修复图（平场增益提取）",
+        "从离焦纯白平场图或当前切片中提取灰尘暗斑与暗角增益场，生成可复用的传感器修正掩膜。",
+        "• 调节“尘点尺度 (σ)”以准确囊括灰尘晕影而不误伤正常纹理；应用前可直接对比处理前后效果。",
+    ),
+    "depth_source_method": (
+        "深度图来源、配准与测距算法",
+        "选择基于当前源图像栈重新计算深度，或读取已渲染成品记录对应的深度，并设定清晰度评价算法与参数。",
+        "• 当基于源栈重新计算时，系统会先按所选配准算法对齐各帧后再评估深度变化。",
+    ),
+    "depth_postprocess": (
+        "深度外观、平滑度与物理 Z 轴标定",
+        "切换伪彩色谱、深度反转、伽马对比度、中值平滑强度，支持叠加透明热图及设定 µm/mm 物理 Z 轴步长与方向。",
+        "• 若焦栈采集方向与近远期望相反，勾选“深度反转”；导出定量深度 TIFF 或真实比例 3D 网格前请先标定步距与单位。",
+    ),
+    "depth_3d_surface": (
+        "3D 交互曲面预览",
+        "在窗口内实时渲染 GPU 三维高度场模型：左键拖拽旋转、滚轮缩放，顶部栏支持切换纹理/泥塑/深度色/线框等视图并实时调节起伏高度与细节。",
+        "• 支持随时切换视角预设、开启自动运镜展示或截取高清 3D 画面快照。",
+    ),
+    "depth_3d_lighting": (
+        "3D 虚拟多光源布光",
+        "独立调节主光方位角、仰角以及主光/补光/环境光强度，凸显微观表面浮雕与纹理细节。",
+        "• 调低“主光仰角”能以侧逆光强化几丁质、花粉或金属刻痕的立体质感。",
+    ),
+    "depth_export": (
+        "深度图、3D 网格与单文件 HTML5 3D 导出",
+        "导出伪彩/16 位原始深度图、切片索引、对比度图、OBJ/PLY/STL 三维网格、红青/左右立体图、旋转视频，以及零依赖的交互式单文件 HTML5 WebGL 3D 查看器。",
+        "• 给客户分享可拖拽旋转的 3D 模型时，推荐导出“单文件 HTML5 3D 查看器 (.html)”，浏览器双击即看且无需安装客户端。",
+    ),
+    "stereo_3d": (
+        "立体 3D 与旋转展示导出",
+        "设置红青立体图、平行/交叉眼立体对的眼距视差、会聚零平面及深度反转，或设定 3D 旋转 MP4/GIF 的分辨率、帧数与运镜方式。",
+        "• 推荐保持 2%–4% 适中眼距视差，既立体突出又不易重影晕眩。",
+    ),
+    "html_animation": (
+        "交互式 HTML5 对焦浏览页导出",
+        "将对齐后的焦栈切片与可选融合成品打包为一个可离线分享的交互网页，客户可直接用鼠标拖动体验整条景深对焦变化。",
+        "• 默认 1280 px + WebP 格式兼顾高清晰度与极小体积，勾选“包含融合成品”可在网页内一键对比前后。",
+    ),
+    "raw_preview": (
+        "相机 RAW 实时解片预览",
+        "对所选 RAW 源帧实时运行 16 位线性解马赛克与影调计算，直观检验高光拉回与色彩表现后再应用到全栈。",
+        "• 可通过下拉框切换检查堆栈中不同帧的高光和暗部，避免逐帧批量解片后才发现过曝。",
+    ),
+    "raw_wb_exposure": (
+        "RAW 白平衡、曝光与高光恢复",
+        "配置相机/自动/自定义白平衡及色温色调偏移、EV 曝光补偿、高光裁切重建模式和自动亮度。",
+        "• 亮部花瓣或反光金属轻微过曝时，建议将高光恢复改为“重建”；正式堆栈建议关闭自动亮度以保证帧间亮度一致。",
+    ),
+    "raw_demosaic_color": (
+        "解马赛克算法与 16 位输出色彩空间",
+        "选择拜耳阵列解马赛克算法（如 AHD / DCB / DHT）及堆栈管线使用的输出色域（sRGB / AdobeRGB / ProPhoto 等）。",
+        "• 宏微距高密纹理推荐使用 AHD 或 DCB，能有效减少细边缘伪色与拉链纹。",
+    ),
+    "batch_folders": (
+        "批量处理堆栈队列",
+        "管理待自动处理的多个堆栈文件夹，支持直接拖入多个目录或开启“单文件夹智能拆分”一次性处理连拍目录。",
+        "• 使用单文件夹拆分前，可在下方选择自适应场景检测或按固定张数/时间/曝光拆分。",
+    ),
+    "batch_methods": (
+        "批量 / 监视文件夹融合与配准设定",
+        "统一指定批处理队列与自动监视文件夹新进堆栈所使用的融合算法与配准模式。",
+        "• 无人值守大批量任务推荐使用 ECC 配准搭配 OpenFocus - B，兼容轻微呼吸与偏移。",
+    ),
+    "batch_grouping": (
+        "大堆栈分组渲染",
+        "按设定组大小与重叠帧数将超深堆栈分段融合再合并，降低大尺寸深栈的内存峰值压力。",
+        "• 保持 1–2 帧重叠可确保跨组接缝处的清晰度平滑过渡。",
+    ),
+    "watch_settle": (
+        "监视文件夹等待稳定延时",
+        "检测到新增文件后先等待设定秒数确认写入完成再自动对齐融合，防止联机拍摄半途抢跑读到未写完的照片。",
+        "• 若通过 Wi-Fi 或网络盘慢速传输大型 RAW 照片，可适当调大该等待时间。",
+    ),
+    "substacks": (
+        "分段渲染（重叠子栈拆分）",
+        "按每段张数或总段数将深焦栈均匀拆成多个重叠子栈分别渲染，可用于景深分层对比、大景深分段微调与自动二次合栈。",
+        "• 适当保留 1–2 帧重叠可消除分段景深交界处断层；勾选“自动二次融合”可在各子栈完成后自动合成终稿。",
+    ),
+    "batch_converter": (
+        "批量图像格式与分辨率转换器",
+        "批量将多张图片或文件夹统一转换为 PNG / TIFF / JPG / WebP / BMP，并支持按 2K/4K/8K 长边或百分比等比缩放。",
+        "• 可选输出到同级目录、子目录或自定义路径，安全保留原始母片不被覆盖。",
+    ),
+    "compare_methods": (
+        "全部融合算法对比选择与参数调节",
+        "勾选多种融合算法、统一调整配准及单算法参数，对同一组堆栈切片横向运行清晰度对比。",
+        "• 高分辨率大图建议先用“ROI 局部对比”秒级试参，选出优胜方案后再验证全图。",
+    ),
+    "compare_view": (
+        "候选对比网格与 1:1 细节裁切视窗",
+        "左侧参考图与右侧所有候选算法同步联动 1:1 细节视角，方便零延时横评毛发锐度、光晕与暗部噪点。",
+        "• 在左侧参考画布拖动局部框或切换“全图 / 细节”视图，可快速巡检多个关键部位。",
+    ),
+    "compare_adopt": (
+        "全图验证与采纳结果 / 参数",
+        "对满意的候选算法执行全分辨率验证、直接把它的算法与参数应用回主工作区，或将结果直接收入右侧“输出”列表。",
+        "• 若配准一致且无需重算，点击“采纳输出”可直接复用已渲染画面，节省等待时间。",
+    ),
+    "mosaic_layout": (
+        "大图拼接 / 马赛克序列与网格布局",
+        "导入瓦片切片或已融合输出成品，按行列数、扫描方向、起始角落和重叠百分比一键网格排布或手动调整。",
+        "• 对于显微镜电控台或微距导轨扫描拍摄的阵列图，先设定行/列数、蛇形路径和重叠率再点“应用网格”最快对齐。",
+    ),
+    "mosaic_align": (
+        "拼接自动配准与单瓦片微调",
+        "触发全局自动特征对齐、适配画布视角，或选中单个瓦片微调 X/Y 坐标、缩放、旋转角度与叠层透明度。",
+        "• 短暂调低单个瓦片的“不透明度”，可直观对照下方相邻帧重叠区域的接缝贴合情况。",
+    ),
+    "mosaic_control_points": (
+        "人工控制点标定与全局优化",
+        "当重复周期纹理导致自动特征对齐困难时，手动点选两张相邻瓦片之间的对应同名特征点并执行全局优化。",
+        "• 在重叠区的四个角落附近分散点选几对清晰控制点后点“优化”，观察残差值缩小即可明显改善拼接错位。",
+    ),
+    "mosaic_mask": (
+        "拼接蒙版涂抹（排除 / 强制保留区域）",
+        "在重叠拼接区用画笔标注“排除”或“包含”掩膜，剔除单帧边缘暗角、游走灰尘或局部虚影干扰。",
+        "• 用排除画笔盖住某帧模糊或有异物的角落，接缝线查找器就会自动绕行并选用另一帧清晰部分。",
+    ),
+    "mosaic_export": (
+        "接缝线、多频段融合、投影与 HDR 拼接选项",
+        "配置最优接缝线算法、多频段融合层数、光度一致性校正、平面/柱面/球面投影、镜头畸变参数与输出位深/ICC。",
+        "• 开启多频段融合与曝光光度平衡可有效消除网格瓦片之间的亮度阶梯与接缝。",
+    ),
+    "scalebar": (
+        "物理标尺叠加（Scale Bar）",
+        "基于镜头/显微 EXIF 元数据或手动 µm/px 标定值，在预览与导出成品角落绘制真实物理尺寸标尺。",
+        "• 推荐颜色选择“自动”，系统会根据角落背景明暗自动切换黑白高对比文字与刻度线。",
+    ),
+    "watermark": (
+        "平铺水印与动态 EXIF 宏标签",
+        "为导出成品添加可调字号、透明度与位置的版权水印，并支持一键插入相机、日期、焦距等 EXIF 动态宏标签。",
+        "• 使用下方 EXIF 标签快捷插入作者或拍摄参数后，右侧可实时预览排布与密铺效果。",
+    ),
+    "retouch_export": (
+        "缺失数据 / 精修图层导出进度",
+        "后台安全写出精修诊断图层或补全导出文件时的进度监视窗口。",
+        "• 导出期间点击“取消”会安全终止写入且不残留半成品损坏文件。",
+    ),
+    "roi_options": (
+        "ROI 感兴趣区域渲染输出方式",
+        "选择仅单独输出裁剪后的框选区域，还是将清晰框选区域无缝贴回所选基准底图形成完整画幅。",
+        "• 若只需在整体画面上验证或精修一小块关键细节，“贴回基准帧”能快速获得完整构图结果。",
+    ),
+    "font_size": (
+        "界面字体大小调节",
+        "调节桌面端全局界面字体大小（pt），并在右侧直接并排预览调整前后文字排版与可读性对比。",
+        "• 高分辨率 4K 屏幕上若觉得面板标签偏小，适当提高字号后点击确定即可全局生效。",
     ),
 }
 

@@ -283,3 +283,171 @@ def test_hold_h_works_inside_sub_dialogs(qapp, tmp_path, monkeypatch):
         dlg.close()
         dlg.deleteLater()
         _destroy_main_window(qapp, window)
+
+
+def test_context_help_topic_catalog_is_complete_and_audited(qapp):
+    import ast
+    from pathlib import Path
+    from locales.context_help_i18n import _EN_TOPICS, _ZH_TOPICS
+
+    assert set(_EN_TOPICS) == set(_ZH_TOPICS)
+    root = Path(__file__).resolve().parent.parent
+    registered_topics: set[str] = set()
+    for folder in ("ui", "dialogs"):
+        for py_file in (root / folder).glob("*.py"):
+            tree = ast.parse(py_file.read_text("utf-8"), filename=str(py_file))
+            for node in ast.walk(tree):
+                if (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)
+                    and node.func.id == "register_help_target"
+                    and len(node.args) >= 2
+                    and isinstance(node.args[1], ast.Constant)
+                    and isinstance(node.args[1].value, str)
+                ):
+                    registered_topics.add(node.args[1].value)
+    assert registered_topics
+    missing = sorted(registered_topics - set(_EN_TOPICS))
+    assert not missing, f"Topics registered in UI but missing from context_help_i18n: {missing}"
+
+    for topic in sorted(_EN_TOPICS):
+        for theme in ("light", "dark", "gray"):
+            img = render_help_diagram(topic, theme)
+            assert isinstance(img, QImage) and not img.isNull()
+
+
+def test_widget_tip_fallback_and_form_label_resolution(qapp, monkeypatch):
+    from PyQt6.QtWidgets import QFormLayout, QLabel
+
+    monkeypatch.setattr(trans, "current_lang", "en")
+    host = QWidget()
+    form = QFormLayout(host)
+    lbl = QLabel("Custom Knob:")
+    btn = QPushButton("Apply Custom Knob")
+    btn.setToolTip("Applies custom knob calibration immediately.")
+    form.addRow(lbl, btn)
+    try:
+        assert resolve_help_target(btn) == (btn, "widget_tip")
+        assert resolve_help_target(lbl) == (btn, "widget_tip")
+
+        dlg = IllustratedHelpDialog("widget_tip", btn)
+        try:
+            text = dlg.text_browser.document().toPlainText()
+            assert dlg.windowTitle() == "Apply Custom Knob"
+            assert "Applies custom knob calibration immediately." in text
+            assert trans.t("ctx_help_overview_body") not in text
+        finally:
+            dlg.close()
+            dlg.deleteLater()
+    finally:
+        host.close()
+        host.deleteLater()
+
+
+def test_advanced_settings_removes_inline_captions_and_covers_all_tabs(qapp, tmp_path, monkeypatch):
+    from PyQt6.QtWidgets import QLabel
+    from dialogs.advanced_settings import AdvancedSettingsDialog
+    from tests.test_control_channel import _destroy_main_window, _new_main_window
+
+    monkeypatch.setattr(trans, "current_lang", "zh")
+    window = _new_main_window(qapp, tmp_path, monkeypatch, use_gpu=False)
+    dlg = AdvancedSettingsDialog(window)
+    try:
+        label_texts = {lbl.text() for lbl in dlg.findChildren(QLabel)}
+        for banned in (
+            trans.t("experimental_features_hint"),
+            trans.t("legacy_features_hint"),
+            trans.t("raw_develop_dng_hint"),
+        ):
+            assert banned not in label_texts
+
+        assert dlg.chk_experimental_features.toolTip() == trans.t("experimental_features_hint")
+        assert dlg.chk_legacy_features.toolTip() == trans.t("legacy_features_hint")
+        assert dlg.raw_dng_converter_path.toolTip() == trans.t("raw_develop_dng_hint")
+
+        checks = (
+            (dlg.chk_experimental_features, "adv_experimental"),
+            (dlg.chk_legacy_features, "adv_legacy"),
+            (dlg.chk_auto_error_reports, "adv_privacy"),
+            (dlg.storage_directory, "adv_storage"),
+            (dlg.output_template, "adv_naming"),
+            (dlg.chk_strip_exif_on_export, "adv_export_color"),
+            (dlg.raw_dng_converter_path, "adv_raw_decode"),
+            (dlg.combo_resources, "adv_resources"),
+            (dlg.spin_block, "tiles"),
+            (dlg.sensor_cleanup.path, "sensor_cleanup"),
+            (dlg.openfocus_registration_panel, "registration"),
+            (dlg.chk_restore, "adv_startup"),
+            (dlg.chk_danmaku_enabled, "adv_gallery"),
+        )
+        for widget, expected in checks:
+            assert resolve_help_target(widget)[1] == expected
+    finally:
+        dlg.close()
+        dlg.deleteLater()
+        _destroy_main_window(qapp, window)
+
+
+def test_subdialogs_resolve_specific_help_topics(qapp, tmp_path, monkeypatch):
+    from PyQt6.QtWidgets import QLabel, QWidget
+    from core.render_queue import RenderQueueManager
+    from dialogs.batch import BatchProcessingDialog
+    from dialogs.batch_converter import BatchConverterDialog
+    from dialogs.dustmap import DustMapDialog
+    from dialogs.font_size import FontSizeDialog
+    from dialogs.html_animation import HtmlAnimationDialog
+    from dialogs.raw_develop import RawDevelopDialog
+    from dialogs.render_queue import RenderQueueDialog
+    from dialogs.render_substacks import RenderSubstacksDialog
+    from dialogs.roi import ROIRenderOptionsDialog
+    from dialogs.scalebar import ScaleBarDialog
+    from dialogs.stereo_3d_export import AnaglyphExportDialog, StereoPairExportDialog, TurntableExportDialog
+    from dialogs.watch_folder import WatchFolderDialog
+
+    monkeypatch.setattr(trans, "current_lang", "zh")
+    dust_host = QWidget()
+    raw_dlg = RawDevelopDialog(sample_paths=())
+    substack_dlg = RenderSubstacksDialog(frame_count=12, fusion_method="openfocus_b", alignment_method="ecc")
+    batch_dlg = BatchProcessingDialog()
+    watch_dlg = WatchFolderDialog()
+    dust_dlg = DustMapDialog(dust_host)
+    scale_dlg = ScaleBarDialog()
+    ana_dlg = AnaglyphExportDialog()
+    pair_dlg = StereoPairExportDialog()
+    turn_dlg = TurntableExportDialog()
+    anim_dlg = HtmlAnimationDialog()
+    roi_dlg = ROIRenderOptionsDialog(4)
+    font_dlg = FontSizeDialog(10)
+    queue_dlg = RenderQueueDialog(RenderQueueManager())
+    conv_dlg = BatchConverterDialog()
+    dialogs = (
+        raw_dlg, substack_dlg, batch_dlg, watch_dlg, dust_dlg, scale_dlg,
+        ana_dlg, pair_dlg, turn_dlg, anim_dlg, roi_dlg, font_dlg, queue_dlg, conv_dlg,
+    )
+    try:
+        raw_labels = {lbl.text() for lbl in raw_dlg.findChildren(QLabel)}
+        assert trans.t("raw_develop_dng_hint") not in raw_labels
+        assert raw_dlg.edit_dng_path.toolTip() == trans.t("raw_develop_dng_hint")
+
+        assert resolve_help_target(raw_dlg.combo_wb_mode)[1] == "raw_wb_exposure"
+        assert resolve_help_target(raw_dlg.combo_demosaic)[1] == "raw_demosaic_color"
+        assert resolve_help_target(raw_dlg.edit_dng_path)[1] == "adv_raw_decode"
+        assert resolve_help_target(substack_dlg.spin_overlap)[1] == "substacks"
+        assert resolve_help_target(batch_dlg.fusion_combo)[1] == "batch_methods"
+        assert resolve_help_target(batch_dlg.folder_list)[1] == "batch_folders"
+        assert resolve_help_target(watch_dlg.settle_spin)[1] == "watch_settle"
+        assert resolve_help_target(dust_dlg.spin_sigma)[1] == "dust_map"
+        assert resolve_help_target(scale_dlg.px_spin)[1] == "scalebar"
+        assert resolve_help_target(ana_dlg.sep_slider)[1] == "stereo_3d"
+        assert resolve_help_target(pair_dlg.divider_chk)[1] == "stereo_3d"
+        assert resolve_help_target(turn_dlg.fps_spin)[1] == "stereo_3d"
+        assert resolve_help_target(anim_dlg.fps_spin)[1] == "html_animation"
+        assert resolve_help_target(roi_dlg.rb_crop)[1] == "roi_options"
+        assert resolve_help_target(font_dlg.size_spin)[1] == "font_size"
+        assert resolve_help_target(queue_dlg.btn_enqueue_current)[1] == "render_queue"
+        assert resolve_help_target(conv_dlg.output_mode)[1] == "batch_converter"
+    finally:
+        for d in dialogs:
+            d.close()
+            d.deleteLater()
+        dust_host.deleteLater()
