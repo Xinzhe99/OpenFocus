@@ -65,7 +65,7 @@ def test_dynamic_onnx_checkpoints_are_packaged():
     assert "weights" in scikit_build["wheel"]["packages"]
     assert "core" in scikit_build["wheel"]["packages"]
     shipped = {}
-    for name in ("stackmff_final.onnx", "stackmff_v2_final.onnx", "stackmff_v3_final.onnx"):
+    for name in ("stackmff_final.onnx", "stackmff_v2_final.onnx", "stackmff_v3_final.onnx", "stackmff_v4_flash.onnx"):
         graph = ROOT / "weights" / name
         checkpoint = graph.with_suffix(".pth")
         shipped[hashlib.sha256(graph.read_bytes()).hexdigest()] = (

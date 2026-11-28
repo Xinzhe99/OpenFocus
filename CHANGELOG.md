@@ -5,7 +5,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-11-28
+
 ### Added
+- Integrate StackMFF V4 Flash neural focus stacking and depth estimation (`stackmffv4`, marked experimental while legacy V1-V3 remain selectable via Settings -> Advanced Settings -> Enable legacy features), with bundled V4 weights in desktop and release packages.
+- Add standalone interactive HTML5 WebGL 3D depth viewer export and upgrade the HTML5 focus-stack animation viewer with a desktop-parity magnifier loupe and offline 12-language UI switcher.
+- Add Linear DNG export support in Batch Processing and Watch Folders, and add PSB v2 (64-bit) alongside bounded-memory per-frame progress for large layered PSD exports.
+- Upgrade the Result panel zoom bar with 1:1 actual-pixels toggle, Fit-to-Window button, continuous logarithmic zoom slider, and clickable actual-pixel readout across themes and locales.
+- Introduce a compact right-hand control panel, refreshed Retouch layout with faster sharpness map estimation, FolderImportDialog image/subfolder counts, and full interactive context help (`H` / help beacon) across desktop dialogs.
+- Graduate DCT, DTCWT, Guided Filter, and GFG-FGF out of experimental gating, add OpenFocusAlign parameter parity with optimized region warping, and enable render completion sound by default.
+- Avoid blocking modals on mixed-size stack loads in headless/control-channel mode and enable Adopt Output in Method Comparison when reusing compatible workspace full-frame outputs.
 - Add an interactive desktop tour from the welcome dialog and Help menu.
   Follow the highlighted controls to browse source frames, choose methods,
   render, and compare the result.

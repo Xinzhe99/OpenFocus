@@ -13,7 +13,17 @@ from core.frame_storage import _mapped_base, async_upload_view
 ROOT = Path(__file__).resolve().parents[1]
 
 # Device-to-host copies whose destination is a fresh RAM array, by (file, destination).
-RAM_DOWNLOADS = {('fusion_methods/_openfocus_gpu_gfg.py', 'host_acc')}
+RAM_DOWNLOADS = {
+    ('fusion_methods/_openfocus_gpu_gfg.py', 'host_acc'),
+    ('fusion_methods/_openfocus_gpu_gff.py', 'wins'),
+    ('fusion_methods/_openfocus_gpu_gff.py', 'ymin'),
+    ('fusion_methods/_openfocus_gpu_gff.py', 'ymax'),
+    ('fusion_methods/_openfocus_gpu_gff.py', 'xmin'),
+    ('fusion_methods/_openfocus_gpu_gfg.py', 'wins'),
+    ('fusion_methods/_openfocus_gpu_gfg.py', 'ymin'),
+    ('fusion_methods/_openfocus_gpu_gfg.py', 'ymax'),
+    ('fusion_methods/_openfocus_gpu_gfg.py', 'xmin'),
+}
 
 
 @pytest.fixture(autouse=True)

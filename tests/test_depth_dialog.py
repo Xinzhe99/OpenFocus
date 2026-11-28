@@ -76,6 +76,7 @@ def depth_dialog(qapp, monkeypatch, tmp_path):
         from controllers.output_manager import OutputManager, OutputRecord, OUTPUT_RECORD_ROLE
         window = QWidget()
         window.experimental_features = True
+        window.legacy_features = True
         window.raw_images = frames if frames is not None else _synthetic_thirds(48, 64)
         window.image_filenames = [f"capture-{i}.tif" for i in range(len(window.raw_images))]
         window.current_fusion_method = lambda: method
