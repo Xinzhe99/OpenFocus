@@ -643,7 +643,8 @@ class ContextHelpManager(QObject):
         ov.update_highlight(rect, title, self._banner_for_mode())
 
     def eventFilter(self, obj, event):  # noqa: N802 (Qt casing)
-        if getattr(self.main_window, "_shutting_down", False):
+        if (self.main_window is None or sip.isdeleted(self.main_window)
+                or getattr(self.main_window, "_shutting_down", False)):
             return False
         etype = event.type()
 

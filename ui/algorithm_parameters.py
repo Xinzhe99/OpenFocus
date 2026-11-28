@@ -219,14 +219,16 @@ class AlgorithmParameterPanel(QWidget):
                 continue
             if spec.choices:
                 label, editor, button = self._build_field(spec, resolved[spec.key], compact=True)
-                row_layout = QHBoxLayout()
-                row_layout.setContentsMargins(0, 0, 0, 0)
-                row_layout.setSpacing(6)
-                row_layout.addWidget(label)
-                row_layout.addWidget(editor, 1)
+                self._form.addWidget(label, grid_row, 0, Qt.AlignmentFlag.AlignVCenter)
                 if button is not None:
+                    row_layout = QHBoxLayout()
+                    row_layout.setContentsMargins(0, 0, 0, 0)
+                    row_layout.setSpacing(6)
+                    row_layout.addWidget(editor, 1)
                     row_layout.addWidget(button)
-                self._form.addLayout(row_layout, grid_row, 0, 1, 5)
+                    self._form.addLayout(row_layout, grid_row, 1, 1, 4)
+                else:
+                    self._form.addWidget(editor, grid_row, 1, 1, 4, Qt.AlignmentFlag.AlignVCenter)
                 grid_row += 1
                 idx += 1
                 continue

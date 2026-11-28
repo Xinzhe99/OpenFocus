@@ -86,7 +86,7 @@ def test_advanced_settings_gates_openfocus_registration_and_clarifies_tiles(qapp
 
         dialog.registration_options_disclosure.setChecked(True)
         assert dialog.registration_options_disclosure.isChecked()
-        dialog.openfocus_registration_panel.editors['max_shift_ratio'].setValue(.2)
+        dialog.openfocus_registration_panel.editors['max_shift_x_ratio'].setValue(.2)
         dialog.openfocus_registration_panel.editors['rotation'].lineEdit().setText('')
         dialog.chk_experimental_features.setChecked(False)
         assert not dialog.registration_options_disclosure.isChecked()
