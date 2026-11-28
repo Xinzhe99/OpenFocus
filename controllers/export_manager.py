@@ -611,7 +611,7 @@ class ExportManager:
         root, ext = os.path.splitext(path)
         if not ext:
             path = root + ".psd"
-        elif ext.lower() != ".psd":
+        elif ext.lower() not in (".psd", ".psb"):
             show_error_box(
                 window,
                 trans.t("msg_save_failed_title"),
@@ -668,11 +668,18 @@ class ExportManager:
                 dialog.setRange(0, total)
             dialog.setValue(max(0, min(total, current)))
         if stage == "masks":
-            dialog.setLabelText(trans.t("layered_psd_progress_masks"))
+            base = trans.t("layered_psd_progress_masks")
+            dialog.setLabelText(f"{base} ({detail})" if detail else base)
         elif stage == "layer":
-            # Total layer count excludes mask and composite steps when present.
-            n_layers = max(1, total - 2) if total >= 3 else max(1, total - 1)
-            layer_num = max(1, min(n_layers, current - (1 if total >= 3 else 0)))
+            ctx = getattr(self.psd_worker, "context", None) if self.psd_worker is not None else None
+            n_sources = len(getattr(ctx, "frames", ()) or ()) if ctx is not None else 0
+            if n_sources > 0:
+                n_layers = n_sources + 1
+                mask_steps = max(0, total - n_layers - 1) if total > n_layers else 0
+            else:
+                n_layers = max(1, total - 2) if total >= 3 else max(1, total - 1)
+                mask_steps = 1 if total >= 3 else 0
+            layer_num = max(1, min(n_layers, current - mask_steps))
             base = trans.t("layered_psd_progress_layer").format(
                 current=layer_num, total=n_layers
             )

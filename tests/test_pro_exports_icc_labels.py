@@ -721,3 +721,91 @@ def test_exif_macro_chip_bar_themes_tooltips_and_preview(qapp, theme):
         preview.deleteLater()
         edit.deleteLater()
         qapp.processEvents()
+
+
+def test_layered_psd_fallback_progress_no_double_decode_and_psb_v2(tmp_path):
+    """Fallback mask estimation streams per-frame progress without re-decoding valid masks, and supports .psb v2."""
+    import struct
+    from core.render_context import RenderedDepth, SourceFrame, RenderContext
+
+    h, w = 80, 100
+    frames = [
+        np.full((h, w, 3), (20 + i * 50, 90, 210 - i * 40), dtype=np.uint8)
+        for i in range(3)
+    ]
+    # Include border black edge on frame 0 so aligned valid_mask exercises _valid_mask_from_pixels.
+    frames[0][:4, :] = 0
+    result = frames[1].copy()
+
+    resolve_calls = {"count": 0}
+
+    class CountingLazy:
+        def __init__(self, arr):
+            self._arr = arr
+            self.shape = arr.shape
+            self.dtype = arr.dtype
+
+        def __array__(self, dtype=None):
+            resolve_calls["count"] += 1
+            return np.asarray(self._arr, dtype=dtype) if dtype is not None else self._arr
+
+    lazy_frames = tuple(
+        SourceFrame(f"f{i}", f"frame_{i}.tif", CountingLazy(arr), aligned=True)
+        for i, arr in enumerate(frames)
+    )
+    ctx = RenderContext(
+        context_id="ctx1",
+        algorithm="openfocus_b",
+        alignment_steps=("ecc",),
+        width=w,
+        height=h,
+        dtype=result.dtype,
+        frames=lazy_frames,
+    )
+
+    events = []
+    psb_path = tmp_path / "large_stack.psb"
+    export_layered_psd(
+        str(psb_path),
+        result,
+        context=ctx,
+        icc_profile=srgb_icc_profile(),
+        progress=lambda c, t, stage, detail: events.append((c, t, stage, detail)),
+    )
+    assert psb_path.exists()
+    raw = psb_path.read_bytes()
+    assert raw[:6] == b"8BPS\x00\x02"  # Adobe PSB v2 signature + version
+
+    # Total steps = 3 mask steps + 4 layers + 1 composite = 8; progress advances immediately past 0.
+    assert events[0] == (0, 8, "masks", "1/3")
+    assert (1, 8, "masks", "1/3") in events
+    assert (3, 8, "masks", "3/3") in events
+    assert [e[2] for e in events].count("layer") == 4
+    assert events[-1] == (8, 8, "composite", "")
+    # Each of the 3 frames resolved once in fallback masks + once in layer streaming = 6 total (never extra for valid_mask).
+    assert resolve_calls["count"] == 6
+
+    # Reversed dict rendered_depth reverses frame mapping cleanly in fast path.
+    depth_dict = {"index": np.zeros((h, w), dtype=np.float32), "reverse_order": True}
+    ctx_rev = RenderContext(
+        context_id="ctx2",
+        algorithm="openfocus_a",
+        alignment_steps=(),
+        width=w,
+        height=h,
+        dtype=result.dtype,
+        frames=lazy_frames,
+        rendered_depth=depth_dict,
+    )
+    psd_rev = tmp_path / "reversed_depth.psd"
+    rev_events = []
+    export_layered_psd(
+        str(psd_rev),
+        result,
+        context=ctx_rev,
+        progress=lambda c, t, stage, detail: rev_events.append((c, t, stage, detail)),
+    )
+    assert psd_rev.exists()
+    # Uses fast 1-step depth mask path instead of fallback loop: 1 mask + 4 layers + 1 composite = 6 steps.
+    assert all(e[1] == 6 for e in rev_events)
+    assert resolve_calls["count"] == 9  # +3 (layer streaming only)
