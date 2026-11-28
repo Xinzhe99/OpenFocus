@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
 from core.mosaic_control import MosaicControlPoint
 from core.mosaic import measure_camera_control_points
 from locales import trans
+from ui.context_help import register_help_target
 from utils.image_utils import cv2_to_pixmap
 from widgets.stepper import StepperSpinBox
 
@@ -236,6 +237,7 @@ class MosaicControlPointsDialog(QDialog):
         self.dialog_buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         self.dialog_buttons.rejected.connect(self.reject)
         outer.addWidget(self.dialog_buttons)
+        register_help_target(self, "mosaic_control_points")
         trans.languageChanged.connect(self._retranslate)
         self._retranslate()
         self._load_previews()

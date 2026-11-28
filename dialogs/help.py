@@ -4,8 +4,9 @@
 from html import escape
 from html.parser import HTMLParser
 
+from PyQt6 import sip
 from PyQt6.QtGui import QTextOption
-from PyQt6.QtWidgets import QDialog, QVBoxLayout, QTextBrowser, QPushButton
+from PyQt6.QtWidgets import QApplication, QDialog, QVBoxLayout, QTextBrowser, QPushButton
 
 from core.algorithms import registration_algorithms
 from locales import trans
@@ -82,11 +83,41 @@ class HelpDialog(QDialog):
         layout.addWidget(close_btn)
 
         # 居中显示
-        if parent:
-            self.move(
-                parent.x() + parent.width() // 2 - self.width() // 2,
-                parent.y() + parent.height() // 2 - self.height() // 2,
-            )
+        self._center_on_host(parent)
+
+    def _center_on_host(self, host=None):
+        """Center cleanly inside the host top-level window and available screen bounds."""
+        anchor = None
+        if host is not None and not sip.isdeleted(host):
+            anchor = host.window()
+        elif self.parentWidget() is not None and not sip.isdeleted(self.parentWidget()):
+            anchor = self.parentWidget().window()
+        else:
+            anchor = QApplication.activeWindow()
+
+        screen = None
+        if anchor is not None and not sip.isdeleted(anchor):
+            screen = anchor.screen()
+        if screen is None:
+            screen = self.screen() or QApplication.primaryScreen()
+
+        w, h = self.width(), self.height()
+        if screen is not None:
+            avail = screen.availableGeometry()
+            w = min(w, max(240, avail.width() - 24))
+            h = min(h, max(200, avail.height() - 24))
+            if (w, h) != (self.width(), self.height()):
+                self.resize(w, h)
+            if anchor is not None and not sip.isdeleted(anchor) and anchor.isVisible():
+                center = anchor.frameGeometry().center()
+            else:
+                center = avail.center()
+            x = max(avail.left(), min(avail.right() - w + 1, center.x() - w // 2))
+            y = max(avail.top(), min(avail.bottom() - h + 1, center.y() - h // 2))
+            self.move(x, y)
+        elif anchor is not None and not sip.isdeleted(anchor):
+            center = anchor.frameGeometry().center()
+            self.move(center.x() - w // 2, center.y() - h // 2)
 
 
 class RenderMethodHelpDialog(HelpDialog):
