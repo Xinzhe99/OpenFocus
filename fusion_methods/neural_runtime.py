@@ -397,11 +397,27 @@ def _provider(kind, index=0):
         return _PROVIDER[kind], {'device_type': 'GPU'}
     return _PROVIDER[kind]
 
-def estimate_inference_bytes(n, h, w, kind):
+def _is_v4_checkpoint(path) -> bool:
+    return os.path.basename(str(path or '')).lower().startswith('stackmff_v4')
+
+
+def estimate_inference_bytes(n, h, w, kind, *, linear_layers: bool = False):
     hp, wp = h + (-h) % 64, w + (-w) % 64
     pixels = hp * wp
     feature_base = 7 if kind == 'CPU' else 12
     workspace = 0
+    if linear_layers:
+        # StreamFocusNet: O(N) summary/refinement without quadratic N^2 attention.
+        if kind in _NATIVE_TORCH:
+            stream_n = min(n, 8)
+            attention = (pixels // 16) * 48 * 4 * (stream_n + 6)
+            return (int(stream_n * pixels * 3 * 4 * 8)
+                    + attention
+                    + n * pixels * 4 + 4 * 1024 * 1024)
+        attention = (pixels // 16) * 48 * 4 * (n + 6)
+        return (int(n * pixels * 3 * 4 * (feature_base + 4))
+                + attention
+                + n * pixels * 4 * 4 + 4 * 1024 * 1024)
     if kind in _NATIVE_TORCH:
         # Only the released checkpoints enter these engines, with bounded
         # attention enabled by the app-supplied worker source.
@@ -414,6 +430,11 @@ def estimate_inference_bytes(n, h, w, kind):
     return (int(n * pixels * 3 * 4 * (feature_base + 4))
             + attention
             + n * pixels * 4 * 6 + 4 * 1024 * 1024 + workspace)
+
+
+def estimate_linear_inference_bytes(n, h, w, kind):
+    """Estimate inference working set for O(N) StreamFocusNet graphs."""
+    return estimate_inference_bytes(n, h, w, kind, linear_layers=True)
 
 
 def _session_key(path, shape, device, threads):
@@ -642,12 +663,13 @@ def _worker_covers_cuda_tile(path, shape):
 
 
 def _memory_refusal(path, shape, device, threads, *, reclaim=True):
+    linear_layers = _is_v4_checkpoint(path)
     if device == 'TORCH_MPS':
         from core.resource_policy import probe_memory, ram_ceiling
         n, hp, wp = shape
         # The staged planes already exist. Admit the extra mmap plus the GPU
         # working set in RAM. A live reading already reflects a started worker.
-        required = estimate_inference_bytes(*shape, device) + n * hp * wp * 4
+        required = estimate_inference_bytes(*shape, device, linear_layers=linear_layers) + n * hp * wp * 4
         startup = native_startup_bytes(device)
         if _JOB_RAM_LIMIT is not None and required + startup > _JOB_RAM_LIMIT:
             return f'Host memory plan budget {_JOB_RAM_LIMIT} bytes, requires {required + startup}'
@@ -672,7 +694,7 @@ def _memory_refusal(path, shape, device, threads, *, reclaim=True):
             return None
         del session
     n, hp, wp = shape
-    required = estimate_inference_bytes(*shape, device) + n * hp * wp * 4 * 6
+    required = estimate_inference_bytes(*shape, device, linear_layers=linear_layers) + n * hp * wp * 4 * 6
     if _JOB_VRAM_LIMIT is not None and required > _JOB_VRAM_LIMIT:
         return f'GPU memory plan budget {_JOB_VRAM_LIMIT} bytes, requires {required}'
     if device == 'TORCH_CUDA' and _worker_covers_cuda_tile(path, shape):
@@ -791,7 +813,8 @@ def logits(planes, path, device, threads, should_cancel=None):
             placed_on_cpu = result = None
         if device == 'CPU' and requested != 'CPU':
             from core.resource_policy import require_memory
-            require_memory(estimate_inference_bytes(*shape, device), None, _JOB_RAM_LIMIT)
+            require_memory(estimate_inference_bytes(*shape, device, linear_layers=_is_v4_checkpoint(model)),
+                           None, _JOB_RAM_LIMIT)
         reason = _memory_refusal(model, shape, device, threads)
         if reason is None:
             try:
@@ -1100,24 +1123,41 @@ def _resize_three_quarters(planes, should_cancel=None):
     return result
 
 
-def probabilities(planes, path, device, threads, sigma, cancel=None, *, dual_scale=True):
+def probabilities(planes, path, device, threads, sigma, cancel=None, *, dual_scale=True, scales=None):
     from fusion_methods.neural_common import (
         StackMFFKernelUnavailable, cancel as check, load_stackmff_kernels,
     )
+    if scales is None:
+        infer_scales = (1.0, 0.75) if dual_scale else (1.0,)
+    else:
+        infer_scales = tuple(float(scale) for scale in scales)
+        if not infer_scales or any(scale <= 0.0 for scale in infer_scales):
+            raise ValueError(f'Invalid inference scales: {scales!r}')
     profile = _profile()
     h, w = planes.shape[-2:]
     workers = max(1, min(8, int(threads or 1)))
-    with profile.stage('logits.full'):
-        p = logits(planes, path, device, threads, cancel)
-    with profile.stage('softmax.full'):
-        p = _run_softmax_inplace(p, workers)
-    check(cancel)
-    n_layers = p.shape[1]
-    spatial_px = h * w
-    scratch_workers = min(workers, max(1, (32 << 20) // max(1, spatial_px * 4)))
-    if spatial_px <= 4096:
-        scratch_workers = min(4, scratch_workers)
-    if dual_scale:
+    if len(infer_scales) == 1 and abs(infer_scales[0] - 1.0) < 1e-6:
+        with profile.stage('logits.full'):
+            p = logits(planes, path, device, threads, cancel)
+        with profile.stage('softmax.full'):
+            p = _run_softmax_inplace(p, workers)
+        check(cancel)
+        n_layers = p.shape[1]
+        spatial_px = h * w
+        scratch_workers = min(workers, max(1, (32 << 20) // max(1, spatial_px * 4)))
+        if spatial_px <= 4096:
+            scratch_workers = min(4, scratch_workers)
+    elif infer_scales == (1.0, 0.75):
+        with profile.stage('logits.full'):
+            p = logits(planes, path, device, threads, cancel)
+        with profile.stage('softmax.full'):
+            p = _run_softmax_inplace(p, workers)
+        check(cancel)
+        n_layers = p.shape[1]
+        spatial_px = h * w
+        scratch_workers = min(workers, max(1, (32 << 20) // max(1, spatial_px * 4)))
+        if spatial_px <= 4096:
+            scratch_workers = min(4, scratch_workers)
         with profile.stage('resize.0.75'):
             small = _run_resize_antialias(planes, 0.75, cancel, workers)
         with profile.stage('logits.reduced'):
@@ -1147,6 +1187,27 @@ def probabilities(planes, path, device, threads, sigma, cancel=None, *, dual_sca
                     p[0, n] += scratch
                 p *= 0.5
             del q
+    else:
+        acc = None
+        for scale in infer_scales:
+            scaled = planes if abs(scale - 1.0) < 1e-6 else _run_resize_antialias(planes, scale, cancel, workers)
+            q = _run_softmax_inplace(logits(scaled, path, device, threads, cancel), workers)
+            if scaled is not planes:
+                del scaled
+            if q.shape[-2:] != (h, w):
+                up = np.empty((q.shape[0], q.shape[1], h, w), dtype=np.float32)
+                for n in range(q.shape[1]):
+                    check(cancel)
+                    up[0, n] = cv2.resize(q[0, n], (w, h), interpolation=cv2.INTER_LINEAR)
+                q = up
+            acc = q if acc is None else (acc + q)
+        p = acc / np.float32(len(infer_scales))
+        check(cancel)
+        n_layers = p.shape[1]
+        spatial_px = h * w
+        scratch_workers = min(workers, max(1, (32 << 20) // max(1, spatial_px * 4)))
+        if spatial_px <= 4096:
+            scratch_workers = min(4, scratch_workers)
     if sigma:
         with profile.stage('gaussian'):
             radius = int(3 * sigma + 0.5)

@@ -2,6 +2,7 @@
 Neural network models for OpenFocus.
 
 Modules:
+- stackmff_v4: StreamFocusNet O(1)-VRAM streaming multi-focus network
 - stackmff_v3: StackMFF-V3 multi-focus fusion network (vendored, MIT)
 - stackmff_v1: retrained StackMFF V1 attention-backbone wrapper
 - stackmff_v2: retrained StackMFF V2 attention-backbone wrapper

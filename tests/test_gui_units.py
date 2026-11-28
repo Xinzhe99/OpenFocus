@@ -722,9 +722,9 @@ def test_render_all_queues_only_stable_methods_without_opt_in(qapp, monkeypatch)
     started = []
     monkeypatch.setattr(manager, 'start_render', lambda *, force_algorithm: started.append(force_algorithm))
     manager.start_compare_all()
-    assert started == ['openfocus_a']
+    assert started == ['stackmffv4']
     assert manager._compare_queue == [
-        'openfocus_b', 'guided_filter', 'gfgfgf', 'openfocus_c', 'dct', 'dtcwt'
+        'openfocus_a', 'openfocus_b', 'guided_filter', 'gfgfgf', 'openfocus_c', 'dct', 'dtcwt'
     ]
 
 

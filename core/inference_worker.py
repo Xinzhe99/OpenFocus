@@ -22,6 +22,8 @@ _SHIPPED_TORCH_EXPORTS = {
         'stackmff_v2_final.pth', 'f7f2ee36453d6073d62b89289133012b95116c07b208e76f5ba6d00a1f3f2cda'),
     'ebf28996d80bd9f7ba6dfca3177ab0e0997ab39075c7341beac0bcf8919081f5': (
         'stackmff_v3_final.pth', '39b2ea3738e8fea1676c379238d6be81a87988fc9952dbd6ac3825d5d7249f46'),
+    '1623a4fd98ac75118bcbda7fb23391de2848f4b90d5654c1c8f6e0e633bb49db': (
+        'stackmff_v4_flash.pth', 'f113d229985bf5c71be43a8eff7d512fcbd8c1dd3463e29e35d3d1abdc9d244a'),
 }
 # Imported copies of the previous V3 export also passed checkpoint parity.
 _TORCH_EXPORTS = {
@@ -38,6 +40,7 @@ def _load_torch_model(digest, device, *, bounded_workspace=False):
     from core.models.stackmff_v2.network import StackMFF_V2
     from core.models.stackmff_v3.model_io import load_checkpoint, load_variant_checkpoint
     from core.models.stackmff_v3.network import InterLayerAttention, IntraLayerWindowAttention
+    from core.models.stackmff_v4.network import StreamFocusNet
 
     if digest not in _TORCH_EXPORTS:
         raise ValueError('This ONNX graph has no verified native PyTorch adapter')
@@ -47,6 +50,34 @@ def _load_torch_model(digest, device, *, bounded_workspace=False):
         raise ValueError(f'Checkpoint does not match the selected ONNX export: {name}')
     # Pass the same verified bytes to the same strict loaders as the ONNX exporter.
     source = io.BytesIO(checkpoint)
+    if name == 'stackmff_v4_flash.pth':
+        ckpt = torch.load(source, map_location='cpu', weights_only=True)
+        model = StreamFocusNet(**ckpt['model_args'])
+        model.load_state_dict(ckpt['model'])
+        is_cuda = str(device).startswith('cuda')
+        target_dtype = torch.float16 if is_cuda else torch.float32
+        model = model.to(device=device, dtype=target_dtype).eval()
+
+        def _predict_v4(x):
+            layers, height, width = int(x.shape[1]), int(x.shape[2]), int(x.shape[3])
+            stream = layers > 32 or (height * width) > (1024 * 1024)
+            if is_cuda:
+                chunk_size = 8
+                try:
+                    free_bytes, _ = torch.cuda.mem_get_info(device)
+                    if free_bytes < 2 * 1024 ** 3:
+                        chunk_size = 2
+                except Exception:
+                    chunk_size = 2
+                with torch.autocast(device_type='cuda', dtype=torch.float16):
+                    x16 = x.to(torch.float16)
+                    out = (model.stream_logits(x16, chunk_size=chunk_size) if stream
+                           else model.forward_logits(x16))
+                return out.float()
+            out = model.stream_logits(x, chunk_size=2) if stream else model.forward_logits(x)
+            return out.float()
+
+        return _predict_v4
     if name == 'stackmff_final.pth':
         model = load_variant_checkpoint(source, StackMFF, 'stackmff_v3backbone')
     elif name == 'stackmff_v2_final.pth':

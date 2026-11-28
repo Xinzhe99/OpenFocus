@@ -231,6 +231,14 @@ def depth_dtcwt(images, progress_callback=None, should_cancel=None, **parameters
                           thread_count=parameters.get('thread_count'))
 
 
+def depth_stackmffv4(images, progress_callback=None, should_cancel=None, **parameters):
+    from core.depth_map import _measure_stackmffv4
+    return _measure_stackmffv4(
+        images, progress_callback, should_cancel,
+        model_path=parameters.get('model_path'), use_gpu=parameters.get('use_gpu', True),
+        execution_plan=parameters.get('execution_plan'), mode=parameters.get('mode', 'soft'))
+
+
 def depth_neural(images, progress_callback=None, should_cancel=None, **parameters):
     from core.depth_map import _measure_stackmffv3
     return _measure_stackmffv3(images, progress_callback, should_cancel,

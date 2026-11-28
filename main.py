@@ -192,7 +192,8 @@ from utils.settings_store import (
 )
 from core.frame_storage import (configure_storage_directory, restore_storage_directory,
                                 set_storage_fallback_notifier)
-from core.experimental import alignment_is_experimental, experimental_enabled
+from core.experimental import (alignment_is_experimental, experimental_enabled,
+                               fusion_is_legacy, legacy_enabled)
 from ui.image_panels import create_source_panel, create_result_panel
 from ui.menus import setup_menus
 from ui.right_panel import bind_right_panel, create_right_panel, set_panel_label
@@ -528,6 +529,7 @@ class OpenFocus(QMainWindow):
         self.profile_performance = False
         self.strip_exif_on_export = False
         self.enable_ui_icc_preview = True
+        self.legacy_features = False
         # 恢复持久化设置与最近文件（语言需在菜单构建前应用）
         load_window_settings(self)
         self.ui_theme = self._resolved_theme()
@@ -598,6 +600,7 @@ class OpenFocus(QMainWindow):
         with self._restore_scope():
             self.init_ui()
             self.apply_experimental_features()
+            self.apply_legacy_features()
             self.apply_theme(self.theme_mode)
         QApplication.instance().styleHints().colorSchemeChanged.connect(self._system_theme_changed)
         self._start_account_load()
@@ -1754,7 +1757,8 @@ class OpenFocus(QMainWindow):
             switched = []
             fusion = self.current_fusion_method()
             align = self.current_alignment_method()
-            switch_fusion = fusion != 'none' and get_fusion(fusion).experimental
+            switch_fusion = (fusion != 'none' and get_fusion(fusion).experimental
+                             and not get_fusion(fusion).legacy)
             switch_align = alignment_is_experimental(align)
             if switch_fusion:
                 self.set_fusion_method(FUSION_DEFAULT)
@@ -1765,7 +1769,9 @@ class OpenFocus(QMainWindow):
             preferred_fusion = getattr(self, '_preferred_fusion_method', None)
             preferred_align = getattr(self, '_preferred_alignment_method', None)
             if switch_fusion or (
-                    preferred_fusion not in (None, 'none') and get_fusion(preferred_fusion).experimental):
+                    preferred_fusion not in (None, 'none')
+                    and get_fusion(preferred_fusion).experimental
+                    and not get_fusion(preferred_fusion).legacy):
                 self._preferred_fusion_method = FUSION_DEFAULT if switch_fusion else fusion
             if switch_align or alignment_is_experimental(preferred_align):
                 self._preferred_alignment_method = ALIGN_DEFAULT if switch_align else align
@@ -1777,6 +1783,43 @@ class OpenFocus(QMainWindow):
                     trans.t('experimental_fallback_notice').format(methods=', '.join(switched)),
                     6000,
                 )
+        self.refresh_method_availability()
+
+    def apply_legacy_features(self, *, fallback_to_modern: bool = False) -> None:
+        """Show/hide superseded legacy algorithms and fall back to StackMFF V4 when disabled."""
+        if getattr(self, 'combo_fusion', None) is None:
+            return
+        if fallback_to_modern and not legacy_enabled(self):
+            current = self.current_fusion_method()
+            switched_label = None
+            if current != 'none' and fusion_is_legacy(current):
+                target = 'stackmffv4'
+                self.set_fusion_method(target)
+                switched_label = trans.t(get_fusion(target).label_key)
+            preferred = getattr(self, '_preferred_fusion_method', None)
+            if switched_label is not None or (
+                    preferred not in (None, 'none') and fusion_is_legacy(preferred)):
+                self._preferred_fusion_method = (
+                    'stackmffv4' if switched_label is not None else current
+                )
+                self.persist_settings()
+            if switched_label is not None:
+                self._show_status_message(
+                    trans.t('legacy_fallback_notice').format(method=switched_label),
+                    6000,
+                )
+        from ui.algorithm_combo import retranslate_fusion_combo
+        from ui.right_panel import label_recommended
+        current = self.combo_fusion.currentData()
+        include_current = current if (current not in (None, 'none') and fusion_is_legacy(current)) else None
+        retranslate_fusion_combo(
+            self.combo_fusion,
+            none_label="radio_no_fusion",
+            none_hint="radio_no_fusion_hint",
+            window=self,
+            include_current=include_current,
+        )
+        label_recommended(self.combo_fusion, FUSION_DEFAULT)
         self.refresh_method_availability()
 
     # --- Update check ---
@@ -3519,6 +3562,20 @@ class OpenFocus(QMainWindow):
         elif code != 'none':
             get_fusion(code)
         index = self.combo_fusion.findData(code)
+        if index < 0 and code != 'none' and fusion_is_legacy(code):
+            from ui.algorithm_combo import retranslate_fusion_combo
+            from ui.right_panel import label_recommended
+            retranslate_fusion_combo(
+                self.combo_fusion,
+                none_label="radio_no_fusion",
+                none_hint="radio_no_fusion_hint",
+                window=self,
+                include_current=code,
+            )
+            label_recommended(self.combo_fusion, FUSION_DEFAULT)
+            if hasattr(self, 'refresh_method_availability'):
+                self.refresh_method_availability()
+            index = self.combo_fusion.findData(code)
         if index < 0:
             raise ValueError(f"Fusion method is not in the selector: {code}")
         if index == self.combo_fusion.currentIndex():
@@ -5849,8 +5906,13 @@ class OpenFocus(QMainWindow):
         # the method id rather than the row index.
         from ui.right_panel import alignment_items, label_recommended, ALIGN_DEFAULT
         from ui.algorithm_combo import retranslate_fusion_combo
+        current_fusion = c.combo_fusion.currentData()
+        include_legacy = (current_fusion
+                          if (current_fusion not in (None, 'none') and fusion_is_legacy(current_fusion))
+                          else None)
         retranslate_fusion_combo(c.combo_fusion, none_label="radio_no_fusion",
-                                 none_hint="radio_no_fusion_hint")
+                                 none_hint="radio_no_fusion_hint",
+                                 window=self, include_current=include_legacy)
         label_recommended(c.combo_fusion, FUSION_DEFAULT)
         # set_panel_label elides to the panel width and keeps the full string
         # in the tooltip; plain setText here re-broke the row on language
@@ -6029,6 +6091,7 @@ class OpenFocus(QMainWindow):
         self.rebuild_recent_menu()
         self.rebuild_recent_projects_menu()
         self.apply_experimental_features()
+        self.apply_legacy_features()
         tour = getattr(self, "_onboarding_tour", None)
         if tour is not None and tour.is_active:
             tour.retranslate()

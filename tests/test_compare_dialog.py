@@ -39,6 +39,7 @@ def _isolated_preview_size(qapp):
 def dialog(qapp):
     window = QWidget()
     window.experimental_features = True
+    window.legacy_features = True
     window.raw_images = make_two_focus_stack((160, 560))
     window.current_fusion_method = lambda: "openfocus_a"
     window.current_alignment_method = lambda: "none"
@@ -129,17 +130,13 @@ def test_parameter_cards_stack_headers_and_wrap(dialog, qapp):
         assert title.geometry().bottom() < panel.geometry().top()
         assert title.width() >= title.fontMetrics().horizontalAdvance(title.text())
         editors = list(panel.editors.values())
-        specs_by_key = {spec.key: spec for spec in panel._specs}
         numeric_count = sum(1 for spec in panel._specs if not spec.choices)
         for key, editor in panel.editors.items():
             label = panel._labels[key]
             assert label.text()
             assert editor.accessibleName().rstrip(':： ').strip() == label.text().rstrip(':： ').strip()
             assert label.width() >= label.fontMetrics().horizontalAdvance(label.text())
-            if numeric_count > 1 and not specs_by_key[key].choices:
-                assert label.geometry().bottom() < editor.geometry().top()
-            else:
-                assert label.geometry().right() < editor.geometry().left()
+            assert label.geometry().right() < editor.geometry().left()
         assert len({editor.geometry().left() for editor in editors}) <= (2 if numeric_count > 1 else 1)
 
     widths = [card.sizeHint().width() for card in cards]
@@ -639,7 +636,7 @@ def test_method_checkboxes_follow_the_shared_family_groups(dialog):
         groups.setdefault(checkbox.parentWidget(), []).append(method)
     assert list(groups.values()) == [
         ["openfocus_a", "openfocus_b", "openfocus_c"],
-        ["stackmffv3", "stackmffv2", "stackmff"],
+        ["stackmffv4", "stackmffv3", "stackmffv2", "stackmff"],
         ["guided_filter", "gfgfgf", "dct", "dtcwt"],
     ]
 
@@ -654,6 +651,7 @@ def test_unavailable_methods_stay_visible_with_a_reason(
     monkeypatch.setattr(algorithm_combo, '_package_available', lambda _name: False)
     window = QWidget()
     window.experimental_features = True
+    window.legacy_features = True
     window.raw_images = make_two_focus_stack((160, 560))
     window.current_fusion_method = lambda: "stackmffv3"
     window.current_alignment_method = lambda: "none"
@@ -663,7 +661,7 @@ def test_unavailable_methods_stay_visible_with_a_reason(
     instance = CompareDialog(window)
     try:
         instance._preview_timer.stop()
-        for method in ("stackmffv3", "stackmffv2", "stackmff"):
+        for method in ("stackmffv4", "stackmffv3", "stackmffv2", "stackmff"):
             box = instance._checks[method]
             assert not box.isHidden()
             assert not box.isEnabled()

@@ -2452,6 +2452,7 @@ def describe_payload() -> dict:
             "label": spec.display_name,
             "category": spec.category,
             "experimental": spec.experimental,
+            "legacy": spec.legacy,
             "neural": spec.neural,
             "order_sensitive": spec.order_sensitive,
             "depth_map": spec.depth is not None,

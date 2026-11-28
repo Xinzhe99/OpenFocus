@@ -167,6 +167,7 @@ class WatchFolderDialog(QDialog):
             self.fusion_combo,
             none_label="radio_no_fusion",
             none_hint="radio_no_fusion_hint",
+            window=self.parent_window,
         )
         idx = self.fusion_combo.findData(FUSION_DEFAULT)
         if idx >= 0:

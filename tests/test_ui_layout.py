@@ -780,15 +780,15 @@ def test_batch_ai_mode_survives_a_method_switch(qapp):
     from dialogs.batch import BatchProcessingDialog
     dlg = BatchProcessingDialog(None)
     from types import SimpleNamespace
-    dlg.parent_window = SimpleNamespace(experimental_features=True)
+    dlg.parent_window = SimpleNamespace(experimental_features=True, legacy_features=False)
     dlg._apply_fusion_availability()
     try:
         dlg.show()
-        dlg.fusion_combo.setCurrentIndex(dlg.fusion_combo.findData("stackmffv3"))
+        dlg.fusion_combo.setCurrentIndex(dlg.fusion_combo.findData("stackmffv4"))
         mode = dlg.fusion_parameter_panel.editors["mode"]
         mode.setCurrentIndex(mode.findData("hard"))
         dlg.fusion_combo.setCurrentIndex(dlg.fusion_combo.findData("dtcwt"))
-        dlg.fusion_combo.setCurrentIndex(dlg.fusion_combo.findData("stackmffv3"))
+        dlg.fusion_combo.setCurrentIndex(dlg.fusion_combo.findData("stackmffv4"))
         qapp.processEvents()
         assert dlg.fusion_parameter_panel.values()["mode"] == "hard"
         assert dlg.get_processing_settings()["fusion_params"]["mode"] == "hard"

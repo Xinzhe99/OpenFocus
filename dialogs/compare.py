@@ -185,7 +185,7 @@ class CompareDialog(QDialog):
                   if hasattr(window_main, 'current_fusion_method') else FUSION_DEFAULT)
         if method == 'none':
             method = self._first_available_method()
-        box = self._checks[method]
+        box = self._checks.get(method)
         self._reuse_workspace_outputs()
         self._show_frame(0)
         if self._selected_methods():
@@ -195,9 +195,9 @@ class CompareDialog(QDialog):
             self._update_adopt_actions()
             self._preview_timer.stop()
             self._set_idle()
-        elif box.isEnabled():
+        elif box is not None and box.isEnabled():
             box.setChecked(True)
-        else:
+        elif box is not None:
             self.param_scroll.setVisible(False)
             self.btn_run.setEnabled(False)
             self.status_label.setText(box.property('unavailableReason'))
@@ -302,8 +302,12 @@ class CompareDialog(QDialog):
         self._checks = {}
         # Same family order and captions as the main/batch/depth selectors, so
         # a method keeps its familiar neighbour and family.
-        from ui.algorithm_combo import fusion_method_groups
-        for label, members in fusion_method_groups():
+        from ui.algorithm_combo import fusion_method_groups, visible_fusion_algorithms
+        current_method = (self.window_main.current_fusion_method()
+                          if hasattr(self.window_main, 'current_fusion_method') else None)
+        for label, members in fusion_method_groups(
+            visible_fusion_algorithms(self.window_main, include_current=current_method)
+        ):
             header = QLabel(label)
             header.setObjectName("sectionLabel")
             methods_layout.addWidget(header)

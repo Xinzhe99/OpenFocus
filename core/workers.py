@@ -44,7 +44,7 @@ def _render_error_category(exc):
 
 logger = get_logger(__name__)
 
-_RENDER_DEPTH_METHODS = frozenset(('openfocus_b', 'openfocus_c', 'stackmffv2', 'stackmffv3'))
+_RENDER_DEPTH_METHODS = frozenset(('openfocus_b', 'openfocus_c', 'stackmffv2', 'stackmffv3', 'stackmffv4'))
 
 
 def _crop_transparent_for_gui(images, should_cancel=None):

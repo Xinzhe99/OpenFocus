@@ -55,7 +55,7 @@ angle_dx angle_dy pixel_dx pixel_dy'''.split())
 _SHAPES = frozenset(('shape', 'first_shape'))
 _DTYPES = frozenset(('uint8', 'uint16', 'uint32', 'int8', 'int16', 'int32', 'float16', 'float32', 'float64', 'bool'))
 _NESTED = frozenset(('settings', 'parameters', 'fusion_parameters', 'registration_parameters'))
-_METHODS = frozenset('''stackmffv3 stackmffv2 stackmff openfocus_a openfocus_b
+_METHODS = frozenset('''stackmffv4 stackmffv3 stackmffv2 stackmff openfocus_a openfocus_b
 openfocus_c guided_filter gfgfgf dct dtcwt none homography ecc openfocus both'''.split())
 _METHOD_FIELDS = frozenset(('method', 'algorithm', 'registration', 'align', 'alignment'))
 _BOOL_FIELDS = frozenset(('preview', 'use_gpu', 'gpu_requested', 'cancelled', 'tile_enabled',
@@ -88,13 +88,14 @@ _GPU_MODEL = re.compile(r'^(?:NVIDIA (?:GeForce (?:RTX|GTX) [1-9][0-9]{2,3}(?: T
 _STACK_FUNCTIONS = {
     'workers.py': frozenset(('run', '_run_admitted')),
     'registration.py': frozenset(('_align_homography_impl', 'align', 'register')),
-    'multi_focus_fusion.py': frozenset(('fuse', '_fuse_tiled_ai_batched', '_fuse_stackmffv3', '_fuse_openfocus_a', '_fuse_openfocus_b', '_fuse_openfocus_c')),
+    'multi_focus_fusion.py': frozenset(('fuse', '_fuse_tiled_ai_batched', '_fuse_tiled_stackmffv4', '_fuse_stackmffv4', '_fuse_stackmffv3', '_fuse_openfocus_a', '_fuse_openfocus_b', '_fuse_openfocus_c')),
     'image_loader.py': frozenset(('load_from_filepaths', 'load_from_folder', 'load_from_video', 'load_linear_raw_stack')),
     'render_process.py': frozenset(('run', '_run_process', '_render_child', '_run_decoded_render_job')),
     'resource_policy.py': frozenset(('require_memory', 'plan_execution')),
     'source_frames.py': frozenset(('resolve', 'decode', 'full_resolution', '_decode', 'resolve_frame')),
     'batch_converter.py': frozenset(('convert_one', 'convert_batch', '_decode', '_decode_tiff')),
     'stackmffv3.py': frozenset(('fuse', '_blend_tile')),
+    'stackmffv4.py': frozenset(('fuse', '_blend_tile')),
     'depth_map.py': frozenset(('compute_focus_index',)),
     'cli.py': frozenset(('_run_with_logging', 'main')),
 }

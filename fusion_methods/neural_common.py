@@ -437,13 +437,14 @@ def normalized_frames(frames, should_cancel=None):
     return normalize_frames(frames, should_cancel)
 
 
-def attention_inference_bytes(frames, height, width, channels, device, result_count=1):
+def attention_inference_bytes(frames, height, width, channels, device, result_count=1,
+                              *, linear_layers=False):
     """Host working set and new VRAM requirement for a whole inference."""
     from fusion_methods.neural_runtime import (UNIFIED_MEMORY_KINDS, VRAM_GATED_KINDS,
                                                estimate_inference_bytes, native_startup_bytes)
     hp = height + (-height) % ATTENTION_PAD_ALIGN
     wp = width + (-width) % ATTENTION_PAD_ALIGN
-    inference = estimate_inference_bytes(frames, height, width, device)
+    inference = estimate_inference_bytes(frames, height, width, device, linear_layers=linear_layers)
     host = (frames * hp * wp * 4 * (2 * channels + 3)
             + result_count * height * width * channels * 4 + inference)
     if device in UNIFIED_MEMORY_KINDS:
@@ -477,8 +478,10 @@ def plan_attention_inference(algorithm, frames, model_path, device,
     itemsize = max(frame.dtype.itemsize for frame in frames)
     snapshot = probe_resources()
     requested = device
+    linear_layers = (algorithm == 'stackmffv4')
     for device in candidate_devices(requested):
-        host, _ = attention_inference_bytes(n, h, w, c, device, result_count)
+        host, _ = attention_inference_bytes(n, h, w, c, device, result_count,
+                                            linear_layers=linear_layers)
         required_ram = host + fixed_bytes
         workload = Workload(algorithm=algorithm, frames=n, height=h, width=w,
                             channels=c, itemsize=itemsize, parallel_layer='native',

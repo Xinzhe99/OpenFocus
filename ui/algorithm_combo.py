@@ -6,7 +6,8 @@ from PyQt6.QtGui import QBrush, QFont, QPalette
 from PyQt6.QtWidgets import QComboBox, QToolTip
 
 from core.algorithms import FUSION_DEFAULT, FUSION_FAMILY_ORDER, fusion_algorithms, get_fusion
-from core.experimental import alignment_is_experimental, alignment_is_locked, experimental_enabled
+from core.experimental import (alignment_is_experimental, alignment_is_locked,
+                               experimental_enabled, legacy_enabled)
 from locales import trans
 
 _FAMILY_LABEL_KEYS = {
@@ -60,14 +61,30 @@ def fusion_unavailable_reason(spec, ai_available):
 def fusion_lock_reason(spec, window, ai_available=None):
     """Explain every condition preventing a desktop user from running this method."""
     dependency = fusion_unavailable_reason(spec, ai_available)
-    opt_in = (trans.t('experimental_locked_hint')
-              if spec.experimental and not experimental_enabled(window) else '')
+    if spec.legacy:
+        opt_in = trans.t('legacy_locked_hint') if not legacy_enabled(window) else ''
+    elif spec.experimental and not experimental_enabled(window):
+        opt_in = trans.t('experimental_locked_hint')
+    else:
+        opt_in = ''
     return '\n\n'.join(filter(None, (opt_in, dependency)))
 
 
 def fusion_label(spec):
     label = trans.t(spec.label_key)
+    if spec.legacy:
+        return f"{label} ({trans.t('legacy_label')})"
     return f"{label} ({trans.t('experimental_label')})" if spec.experimental else label
+
+
+def visible_fusion_algorithms(window=None, *, specs=None, include_current=None):
+    """Return registered fusion algorithms visible in the Desktop UI."""
+    all_specs = fusion_algorithms() if specs is None else specs
+    show_legacy = legacy_enabled(window)
+    return tuple(
+        spec for spec in all_specs
+        if not spec.legacy or show_legacy or (include_current is not None and spec.id == include_current)
+    )
 
 
 def desktop_fusion_lock_reason(window, method):
@@ -141,9 +158,14 @@ def _add_header(combo, label):
         QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text)))
 
 
-def fill_fusion_combo(combo, specs=None, *, none_label=None, none_hint=None):
+def fill_fusion_combo(combo, specs=None, *, none_label=None, none_hint=None,
+                      window=None, include_current=None):
     """Rebuild a method combo with family headers; preserves the selection."""
     current = combo.currentData()
+    filtered_specs = visible_fusion_algorithms(
+        window, specs=specs,
+        include_current=include_current if include_current is not None else current,
+    )
     with QSignalBlocker(combo):
         combo.clear()
         if none_label:
@@ -151,7 +173,7 @@ def fill_fusion_combo(combo, specs=None, *, none_label=None, none_hint=None):
             if none_hint:
                 combo.setItemData(combo.count() - 1, trans.t(none_hint),
                                   Qt.ItemDataRole.ToolTipRole)
-        for label, members in fusion_method_groups(specs):
+        for label, members in fusion_method_groups(filtered_specs):
             _add_header(combo, label)
             for spec in members:
                 combo.addItem(fusion_label(spec), spec.id)
@@ -165,6 +187,7 @@ def fill_fusion_combo(combo, specs=None, *, none_label=None, none_hint=None):
 
 
 def retranslate_fusion_combo(combo, specs=None, *, none_label=None,
-                             none_hint=None):
+                             none_hint=None, window=None, include_current=None):
     """Same list in the active language, keeping the selected method."""
-    fill_fusion_combo(combo, specs, none_label=none_label, none_hint=none_hint)
+    fill_fusion_combo(combo, specs, none_label=none_label, none_hint=none_hint,
+                      window=window, include_current=include_current)

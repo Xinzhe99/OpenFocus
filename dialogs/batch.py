@@ -426,7 +426,7 @@ class BatchProcessingDialog(QDialog):
         # The no-op entry means "no fusion" here just like in the main panel;
         # "No alignment" belongs to the registration dropdown on the next row.
         fill_fusion_combo(self.fusion_combo, none_label="radio_no_fusion",
-                          none_hint="radio_no_fusion_hint")
+                          none_hint="radio_no_fusion_hint", window=self.parent_window)
         if self.fusion_combo.currentData() is None:
             # A disabled category header is never a method: without a saved
             # choice the batch default is the explicit no-fusion entry.
