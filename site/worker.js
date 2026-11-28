@@ -50,6 +50,14 @@ const QR_ROUTES = new Map([
 const QR_MAX_BYTES = 512 * 1024;
 const QR_MAX_DIMENSION = 1024;
 const PNG_SIGNATURE = [137, 80, 78, 71, 13, 10, 26, 10];
+const LOCALIZED_ROUTES = new Map([
+  ["/", { en: "/", zh: "/zh/", lang: null, home: true }],
+  ["/zh/", { en: "/", zh: "/zh/", lang: "zh", home: true }],
+  ["/contributors", { en: "/contributors/", zh: "/zh/contributors/", lang: null, canonicalize: true, home: false }],
+  ["/contributors/", { en: "/contributors/", zh: "/zh/contributors/", lang: null, canonicalize: false, home: false }],
+  ["/zh/contributors", { en: "/contributors/", zh: "/zh/contributors/", lang: "zh", canonicalize: true, home: false }],
+  ["/zh/contributors/", { en: "/contributors/", zh: "/zh/contributors/", lang: "zh", canonicalize: false, home: false }],
+]);
 // /download/latest/* is a mutable URL even though the R2 object it resolves to
 // is versioned, so no downstream cache may pin the response.
 const OBJECT_CACHE = NO_STORE;
@@ -965,12 +973,13 @@ export default {
     }
 
     let languageHeaders = null;
-    const homepage = url.pathname === "/" || url.pathname === "/zh/";
-    if (homepage && (method === "GET" || method === "HEAD")) {
+    const route = LOCALIZED_ROUTES.get(url.pathname);
+    const homepage = Boolean(route?.home);
+    if (route && (method === "GET" || method === "HEAD")) {
       const query = url.searchParams.get("lang");
       const explicit = query === "en" || query === "zh";
-      const lang = explicit ? query : url.pathname === "/zh/" ? "zh" : preferredLanguage(request);
-      if (url.pathname === "/" || explicit) {
+      const lang = explicit ? query : route.lang || preferredLanguage(request);
+      if (route.lang !== "zh" || explicit || route.canonicalize) {
         languageHeaders = new Headers({
           Vary: "Accept-Language, Cookie",
           "Cache-Control": NO_STORE,
@@ -979,7 +988,7 @@ export default {
           languageHeaders.set("Set-Cookie", `lang=${lang}; Path=/; Max-Age=31536000; SameSite=Lax${url.protocol === "https:" ? "; Secure" : ""}`);
         }
       }
-      const pathname = lang === "zh" ? "/zh/" : "/";
+      const pathname = lang === "zh" ? route.zh : route.en;
       if (url.pathname !== pathname) {
         languageHeaders.set("Location", pathname + url.search);
         return new Response(null, { status: 302, headers: languageHeaders });

@@ -1026,6 +1026,42 @@ test("negotiation selects the highest-priority supported language", async () => 
   }
 });
 
+test("contributors pages negotiate English/Chinese consistently with homepages", async () => {
+  const env = makeEnv();
+  let response = await run("https://openfocus.top/contributors/", {
+    headers: { "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8" },
+    env,
+  });
+  assert.equal(response.status, 302);
+  assert.equal(response.headers.get("Location"), "/zh/contributors/");
+
+  response = await run("https://openfocus.top/contributors", {
+    headers: { "Accept-Language": "en-US" },
+    env,
+  });
+  assert.equal(response.status, 302);
+  assert.equal(response.headers.get("Location"), "/contributors/");
+
+  response = await run("https://openfocus.top/contributors/?lang=en", {
+    headers: { "Accept-Language": "zh-CN", Cookie: "lang=zh" },
+    env,
+  });
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), "asset:/contributors/");
+  assert.equal(response.headers.get("Vary"), "Accept-Language, Cookie");
+  assert.equal(response.headers.get("Cache-Control"), "no-store");
+  assert.match(response.headers.get("Set-Cookie"), /^lang=en; Path=\/; Max-Age=31536000; SameSite=Lax; Secure$/);
+
+  response = await run("https://openfocus.top/zh/contributors/?lang=en&ref=gh", { env });
+  assert.equal(response.status, 302);
+  assert.equal(response.headers.get("Location"), "/contributors/?lang=en&ref=gh");
+  assert.match(response.headers.get("Set-Cookie"), /^lang=en;/);
+
+  response = await run("https://openfocus.top/zh/contributors/", { env });
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), "asset:/zh/contributors/");
+});
+
 
 function analyticsDb() {
   const writes = [];

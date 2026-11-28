@@ -31,7 +31,7 @@ def built_site(tmp_path, monkeypatch):
     root = tmp_path / "checkout"
     site = root / "site"
     site.mkdir(parents=True)
-    for name in ("template.html", "style.css", "app.js", "install.ps1"):
+    for name in ("template.html", "contributors_template.html", "contributors.json", "style.css", "app.js", "install.ps1"):
         shutil.copyfile(original_root / "site" / name, site / name)
     installer = (original_root / "site" / "install.sh").read_text(encoding="utf-8")
     (site / "install.sh").write_bytes(installer.replace("\n", "\r\n").encode("utf-8"))
@@ -138,3 +138,50 @@ for (const mode of ['light', 'dark', 'system']) {
         capture_output=True, text=True, encoding="utf-8", timeout=30,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_built_contributors_pages_render_external_reporters_without_maintainer(built_site):
+    en_html = (built_site / "contributors/index.html").read_text(encoding="utf-8")
+    zh_html = (built_site / "zh/contributors/index.html").read_text(encoding="utf-8")
+    sitemap = (built_site / "sitemap.xml").read_text(encoding="utf-8")
+    headers = (built_site / "_headers").read_text(encoding="utf-8")
+
+    for handle in ("AlanRockefeller", "m1ll3t", "taraskin45-glitch", "hzweifei", "Phreemann", "pixelsurium"):
+        assert f"@{handle}" in en_html
+        assert f"@{handle}" in zh_html
+    for version in ("v2.0.0", "v1.52", "v1.26", "v1.9"):
+        assert version in en_html
+        assert version in zh_html
+    for issue in ("#329", "#294", "#246", "#5", "#4", "#2"):
+        assert issue in en_html
+        assert issue in zh_html
+
+    assert "@Xinzhe99" not in en_html
+    assert "@Xinzhe99" not in zh_html
+    assert "<details" in en_html and "5 more" in en_html
+    assert "<details" in zh_html and "还有 5 项" in zh_html
+    assert 'href="/contributors/?lang=en"' in en_html
+    assert 'href="/zh/contributors/?lang=zh"' in zh_html
+    assert "https://openfocus.top/contributors/" in sitemap
+    assert "https://openfocus.top/zh/contributors/" in sitemap
+    assert "/contributors/\n" in headers
+    assert "/zh/contributors/\n" in headers
+
+
+def test_contributors_loader_rejects_excluded_author(tmp_path, monkeypatch):
+    import json
+    from tools import build_site
+
+    site = tmp_path / "site"
+    site.mkdir()
+    (site / "contributors.json").write_text(json.dumps({
+        "excluded_authors": ["Xinzhe99"],
+        "contributors": [{
+            "handle": "Xinzhe99",
+            "url": "https://github.com/Xinzhe99",
+            "contributions": [{"issue": 1, "version": "v1.0", "date": "2026-01-01", "en": "a", "zh": "a"}],
+        }],
+    }), encoding="utf-8")
+    monkeypatch.setattr(build_site, "SITE", site)
+    with pytest.raises(ValueError, match="excluded contributor"):
+        build_site.load_contributors()

@@ -51,6 +51,7 @@ def _en() -> dict:
             "workflow": "Workflow",
             "benchmark": "Benchmark",
             "cli": "CLI",
+            "contributors": "Contributors",
             "docs": "Docs",
             "github": "GitHub",
             "account": "Sign in",
@@ -317,11 +318,45 @@ def _en() -> dict:
             "usage": "Desktop usage reporting is enabled by default when no preference exists; a previous explicit opt-out is preserved. Usage reports send only a random installation ID, application version and operating system to estimate active installations. They do not include images, paths, hardware details or logs. Turn reporting off in Settings → Advanced Settings → Share usage statistics, then choose OK, to stop future reports and delete the local ID. Cancel discards changes. A request already in flight may still complete.",
             "retention": "Usage records are kept for up to 90 UTC calendar days; operational failures can delay deletion. Homepage and download totals remain until an operator deletes them. The statistics database does not store IP addresses, user agents or hardware identifiers. Cloudflare may keep separate request logs, including network information.",
         },
+        "contributors_page": {
+            "title": "Contributors — OpenFocus",
+            "desc": (
+                "Community contributors who reported bugs, shared edge cases, and "
+                "inspired OpenFocus releases, linked version by version."
+            ),
+            "eyebrow": "Community",
+            "heading": "Contributors",
+            "lede": (
+                "OpenFocus is shaped by the people who tell us what broke, share tricky "
+                "focus stacks, and ask for what is missing. Every change below traces back "
+                "to the version where it landed."
+            ),
+            "stats_fmt": "{people} community contributors · {changes} inspired changes · excluding maintainer issues",
+            "cta_report": "Report an issue or suggest a feature",
+            "col_who": "Who",
+            "col_changes": "Inspired changes, newest first",
+            "next_version": "Next (main)",
+            "more_fmt": "{n} more",
+            "how_title": "How this list is built",
+            "how_body": (
+                "Generated from closed public GitHub issues opened by community members "
+                "(excluding maintainer-filed and bot issues). Each item links to the "
+                "OpenFocus release where the fix or feature shipped, or Next (main) while "
+                "merged improvements await the next tag."
+            ),
+            "optout_title": "Want to be removed or credited differently?",
+            "optout_body": (
+                "If you would prefer not to be listed or want a different attribution, "
+                "comment on the linked GitHub issue or email support@openfocus.top and we "
+                "will update it promptly."
+            ),
+        },
         "footer": {
             "tagline": "Every pixel, its sharpest frame.",
             "links": [
                 ("GitHub", REPO),
                 ("Docs", MANUAL["en"]),
+                ("Contributors", "/contributors/"),
                 ("Changelog", f"{REPO}/blob/main/CHANGELOG.md"),
                 ("Community", "#community"),
                 ("Privacy", "#privacy"),
@@ -365,6 +400,7 @@ def _zh() -> dict:
             "workflow": "工作流",
             "benchmark": "基准",
             "cli": "命令行",
+            "contributors": "贡献墙",
             "docs": "文档",
             "github": "GitHub",
             "account": "登录",
@@ -594,11 +630,29 @@ def _zh() -> dict:
             "usage": "未保存偏好时，桌面使用统计默认开启；此前明确关闭的偏好会保留。使用统计报告仅发送随机安装标识、应用版本和操作系统，用于估计活跃安装量，不包含图像、路径、硬件信息或日志。可在“设置 → 高级设置 → 分享使用统计”关闭并确定，停止后续报告并删除本地标识；取消则放弃修改。已经发出的请求仍可能完成。",
             "retention": "使用记录最多保留 90 个 UTC 日历日；系统故障可能延迟删除。首页和下载汇总保留到管理员删除为止。统计数据库不保存 IP 地址、用户代理或硬件标识。Cloudflare 可能另行保存包含网络信息的请求日志。"
         },
+        "contributors_page": {
+            "title": "贡献墙 — OpenFocus",
+            "desc": "感谢通过 GitHub Issue 反馈缺陷、提供疑难堆栈与提出新功能建议的社区贡献者，每一项灵感与改进都与对应版本一一关联。",
+            "eyebrow": "社区共建",
+            "heading": "贡献墙",
+            "lede": "OpenFocus 由每一位认真反馈问题、分享棘手堆栈并提出改进想法的用户共同塑造。下面列出了社区伙伴通过 Issue 推动并已在版本中落地的每一项改动。",
+            "stats_fmt": "{people} 位社区贡献者 · {changes} 项关联改动 · 仅收录社区反馈，不含维护者自提",
+            "cta_report": "去 GitHub 提 Issue 或建议",
+            "col_who": "谁",
+            "col_changes": "带来的改动，新的在前",
+            "next_version": "下个版本 (main)",
+            "more_fmt": "还有 {n} 项",
+            "how_title": "名单怎么来的",
+            "how_body": "直接整理自公开 GitHub Issue 中由社区成员提交并已解决的反馈与建议（已排除维护者自提与机器人账号），并与改动实际落地的 OpenFocus 版本一一对应；已合并到主分支、等待下一正式版打标的改动标记为“下个版本 (main)”。",
+            "optout_title": "不想被列出，或想修改署名？",
+            "optout_body": "如果你不希望出现在本页，或想调整显示名称与链接，欢迎直接在对应 Issue 下留言或发送邮件至 support@openfocus.top，我们会第一时间处理。",
+        },
         "footer": {
             "tagline": "每一像素，皆取自最清晰的一帧。",
             "links": [
                 ("GitHub", REPO),
                 ("文档", MANUAL["zh"]),
+                ("贡献墙", "/zh/contributors/"),
                 ("更新日志", f"{REPO}/blob/main/CHANGELOG.md"),
                 ("用户社区", "#community"),
                 ("隐私", "#privacy"),
