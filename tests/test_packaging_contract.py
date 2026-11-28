@@ -15,7 +15,7 @@ from packaging.requirements import Requirement
 ROOT = Path(__file__).resolve().parent.parent
 PYPROJECT = ROOT / "pyproject.toml"
 
-# tomllib is 3.11+; CI still tests 3.10, so fall back to tomli when present.
+# tomllib is 3.11+; keep the tomli fallback for Python 3.10 environments.
 try:
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover - only on Python 3.10
@@ -93,7 +93,7 @@ def test_pytorch_is_not_a_production_dependency():
 def test_python_floor_matches_the_ci_matrix():
     floor = _project()["requires-python"]
     assert "3.10" in floor, (
-        "CI and both release builds run 3.10; advertising anything lower "
+        "OpenFocus requires Python 3.10+; advertising anything lower "
         "installs on interpreters the app cannot import on")
 
 

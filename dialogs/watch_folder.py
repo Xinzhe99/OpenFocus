@@ -588,7 +588,7 @@ class WatchFolderDialog(QDialog):
         key_map = {
             "idle": ("watch_folder_status_idle", tokens["textMuted"], tokens["surfaceActive"], tokens["border"]),
             "watching": ("watch_folder_status_watching", tokens["accentSoftText"], tokens["accentSoft"], tokens["accent"]),
-            "paused": ("watch_folder_status_paused", tokens["warning"], tokens["warningSoft"], tokens["warning"]),
+            "paused": ("watch_folder_status_paused", tokens["textMuted"], tokens["surfaceActive"], tokens["border"]),
             "processing": ("watch_folder_status_processing", tokens["success"], tokens["successSoft"], tokens["success"]),
         }
         t_key, fg, bg, border = key_map.get(self._status_code, key_map["idle"])

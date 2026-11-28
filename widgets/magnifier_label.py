@@ -461,6 +461,59 @@ class MagnifierLabel(QLabel):
         available = self._base_pixmap is not None and not self._base_pixmap.isNull()
         return self._zoom_factor, self._min_zoom, self._view_max_zoom(), available
 
+    def native_pixel_zoom_factor(self) -> float:
+        """Return the fit-relative zoom corresponding to 1:1 actual image pixels."""
+        if self._base_pixmap is None or self._base_pixmap.isNull():
+            return 1.0
+        scale = self._fit_scale() * self.devicePixelRatioF()
+        target = 1.0 / max(1e-6, scale)
+        return min(max(target, self._min_zoom), self._view_max_zoom())
+
+    def actual_zoom_percent(self) -> float:
+        """Return the displayed percentage relative to 1:1 actual pixels."""
+        if self._base_pixmap is None or self._base_pixmap.isNull():
+            return 0.0
+        return self._fit_scale() * self._zoom_factor * self.devicePixelRatioF() * 100.0
+
+    def set_view_zoom(
+        self,
+        target_zoom: float,
+        *,
+        interactive: bool = False,
+        show_indicator: bool = True,
+    ) -> None:
+        """Set fit-relative zoom anchored at viewport center."""
+        old_zoom, minimum, maximum, available = self.view_zoom_state()
+        if not available:
+            return
+        new_zoom = min(max(float(target_zoom), minimum), maximum)
+        centre = QPointF(self.width() / 2.0, self.height() / 2.0)
+        base_point = self._map_to_base(centre)
+        self._zoom_factor = new_zoom
+        after = self._map_from_base(base_point)
+        self._pan_offset += centre - after
+        scaled_w, scaled_h = self._display_size()
+        if scaled_w <= self.width() and scaled_h <= self.height():
+            self._pan_offset = QPointF(0, 0)
+        if interactive:
+            self._interactive_transform = True
+            self._refine_timer.start()
+        else:
+            self._interactive_transform = False
+            self._refine_timer.stop()
+        self._update_scaled_pixmap()
+        if show_indicator and abs(new_zoom - old_zoom) > 1e-6:
+            self._show_zoom_indicator()
+        self.viewStateChanged.emit()
+
+    def zoom_to_actual_pixels(self) -> None:
+        """Zoom the view cleanly to 1:1 actual source pixels."""
+        self.set_view_zoom(self.native_pixel_zoom_factor(), interactive=False, show_indicator=True)
+
+    def zoom_to_fit(self) -> None:
+        """Zoom the view cleanly to fit inside the canvas."""
+        self.reset_view()
+
     def zoom_view(self, zoom_in):
         """Zoom around the view centre, keeping the image within pan bounds."""
         old_zoom, minimum, maximum, available = self.view_zoom_state()
@@ -470,17 +523,7 @@ class MagnifierLabel(QLabel):
                     else max(old_zoom / 1.1, minimum))
         if new_zoom == old_zoom:
             return
-        centre = QPointF(self.width() / 2.0, self.height() / 2.0)
-        base_point = self._map_to_base(centre)
-        self._zoom_factor = new_zoom
-        after = self._map_from_base(base_point)
-        self._pan_offset += centre - after
-        scaled_w, scaled_h = self._display_size()
-        if scaled_w <= self.width() and scaled_h <= self.height():
-            self._pan_offset = QPointF(0, 0)
-        self._update_scaled_pixmap()
-        self._show_zoom_indicator()
-        self.viewStateChanged.emit()
+        self.set_view_zoom(new_zoom, interactive=False, show_indicator=True)
 
     def reset_view(self):
         self._refine_timer.stop()
@@ -1266,7 +1309,7 @@ class MagnifierLabel(QLabel):
                 painter.drawText(res_bg, Qt.AlignmentFlag.AlignCenter, res_str)
 
         if (self._align_roi_mode or self._align_roi_rect is not None) and self._base_pixmap is not None and not self._base_pixmap.isNull():
-            amber = QColor(245, 158, 11)
+            accent = QColor(0, 120, 215)
             if self._align_roi_rect is None:
                 if self._align_roi_mode:
                     painter.fillRect(self.rect(), QColor(0, 0, 0, 100))
@@ -1285,10 +1328,10 @@ class MagnifierLabel(QLabel):
                     painter.setClipRegion(dim_region)
                     painter.fillRect(self.rect(), QColor(0, 0, 0, 80))
                     painter.restore()
-                # Subtle translucent amber tint inside detection box
-                painter.fillRect(screen_roi, QColor(245, 158, 11, 24))
-                # Distinct dashed amber border
-                pen = QPen(amber, 2, Qt.PenStyle.DashLine)
+                # Subtle translucent accent tint inside detection box
+                painter.fillRect(screen_roi, QColor(0, 120, 215, 20))
+                # Distinct dashed accent border (solid border = Output ROI, dashed = Alignment Detection Area)
+                pen = QPen(accent, 2, Qt.PenStyle.DashLine)
                 pen.setDashPattern([6, 4])
                 painter.setPen(pen)
                 painter.setBrush(Qt.BrushStyle.NoBrush)
@@ -1297,7 +1340,7 @@ class MagnifierLabel(QLabel):
                 if self._align_roi_mode:
                     handles = self._get_handle_rects(screen_roi)
                     painter.setBrush(Qt.GlobalColor.white)
-                    painter.setPen(QPen(amber, 1.5))
+                    painter.setPen(QPen(accent, 1.5))
                     for name, rect in handles.items():
                         if name == "del":
                             continue
@@ -1332,9 +1375,9 @@ class MagnifierLabel(QLabel):
                     by = screen_roi.top() + 3
                 badge_rect = QRectF(bx, by, bw, bh)
                 painter.setBrush(QColor(24, 24, 28, 215))
-                painter.setPen(QPen(amber, 1.5))
+                painter.setPen(QPen(accent, 1.5))
                 painter.drawRoundedRect(badge_rect, 4, 4)
-                painter.setPen(QColor(253, 224, 71))
+                painter.setPen(QColor(255, 255, 255))
                 painter.drawText(badge_rect, Qt.AlignmentFlag.AlignCenter, badge_text)
 
         self._draw_zoom_indicator(painter)

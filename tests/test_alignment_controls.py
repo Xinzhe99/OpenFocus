@@ -120,6 +120,79 @@ def test_alignment_roi_ignores_outer_distractors_and_warps_full_frame(method):
     assert mae_after < mae_before * 0.35, f"{method}: mae_after={mae_after:.2f} vs mae_before={mae_before:.2f}"
 
 
+def test_multistage_alignment_roi_clips_width_on_left_crop(monkeypatch):
+    from core import registration as reg_mod
+
+    base = _textured_base(256, 256, seed=10)
+    shifted = _warp_synthetic(base, dx=-18.0, dy=0.0)
+    roi = (4, 40, 120, 176)
+
+    seen_ecc_rois = []
+    orig_ecc = reg_mod._align_ecc_impl
+
+    def spy_ecc(*args, **kwargs):
+        seen_ecc_rois.append(kwargs.get("alignment_roi"))
+        return orig_ecc(*args, **kwargs)
+
+    monkeypatch.setattr(reg_mod, "_align_ecc_impl", spy_ecc)
+
+    reg = ImageRegistration(
+        method="both",
+        alignment_roi=roi,
+        auto_crop=True,
+        accelerate_ecc=False,
+    )
+    aligned = reg.process([base, shifted], thread_count=1)
+    assert len(aligned) == 2
+    assert len(seen_ecc_rois) == 1
+
+    top_b, bottom_b, left_b, right_b = reg._perspective_stages[0].bounds
+    assert left_b > roi[0], f"Expected stage 1 left crop > {roi[0]}, got {left_b}"
+    stage_h, stage_w = bottom_b - top_b, right_b - left_b
+    expected_x0 = max(0, roi[0] - left_b)
+    expected_y0 = max(0, roi[1] - top_b)
+    expected_x1 = min(stage_w, roi[0] + roi[2] - left_b)
+    expected_y1 = min(stage_h, roi[1] + roi[3] - top_b)
+    assert seen_ecc_rois[0] == (
+        expected_x0,
+        expected_y0,
+        expected_x1 - expected_x0,
+        expected_y1 - expected_y0,
+    )
+
+
+def test_multistage_alignment_roi_clears_when_cropped_below_minimum(monkeypatch):
+    from core import registration as reg_mod
+
+    base = _textured_base(256, 256, seed=10)
+    frames = [
+        base,
+        _warp_synthetic(base, dx=12.0, dy=0.0),
+        _warp_synthetic(base, dx=24.0, dy=0.0),
+        _warp_synthetic(base, dx=34.0, dy=0.0),
+    ]
+    roi = (218, 40, 38, 176)
+
+    seen_ecc_rois = []
+    orig_ecc = reg_mod._align_ecc_impl
+
+    def spy_ecc(*args, **kwargs):
+        seen_ecc_rois.append(kwargs.get("alignment_roi"))
+        return orig_ecc(*args, **kwargs)
+
+    monkeypatch.setattr(reg_mod, "_align_ecc_impl", spy_ecc)
+
+    reg = ImageRegistration(
+        method="both",
+        alignment_roi=roi,
+        auto_crop=True,
+        accelerate_ecc=False,
+    )
+    aligned = reg.process(frames, thread_count=1)
+    assert len(aligned) == 4
+    assert seen_ecc_rois == [None]
+
+
 # ---------------------------------------------------------------------------
 # 2. #15 Independent X/Y/Rotation/Scale Limits & Backward Compat
 # ---------------------------------------------------------------------------
@@ -452,3 +525,17 @@ def test_alignment_control_translations_complete_in_all_12_languages():
         table = trans.translations[code]
         for key in _ALIGNMENT_CONTROLS_KEYS:
             assert table.get(key), f"{code}: missing {key}"
+
+
+def test_alignment_area_button_uses_panel_toggle_consistent_theme(qapp):
+    from ui.image_panels import _panel_qss, create_source_panel
+
+    panel = create_source_panel()
+    try:
+        assert panel.align_area_btn.objectName() == panel.show_aligned_btn.objectName() == "panelToggle"
+        for theme in ("light", "dark", "gray"):
+            qss = _panel_qss(theme)
+            assert "alignAreaToggle" not in qss
+            assert "warningSoft" not in qss
+    finally:
+        panel.widget.deleteLater()

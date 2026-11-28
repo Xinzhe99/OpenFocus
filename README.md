@@ -366,7 +366,7 @@ bundled StackMFF V3 v2.0 snapshot remains MIT licensed. See the full
 Run from a checkout:
 
 ```bash
-conda create -n openfocus python=3.10
+conda create -n openfocus python=3.12
 conda activate openfocus
 pip install -r requirements.txt
 python main.py
