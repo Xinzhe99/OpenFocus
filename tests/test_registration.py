@@ -366,18 +366,21 @@ def test_shift_limit_argument_stays_method_scoped():
     passing it with ECC/Homography was harmless. The registry migration made
     it an unknown parameter there and raised instead.
     """
-    assert ImageRegistration(method="openfocus",
-                             max_shift_ratio=0.25).parameters["max_shift_ratio"] == 0.25
+    of_params = ImageRegistration(method="openfocus", max_shift_ratio=0.25).parameters
+    assert "max_shift_ratio" not in of_params
+    assert of_params["max_shift_x_ratio"] == 0.25
+    assert of_params["max_shift_y_ratio"] == 0.25
     for method in ("ecc", "homography"):
         params = ImageRegistration(method=method, max_shift_ratio=0.25).parameters
         assert "max_shift_ratio" not in params
         assert params == ImageRegistration(method=method).parameters
         assert params["failure_policy"] == "continue"
-    # An explicit registry value still wins over the legacy argument.
+    # Legacy constructor argument still overrides legacy registry value.
     explicit = ImageRegistration(method="openfocus",
                                  parameters={"max_shift_ratio": 0.1},
                                  max_shift_ratio=0.3)
-    assert explicit.parameters["max_shift_ratio"] == 0.3
+    assert explicit.parameters["max_shift_x_ratio"] == 0.3
+    assert explicit.parameters["max_shift_y_ratio"] == 0.3
 
 
 @pytest.mark.parametrize('method,steps', [

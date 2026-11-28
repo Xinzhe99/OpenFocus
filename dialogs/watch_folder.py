@@ -285,7 +285,10 @@ class WatchFolderDialog(QDialog):
         root.addWidget(self.log_group, 1)
         register_help_target(self.dirs_group, "watch_folder")
         register_help_target(self.settings_group, "watch_folder")
+        register_help_target(self.fusion_combo, "batch_methods")
+        register_help_target(self.align_combo, "batch_methods")
         register_help_target(self.format_combo, "batch_output_format")
+        register_help_target(self.settle_spin, "watch_settle")
         register_help_target(self.activity_table, "watch_folder")
 
     def _apply_method_availability(self) -> None:
