@@ -248,7 +248,8 @@ def test_directory_exposure_match_admits_mixed_bit_depths(monkeypatch, tmp_path)
     np.testing.assert_array_equal(result, unrestricted)
 
 
-@pytest.mark.parametrize('method', ['openfocus_a', 'openfocus_b', 'openfocus_c', 'dtcwt'])
+@pytest.mark.parametrize('method', ['openfocus_a', 'openfocus_b', 'openfocus_c',
+                                    'guided_filter', 'gfgfgf', 'dct', 'dtcwt'])
 def test_streaming_workspace_depends_on_geometry_not_stack_depth(method):
     from types import SimpleNamespace
     from core import multi_focus_fusion as mff
@@ -262,7 +263,8 @@ def test_streaming_workspace_depends_on_geometry_not_stack_depth(method):
 
 
 @pytest.mark.parametrize('hook', ['neural_needs_tiles', 'openfocus_a_needs_tiles',
-                                 'openfocus_b_needs_tiles'])
+                                 'openfocus_b_needs_tiles', 'guided_needs_tiles',
+                                 'gfg_needs_tiles', 'dct_needs_tiles'])
 def test_tile_decision_uses_resized_dimensions(hook):
     from core import algorithm_adapters
     decide = getattr(algorithm_adapters, hook)
@@ -270,6 +272,32 @@ def test_tile_decision_uses_resized_dimensions(hook):
     small = [np.zeros((96, 96, 3), np.uint8) for _ in range(2)]
     assert not decide(large, 256, height=120, width=120, device='CPU')
     assert decide(small, 256, height=320, width=320, device='CPU')
+
+
+def test_graduated_methods_run_full_frame_on_45mp_within_budget_and_tile_when_constrained(monkeypatch):
+    from types import SimpleNamespace
+    from core import algorithm_adapters
+    from core import multi_focus_fusion as mff
+    from core.algorithms import get_fusion
+
+    frame_45mp = SimpleNamespace(shape=(5464, 8192, 3), ndim=3, dtype=np.dtype(np.uint8), nbytes=5464 * 8192 * 3)
+    frames = [frame_45mp] * 92
+    # Typical 16 GiB workstation budget (~6.8 GiB ceiling): all 4 graduated methods fit whole-frame.
+    monkeypatch.setattr(mff, 'memory_budget_bytes', lambda: 6 * 1024 ** 3)
+    for method in ('guided_filter', 'gfgfgf', 'dct', 'dtcwt'):
+        spec = get_fusion(method)
+        assert not spec.experimental
+        assert not spec.external_tiling_default
+        assert spec.tile_decider is not None
+        decide = getattr(algorithm_adapters, spec.tile_decider.split(':')[1])
+        assert not decide(frames, mff._DEFAULT_TILE_THRESHOLD, height=5464, width=8192)
+        assert mff.estimate_peak_bytes(method, frames) <= 6 * 1024 ** 3
+
+    # Constrained machine (< 512 MiB ceiling): tile deciders trigger safety tiling.
+    monkeypatch.setattr(mff, 'memory_budget_bytes', lambda: 512 * 1024 ** 2)
+    for hook in ('guided_needs_tiles', 'gfg_needs_tiles', 'dct_needs_tiles', 'dtcwt_needs_tiles'):
+        decide = getattr(algorithm_adapters, hook)
+        assert decide(frames, mff._DEFAULT_TILE_THRESHOLD, height=5464, width=8192)
 
 
 def test_neural_tile_decision_accounts_for_resized_stack_footprint():

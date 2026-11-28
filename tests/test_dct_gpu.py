@@ -525,3 +525,47 @@ def test_dct_drains_queue_on_error_and_cancel(monkeypatch):
     with pytest.raises(RegistrationCancelled):
         MultiFocusFusion(use_gpu=True, **options).fuse(frames, thread_count=1)
     assert drained == [True]
+
+
+def test_dct_kernels_fused_bgr_and_median_match_reference():
+    from scipy.ndimage import median_filter as scipy_median
+    from fusion_methods import _dct_kernels
+
+    rng = np.random.default_rng(2026)
+    for h, w in ((17, 19), (64, 72), (131, 97)):
+        bgr = rng.integers(0, 256, (h, w, 3), dtype=np.uint8)
+        gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+        for bs in (4, 8):
+            mh = (h + bs - 1) // bs
+            mw = (w + bs - 1) // bs
+            var_bgr = np.empty((mh, mw), dtype=np.float32)
+            var_gray = np.empty((mh, mw), dtype=np.float32)
+            _dct_kernels.block_variance_bgr_u8(bgr, h, w, bs, var_bgr)
+            _dct_kernels.block_variance_u8(gray, h, w, bs, var_gray)
+            np.testing.assert_array_equal(var_bgr, var_gray)
+
+    for shape in ((1, 1), (3, 17), (29, 31)):
+        src = rng.integers(0, 12, shape, dtype=np.int32)
+        for ksize in (1, 3, 5, 7, 11):
+            actual = np.empty_like(src)
+            _dct_kernels.median_filter_i32(src, actual, ksize)
+            expected = scipy_median(src, size=ksize, mode='nearest').astype(np.int32)
+            np.testing.assert_array_equal(actual, expected)
+
+
+@pytest.mark.parametrize('ksize', [1, 3, 5, 7, 9])
+@pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
+def test_dct_gpu_device_median_matches_cpu_across_kernel_sizes(monkeypatch, ksize, dtype):
+    from fusion_methods import _openfocus_gpu
+    if not _openfocus_gpu.gpu_available():
+        pytest.skip('No OpenCL GPU is available')
+    monkeypatch.setattr(_openfocus_gpu, '_free_vram',
+                        lambda device: (int(device.global_mem_size),) * 2)
+    frames = _stack(dtype, 3, shape=(73, 85), count=4)
+    expected = dct.dct_focus_stack_fusion(frames, kernel_size=ksize, thread_count=2)
+    used = []
+    actual = dct.dct_focus_stack_fusion(
+        frames, kernel_size=ksize, use_gpu=True, device_callback=used.append,
+    )
+    assert used and used[0].startswith('OpenCL: ')
+    np.testing.assert_array_equal(actual, expected)

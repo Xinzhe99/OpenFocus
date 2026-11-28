@@ -31,7 +31,7 @@ OpenFocus は、研究者、エンジニア、画像処理の専門家のため�
 ### 主な機能
 
 - **多焦点画像融合**：ピント位置の異なる複数の画像を 1 枚の全焦点画像に合成します
-- **融合アルゴリズム**：安定版の OpenFocus A/B/C、実験的な StackMFF V1/V2/V3（深層学習）、ガイドフィルタ、DCT、DTCWT、GFG-FGF に加え、位置合わせ専用モードがあります
+- **融合アルゴリズム**：安定版の OpenFocus A/B/C、ガイドフィルタ、DCT、DTCWT、GFG-FGF と、実験的な StackMFF V1/V2/V3（深層学習）に加え、位置合わせ専用モードがあります
 - **画像の位置合わせ**：OpenFocus（高速）、ECC、ホモグラフィから 1 つを選び、ずれ・回転・拡大縮小・遠近の変化を補正します
 - **自動背景**：スタックで乱れた背景を実際の1フレームに置き換え、どのフレームにもきれいに写っていない場所を表示
 - **ワイプ比較ビュー**：A/B の仕切り表示で位置合わせを点検し、結果を比較できます
@@ -75,7 +75,7 @@ OpenFocus は、研究者、エンジニア、画像処理の専門家のため�
 グラデーションやぼかしのあるマスク、フレームごとに異なるマスク、透明 TIFF 入力、GIF や
 マルチページ TIFF を含む PNG 以外の出力は未対応です。CLI も透明入力のセンサー補正と
 深度マップを拒否します。CLI 例：
-`python main.py --input ./png-stack --output ./result.png --method guided_filter --align none --experimental`。
+`python main.py --input ./png-stack --output ./result.png --method guided_filter --align none`。
 
 ### 対応出力形式
 
@@ -659,8 +659,8 @@ RAW 入力は sRGB に現像され、カメラのプロファイルは継承し�
 
 ## 8. 画像融合手法
 
-安定版の融合手法は **OpenFocus A、B、C** です。デスクトップ版の新規プロファイルでは、
-**OpenFocus B** と **ECC** 位置合わせが既定です。その他の融合手法や実験的な位置合わせ手法を
+安定版の融合手法は **OpenFocus A、B、C、ガイドフィルタ、GFG-FGF、DCT、DTCWT** です。デスクトップ版の新規プロファイルでは、
+**OpenFocus B** と **ECC** 位置合わせが既定です。実験的な融合手法（StackMFF V1/V2/V3）や実験的な位置合わせ手法を
 デスクトップ版で使うには、**設定 → 詳細設定 → 一般** で **実験的機能を有効にする** をオンにします。
 CLI で実験的な融合手法を使うには、実行するたびに `--experimental` を指定します。
 
@@ -1410,16 +1410,16 @@ openfocus -i ./stack_folder -o ./result/fused.png
 python main.py --input ./stack_folder --output ./result/fused.png
 
 # DTCWT と ECC 位置合わせ、8 スレッド
-python main.py -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8 --experimental
+python main.py -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8
 
 # StackMFF V3 を CPU に強制し、タイルサイズを指定
 python main.py -i ./stack_folder -o ./result/fused.png -m stackmffv3 --cpu --tile-size 512 --experimental
 
 # ファイルを明示的に列挙。動画ファイルも入力として受け付けます
-python main.py -i img1.jpg img2.jpg img3.jpg -o fused.png -m gfgfgf --experimental
+python main.py -i img1.jpg img2.jpg img3.jpg -o fused.png -m gfgfgf
 
 # メタデータから較正したスケールバー付きのマルチページ TIFF Z スタック
-python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar --experimental
+python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar
 
 # 融合せず、入力も変えずに隣接する類似フレームだけを調べる
 python main.py -i ./stack_folder --suggest-duplicates
@@ -1512,7 +1512,7 @@ openfocus retouch replay edits.ofretouch --base fused.png --sources frame1.png f
 | `--input, -i` | 画像フォルダ、動画ファイル、1 つ以上の画像ファイル、またはマルチページ TIFF |
 | `--output, -o` | 単一スタックの出力画像パス（拡張子が形式を決定）。`--output-dir` がない場合は必須 |
 | `--output-dir, -d` | バッチモード：各入力フォルダを処理し、スタックごとに `<folder>.png` を書き出す |
-| `--method, -m` | 安定版は `openfocus_a`、`openfocus_b`（既定）、`openfocus_c`。実験的な手法は `guided_filter`、`dct`、`dtcwt`、`gfgfgf`、`stackmff`、`stackmffv2`、`stackmffv3` |
+| `--method, -m` | 安定版は `openfocus_a`、`openfocus_b`（既定）、`openfocus_c`、`guided_filter`、`dct`、`dtcwt`、`gfgfgf`。実験的な手法は `stackmff`、`stackmffv2`、`stackmffv3` |
 | `--experimental` | この CLI 実行で実験的な融合手法の使用を許可 |
 | `--param KEY=JSON_VALUE` | 融合パラメータ。複数回指定でき、旧式の専用フラグより優先 |
 | `--align, -a` | `none`（既定）、`homography`、`ecc`、`openfocus`、`both` |

@@ -1823,8 +1823,9 @@ def _exposure_table(gain, dtype, shape):
 
 def _match_through_table(image, gain, output, should_cancel):
     """Fill output with the matched frame, in row bands a row job shares."""
-    from core.registration import RegistrationCancelled
-    from fusion_methods._openfocus_execution import run_bands
+    from core.openfocus_alignment import _run_row_bands
+    from core.registration import RegistrationCancelled, _warp_thread_budget
+    from fusion_methods._openfocus_execution import cancellation_check, run_bands, uses_rows
     from fusion_methods._openfocus_kernels import table_rows
     table = _exposure_table(gain, image.dtype, image.shape)
     if (image.ndim == 3 and image.flags.c_contiguous and output.flags.c_contiguous
@@ -1834,6 +1835,17 @@ def _match_through_table(image, gain, output, should_cancel):
         table = np.ascontiguousarray(table[:, :1])
         image = image.reshape(image.shape[0], -1)
         output = output.reshape(output.shape[0], -1)
+
+    # A serial frame owner (a large prepared stack) lends its warp threads to
+    # the matcher as well. Each row maps independently, so bands are exact.
+    workers = 1 if uses_rows() else _warp_thread_budget()
+    if workers > 1:
+        # The guard raises for the frame's own cancellation, so it also stops
+        # the bands under a job, whose check does not return the predicate.
+        check = cancellation_check(lambda: _check_resolution_cancel(should_cancel))
+        _run_row_bands(image.shape[0], 128, check, table_rows, image, table, output,
+                       parallel_pixels=image.shape[0] * image.shape[1], workers=workers)
+        return
 
     def rows(start, stop):
         if should_cancel is not None and should_cancel():

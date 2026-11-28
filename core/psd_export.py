@@ -28,12 +28,15 @@ except Exception:  # pragma: no cover
 
 PSD_SIGNATURE = b"8BPS"
 PSD_VERSION = 1
+PSB_VERSION = 2
 PSD_MAX_DIMENSION = 30000
+PSB_MAX_DIMENSION = 300000
 PSD_COLOR_MODE_RGB = 3
 PSD_COMPRESSION_RAW = 0
 PSD_COMPRESSION_RLE = 1
 PSD_RESOURCE_ICC_PROFILE = 0x040F
 _PSD_V1_MAX_U32 = 0xFFFFFFFF
+_DEFAULT_MASK_MAX_EDGE = 1600
 
 CHANNEL_USER_MASK = -2
 CHANNEL_ALPHA = -1
@@ -197,10 +200,15 @@ def packbits_decode(data: bytes | bytearray | memoryview, expected_length: Optio
     return bytes(out)
 
 
-def _encode_rle_strip(strip: np.ndarray, cancelled=None) -> Tuple[bytes, bytes]:
-    """Encode a contiguous 2D strip of rows into (be16_row_counts, packed_bytes)."""
+def _encode_rle_strip(
+    strip: np.ndarray,
+    cancelled=None,
+    *,
+    count_dtype: str = ">u2",
+) -> Tuple[bytes, bytes]:
+    """Encode a contiguous 2D strip of rows into (be_row_counts, packed_bytes)."""
     h = strip.shape[0]
-    counts = np.empty(h, dtype=">u2")
+    counts = np.empty(h, dtype=count_dtype)
     chunks: list[bytes] = []
     enc = _IMAGECODECS_PACKBITS_ENCODE if _IMAGECODECS_PACKBITS_ENCODE is not None else _packbits_encode_numpy
     for y in range(h):
@@ -217,6 +225,7 @@ def _encode_rle_plane(
     *,
     executor: Optional[ThreadPoolExecutor] = None,
     cancelled=None,
+    count_dtype: str = ">u2",
 ) -> Tuple[bytes, bytes]:
     """PackBits-encode a 2D uint8 plane into (row_byte_counts, packed_rows)."""
     arr = np.ascontiguousarray(plane, dtype=np.uint8)
@@ -224,10 +233,10 @@ def _encode_rle_plane(
     if height == 0:
         return b"", b""
     if executor is None or height < _RLE_STRIP_ROWS * 2:
-        return _encode_rle_strip(arr, cancelled=cancelled)
+        return _encode_rle_strip(arr, cancelled=cancelled, count_dtype=count_dtype)
 
     strips = [arr[y:y + _RLE_STRIP_ROWS] for y in range(0, height, _RLE_STRIP_ROWS)]
-    futures = [executor.submit(_encode_rle_strip, strip, cancelled) for strip in strips]
+    futures = [executor.submit(_encode_rle_strip, strip, cancelled, count_dtype=count_dtype) for strip in strips]
     counts_parts: list[bytes] = []
     packed_parts: list[bytes] = []
     for fut in futures:
@@ -278,21 +287,34 @@ def _to_luminance_u8(image: np.ndarray) -> np.ndarray:
     raise ValueError(f"Unsupported image shape for luminance: {disp.shape}")
 
 
+def _valid_mask_from_pixels(frame_arr: np.ndarray, *, cancelled=None) -> Optional[np.ndarray]:
+    """Compute border-connected fill mask directly from an already-resolved array."""
+    from core.render_context import _alignment_valid_mask
+
+    return _alignment_valid_mask(frame_arr, should_cancel=cancelled)
+
+
 def _compute_winner_map(
     result: np.ndarray,
     n_frames: int,
     *,
     frame_loader: Optional[Callable[[int], np.ndarray]] = None,
     depth_index: Optional[np.ndarray] = None,
+    depth_reversed: bool = False,
     source_indices: Optional[np.ndarray] = None,
     valid_masks: Optional[Sequence[Optional[np.ndarray]]] = None,
+    compute_valid_flags: Optional[Sequence[bool]] = None,
     offsets: Optional[Sequence[Tuple[int, int]]] = None,
     cancelled=None,
+    progress: Optional[ProgressCallback] = None,
+    progress_total: Optional[int] = None,
+    max_work_edge: int = _DEFAULT_MASK_MAX_EDGE,
 ) -> np.ndarray:
     """Compute per-pixel winning source frame index (-1 means invalid)."""
     res_h, res_w = result.shape[:2]
     frame_offsets = list(offsets) if offsets is not None else [(0, 0)] * n_frames
     frame_valids = list(valid_masks) if valid_masks is not None else [None] * n_frames
+    valid_flags = list(compute_valid_flags) if compute_valid_flags is not None else [False] * n_frames
     win_dtype = np.int16 if n_frames <= 32767 else np.int32
 
     if source_indices is not None:
@@ -323,51 +345,105 @@ def _compute_winner_map(
                     if n_frames == 1:
                         out_strip[finite] = 0
                     elif np.any(finite):
-                        scaled = np.clip(strip[finite].astype(np.float64), 0.0, 1.0) * (n_frames - 1)
-                        out_strip[finite] = np.floor(scaled + 0.5).astype(win_dtype)
+                        vals = np.clip(strip[finite].astype(np.float64), 0.0, 1.0)
+                        if depth_reversed:
+                            vals = 1.0 - vals
+                        out_strip[finite] = np.floor(vals * (n_frames - 1) + 0.5).astype(win_dtype)
             return winner_map
 
-    # Fallback: estimate pixel ownership by closeness to fused result, broken by sharpness.
+    # Fallback: estimate pixel ownership at bounded working resolution by closeness to
+    # merged result, broken by sharpness, then upsample nearest-neighbor to full size.
     if frame_loader is None:
         raise ValueError("frame_loader is required when neither depth_index nor source_indices is provided")
     res_bgr, _ = _to_bgr_uint8(result)
-    best_score = np.full((res_h, res_w), np.inf, dtype=np.float32)
-    winner_map = np.zeros((res_h, res_w), dtype=win_dtype)
+    long_edge = max(res_h, res_w)
+    if max_work_edge > 0 and long_edge > max_work_edge:
+        scale = float(max_work_edge) / float(long_edge)
+        work_w = max(1, int(round(res_w * scale)))
+        work_h = max(1, int(round(res_h * scale)))
+        sx = work_w / float(res_w)
+        sy = work_h / float(res_h)
+        work_res_bgr = cv2.resize(res_bgr, (work_w, work_h), interpolation=cv2.INTER_AREA)
+    else:
+        work_w, work_h = res_w, res_h
+        sx = sy = 1.0
+        work_res_bgr = res_bgr
+    del res_bgr
+
+    best_score = np.full((work_h, work_w), np.inf, dtype=np.float32)
+    work_winner = np.zeros((work_h, work_w), dtype=win_dtype)
+    total_p = progress_total if progress_total is not None else max(1, n_frames)
+
     for i in range(n_frames):
         _check_cancelled(cancelled)
+        _emit_progress(progress, i, total_p, "masks", f"{i + 1}/{n_frames}")
         frame = frame_loader(i)
         ox, oy = frame_offsets[i]
         fh, fw = frame.shape[:2]
         x1 = min(res_w, ox + fw)
         y1 = min(res_h, oy + fh)
         if ox >= res_w or oy >= res_h or x1 <= ox or y1 <= oy:
+            _emit_progress(progress, i + 1, total_p, "masks", f"{i + 1}/{n_frames}")
             continue
         crop = frame[:y1 - oy, :x1 - ox]
+        valid = frame_valids[i]
+        if valid is None and i < len(valid_flags) and valid_flags[i]:
+            valid = _valid_mask_from_pixels(crop, cancelled=cancelled)
         src_bgr, _ = _to_bgr_uint8(crop)
-        diff_u8 = cv2.absdiff(src_bgr, res_bgr[oy:y1, ox:x1])
-        # Mean channel absolute difference in float32 without 3-channel float32 temp.
+        del frame, crop
+
+        wx0 = max(0, min(work_w, int(round(ox * sx))))
+        wy0 = max(0, min(work_h, int(round(oy * sy))))
+        wx1 = max(wx0, min(work_w, int(round(x1 * sx))))
+        wy1 = max(wy0, min(work_h, int(round(y1 * sy))))
+        cw, ch = wx1 - wx0, wy1 - wy0
+        if cw <= 0 or ch <= 0:
+            del src_bgr, valid
+            _emit_progress(progress, i + 1, total_p, "masks", f"{i + 1}/{n_frames}")
+            continue
+
+        if src_bgr.shape[1] != cw or src_bgr.shape[0] != ch:
+            work_src = cv2.resize(src_bgr, (cw, ch), interpolation=cv2.INTER_AREA)
+        else:
+            work_src = src_bgr
+        del src_bgr
+
+        diff_u8 = cv2.absdiff(work_src, work_res_bgr[wy0:wy1, wx0:wx1])
         score = diff_u8[..., 0].astype(np.float32)
         score += diff_u8[..., 1]
         score += diff_u8[..., 2]
         score *= np.float32(1.0 / 3.0)
         del diff_u8
-        gray_u8 = cv2.cvtColor(src_bgr, cv2.COLOR_BGR2GRAY)
-        del src_bgr
+        gray_u8 = cv2.cvtColor(work_src, cv2.COLOR_BGR2GRAY)
+        del work_src
         lap = cv2.Laplacian(gray_u8, cv2.CV_32F, ksize=3)
         del gray_u8
         np.abs(lap, out=lap)
         np.minimum(lap, np.float32(64.0), out=lap)
         score -= np.float32(0.05) * lap
         del lap
-        valid = frame_valids[i]
+
         if valid is not None:
-            v_crop = np.asarray(valid[:y1 - oy, :x1 - ox], dtype=bool)
-            score[~v_crop] = np.inf
-        region_best = best_score[oy:y1, ox:x1]
+            v_crop = np.asarray(valid[:y1 - oy, :x1 - ox], dtype=np.uint8)
+            if v_crop.shape != (ch, cw):
+                v_small = cv2.resize(v_crop, (cw, ch), interpolation=cv2.INTER_NEAREST) > 0
+            else:
+                v_small = v_crop > 0
+            score[~v_small] = np.inf
+            del v_crop, v_small
+        del valid
+
+        region_best = best_score[wy0:wy1, wx0:wx1]
         better = score < region_best
         region_best[better] = score[better]
-        winner_map[oy:y1, ox:x1][better] = i
-    return winner_map
+        work_winner[wy0:wy1, wx0:wx1][better] = i
+        del score, better
+        _emit_progress(progress, i + 1, total_p, "masks", f"{i + 1}/{n_frames}")
+
+    del best_score, work_res_bgr
+    if (work_h, work_w) != (res_h, res_w):
+        return cv2.resize(work_winner, (res_w, res_h), interpolation=cv2.INTER_NEAREST).astype(win_dtype, copy=False)
+    return work_winner
 
 
 def _feather_layer_mask(
@@ -537,21 +613,30 @@ def _write_psd_stream(
     progress: Optional[ProgressCallback] = None,
     progress_offset: int = 0,
     progress_total: Optional[int] = None,
+    large_format: bool = False,
 ) -> None:
-    """Stream an Adobe PSD v1 document directly to a seekable binary stream.
+    """Stream an Adobe PSD v1 or PSB v2 document directly to a binary stream.
 
     Encodes and writes one layer at a time using strip-parallel PackBits RLE so
     peak RAM remains tightly bounded to a single layer regardless of stack depth.
     """
     _check_cancelled(cancelled)
     height, width = comp_rgb.shape[:2]
+    max_dim = PSB_MAX_DIMENSION if large_format else PSD_MAX_DIMENSION
     if height <= 0 or width <= 0:
         raise ValueError("PSD export requires a non-empty image")
-    if height > PSD_MAX_DIMENSION or width > PSD_MAX_DIMENSION:
+    if height > max_dim or width > max_dim:
+        fmt_name = "PSB v2" if large_format else "PSD v1"
         raise ValueError(
-            f"PSD v1 supports dimensions up to {PSD_MAX_DIMENSION}x{PSD_MAX_DIMENSION} "
+            f"{fmt_name} supports dimensions up to {max_dim}x{max_dim} "
             f"(got {width}x{height})"
         )
+
+    version = PSB_VERSION if large_format else PSD_VERSION
+    len_fmt = ">Q" if large_format else ">I"
+    len_size = 8 if large_format else 4
+    count_dtype = ">u4" if large_format else ">u2"
+    count_bytes_per_row = 4 if large_format else 2
 
     n_layers = len(layer_metas)
     total_steps = progress_total if progress_total is not None else (progress_offset + n_layers + 1)
@@ -562,7 +647,7 @@ def _write_psd_stream(
         struct.pack(
             ">4sH6sHIIHH",
             PSD_SIGNATURE,
-            PSD_VERSION,
+            version,
             b"\x00" * 6,
             channels,
             height,
@@ -581,11 +666,11 @@ def _write_psd_stream(
 
     # 4. Layer and Mask Information Section (streamed with seek-back length patching)
     layer_mask_len_pos = stream.tell()
-    stream.write(struct.pack(">I", 0))  # placeholder for layer_and_mask_len
+    stream.write(b"\x00" * len_size)  # placeholder for layer_and_mask_len
     layer_mask_start = stream.tell()
 
     layer_info_len_pos = stream.tell()
-    stream.write(struct.pack(">I", 0))  # placeholder for layer_info_len
+    stream.write(b"\x00" * len_size)  # placeholder for layer_info_len
     layer_info_start = stream.tell()
 
     stream.write(struct.pack(">h", n_layers))
@@ -601,7 +686,7 @@ def _write_psd_stream(
         for ch_id in meta.channel_ids:
             stream.write(struct.pack(">h", ch_id))
             ch_positions.append(stream.tell())
-            stream.write(struct.pack(">I", 0))  # placeholder for channel byte length
+            stream.write(b"\x00" * len_size)  # placeholder for channel byte length
         channel_len_positions.append(ch_positions)
 
         opacity = max(0, min(255, int(meta.opacity)))
@@ -643,10 +728,14 @@ def _write_psd_stream(
             layer_ch_lens: list[int] = []
             for plane in planes:
                 _check_cancelled(cancelled)
-                counts, packed = _encode_rle_plane(plane, executor=executor, cancelled=cancelled)
+                counts, packed = _encode_rle_plane(
+                    plane, executor=executor, cancelled=cancelled, count_dtype=count_dtype
+                )
                 ch_len = 2 + len(counts) + len(packed)
-                if ch_len > _PSD_V1_MAX_U32:
-                    raise ValueError("Layer channel exceeds PSD v1 4 GiB size limit")
+                if not large_format and ch_len > _PSD_V1_MAX_U32:
+                    raise ValueError(
+                        "Layered PSD v1 exceeds 4 GiB limit; please save with the .psb extension"
+                    )
                 stream.write(rle_header)
                 stream.write(counts)
                 stream.write(packed)
@@ -660,8 +749,10 @@ def _write_psd_stream(
             stream.write(b"\x00")
             layer_info_end += 1
         layer_info_len = layer_info_end - layer_info_start
-        if layer_info_len > _PSD_V1_MAX_U32:
-            raise ValueError("Layer section exceeds PSD v1 4 GiB size limit")
+        if not large_format and layer_info_len > _PSD_V1_MAX_U32:
+            raise ValueError(
+                "Layered PSD v1 exceeds 4 GiB limit; please save with the .psb extension"
+            )
 
         # Global layer mask info (length = 0)
         stream.write(struct.pack(">I", 0))
@@ -670,18 +761,20 @@ def _write_psd_stream(
             stream.write(b"\x00")
             layer_mask_end += 1
         layer_mask_len = layer_mask_end - layer_mask_start
-        if layer_mask_len > _PSD_V1_MAX_U32:
-            raise ValueError("Layer and mask section exceeds PSD v1 4 GiB size limit")
+        if not large_format and layer_mask_len > _PSD_V1_MAX_U32:
+            raise ValueError(
+                "Layered PSD v1 exceeds 4 GiB limit; please save with the .psb extension"
+            )
 
         # Patch layer section lengths and per-channel lengths in-place.
         stream.seek(layer_mask_len_pos)
-        stream.write(struct.pack(">I", layer_mask_len))
+        stream.write(struct.pack(len_fmt, layer_mask_len))
         stream.seek(layer_info_len_pos)
-        stream.write(struct.pack(">I", layer_info_len))
+        stream.write(struct.pack(len_fmt, layer_info_len))
         for ch_positions, ch_lens in zip(channel_len_positions, encoded_lengths):
             for pos, ch_len in zip(ch_positions, ch_lens):
                 stream.seek(pos)
-                stream.write(struct.pack(">I", ch_len))
+                stream.write(struct.pack(len_fmt, ch_len))
 
         # 5. Image Data Section (flattened preview composite), streamed per plane.
         stream.seek(layer_mask_end)
@@ -694,13 +787,15 @@ def _write_psd_stream(
 
         stream.write(rle_header)
         comp_counts_pos = stream.tell()
-        total_count_bytes = len(comp_planes) * height * 2
+        total_count_bytes = len(comp_planes) * height * count_bytes_per_row
         stream.write(b"\x00" * total_count_bytes)
 
         all_comp_counts = bytearray()
         for plane in comp_planes:
             _check_cancelled(cancelled)
-            counts, packed = _encode_rle_plane(plane, executor=executor, cancelled=cancelled)
+            counts, packed = _encode_rle_plane(
+                plane, executor=executor, cancelled=cancelled, count_dtype=count_dtype
+            )
             all_comp_counts.extend(counts)
             stream.write(packed)
             del counts, packed
@@ -819,8 +914,10 @@ def export_layered_psd(
         contribution estimate when no depth map is present).
     """
     destination = os.path.abspath(os.fspath(path))
-    if os.path.splitext(destination)[1].lower() != ".psd":
-        raise ValueError("Layered PSD export requires a .psd filename")
+    ext = os.path.splitext(destination)[1].lower()
+    if ext not in (".psd", ".psb"):
+        raise ValueError("Layered PSD export requires a .psd or .psb filename")
+    large_format = ext == ".psb"
 
     ctx_frames = tuple(getattr(context, "frames", ()) or ()) if context is not None else ()
     sources_to_protect = source_paths(
@@ -844,7 +941,7 @@ def export_layered_psd(
     shapes: list[Tuple[int, int, bool]] = []
     has_valid_flags: list[bool] = []
     frame_loader: Callable[[int], np.ndarray]
-    valid_loader: Callable[[int], Optional[np.ndarray]]
+    depth_reversed = False
 
     if ctx_frames:
         from core.source_frames import resolve_frame
@@ -856,16 +953,17 @@ def export_layered_psd(
             offsets.append((int(getattr(frame, "offset_x", 0)), int(getattr(frame, "offset_y", 0))))
             shapes.append(_frame_shape_and_alpha(frame.image))
             has_valid_flags.append(bool(getattr(frame, "aligned", False)))
-        if depth_index is None and getattr(context, "rendered_depth", None) is not None:
-            depth_index = getattr(context.rendered_depth, "index", None)
+        rd = getattr(context, "rendered_depth", None)
+        if depth_index is None and rd is not None:
+            if isinstance(rd, dict):
+                depth_index = rd.get("index")
+                depth_reversed = bool(rd.get("reverse_order", False))
+            else:
+                depth_index = getattr(rd, "index", None)
+                depth_reversed = bool(getattr(rd, "reverse_order", False))
 
         def frame_loader(i: int) -> np.ndarray:
-            return resolve_frame(ctx_frames[i].image, should_cancel=cancelled)
-
-        def valid_loader(i: int) -> Optional[np.ndarray]:
-            if not has_valid_flags[i]:
-                return None
-            return ctx_frames[i].valid_mask(should_cancel=cancelled)
+            return np.asarray(resolve_frame(ctx_frames[i].image, should_cancel=cancelled))
     elif source_frames:
         n_sources = len(source_frames)
         for idx, frame in enumerate(source_frames, 1):
@@ -882,38 +980,36 @@ def export_layered_psd(
 
         def frame_loader(i: int) -> np.ndarray:
             return np.asarray(source_frames[i])
-
-        def valid_loader(i: int) -> Optional[np.ndarray]:
-            return None
     else:
         def frame_loader(i: int) -> np.ndarray:
             raise IndexError(i)
 
-        def valid_loader(i: int) -> Optional[np.ndarray]:
-            return None
-
     total_layers = n_sources + 1
     has_mask_stage = n_sources > 0
-    progress_offset = 1 if has_mask_stage else 0
-    total_steps = progress_offset + total_layers + 1  # [masks] + N source + Merged + composite
+    uses_fallback_masks = has_mask_stage and depth_index is None and source_indices is None
+    mask_steps = n_sources if uses_fallback_masks else (1 if has_mask_stage else 0)
+    progress_offset = mask_steps
+    total_steps = mask_steps + total_layers + 1  # [masks] + N source + Merged + composite
 
     winner_map: Optional[np.ndarray] = None
-    if n_sources > 0:
-        _emit_progress(progress, 0, total_steps, "masks", "")
-        valid_masks_for_winner: Optional[list[Optional[np.ndarray]]] = None
-        if depth_index is None and source_indices is None and any(has_valid_flags):
-            valid_masks_for_winner = [valid_loader(i) for i in range(n_sources)]
+    if has_mask_stage:
+        if not uses_fallback_masks:
+            _emit_progress(progress, 0, total_steps, "masks", "")
         winner_map = _compute_winner_map(
             result,
             n_sources,
             frame_loader=frame_loader,
             depth_index=depth_index,
+            depth_reversed=depth_reversed,
             source_indices=source_indices,
-            valid_masks=valid_masks_for_winner,
+            compute_valid_flags=has_valid_flags,
             offsets=offsets,
             cancelled=cancelled,
+            progress=progress if uses_fallback_masks else None,
+            progress_total=total_steps,
         )
-        _emit_progress(progress, 1, total_steps, "masks", "")
+        if not uses_fallback_masks:
+            _emit_progress(progress, 1, total_steps, "masks", "")
 
     sigma = max(0.0, float(feather_sigma))
 
@@ -941,11 +1037,12 @@ def export_layered_psd(
             off_x: int,
             off_y: int,
             expect_alpha: bool,
+            check_valid: bool,
         ):
             def _provide() -> Sequence[np.ndarray]:
                 _check_cancelled(cancelled)
                 frame_arr = frame_loader(idx)
-                valid = valid_loader(idx)
+                valid = _valid_mask_from_pixels(frame_arr, cancelled=cancelled) if check_valid else None
                 contrib_mask = _feather_layer_mask(
                     winner_map, idx, layer_h, layer_w, off_x, off_y, valid, sigma
                 )
@@ -996,7 +1093,9 @@ def export_layered_psd(
                 opacity=255,
                 channel_ids=ch_ids,
                 has_user_mask=has_user_mask,
-                provide_planes=_make_source_provider(i, fh, fw, ox, oy, has_src_alpha or has_valid),
+                provide_planes=_make_source_provider(
+                    i, fh, fw, ox, oy, has_src_alpha or has_valid, has_valid
+                ),
             )
         )
 
@@ -1034,7 +1133,7 @@ def export_layered_psd(
         with tempfile.NamedTemporaryFile(
             mode="wb+",
             prefix=".layered-",
-            suffix=".psd",
+            suffix=ext,
             dir=parent_dir,
             delete=False,
             buffering=1024 * 1024,
@@ -1050,6 +1149,7 @@ def export_layered_psd(
                 progress=progress,
                 progress_offset=progress_offset,
                 progress_total=total_steps,
+                large_format=large_format,
             )
             stream.flush()
             os.fsync(stream.fileno())

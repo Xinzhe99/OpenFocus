@@ -141,20 +141,12 @@ def test_dtcwt_gpu_1ch_streaming_mode_matches_3ch_mode(monkeypatch):
 
     # Set VRAM limit tightly between 1-channel and 3-channel workspace sizes
     specs = _plan_levels(65, 67, 4)
-    r0, c0 = specs[0].in_h, specs[0].in_w
-    lp_n = specs[-1].lolo_h * specs[-1].lolo_w
-    hp_bytes = sum(s.hp_h * s.hp_w * 6 * 8 for s in specs)
-    dec_bytes = sum(s.hp_h * s.hp_w * 4 for s in specs)
-    quad = r0 * c0 * 4
-    pad = max(s.pad_h * s.pad_w * 4 for s in specs)
-    active = len(frames) * len(specs) * 4
-    fixed = (
-        2 * frames[0].nbytes + 2 * dec_bytes + hp_bytes
-        + 6 * quad + 2 * max(quad, pad // 2) + pad
-        + 3 * lp_n * 4 + active + 16 * 1024 * 1024
+    _, per_ch, need_1ch, need_3ch, _ = _openfocus_gpu_dtcwt._estimate_vram_bytes(
+        specs, len(frames), frames[0].nbytes, frames[0].nbytes,
     )
-    per_ch = hp_bytes + lp_n * 4
-    mid_vram = fixed + 2 * per_ch
+    active = len(frames) * len(specs) * 4
+    mid_vram = need_1ch + per_ch
+    assert need_1ch <= mid_vram < need_3ch
 
     monkeypatch.setattr(_openfocus_gpu, '_free_vram', lambda device: (mid_vram, mid_vram * 4))
     monkeypatch.setattr(resource_policy, 'vram_budget', lambda snap: mid_vram)
@@ -380,3 +372,20 @@ def test_dtcwt_compiled_vote_matches_scipy_and_python(shape):
                 best_c[win] = votes[win]
                 best_l[win] = label
         np.testing.assert_array_equal(out, best_l)
+
+
+@pytest.mark.parametrize('dtype', [np.uint8, np.uint16, np.float32])
+@pytest.mark.parametrize('nlevels', [1, 2, 4])
+def test_dtcwt_gpu_grayscale_fast_path_and_multi_level_parity(monkeypatch, dtype, nlevels):
+    _require_gpu(monkeypatch)
+    frames = _stack(shape=(67, 73), dtype=dtype, channels=1, count=3)
+    expected = dtcwt_mod._dtcwt_impl(frames, None, nlevels, False, thread_count=1)
+    seen = []
+    actual = dtcwt_mod._dtcwt_impl(
+        frames, None, nlevels, True, thread_count=1, device_callback=seen.append,
+    )
+    assert seen and seen[0].startswith('OpenCL: ')
+    if dtype == np.uint8:
+        assert np.max(np.abs(actual.astype(np.int16) - expected.astype(np.int16))) <= 1
+    else:
+        assert np.max(np.abs(actual.astype(np.float32) - expected.astype(np.float32))) <= 1.0

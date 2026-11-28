@@ -44,6 +44,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Start renders and tiles sooner on macOS: OpenFocus remembers which volumes
   are internal until a volume is mounted or unmounted, and no longer asks
   the system before every scratch choice.
+- Match exposure on the threads lent to each full-frame warp when OpenFocus B
+  prepares a large stack one frame at a time. Prepared frames are unchanged.
 - Run the full CI suite in parallel slices. Preserve pytest selection and
   collection errors, isolate temporary directories, and replay a crashing
   slice for native diagnostics.

@@ -20,6 +20,13 @@ _W_B = np.float32(0.114)
 _INV_255 = np.float32(255.0)
 _U16_SCALE = np.float32(255.0 / 65535.0)
 
+# Bit-exact 256-entry float32 lookup tables eliminate per-pixel FP32 divisions.
+_LUT_U8 = (np.arange(256, dtype=np.float32) / _INV_255).astype(np.float32)
+_LUT_R = (_W_R * _LUT_U8).astype(np.float32)
+_LUT_G = (_W_G * _LUT_U8).astype(np.float32)
+_LUT_B = (_W_B * _LUT_U8).astype(np.float32)
+_LUT_GRAY = ((_LUT_R + _LUT_G) + _LUT_B).astype(np.float32)
+
 
 @njit(nogil=True, fastmath=False)
 def _ref_idx(i, n):
@@ -34,31 +41,39 @@ def _ref_idx(i, n):
 
 
 @njit(nogil=True, fastmath=False)
-def _extract_luma_u8_3(src, dst, h, w):
-    r0, c0 = dst.shape
-    for y in range(r0):
+def _extract_luma_u8_3_rows(src, dst, h, w, lut_r, lut_g, lut_b, y_start, y_stop):
+    c0 = dst.shape[1]
+    for y in range(y_start, y_stop):
         sy = y if y < h else h - 1
-        for x in range(c0):
-            sx = x if x < w else w - 1
-            b = np.float32(src[sy, sx, 0]) / _INV_255
-            g = np.float32(src[sy, sx, 1]) / _INV_255
-            r = np.float32(src[sy, sx, 2]) / _INV_255
-            dst[y, x] = np.float32(
-                np.float32(_W_R * r) + np.float32(_W_G * g)
-            ) + np.float32(_W_B * b)
+        s_row = src[sy]
+        d_row = dst[y]
+        for x in range(w):
+            d_row[x] = np.float32(lut_r[s_row[x, 2]] + lut_g[s_row[x, 1]]) + lut_b[s_row[x, 0]]
+        if c0 > w:
+            d_row[w] = d_row[w - 1]
 
 
 @njit(nogil=True, fastmath=False)
-def _extract_luma_u8_2(src, dst, h, w):
-    r0, c0 = dst.shape
-    for y in range(r0):
+def _extract_luma_u8_3(src, dst, h, w, lut_r, lut_g, lut_b):
+    _extract_luma_u8_3_rows(src, dst, h, w, lut_r, lut_g, lut_b, 0, dst.shape[0])
+
+
+@njit(nogil=True, fastmath=False)
+def _extract_luma_u8_2_rows(src, dst, h, w, lut_gray, y_start, y_stop):
+    c0 = dst.shape[1]
+    for y in range(y_start, y_stop):
         sy = y if y < h else h - 1
-        for x in range(c0):
-            sx = x if x < w else w - 1
-            v = np.float32(src[sy, sx]) / _INV_255
-            dst[y, x] = np.float32(
-                np.float32(_W_R * v) + np.float32(_W_G * v)
-            ) + np.float32(_W_B * v)
+        s_row = src[sy]
+        d_row = dst[y]
+        for x in range(w):
+            d_row[x] = lut_gray[s_row[x]]
+        if c0 > w:
+            d_row[w] = d_row[w - 1]
+
+
+@njit(nogil=True, fastmath=False)
+def _extract_luma_u8_2(src, dst, h, w, lut_gray):
+    _extract_luma_u8_2_rows(src, dst, h, w, lut_gray, 0, dst.shape[0])
 
 
 @njit(nogil=True, fastmath=False)
@@ -130,23 +145,39 @@ def _extract_luma_f32_2(src, dst, h, w):
 
 
 @njit(nogil=True, fastmath=False)
-def _extract_chan_u8_3(src, dst, h, w, ch):
-    r0, c0 = dst.shape
-    for y in range(r0):
+def _extract_chan_u8_3_rows(src, dst, h, w, ch, lut_u8, y_start, y_stop):
+    c0 = dst.shape[1]
+    for y in range(y_start, y_stop):
         sy = y if y < h else h - 1
-        for x in range(c0):
-            sx = x if x < w else w - 1
-            dst[y, x] = np.float32(src[sy, sx, ch]) / _INV_255
+        s_row = src[sy]
+        d_row = dst[y]
+        for x in range(w):
+            d_row[x] = lut_u8[s_row[x, ch]]
+        if c0 > w:
+            d_row[w] = d_row[w - 1]
 
 
 @njit(nogil=True, fastmath=False)
-def _extract_chan_u8_2(src, dst, h, w):
-    r0, c0 = dst.shape
-    for y in range(r0):
+def _extract_chan_u8_3(src, dst, h, w, ch, lut_u8):
+    _extract_chan_u8_3_rows(src, dst, h, w, ch, lut_u8, 0, dst.shape[0])
+
+
+@njit(nogil=True, fastmath=False)
+def _extract_chan_u8_2_rows(src, dst, h, w, lut_u8, y_start, y_stop):
+    c0 = dst.shape[1]
+    for y in range(y_start, y_stop):
         sy = y if y < h else h - 1
-        for x in range(c0):
-            sx = x if x < w else w - 1
-            dst[y, x] = np.float32(src[sy, sx]) / _INV_255
+        s_row = src[sy]
+        d_row = dst[y]
+        for x in range(w):
+            d_row[x] = lut_u8[s_row[x]]
+        if c0 > w:
+            d_row[w] = d_row[w - 1]
+
+
+@njit(nogil=True, fastmath=False)
+def _extract_chan_u8_2(src, dst, h, w, lut_u8):
+    _extract_chan_u8_2_rows(src, dst, h, w, lut_u8, 0, dst.shape[0])
 
 
 @njit(nogil=True, fastmath=False)
@@ -200,50 +231,68 @@ def _extract_chan_f32_2(src, dst, h, w):
 
 
 @njit(nogil=True, fastmath=False)
-def _colfilter_v5(src, dst, h5, r, c):
+def _colfilter_v5_rows(src, dst, h5, r, c, y_start, y_stop):
     w0, w1, w2, w3, w4 = h5[0], h5[1], h5[2], h5[3], h5[4]
     z = np.float32(0.0)
-    y_lo = 2 if r >= 4 else r
-    for y in range(y_lo):
-        yp2 = _ref_idx(y + 2, r)
-        yp1 = _ref_idx(y + 1, r)
-        ym1 = _ref_idx(y - 1, r)
-        ym2 = _ref_idx(y - 2, r)
+    head_stop = min(y_stop, 2)
+    int_start = max(y_start, head_stop)
+    int_stop = max(int_start, min(y_stop, r - 2))
+    for y in range(y_start, min(y_stop, head_stop)):
+        rp2 = src[_ref_idx(y + 2, r)]
+        rp1 = src[_ref_idx(y + 1, r)]
+        r0 = src[y]
+        rm1 = src[_ref_idx(y - 1, r)]
+        rm2 = src[_ref_idx(y - 2, r)]
+        out = dst[y]
         for x in range(c):
             acc = z
-            acc += src[yp2, x] * w0
-            acc += src[yp1, x] * w1
-            acc += src[y, x] * w2
-            acc += src[ym1, x] * w3
-            acc += src[ym2, x] * w4
-            dst[y, x] = acc
-    y_hi = max(y_lo, r - 2)
-    for y in range(y_lo, y_hi):
+            acc += rp2[x] * w0
+            acc += rp1[x] * w1
+            acc += r0[x] * w2
+            acc += rm1[x] * w3
+            acc += rm2[x] * w4
+            out[x] = acc
+    for y in range(int_start, int_stop):
+        rp2 = src[y + 2]
+        rp1 = src[y + 1]
+        r0 = src[y]
+        rm1 = src[y - 1]
+        rm2 = src[y - 2]
+        out = dst[y]
         for x in range(c):
             acc = z
-            acc += src[y + 2, x] * w0
-            acc += src[y + 1, x] * w1
-            acc += src[y, x] * w2
-            acc += src[y - 1, x] * w3
-            acc += src[y - 2, x] * w4
-            dst[y, x] = acc
-    for y in range(y_hi, r):
-        yp2 = _ref_idx(y + 2, r)
-        yp1 = _ref_idx(y + 1, r)
-        ym1 = _ref_idx(y - 1, r)
-        ym2 = _ref_idx(y - 2, r)
+            acc += rp2[x] * w0
+            acc += rp1[x] * w1
+            acc += r0[x] * w2
+            acc += rm1[x] * w3
+            acc += rm2[x] * w4
+            out[x] = acc
+    for y in range(int_stop, y_stop):
+        rp2 = src[_ref_idx(y + 2, r)]
+        rp1 = src[_ref_idx(y + 1, r)]
+        r0 = src[y]
+        rm1 = src[_ref_idx(y - 1, r)]
+        rm2 = src[_ref_idx(y - 2, r)]
+        out = dst[y]
         for x in range(c):
             acc = z
-            acc += src[yp2, x] * w0
-            acc += src[yp1, x] * w1
-            acc += src[y, x] * w2
-            acc += src[ym1, x] * w3
-            acc += src[ym2, x] * w4
-            dst[y, x] = acc
+            acc += rp2[x] * w0
+            acc += rp1[x] * w1
+            acc += r0[x] * w2
+            acc += rm1[x] * w3
+            acc += rm2[x] * w4
+            out[x] = acc
 
 
 @njit(nogil=True, fastmath=False)
-def _colfilter_v7_rows(src, dst, h7, r, c, y_start, y_stop):
+def _colfilter_v5(src, dst, h5, r, c):
+    _colfilter_v5_rows(src, dst, h5, r, c, 0, r)
+
+
+@njit(nogil=True, fastmath=False)
+def _colfilter_v5_v7_strip(src, lo_dst, hi_dst, h5, h7, r, c, y_start, y_stop):
+    """Fused single-pass vertical 5-tap (lo) + 7-tap (hi) over a row strip."""
+    a0, a1, a2, a3, a4 = h5[0], h5[1], h5[2], h5[3], h5[4]
     w0, w1, w2, w3, w4, w5, w6 = (
         h7[0], h7[1], h7[2], h7[3], h7[4], h7[5], h7[6]
     )
@@ -252,64 +301,230 @@ def _colfilter_v7_rows(src, dst, h7, r, c, y_start, y_stop):
     int_start = max(y_start, head_stop)
     int_stop = max(int_start, min(y_stop, r - 3))
     for y in range(y_start, min(y_stop, head_stop)):
-        yp3 = _ref_idx(y + 3, r)
-        yp2 = _ref_idx(y + 2, r)
-        yp1 = _ref_idx(y + 1, r)
-        ym1 = _ref_idx(y - 1, r)
-        ym2 = _ref_idx(y - 2, r)
-        ym3 = _ref_idx(y - 3, r)
+        rp3 = src[_ref_idx(y + 3, r)]
+        rp2 = src[_ref_idx(y + 2, r)]
+        rp1 = src[_ref_idx(y + 1, r)]
+        r0 = src[y]
+        rm1 = src[_ref_idx(y - 1, r)]
+        rm2 = src[_ref_idx(y - 2, r)]
+        rm3 = src[_ref_idx(y - 3, r)]
         dy = y - y_start
+        lo_row = lo_dst[dy]
+        hi_row = hi_dst[dy]
         for x in range(c):
-            acc = z
-            acc += src[yp3, x] * w0
-            acc += src[yp2, x] * w1
-            acc += src[yp1, x] * w2
-            acc += src[y, x] * w3
-            acc += src[ym1, x] * w4
-            acc += src[ym2, x] * w5
-            acc += src[ym3, x] * w6
-            dst[dy, x] = acc
+            s6 = rp3[x]
+            s5 = rp2[x]
+            s4 = rp1[x]
+            s3 = r0[x]
+            s2 = rm1[x]
+            s1 = rm2[x]
+            s0 = rm3[x]
+            al = z
+            al += s5 * a0
+            al += s4 * a1
+            al += s3 * a2
+            al += s2 * a3
+            al += s1 * a4
+            lo_row[x] = al
+            ah = z
+            ah += s6 * w0
+            ah += s5 * w1
+            ah += s4 * w2
+            ah += s3 * w3
+            ah += s2 * w4
+            ah += s1 * w5
+            ah += s0 * w6
+            hi_row[x] = ah
     for y in range(int_start, int_stop):
+        rp3 = src[y + 3]
+        rp2 = src[y + 2]
+        rp1 = src[y + 1]
+        r0 = src[y]
+        rm1 = src[y - 1]
+        rm2 = src[y - 2]
+        rm3 = src[y - 3]
         dy = y - y_start
+        lo_row = lo_dst[dy]
+        hi_row = hi_dst[dy]
         for x in range(c):
-            acc = z
-            acc += src[y + 3, x] * w0
-            acc += src[y + 2, x] * w1
-            acc += src[y + 1, x] * w2
-            acc += src[y, x] * w3
-            acc += src[y - 1, x] * w4
-            acc += src[y - 2, x] * w5
-            acc += src[y - 3, x] * w6
-            dst[dy, x] = acc
+            s6 = rp3[x]
+            s5 = rp2[x]
+            s4 = rp1[x]
+            s3 = r0[x]
+            s2 = rm1[x]
+            s1 = rm2[x]
+            s0 = rm3[x]
+            al = z
+            al += s5 * a0
+            al += s4 * a1
+            al += s3 * a2
+            al += s2 * a3
+            al += s1 * a4
+            lo_row[x] = al
+            ah = z
+            ah += s6 * w0
+            ah += s5 * w1
+            ah += s4 * w2
+            ah += s3 * w3
+            ah += s2 * w4
+            ah += s1 * w5
+            ah += s0 * w6
+            hi_row[x] = ah
     for y in range(int_stop, y_stop):
-        yp3 = _ref_idx(y + 3, r)
-        yp2 = _ref_idx(y + 2, r)
-        yp1 = _ref_idx(y + 1, r)
-        ym1 = _ref_idx(y - 1, r)
-        ym2 = _ref_idx(y - 2, r)
-        ym3 = _ref_idx(y - 3, r)
+        rp3 = src[_ref_idx(y + 3, r)]
+        rp2 = src[_ref_idx(y + 2, r)]
+        rp1 = src[_ref_idx(y + 1, r)]
+        r0 = src[y]
+        rm1 = src[_ref_idx(y - 1, r)]
+        rm2 = src[_ref_idx(y - 2, r)]
+        rm3 = src[_ref_idx(y - 3, r)]
         dy = y - y_start
+        lo_row = lo_dst[dy]
+        hi_row = hi_dst[dy]
         for x in range(c):
-            acc = z
-            acc += src[yp3, x] * w0
-            acc += src[yp2, x] * w1
-            acc += src[yp1, x] * w2
-            acc += src[y, x] * w3
-            acc += src[ym1, x] * w4
-            acc += src[ym2, x] * w5
-            acc += src[ym3, x] * w6
-            dst[dy, x] = acc
+            s6 = rp3[x]
+            s5 = rp2[x]
+            s4 = rp1[x]
+            s3 = r0[x]
+            s2 = rm1[x]
+            s1 = rm2[x]
+            s0 = rm3[x]
+            al = z
+            al += s5 * a0
+            al += s4 * a1
+            al += s3 * a2
+            al += s2 * a3
+            al += s1 * a4
+            lo_row[x] = al
+            ah = z
+            ah += s6 * w0
+            ah += s5 * w1
+            ah += s4 * w2
+            ah += s3 * w3
+            ah += s2 * w4
+            ah += s1 * w5
+            ah += s0 * w6
+            hi_row[x] = ah
 
 
 @njit(nogil=True, fastmath=False)
-def _colfilter_h5(src, dst, h5, r, c):
+def _colfilter_v7_rows_span(src, dst, h7, r, y_start, y_stop, x_lo, x_hi):
+    w0, w1, w2, w3, w4, w5, w6 = (
+        h7[0], h7[1], h7[2], h7[3], h7[4], h7[5], h7[6]
+    )
+    z = np.float32(0.0)
+    head_stop = min(y_stop, 3)
+    int_start = max(y_start, head_stop)
+    int_stop = max(int_start, min(y_stop, r - 3))
+    for y in range(y_start, min(y_stop, head_stop)):
+        rp3 = src[_ref_idx(y + 3, r)]
+        rp2 = src[_ref_idx(y + 2, r)]
+        rp1 = src[_ref_idx(y + 1, r)]
+        r0 = src[y]
+        rm1 = src[_ref_idx(y - 1, r)]
+        rm2 = src[_ref_idx(y - 2, r)]
+        rm3 = src[_ref_idx(y - 3, r)]
+        out = dst[y - y_start]
+        for x in range(x_lo, x_hi):
+            acc = z
+            acc += rp3[x] * w0
+            acc += rp2[x] * w1
+            acc += rp1[x] * w2
+            acc += r0[x] * w3
+            acc += rm1[x] * w4
+            acc += rm2[x] * w5
+            acc += rm3[x] * w6
+            out[x] = acc
+    for y in range(int_start, int_stop):
+        rp3 = src[y + 3]
+        rp2 = src[y + 2]
+        rp1 = src[y + 1]
+        r0 = src[y]
+        rm1 = src[y - 1]
+        rm2 = src[y - 2]
+        rm3 = src[y - 3]
+        out = dst[y - y_start]
+        for x in range(x_lo, x_hi):
+            acc = z
+            acc += rp3[x] * w0
+            acc += rp2[x] * w1
+            acc += rp1[x] * w2
+            acc += r0[x] * w3
+            acc += rm1[x] * w4
+            acc += rm2[x] * w5
+            acc += rm3[x] * w6
+            out[x] = acc
+    for y in range(int_stop, y_stop):
+        rp3 = src[_ref_idx(y + 3, r)]
+        rp2 = src[_ref_idx(y + 2, r)]
+        rp1 = src[_ref_idx(y + 1, r)]
+        r0 = src[y]
+        rm1 = src[_ref_idx(y - 1, r)]
+        rm2 = src[_ref_idx(y - 2, r)]
+        rm3 = src[_ref_idx(y - 3, r)]
+        out = dst[y - y_start]
+        for x in range(x_lo, x_hi):
+            acc = z
+            acc += rp3[x] * w0
+            acc += rp2[x] * w1
+            acc += rp1[x] * w2
+            acc += r0[x] * w3
+            acc += rm1[x] * w4
+            acc += rm2[x] * w5
+            acc += rm3[x] * w6
+            out[x] = acc
+
+
+@njit(nogil=True, fastmath=False)
+def _colfilter_h5_span(src, dst, h5, c, y_start, y_stop):
     w0, w1, w2, w3, w4 = h5[0], h5[1], h5[2], h5[3], h5[4]
     z = np.float32(0.0)
     x_lo = 2 if c >= 4 else c
     x_hi = max(x_lo, c - 2)
-    for y in range(r):
+    for y in range(y_start, y_stop):
         row = src[y]
         out = dst[y]
+        for x in range(x_lo):
+            acc = z
+            acc += row[_ref_idx(x + 2, c)] * w0
+            acc += row[_ref_idx(x + 1, c)] * w1
+            acc += row[x] * w2
+            acc += row[_ref_idx(x - 1, c)] * w3
+            acc += row[_ref_idx(x - 2, c)] * w4
+            out[x] = acc
+        for x in range(x_lo, x_hi):
+            acc = z
+            acc += row[x + 2] * w0
+            acc += row[x + 1] * w1
+            acc += row[x] * w2
+            acc += row[x - 1] * w3
+            acc += row[x - 2] * w4
+            out[x] = acc
+        for x in range(x_hi, c):
+            acc = z
+            acc += row[_ref_idx(x + 2, c)] * w0
+            acc += row[_ref_idx(x + 1, c)] * w1
+            acc += row[x] * w2
+            acc += row[_ref_idx(x - 1, c)] * w3
+            acc += row[_ref_idx(x - 2, c)] * w4
+            out[x] = acc
+
+
+@njit(nogil=True, fastmath=False)
+def _colfilter_h5(src, dst, h5, r, c):
+    _colfilter_h5_span(src, dst, h5, c, 0, r)
+
+
+@njit(nogil=True, fastmath=False)
+def _colfilter_h5_rows(src_strip, dst_full, h5, dst_y0, n_rows, c):
+    """Horizontal 5-tap filter from L2-hot strip into dst_full[dst_y0 : dst_y0 + n_rows]."""
+    w0, w1, w2, w3, w4 = h5[0], h5[1], h5[2], h5[3], h5[4]
+    z = np.float32(0.0)
+    x_lo = 2 if c >= 4 else c
+    x_hi = max(x_lo, c - 2)
+    for ry in range(n_rows):
+        row = src_strip[ry]
+        out = dst_full[dst_y0 + ry]
         for x in range(x_lo):
             acc = z
             acc += row[_ref_idx(x + 2, c)] * w0
@@ -392,7 +607,7 @@ def _store_q2c(dst_hp, y, qx, a, b, cc, d, c0, c1):
 
 
 @njit(nogil=True, fastmath=False)
-def _colfilter_h_q2c_strip(lo, hi_strip, hp_strip, h0, h1, y_pair_start, n_pairs, c):
+def _colfilter_h_q2c_strip_local(lo_strip, hi_strip, hp_strip, h0, h1, n_pairs, c):
     hp_w = c >> 1
     a0, a1, a2, a3, a4 = h0[0], h0[1], h0[2], h0[3], h0[4]
     b0, b1, b2, b3, b4, b5, b6 = (
@@ -404,8 +619,8 @@ def _colfilter_h_q2c_strip(lo, hi_strip, hp_strip, h0, h1, y_pair_start, n_pairs
     qx_hi = max(qx_lo, hp_w - 2)
 
     for yp in range(n_pairs):
-        lo_top = lo[2 * (y_pair_start + yp)]
-        lo_bot = lo[2 * (y_pair_start + yp) + 1]
+        lo_top = lo_strip[2 * yp]
+        lo_bot = lo_strip[2 * yp + 1]
         hi_top = hi_strip[2 * yp]
         hi_bot = hi_strip[2 * yp + 1]
 
@@ -488,21 +703,44 @@ def _colfilter_h_q2c_strip(lo, hi_strip, hp_strip, h0, h1, y_pair_start, n_pairs
 
 
 @njit(nogil=True, fastmath=False)
-def _level0_select_sparse(src_x, lo_full, has_lo_full, decisions, frame_idx,
-                          out_hp, is_packed, h0, h1, r, c, lo_2row, hi_2row):
-    hp_h, hp_w = decisions.shape
+def _level0_select_sparse_rows(src_x, lo_full, has_lo_full, decisions, frame_idx,
+                               out_hp, is_packed, h0, h1, r, c, lo_2row, hi_2row,
+                               qy_start, qy_stop):
+    hp_w = decisions.shape[1]
     pos = 0
-    for qy in range(hp_h):
+    w0, w1, w2, w3, w4 = h0[0], h0[1], h0[2], h0[3], h0[4]
+    z = np.float32(0.0)
+
+    for qy in range(qy_start, qy_stop):
         dec_row = decisions[qy]
-        any_win = False
+        first_qx = -1
+        last_qx = -1
         for qx in range(hp_w):
             if dec_row[qx] == frame_idx:
-                any_win = True
-                break
-        if not any_win:
+                if first_qx < 0:
+                    first_qx = qx
+                last_qx = qx
+        if first_qx < 0:
             continue
+
+        # Compute vertical convolution only over the column span needed by winning qx.
+        if c < 8:
+            x_lo = 0
+            x_hi = c
+        else:
+            x_lo = 0 if first_qx < 2 else (2 * first_qx - 3)
+            x_hi = c if last_qx >= hp_w - 2 else (2 * last_qx + 5)
+            if first_qx < 2 and x_hi < 4:
+                x_hi = 4
+            if last_qx >= hp_w - 2 and x_lo > c - 4:
+                x_lo = c - 4
+            if x_lo < 0:
+                x_lo = 0
+            if x_hi > c:
+                x_hi = c
+
         y0 = 2 * qy
-        _colfilter_v7_rows(src_x, hi_2row, h1, r, c, y0, y0 + 2)
+        _colfilter_v7_rows_span(src_x, hi_2row, h1, r, y0, y0 + 2, x_lo, x_hi)
         hi_top = hi_2row[0]
         hi_bot = hi_2row[1]
         if has_lo_full:
@@ -510,38 +748,43 @@ def _level0_select_sparse(src_x, lo_full, has_lo_full, decisions, frame_idx,
             lo_bot = lo_full[y0 + 1]
         else:
             if 2 <= y0 and y0 + 1 < r - 2:
-                w0, w1, w2, w3, w4 = h0[0], h0[1], h0[2], h0[3], h0[4]
-                z = np.float32(0.0)
                 for row_off in range(2):
                     ry = y0 + row_off
-                    for cx_i in range(c):
+                    rp2 = src_x[ry + 2]
+                    rp1 = src_x[ry + 1]
+                    r0_s = src_x[ry]
+                    rm1 = src_x[ry - 1]
+                    rm2 = src_x[ry - 2]
+                    out_l = lo_2row[row_off]
+                    for cx_i in range(x_lo, x_hi):
                         acc = z
-                        acc += src_x[ry + 2, cx_i] * w0
-                        acc += src_x[ry + 1, cx_i] * w1
-                        acc += src_x[ry, cx_i] * w2
-                        acc += src_x[ry - 1, cx_i] * w3
-                        acc += src_x[ry - 2, cx_i] * w4
-                        lo_2row[row_off, cx_i] = acc
+                        acc += rp2[cx_i] * w0
+                        acc += rp1[cx_i] * w1
+                        acc += r0_s[cx_i] * w2
+                        acc += rm1[cx_i] * w3
+                        acc += rm2[cx_i] * w4
+                        out_l[cx_i] = acc
             else:
-                w0, w1, w2, w3, w4 = h0[0], h0[1], h0[2], h0[3], h0[4]
-                z = np.float32(0.0)
                 for row_off in range(2):
                     ry = y0 + row_off
-                    yp2 = _ref_idx(ry + 2, r)
-                    yp1 = _ref_idx(ry + 1, r)
-                    ym1 = _ref_idx(ry - 1, r)
-                    ym2 = _ref_idx(ry - 2, r)
-                    for cx_i in range(c):
+                    rp2 = src_x[_ref_idx(ry + 2, r)]
+                    rp1 = src_x[_ref_idx(ry + 1, r)]
+                    r0_s = src_x[ry]
+                    rm1 = src_x[_ref_idx(ry - 1, r)]
+                    rm2 = src_x[_ref_idx(ry - 2, r)]
+                    out_l = lo_2row[row_off]
+                    for cx_i in range(x_lo, x_hi):
                         acc = z
-                        acc += src_x[yp2, cx_i] * w0
-                        acc += src_x[yp1, cx_i] * w1
-                        acc += src_x[ry, cx_i] * w2
-                        acc += src_x[ym1, cx_i] * w3
-                        acc += src_x[ym2, cx_i] * w4
-                        lo_2row[row_off, cx_i] = acc
+                        acc += rp2[cx_i] * w0
+                        acc += rp1[cx_i] * w1
+                        acc += r0_s[cx_i] * w2
+                        acc += rm1[cx_i] * w3
+                        acc += rm2[cx_i] * w4
+                        out_l[cx_i] = acc
             lo_top = lo_2row[0]
             lo_bot = lo_2row[1]
-        for qx in range(hp_w):
+
+        for qx in range(first_qx, last_qx + 1):
             if dec_row[qx] != frame_idx:
                 continue
             cx = 2 * qx
@@ -576,7 +819,16 @@ def _level0_select_sparse(src_x, lo_full, has_lo_full, decisions, frame_idx,
 
 
 @njit(nogil=True, fastmath=False)
-def _coldfilt_v_rows(src, dst, ha, hb, pos_sign, xe_r, j_start, j_stop, c):
+def _level0_select_sparse(src_x, lo_full, has_lo_full, decisions, frame_idx,
+                          out_hp, is_packed, h0, h1, r, c, lo_2row, hi_2row):
+    _level0_select_sparse_rows(
+        src_x, lo_full, has_lo_full, decisions, frame_idx,
+        out_hp, is_packed, h0, h1, r, c, lo_2row, hi_2row, 0, decisions.shape[0],
+    )
+
+
+@njit(nogil=True, fastmath=False)
+def _coldfilt_v_rows_span(src, dst, ha, hb, pos_sign, xe_r, j_start, j_stop, x_lo, x_hi):
     ha0, ha2, ha4, ha6, ha8 = ha[0], ha[2], ha[4], ha[6], ha[8]
     ha1, ha3, ha5, ha7, ha9 = ha[1], ha[3], ha[5], ha[7], ha[9]
     hb0, hb2, hb4, hb6, hb8 = hb[0], hb[2], hb[4], hb[6], hb[8]
@@ -587,38 +839,43 @@ def _coldfilt_v_rows(src, dst, ha, hb, pos_sign, xe_r, j_start, j_stop, c):
 
     for j in range(j_start, j_stop):
         p = 10 + 4 * j
-        re0 = xe_r[p + 10]
-        re1 = xe_r[p + 8]
-        re2 = xe_r[p + 6]
-        re3 = xe_r[p + 4]
-        re4 = xe_r[p + 2]
-        re5 = xe_r[p]
-        re6 = xe_r[p - 2]
-        re7 = xe_r[p - 4]
-        re8 = xe_r[p - 6]
-        re9 = xe_r[p - 8]
+        se0 = src[xe_r[p + 10]]
+        se1 = src[xe_r[p + 8]]
+        se2 = src[xe_r[p + 6]]
+        se3 = src[xe_r[p + 4]]
+        se4 = src[xe_r[p + 2]]
+        se5 = src[xe_r[p]]
+        se6 = src[xe_r[p - 2]]
+        se7 = src[xe_r[p - 4]]
+        se8 = src[xe_r[p - 6]]
+        se9 = src[xe_r[p - 8]]
 
-        ro0 = xe_r[p + 11]
-        ro1 = xe_r[p + 9]
-        ro2 = xe_r[p + 7]
-        ro3 = xe_r[p + 5]
-        ro4 = xe_r[p + 3]
-        ro5 = xe_r[p + 1]
-        ro6 = xe_r[p - 1]
-        ro7 = xe_r[p - 3]
-        ro8 = xe_r[p - 5]
-        ro9 = xe_r[p - 7]
+        so0 = src[xe_r[p + 11]]
+        so1 = src[xe_r[p + 9]]
+        so2 = src[xe_r[p + 7]]
+        so3 = src[xe_r[p + 5]]
+        so4 = src[xe_r[p + 3]]
+        so5 = src[xe_r[p + 1]]
+        so6 = src[xe_r[p - 1]]
+        so7 = src[xe_r[p - 3]]
+        so8 = src[xe_r[p - 5]]
+        so9 = src[xe_r[p - 7]]
 
         out1 = dst[2 * (j - j_start) + off1]
         out2 = dst[2 * (j - j_start) + off2]
-        for x in range(c):
-            a_even = ((((z + src[re0, x] * ha0) + src[re2, x] * ha2) + src[re4, x] * ha4) + src[re6, x] * ha6) + src[re8, x] * ha8
-            a_odd = ((((z + src[re1, x] * ha1) + src[re3, x] * ha3) + src[re5, x] * ha5) + src[re7, x] * ha7) + src[re9, x] * ha9
+        for x in range(x_lo, x_hi):
+            a_even = ((((z + se0[x] * ha0) + se2[x] * ha2) + se4[x] * ha4) + se6[x] * ha6) + se8[x] * ha8
+            a_odd = ((((z + se1[x] * ha1) + se3[x] * ha3) + se5[x] * ha5) + se7[x] * ha7) + se9[x] * ha9
             out1[x] = a_even + a_odd
 
-            b_even = ((((z + src[ro0, x] * hb0) + src[ro2, x] * hb2) + src[ro4, x] * hb4) + src[ro6, x] * hb6) + src[ro8, x] * hb8
-            b_odd = ((((z + src[ro1, x] * hb1) + src[ro3, x] * hb3) + src[ro5, x] * hb5) + src[ro7, x] * hb7) + src[ro9, x] * hb9
+            b_even = ((((z + so0[x] * hb0) + so2[x] * hb2) + so4[x] * hb4) + so6[x] * hb6) + so8[x] * hb8
+            b_odd = ((((z + so1[x] * hb1) + so3[x] * hb3) + so5[x] * hb5) + so7[x] * hb7) + so9[x] * hb9
             out2[x] = b_even + b_odd
+
+
+@njit(nogil=True, fastmath=False)
+def _coldfilt_v_rows(src, dst, ha, hb, pos_sign, xe_r, j_start, j_stop, c):
+    _coldfilt_v_rows_span(src, dst, ha, hb, pos_sign, xe_r, j_start, j_stop, 0, c)
 
 
 @njit(nogil=True, fastmath=False)
@@ -638,7 +895,7 @@ def _coldfilt_h_eval(row, ha, hb, pos_sign, xe_c, j):
 
 
 @njit(nogil=True, fastmath=False)
-def _coldfilt_h(src, dst, ha, hb, pos_sign, xe_c, r_out, groups_c):
+def _coldfilt_h_rows(src, dst, ha, hb, pos_sign, xe_c, y_start, y_stop, groups_c):
     ha0, ha2, ha4, ha6, ha8 = ha[0], ha[2], ha[4], ha[6], ha[8]
     ha1, ha3, ha5, ha7, ha9 = ha[1], ha[3], ha[5], ha[7], ha[9]
     hb0, hb2, hb4, hb6, hb8 = hb[0], hb[2], hb[4], hb[6], hb[8]
@@ -647,7 +904,7 @@ def _coldfilt_h(src, dst, ha, hb, pos_sign, xe_c, r_out, groups_c):
     off1 = 0 if pos_sign else 1
     off2 = 1 if pos_sign else 0
 
-    for y in range(r_out):
+    for y in range(y_start, y_stop):
         row = src[y]
         out = dst[y]
         for j in range(groups_c):
@@ -661,53 +918,150 @@ def _coldfilt_h(src, dst, ha, hb, pos_sign, xe_c, r_out, groups_c):
 
 
 @njit(nogil=True, fastmath=False)
+def _coldfilt_h(src, dst, ha, hb, pos_sign, xe_c, r_out, groups_c):
+    _coldfilt_h_rows(src, dst, ha, hb, pos_sign, xe_c, 0, r_out, groups_c)
+
+
+@njit(nogil=True, fastmath=False)
 def _coldfilt_h_q2c_strip(lo, hi_strip, hp_strip, fa0b, fa0a, fa1b, fa1a,
                           xe_c, y_pair_start, n_pairs, hp_w):
+    """Evaluate all 6 orientations at level >= 1, reusing hi_strip sample loads."""
+    h0b0, h0b2, h0b4, h0b6, h0b8 = fa0b[0], fa0b[2], fa0b[4], fa0b[6], fa0b[8]
+    h0b1, h0b3, h0b5, h0b7, h0b9 = fa0b[1], fa0b[3], fa0b[5], fa0b[7], fa0b[9]
+    h0a0, h0a2, h0a4, h0a6, h0a8 = fa0a[0], fa0a[2], fa0a[4], fa0a[6], fa0a[8]
+    h0a1, h0a3, h0a5, h0a7, h0a9 = fa0a[1], fa0a[3], fa0a[5], fa0a[7], fa0a[9]
+
+    h1b0, h1b2, h1b4, h1b6, h1b8 = fa1b[0], fa1b[2], fa1b[4], fa1b[6], fa1b[8]
+    h1b1, h1b3, h1b5, h1b7, h1b9 = fa1b[1], fa1b[3], fa1b[5], fa1b[7], fa1b[9]
+    h1a0, h1a2, h1a4, h1a6, h1a8 = fa1a[0], fa1a[2], fa1a[4], fa1a[6], fa1a[8]
+    h1a1, h1a3, h1a5, h1a7, h1a9 = fa1a[1], fa1a[3], fa1a[5], fa1a[7], fa1a[9]
+
+    z = np.float32(0.0)
+    s = _SQRT_HALF_32
+
     for yp in range(n_pairs):
         lo_top = lo[2 * (y_pair_start + yp)]
         lo_bot = lo[2 * (y_pair_start + yp) + 1]
         hi_top = hi_strip[2 * yp]
         hi_bot = hi_strip[2 * yp + 1]
         for qx in range(hp_w):
-            a, b = _coldfilt_h_eval(hi_top, fa0b, fa0a, True, xe_c, qx)
-            cc, d = _coldfilt_h_eval(hi_bot, fa0b, fa0a, True, xe_c, qx)
-            _store_q2c(hp_strip, yp, qx, a, b, cc, d, 0, 5)
+            p = 10 + 4 * qx
+            i0 = xe_c[p + 10]
+            i1 = xe_c[p + 8]
+            i2 = xe_c[p + 6]
+            i3 = xe_c[p + 4]
+            i4 = xe_c[p + 2]
+            i5 = xe_c[p]
+            i6 = xe_c[p - 2]
+            i7 = xe_c[p - 4]
+            i8 = xe_c[p - 6]
+            i9 = xe_c[p - 8]
 
-            a, b = _coldfilt_h_eval(lo_top, fa1b, fa1a, False, xe_c, qx)
-            cc, d = _coldfilt_h_eval(lo_bot, fa1b, fa1a, False, xe_c, qx)
-            _store_q2c(hp_strip, yp, qx, a, b, cc, d, 2, 3)
+            j0 = xe_c[p + 11]
+            j1 = xe_c[p + 9]
+            j2 = xe_c[p + 7]
+            j3 = xe_c[p + 5]
+            j4 = xe_c[p + 3]
+            j5 = xe_c[p + 1]
+            j6 = xe_c[p - 1]
+            j7 = xe_c[p - 3]
+            j8 = xe_c[p - 5]
+            j9 = xe_c[p - 7]
 
-            a, b = _coldfilt_h_eval(hi_top, fa1b, fa1a, False, xe_c, qx)
-            cc, d = _coldfilt_h_eval(hi_bot, fa1b, fa1a, False, xe_c, qx)
-            _store_q2c(hp_strip, yp, qx, a, b, cc, d, 1, 4)
+            # Load hi_top once and compute both (0, 5) and (1, 4) top components
+            e0 = hi_top[i0]; e1 = hi_top[i1]; e2 = hi_top[i2]; e3 = hi_top[i3]; e4 = hi_top[i4]
+            e5 = hi_top[i5]; e6 = hi_top[i6]; e7 = hi_top[i7]; e8 = hi_top[i8]; e9 = hi_top[i9]
+            o0 = hi_top[j0]; o1 = hi_top[j1]; o2 = hi_top[j2]; o3 = hi_top[j3]; o4 = hi_top[j4]
+            o5 = hi_top[j5]; o6 = hi_top[j6]; o7 = hi_top[j7]; o8 = hi_top[j8]; o9 = hi_top[j9]
+
+            ht_a0 = (((((z + e0 * h0b0) + e2 * h0b2) + e4 * h0b4) + e6 * h0b6) + e8 * h0b8) + (((((z + e1 * h0b1) + e3 * h0b3) + e5 * h0b5) + e7 * h0b7) + e9 * h0b9)
+            ht_b0 = (((((z + o0 * h0a0) + o2 * h0a2) + o4 * h0a4) + o6 * h0a6) + o8 * h0a8) + (((((z + o1 * h0a1) + o3 * h0a3) + o5 * h0a5) + o7 * h0a7) + o9 * h0a9)
+            ht_b1 = (((((z + e0 * h1b0) + e2 * h1b2) + e4 * h1b4) + e6 * h1b6) + e8 * h1b8) + (((((z + e1 * h1b1) + e3 * h1b3) + e5 * h1b5) + e7 * h1b7) + e9 * h1b9)
+            ht_a1 = (((((z + o0 * h1a0) + o2 * h1a2) + o4 * h1a4) + o6 * h1a6) + o8 * h1a8) + (((((z + o1 * h1a1) + o3 * h1a3) + o5 * h1a5) + o7 * h1a7) + o9 * h1a9)
+
+            # Load hi_bot once and compute both (0, 5) and (1, 4) bottom components
+            e0 = hi_bot[i0]; e1 = hi_bot[i1]; e2 = hi_bot[i2]; e3 = hi_bot[i3]; e4 = hi_bot[i4]
+            e5 = hi_bot[i5]; e6 = hi_bot[i6]; e7 = hi_bot[i7]; e8 = hi_bot[i8]; e9 = hi_bot[i9]
+            o0 = hi_bot[j0]; o1 = hi_bot[j1]; o2 = hi_bot[j2]; o3 = hi_bot[j3]; o4 = hi_bot[j4]
+            o5 = hi_bot[j5]; o6 = hi_bot[j6]; o7 = hi_bot[j7]; o8 = hi_bot[j8]; o9 = hi_bot[j9]
+
+            hb_c0 = (((((z + e0 * h0b0) + e2 * h0b2) + e4 * h0b4) + e6 * h0b6) + e8 * h0b8) + (((((z + e1 * h0b1) + e3 * h0b3) + e5 * h0b5) + e7 * h0b7) + e9 * h0b9)
+            hb_d0 = (((((z + o0 * h0a0) + o2 * h0a2) + o4 * h0a4) + o6 * h0a6) + o8 * h0a8) + (((((z + o1 * h0a1) + o3 * h0a3) + o5 * h0a5) + o7 * h0a7) + o9 * h0a9)
+            hb_d1 = (((((z + e0 * h1b0) + e2 * h1b2) + e4 * h1b4) + e6 * h1b6) + e8 * h1b8) + (((((z + e1 * h1b1) + e3 * h1b3) + e5 * h1b5) + e7 * h1b7) + e9 * h1b9)
+            hb_c1 = (((((z + o0 * h1a0) + o2 * h1a2) + o4 * h1a4) + o6 * h1a6) + o8 * h1a8) + (((((z + o1 * h1a1) + o3 * h1a3) + o5 * h1a5) + o7 * h1a7) + o9 * h1a9)
+
+            a_s = np.float32(ht_a0 * s); b_s = np.float32(ht_b0 * s)
+            c_s = np.float32(hb_c0 * s); d_s = np.float32(hb_d0 * s)
+            hp_strip[yp, qx, 0] = np.complex64(np.float32(a_s - d_s) + 1j * np.float32(b_s + c_s))
+            hp_strip[yp, qx, 5] = np.complex64(np.float32(a_s + d_s) + 1j * np.float32(b_s - c_s))
+
+            a_s = np.float32(ht_a1 * s); b_s = np.float32(ht_b1 * s)
+            c_s = np.float32(hb_c1 * s); d_s = np.float32(hb_d1 * s)
+            hp_strip[yp, qx, 1] = np.complex64(np.float32(a_s - d_s) + 1j * np.float32(b_s + c_s))
+            hp_strip[yp, qx, 4] = np.complex64(np.float32(a_s + d_s) + 1j * np.float32(b_s - c_s))
+
+            # Orientations (2, 3): h1(lo)
+            lt_b = (((((z + lo_top[i0] * h1b0) + lo_top[i2] * h1b2) + lo_top[i4] * h1b4) + lo_top[i6] * h1b6) + lo_top[i8] * h1b8) + (((((z + lo_top[i1] * h1b1) + lo_top[i3] * h1b3) + lo_top[i5] * h1b5) + lo_top[i7] * h1b7) + lo_top[i9] * h1b9)
+            lt_a = (((((z + lo_top[j0] * h1a0) + lo_top[j2] * h1a2) + lo_top[j4] * h1a4) + lo_top[j6] * h1a6) + lo_top[j8] * h1a8) + (((((z + lo_top[j1] * h1a1) + lo_top[j3] * h1a3) + lo_top[j5] * h1a5) + lo_top[j7] * h1a7) + lo_top[j9] * h1a9)
+            lb_d = (((((z + lo_bot[i0] * h1b0) + lo_bot[i2] * h1b2) + lo_bot[i4] * h1b4) + lo_bot[i6] * h1b6) + lo_bot[i8] * h1b8) + (((((z + lo_bot[i1] * h1b1) + lo_bot[i3] * h1b3) + lo_bot[i5] * h1b5) + lo_bot[i7] * h1b7) + lo_bot[i9] * h1b9)
+            lb_c = (((((z + lo_bot[j0] * h1a0) + lo_bot[j2] * h1a2) + lo_bot[j4] * h1a4) + lo_bot[j6] * h1a6) + lo_bot[j8] * h1a8) + (((((z + lo_bot[j1] * h1a1) + lo_bot[j3] * h1a3) + lo_bot[j5] * h1a5) + lo_bot[j7] * h1a7) + lo_bot[j9] * h1a9)
+
+            a_s = np.float32(lt_a * s); b_s = np.float32(lt_b * s)
+            c_s = np.float32(lb_c * s); d_s = np.float32(lb_d * s)
+            hp_strip[yp, qx, 2] = np.complex64(np.float32(a_s - d_s) + 1j * np.float32(b_s + c_s))
+            hp_strip[yp, qx, 3] = np.complex64(np.float32(a_s + d_s) + 1j * np.float32(b_s - c_s))
 
 
 @njit(nogil=True, fastmath=False)
-def _levelk_select_sparse(lolo, lo_full, has_lo_full, decisions, frame_idx,
-                          out_hp, is_packed, fa0b, fa0a, fa1b, fa1a,
-                          xe_r, xe_c, c_raw, lo_2row, hi_2row):
-    hp_h, hp_w = decisions.shape
+def _levelk_select_sparse_rows(lolo, lo_full, has_lo_full, decisions, frame_idx,
+                               out_hp, is_packed, fa0b, fa0a, fa1b, fa1a,
+                               xe_r, xe_c, c_raw, lo_2row, hi_2row, qy_start, qy_stop):
+    hp_w = decisions.shape[1]
     pos = 0
-    for qy in range(hp_h):
+    for qy in range(qy_start, qy_stop):
         dec_row = decisions[qy]
-        any_win = False
+        first_qx = -1
+        last_qx = -1
         for qx in range(hp_w):
             if dec_row[qx] == frame_idx:
-                any_win = True
-                break
-        if not any_win:
+                if first_qx < 0:
+                    first_qx = qx
+                last_qx = qx
+        if first_qx < 0:
             continue
-        _coldfilt_v_rows(lolo, hi_2row, fa1b, fa1a, False, xe_r, qy, qy + 1, c_raw)
+
+        # Exact active column span in [0, c_raw) required by xe_c for first_qx..last_qx.
+        if first_qx >= 3 and last_qx < hp_w - 3:
+            p_lo = 10 + 4 * first_qx
+            p_hi = 10 + 4 * last_qx
+            x_lo = c_raw
+            x_hi = 0
+            for off in range(-8, 12):
+                v = xe_c[p_lo + off]
+                if v < x_lo:
+                    x_lo = v
+                if v + 1 > x_hi:
+                    x_hi = v + 1
+                v2 = xe_c[p_hi + off]
+                if v2 < x_lo:
+                    x_lo = v2
+                if v2 + 1 > x_hi:
+                    x_hi = v2 + 1
+        else:
+            x_lo = 0
+            x_hi = c_raw
+
+        _coldfilt_v_rows_span(lolo, hi_2row, fa1b, fa1a, False, xe_r, qy, qy + 1, x_lo, x_hi)
         hi_top = hi_2row[0]
         hi_bot = hi_2row[1]
         if has_lo_full:
             lo_top = lo_full[2 * qy]
             lo_bot = lo_full[2 * qy + 1]
         else:
-            _coldfilt_v_rows(lolo, lo_2row, fa0b, fa0a, True, xe_r, qy, qy + 1, c_raw)
+            _coldfilt_v_rows_span(lolo, lo_2row, fa0b, fa0a, True, xe_r, qy, qy + 1, x_lo, x_hi)
             lo_top = lo_2row[0]
             lo_bot = lo_2row[1]
-        for qx in range(hp_w):
+        for qx in range(first_qx, last_qx + 1):
             if dec_row[qx] != frame_idx:
                 continue
             out_y = pos if is_packed else qy
@@ -728,16 +1082,29 @@ def _levelk_select_sparse(lolo, lo_full, has_lo_full, decisions, frame_idx,
 
 
 @njit(nogil=True, fastmath=False)
+def _levelk_select_sparse(lolo, lo_full, has_lo_full, decisions, frame_idx,
+                          out_hp, is_packed, fa0b, fa0a, fa1b, fa1a,
+                          xe_r, xe_c, c_raw, lo_2row, hi_2row):
+    _levelk_select_sparse_rows(
+        lolo, lo_full, has_lo_full, decisions, frame_idx,
+        out_hp, is_packed, fa0b, fa0a, fa1b, fa1a,
+        xe_r, xe_c, c_raw, lo_2row, hi_2row, 0, decisions.shape[0],
+    )
+
+
+@njit(nogil=True, fastmath=False)
 def _sum6_strip(abs_strip, mag, y_start):
     n_rows, w, _ = abs_strip.shape
     for ry in range(n_rows):
         dy = y_start + ry
+        m_row = mag[dy]
+        a_row = abs_strip[ry]
         for x in range(w):
-            acc = np.float32(abs_strip[ry, x, 0] + abs_strip[ry, x, 1])
-            acc = np.float32(acc + abs_strip[ry, x, 2])
-            acc = np.float32(acc + abs_strip[ry, x, 3])
-            acc = np.float32(acc + abs_strip[ry, x, 4])
-            mag[dy, x] = np.float32(acc + abs_strip[ry, x, 5])
+            acc = np.float32(a_row[x, 0] + a_row[x, 1])
+            acc = np.float32(acc + a_row[x, 2])
+            acc = np.float32(acc + a_row[x, 3])
+            acc = np.float32(acc + a_row[x, 4])
+            m_row[x] = np.float32(acc + a_row[x, 5])
 
 
 def _write_activity_strip(hp_strip, scratch, mag, y_start):
@@ -747,9 +1114,9 @@ def _write_activity_strip(hp_strip, scratch, mag, y_start):
 
 
 @njit(nogil=True, fastmath=False)
-def _max3x3_update(mag, best_act, best_idx, frame_idx, is_first):
+def _max3x3_update_rows(mag, best_act, best_idx, frame_idx, is_first, y_start, y_stop):
     h, w = mag.shape
-    for y in range(h):
+    for y in range(y_start, y_stop):
         ym = 0 if y == 0 else y - 1
         yp = h - 1 if y == h - 1 else y + 1
         rm = mag[ym]
@@ -794,6 +1161,11 @@ def _max3x3_update(mag, best_act, best_idx, frame_idx, is_first):
 
 
 @njit(nogil=True, fastmath=False)
+def _max3x3_update(mag, best_act, best_idx, frame_idx, is_first):
+    _max3x3_update_rows(mag, best_act, best_idx, frame_idx, is_first, 0, mag.shape[0])
+
+
+@njit(nogil=True, fastmath=False)
 def _scan_count_decisions(decisions, counts_row):
     h, w = decisions.shape
     n = counts_row.shape[0]
@@ -830,24 +1202,32 @@ def _acc_weighted_lp(lp, weight, src):
 
 
 @njit(nogil=True, fastmath=False)
-def _c2q_pair(hp, quad, c0, c1, scale):
-    h2, w2, _ = hp.shape
-    for y in range(h2):
+def _c2q_pair_rows(hp, quad, c0, c1, scale, y_start, y_stop):
+    w2 = hp.shape[1]
+    for y in range(y_start, y_stop):
         qy0 = 2 * y
         qy1 = qy0 + 1
+        q0 = quad[qy0]
+        q1 = quad[qy1]
+        hp_row = hp[y]
         for x in range(w2):
-            z0 = hp[y, x, c0]
-            z1 = hp[y, x, c1]
+            z0 = hp_row[x, c0]
+            z1 = hp_row[x, c1]
             w0r = z0.real * scale
             w0i = z0.imag * scale
             w1r = z1.real * scale
             w1i = z1.imag * scale
             qx0 = 2 * x
             qx1 = qx0 + 1
-            quad[qy0, qx0] = np.float32(w0r + w1r)
-            quad[qy0, qx1] = np.float32(w0i + w1i)
-            quad[qy1, qx0] = np.float32(w0i - w1i)
-            quad[qy1, qx1] = np.float32(-(w0r - w1r))
+            q0[qx0] = np.float32(w0r + w1r)
+            q0[qx1] = np.float32(w0i + w1i)
+            q1[qx0] = np.float32(w0i - w1i)
+            q1[qx1] = np.float32(-(w0r - w1r))
+
+
+@njit(nogil=True, fastmath=False)
+def _c2q_pair(hp, quad, c0, c1, scale):
+    _c2q_pair_rows(hp, quad, c0, c1, scale, 0, hp.shape[0])
 
 
 @njit(nogil=True, fastmath=False)
@@ -980,48 +1360,66 @@ def _colifilt_h_add_trim(src0, src1, dst, f0b, f0a, f1b, f1a, xe_c, r, c,
 
 
 @njit(nogil=True, fastmath=False)
-def _colfilter_v_add0(src7, src5, dst, g0, g1, r, c):
+def _colfilter_v_add0_rows(src7, src5, dst, g0, g1, r, c, y_start, y_stop):
     k0, k1, k2, k3, k4, k5, k6 = (
         g0[0], g0[1], g0[2], g0[3], g0[4], g0[5], g0[6]
     )
     m0, m1, m2, m3, m4 = g1[0], g1[1], g1[2], g1[3], g1[4]
     z = np.float32(0.0)
-    y_lo = 3 if r >= 6 else r
-    y_hi = max(y_lo, r - 3)
+    head_stop = min(y_stop, 3) if r >= 6 else y_stop
+    int_start = max(y_start, head_stop)
+    int_stop = max(int_start, min(y_stop, r - 3)) if r >= 6 else int_start
 
-    for y in range(y_lo):
+    for y in range(y_start, min(y_stop, head_stop)):
         yp3 = _ref_idx(y + 3, r)
         yp2 = _ref_idx(y + 2, r)
         yp1 = _ref_idx(y + 1, r)
         ym1 = _ref_idx(y - 1, r)
         ym2 = _ref_idx(y - 2, r)
         ym3 = _ref_idx(y - 3, r)
+        s7p3 = src7[yp3]; s7p2 = src7[yp2]; s7p1 = src7[yp1]; s70 = src7[y]
+        s7m1 = src7[ym1]; s7m2 = src7[ym2]; s7m3 = src7[ym3]
+        s5p2 = src5[yp2]; s5p1 = src5[yp1]; s50 = src5[y]; s5m1 = src5[ym1]; s5m2 = src5[ym2]
+        out = dst[y]
         for x in range(c):
-            v7 = (((((((z + src7[yp3, x] * k0) + src7[yp2, x] * k1) + src7[yp1, x] * k2) + src7[y, x] * k3) + src7[ym1, x] * k4) + src7[ym2, x] * k5) + src7[ym3, x] * k6)
-            v5 = (((((z + src5[yp2, x] * m0) + src5[yp1, x] * m1) + src5[y, x] * m2) + src5[ym1, x] * m3) + src5[ym2, x] * m4)
-            dst[y, x] = v7 + v5
+            v7 = (((((((z + s7p3[x] * k0) + s7p2[x] * k1) + s7p1[x] * k2) + s70[x] * k3) + s7m1[x] * k4) + s7m2[x] * k5) + s7m3[x] * k6)
+            v5 = (((((z + s5p2[x] * m0) + s5p1[x] * m1) + s50[x] * m2) + s5m1[x] * m3) + s5m2[x] * m4)
+            out[x] = v7 + v5
 
-    for y in range(y_lo, y_hi):
+    for y in range(int_start, int_stop):
+        s7p3 = src7[y + 3]; s7p2 = src7[y + 2]; s7p1 = src7[y + 1]; s70 = src7[y]
+        s7m1 = src7[y - 1]; s7m2 = src7[y - 2]; s7m3 = src7[y - 3]
+        s5p2 = src5[y + 2]; s5p1 = src5[y + 1]; s50 = src5[y]; s5m1 = src5[y - 1]; s5m2 = src5[y - 2]
+        out = dst[y]
         for x in range(c):
-            v7 = (((((((z + src7[y + 3, x] * k0) + src7[y + 2, x] * k1) + src7[y + 1, x] * k2) + src7[y, x] * k3) + src7[y - 1, x] * k4) + src7[y - 2, x] * k5) + src7[y - 3, x] * k6)
-            v5 = (((((z + src5[y + 2, x] * m0) + src5[y + 1, x] * m1) + src5[y, x] * m2) + src5[y - 1, x] * m3) + src5[y - 2, x] * m4)
-            dst[y, x] = v7 + v5
+            v7 = (((((((z + s7p3[x] * k0) + s7p2[x] * k1) + s7p1[x] * k2) + s70[x] * k3) + s7m1[x] * k4) + s7m2[x] * k5) + s7m3[x] * k6)
+            v5 = (((((z + s5p2[x] * m0) + s5p1[x] * m1) + s50[x] * m2) + s5m1[x] * m3) + s5m2[x] * m4)
+            out[x] = v7 + v5
 
-    for y in range(y_hi, r):
+    for y in range(int_stop, y_stop):
         yp3 = _ref_idx(y + 3, r)
         yp2 = _ref_idx(y + 2, r)
         yp1 = _ref_idx(y + 1, r)
         ym1 = _ref_idx(y - 1, r)
         ym2 = _ref_idx(y - 2, r)
         ym3 = _ref_idx(y - 3, r)
+        s7p3 = src7[yp3]; s7p2 = src7[yp2]; s7p1 = src7[yp1]; s70 = src7[y]
+        s7m1 = src7[ym1]; s7m2 = src7[ym2]; s7m3 = src7[ym3]
+        s5p2 = src5[yp2]; s5p1 = src5[yp1]; s50 = src5[y]; s5m1 = src5[ym1]; s5m2 = src5[ym2]
+        out = dst[y]
         for x in range(c):
-            v7 = (((((((z + src7[yp3, x] * k0) + src7[yp2, x] * k1) + src7[yp1, x] * k2) + src7[y, x] * k3) + src7[ym1, x] * k4) + src7[ym2, x] * k5) + src7[ym3, x] * k6)
-            v5 = (((((z + src5[yp2, x] * m0) + src5[yp1, x] * m1) + src5[y, x] * m2) + src5[ym1, x] * m3) + src5[ym2, x] * m4)
-            dst[y, x] = v7 + v5
+            v7 = (((((((z + s7p3[x] * k0) + s7p2[x] * k1) + s7p1[x] * k2) + s70[x] * k3) + s7m1[x] * k4) + s7m2[x] * k5) + s7m3[x] * k6)
+            v5 = (((((z + s5p2[x] * m0) + s5p1[x] * m1) + s50[x] * m2) + s5m1[x] * m3) + s5m2[x] * m4)
+            out[x] = v7 + v5
 
 
 @njit(nogil=True, fastmath=False)
-def _colfilter_h_add0(src7, src5, dst, g0, g1, r, c):
+def _colfilter_v_add0(src7, src5, dst, g0, g1, r, c):
+    _colfilter_v_add0_rows(src7, src5, dst, g0, g1, r, c, 0, r)
+
+
+@njit(nogil=True, fastmath=False)
+def _colfilter_h_add0_rows(src7, src5, dst, g0, g1, c, y_start, y_stop):
     k0, k1, k2, k3, k4, k5, k6 = (
         g0[0], g0[1], g0[2], g0[3], g0[4], g0[5], g0[6]
     )
@@ -1029,7 +1427,7 @@ def _colfilter_h_add0(src7, src5, dst, g0, g1, r, c):
     z = np.float32(0.0)
     x_lo = 3 if c >= 6 else c
     x_hi = max(x_lo, c - 3)
-    for y in range(r):
+    for y in range(y_start, y_stop):
         r7 = src7[y]
         r5 = src5[y]
         out = dst[y]
@@ -1045,6 +1443,30 @@ def _colfilter_h_add0(src7, src5, dst, g0, g1, r, c):
             v7 = (((((((z + r7[_ref_idx(x + 3, c)] * k0) + r7[_ref_idx(x + 2, c)] * k1) + r7[_ref_idx(x + 1, c)] * k2) + r7[x] * k3) + r7[_ref_idx(x - 1, c)] * k4) + r7[_ref_idx(x - 2, c)] * k5) + r7[_ref_idx(x - 3, c)] * k6)
             v5 = (((((z + r5[_ref_idx(x + 2, c)] * m0) + r5[_ref_idx(x + 1, c)] * m1) + r5[x] * m2) + r5[_ref_idx(x - 1, c)] * m3) + r5[_ref_idx(x - 2, c)] * m4)
             out[x] = v7 + v5
+
+
+@njit(nogil=True, fastmath=False)
+def _colfilter_h_add0(src7, src5, dst, g0, g1, r, c):
+    _colfilter_h_add0_rows(src7, src5, dst, g0, g1, c, 0, r)
+
+
+def _run_bands_pool(pool, n_workers: int, total: int, fn):
+    """Dispatch ``fn(band_idx, start, stop)`` across disjoint row bands."""
+    if total <= 0:
+        return
+    if pool is None or n_workers <= 1 or total < 2:
+        fn(0, 0, total)
+        return
+    n_bands = min(n_workers, total)
+    chunk = (total + n_bands - 1) // n_bands
+    futs = []
+    b = 0
+    for start in range(0, total, chunk):
+        stop = min(total, start + chunk)
+        futs.append(pool.submit(fn, b, start, stop))
+        b += 1
+    for f in futs:
+        f.result()
 
 
 class _LevelPlan:
@@ -1083,6 +1505,7 @@ class _NativeWorkspace:
         self.buf_b = np.empty((r0, c0), dtype=np.float32)
         if for_pass2:
             self.strip_pairs = 0
+            self.lo_strip = None
             self.hi_strip = None
             self.hp_strip = None
             self.abs_strip = None
@@ -1090,6 +1513,7 @@ class _NativeWorkspace:
             self.hi_2row = np.empty((2, c0), dtype=np.float32)
         else:
             self.strip_pairs = max(1, min(strip_pairs, max(1, sp0.hp_h)))
+            self.lo_strip = np.empty((2 * self.strip_pairs, c0), dtype=np.float32)
             self.hi_strip = np.empty((2 * self.strip_pairs, c0), dtype=np.float32)
             self.hp_strip = np.empty((self.strip_pairs, sp0.hp_w, 6), dtype=np.complex64)
             self.abs_strip = _magnitude_scratch(self.hp_strip.size, np.float32)
@@ -1124,9 +1548,6 @@ class _NativeDtcwtEngine:
         self.h1b = h1b
         self.g1a = g1a
         self.g1b = g1b
-        # dtcwt multiplies a complex64 subband by a NumPy float64 gain scalar.
-        # NumPy 1.x can keep that product complex64, while NumPy 2 promotes it.
-        # Pass the matching real scalar type explicitly so Numba caches each signature.
         scale = np.sqrt(0.5)
         product_dtype = np.result_type(np.empty(0, dtype=np.complex64), scale)
         self._inverse_scale = product_dtype.type(scale).real
@@ -1169,7 +1590,7 @@ class _NativeDtcwtEngine:
         dtype = image.dtype
         if image.ndim == 2:
             if dtype == np.uint8:
-                _extract_luma_u8_2(image, dst, h, w)
+                _extract_luma_u8_2(image, dst, h, w, _LUT_GRAY)
                 return False
             if dtype == np.uint16:
                 _extract_luma_u16_2(image, dst, h, w)
@@ -1179,7 +1600,7 @@ class _NativeDtcwtEngine:
         if ch == 1:
             plane = image[:, :, 0]
             if dtype == np.uint8:
-                _extract_luma_u8_2(plane, dst, h, w)
+                _extract_luma_u8_2(plane, dst, h, w, _LUT_GRAY)
                 return False
             if dtype == np.uint16:
                 _extract_luma_u16_2(plane, dst, h, w)
@@ -1188,7 +1609,7 @@ class _NativeDtcwtEngine:
         if ch not in (3, 4):
             raise ValueError(f"Unsupported image shape: {image.shape}")
         if dtype == np.uint8:
-            _extract_luma_u8_3(image, dst, h, w)
+            _extract_luma_u8_3(image, dst, h, w, _LUT_R, _LUT_G, _LUT_B)
             return False
         if dtype == np.uint16:
             _extract_luma_u16_3(image, dst, h, w)
@@ -1201,7 +1622,7 @@ class _NativeDtcwtEngine:
         dtype = image.dtype
         if image.ndim == 2:
             if dtype == np.uint8:
-                _extract_chan_u8_2(image, dst, h, w)
+                _extract_chan_u8_2(image, dst, h, w, _LUT_U8)
                 return False
             if dtype == np.uint16:
                 _extract_chan_u16_2(image, dst, h, w)
@@ -1210,7 +1631,7 @@ class _NativeDtcwtEngine:
         if image.ndim == 3 and image.shape[2] == 1:
             plane = image[:, :, 0]
             if dtype == np.uint8:
-                _extract_chan_u8_2(plane, dst, h, w)
+                _extract_chan_u8_2(plane, dst, h, w, _LUT_U8)
                 return False
             if dtype == np.uint16:
                 _extract_chan_u16_2(plane, dst, h, w)
@@ -1219,7 +1640,7 @@ class _NativeDtcwtEngine:
         if image.ndim == 3 and image.shape[2] in (3, 4):
             src_ch = 2 - channel
             if dtype == np.uint8:
-                _extract_chan_u8_3(image, dst, h, w, src_ch)
+                _extract_chan_u8_3(image, dst, h, w, src_ch, _LUT_U8)
                 return False
             if dtype == np.uint16:
                 _extract_chan_u16_3(image, dst, h, w, src_ch)
@@ -1233,31 +1654,38 @@ class _NativeDtcwtEngine:
         mags = []
         sp0 = plans[0]
         r, c = sp0.in_r, sp0.in_c
-        lo = ws.buf_b[:r, :c]
-        _colfilter_v5(ws.buf_a[:r, :c], lo, self.h0o, r, c)
-
         hp0_h, hp0_w = sp0.hp_h, sp0.hp_w
         mag0 = np.empty((hp0_h, hp0_w), dtype=np.float32)
         strip_pairs = ws.strip_pairs
+        src0 = ws.buf_a[:r, :c]
+        lolo_out = ws.buf_b[:r, :c] if nlevels > 1 else None
+
+        # Fused level-0 strip pass keeps lo_strip and hi_strip hot in L2 cache.
         for yp in range(0, hp0_h, strip_pairs):
             n_pairs = min(strip_pairs, hp0_h - yp)
+            lo_strip = ws.lo_strip[:2 * n_pairs, :c]
             hi_strip = ws.hi_strip[:2 * n_pairs, :c]
-            _colfilter_v7_rows(ws.buf_a[:r, :c], hi_strip, self.h1o, r, c, 2 * yp, 2 * (yp + n_pairs))
+            _colfilter_v5_v7_strip(
+                src0, lo_strip, hi_strip, self.h0o, self.h1o, r, c,
+                2 * yp, 2 * (yp + n_pairs),
+            )
             hp_strip = ws.hp_strip[:n_pairs, :hp0_w]
-            _colfilter_h_q2c_strip(lo, hi_strip, hp_strip, self.h0o, self.h1o, yp, n_pairs, c)
+            _colfilter_h_q2c_strip_local(
+                lo_strip, hi_strip, hp_strip, self.h0o, self.h1o, n_pairs, c,
+            )
             _write_activity_strip(hp_strip, ws.abs_strip, mag0, yp)
+            if lolo_out is not None:
+                _colfilter_h5_rows(lo_strip, lolo_out, self.h0o, 2 * yp, 2 * n_pairs, c)
         mags.append(mag0)
 
         if nlevels == 1:
             return mags
 
-        lolo = ws.buf_a[:r, :c]
-        _colfilter_h5(lo, lolo, self.h0o, r, c)
-
+        lolo = lolo_out
         for lvl in range(1, nlevels):
             sp = plans[lvl]
             lo_r = sp.lolo_r
-            lo = ws.buf_b[:lo_r, :sp.in_c]
+            lo = ws.buf_a[:lo_r, :sp.in_c]
             _coldfilt_v_rows(lolo, lo, self.h0b, self.h0a, True, sp.xe_r_fwd, 0, lo_r >> 1, sp.in_c)
 
             mag_lvl = np.empty((sp.hp_h, sp.hp_w), dtype=np.float32)
@@ -1274,7 +1702,7 @@ class _NativeDtcwtEngine:
             mags.append(mag_lvl)
 
             if lvl + 1 < nlevels:
-                next_lolo = ws.buf_a[:lo_r, :sp.lolo_c]
+                next_lolo = ws.buf_b[:lo_r, :sp.lolo_c]
                 _coldfilt_h(lo, next_lolo, self.h0b, self.h0a, True, sp.xe_c_fwd, lo_r, sp.lolo_c >> 1)
                 lolo = next_lolo
 
@@ -1402,6 +1830,409 @@ class _NativeDtcwtEngine:
         return _NativeWorkspace(
             self, orig_h, orig_w, nlevels, strip_pairs=strip_pairs, for_pass2=for_pass2,
         )
+
+    def make_pass1_scratches(self, orig_h: int, orig_w: int, nlevels: int,
+                             n_workers: int, strip_pairs: int = 16):
+        sp0 = self.build_level_plans(orig_h, orig_w, nlevels)[0]
+        sp = max(1, min(strip_pairs, max(1, sp0.hp_h)))
+        c0 = sp0.in_c
+        hp0_w = sp0.hp_w
+        scratches = []
+        for _ in range(max(1, n_workers)):
+            lo_s = np.empty((2 * sp, c0), dtype=np.float32)
+            hi_s = np.empty((2 * sp, c0), dtype=np.float32)
+            hp_s = np.empty((sp, hp0_w, 6), dtype=np.complex64)
+            abs_s = np.empty(hp_s.size, dtype=np.float32)
+            scratches.append((lo_s, hi_s, hp_s, abs_s))
+        return scratches
+
+    def make_pass2_scratches(self, orig_h: int, orig_w: int, nlevels: int,
+                             n_workers: int):
+        sp0 = self.build_level_plans(orig_h, orig_w, nlevels)[0]
+        c0 = sp0.in_c
+        return [
+            (np.empty((2, c0), dtype=np.float32), np.empty((2, c0), dtype=np.float32))
+            for _ in range(max(1, n_workers))
+        ]
+
+    def extract_luma_parallel(self, image: np.ndarray, dst: np.ndarray,
+                              pool, row_workers: int) -> bool:
+        if pool is None or row_workers <= 1 or dst.shape[0] < 64 or image.dtype != np.uint8:
+            return self.extract_luma(image, dst)
+        h, w = image.shape[:2]
+        r0 = dst.shape[0]
+        if image.ndim == 2:
+            _run_bands_pool(
+                pool, row_workers, r0,
+                lambda _b, y0, y1: _extract_luma_u8_2_rows(image, dst, h, w, _LUT_GRAY, y0, y1),
+            )
+            return False
+        ch = image.shape[2]
+        if ch == 1:
+            plane = image[:, :, 0]
+            _run_bands_pool(
+                pool, row_workers, r0,
+                lambda _b, y0, y1: _extract_luma_u8_2_rows(plane, dst, h, w, _LUT_GRAY, y0, y1),
+            )
+            return False
+        if ch in (3, 4):
+            _run_bands_pool(
+                pool, row_workers, r0,
+                lambda _b, y0, y1: _extract_luma_u8_3_rows(
+                    image, dst, h, w, _LUT_R, _LUT_G, _LUT_B, y0, y1,
+                ),
+            )
+            return False
+        return self.extract_luma(image, dst)
+
+    def extract_channel_parallel(self, image: np.ndarray, channel: int,
+                                 dst: np.ndarray, pool, row_workers: int) -> bool:
+        if pool is None or row_workers <= 1 or dst.shape[0] < 64 or image.dtype != np.uint8:
+            return self.extract_channel(image, channel, dst)
+        h, w = image.shape[:2]
+        r0 = dst.shape[0]
+        if image.ndim == 2:
+            _run_bands_pool(
+                pool, row_workers, r0,
+                lambda _b, y0, y1: _extract_chan_u8_2_rows(image, dst, h, w, _LUT_U8, y0, y1),
+            )
+            return False
+        if image.ndim == 3 and image.shape[2] == 1:
+            plane = image[:, :, 0]
+            _run_bands_pool(
+                pool, row_workers, r0,
+                lambda _b, y0, y1: _extract_chan_u8_2_rows(plane, dst, h, w, _LUT_U8, y0, y1),
+            )
+            return False
+        if image.ndim == 3 and image.shape[2] in (3, 4):
+            src_ch = 2 - channel
+            _run_bands_pool(
+                pool, row_workers, r0,
+                lambda _b, y0, y1: _extract_chan_u8_3_rows(
+                    image, dst, h, w, src_ch, _LUT_U8, y0, y1,
+                ),
+            )
+            return False
+        return self.extract_channel(image, channel, dst)
+
+    def forward_activity_parallel(self, ws: _NativeWorkspace, nlevels: int,
+                                  pool, row_workers: int, p1_scratches):
+        """Row-band parallel Pass 1 activity extraction sharing one workspace."""
+        if pool is None or row_workers <= 1 or not p1_scratches:
+            return self.forward_activity_into(ws, nlevels)
+        plans = ws.plans
+        mags = []
+        sp0 = plans[0]
+        r, c = sp0.in_r, sp0.in_c
+        hp0_h, hp0_w = sp0.hp_h, sp0.hp_w
+        mag0 = np.empty((hp0_h, hp0_w), dtype=np.float32)
+        strip_pairs = p1_scratches[0][2].shape[0]
+        src0 = ws.buf_a[:r, :c]
+        lolo_out = ws.buf_b[:r, :c] if nlevels > 1 else None
+
+        def _lv0_band(b, yp_start, yp_stop):
+            lo_buf, hi_buf, hp_buf, abs_buf = p1_scratches[b]
+            for yp in range(yp_start, yp_stop, strip_pairs):
+                n_pairs = min(strip_pairs, yp_stop - yp)
+                lo_s = lo_buf[:2 * n_pairs, :c]
+                hi_s = hi_buf[:2 * n_pairs, :c]
+                _colfilter_v5_v7_strip(
+                    src0, lo_s, hi_s, self.h0o, self.h1o, r, c,
+                    2 * yp, 2 * (yp + n_pairs),
+                )
+                hp_s = hp_buf[:n_pairs, :hp0_w]
+                _colfilter_h_q2c_strip_local(
+                    lo_s, hi_s, hp_s, self.h0o, self.h1o, n_pairs, c,
+                )
+                _write_activity_strip(hp_s, abs_buf, mag0, yp)
+                if lolo_out is not None:
+                    _colfilter_h5_rows(lo_s, lolo_out, self.h0o, 2 * yp, 2 * n_pairs, c)
+
+        if hp0_h >= 64:
+            _run_bands_pool(pool, row_workers, hp0_h, _lv0_band)
+        else:
+            _lv0_band(0, 0, hp0_h)
+        mags.append(mag0)
+
+        if nlevels == 1:
+            return mags
+
+        lolo = lolo_out
+        for lvl in range(1, nlevels):
+            sp = plans[lvl]
+            lo_r = sp.lolo_r
+            lo = ws.buf_a[:lo_r, :sp.in_c]
+            j_total = lo_r >> 1
+            if j_total >= 64:
+                _run_bands_pool(
+                    pool, row_workers, j_total,
+                    lambda _b, j0, j1, _lolo=lolo, _lo=lo, _sp=sp: _coldfilt_v_rows(
+                        _lolo, _lo[2 * j0:2 * j1], self.h0b, self.h0a, True,
+                        _sp.xe_r_fwd, j0, j1, _sp.in_c,
+                    ),
+                )
+            else:
+                _coldfilt_v_rows(lolo, lo, self.h0b, self.h0a, True, sp.xe_r_fwd, 0, j_total, sp.in_c)
+
+            mag_lvl = np.empty((sp.hp_h, sp.hp_w), dtype=np.float32)
+
+            def _lvk_band(b, yp_start, yp_stop, _lolo=lolo, _lo=lo, _sp=sp, _mag=mag_lvl):
+                _, hi_buf, hp_buf, abs_buf = p1_scratches[b]
+                for yp in range(yp_start, yp_stop, strip_pairs):
+                    n_pairs = min(strip_pairs, yp_stop - yp)
+                    hi_s = hi_buf[:2 * n_pairs, :_sp.in_c]
+                    _coldfilt_v_rows(
+                        _lolo, hi_s, self.h1b, self.h1a, False,
+                        _sp.xe_r_fwd, yp, yp + n_pairs, _sp.in_c,
+                    )
+                    hp_s = hp_buf[:n_pairs, :_sp.hp_w]
+                    _coldfilt_h_q2c_strip(
+                        _lo, hi_s, hp_s, self.h0b, self.h0a, self.h1b, self.h1a,
+                        _sp.xe_c_fwd, yp, n_pairs, _sp.hp_w,
+                    )
+                    _write_activity_strip(hp_s, abs_buf, _mag, yp)
+
+            if sp.hp_h >= 64:
+                _run_bands_pool(pool, row_workers, sp.hp_h, _lvk_band)
+            else:
+                _lvk_band(0, 0, sp.hp_h)
+            mags.append(mag_lvl)
+
+            if lvl + 1 < nlevels:
+                next_lolo = ws.buf_b[:lo_r, :sp.lolo_c]
+                if lo_r >= 64:
+                    _run_bands_pool(
+                        pool, row_workers, lo_r,
+                        lambda _b, y0, y1, _lo=lo, _nl=next_lolo, _sp=sp: _coldfilt_h_rows(
+                            _lo, _nl, self.h0b, self.h0a, True, _sp.xe_c_fwd,
+                            y0, y1, _sp.lolo_c >> 1,
+                        ),
+                    )
+                else:
+                    _coldfilt_h(lo, next_lolo, self.h0b, self.h0a, True, sp.xe_c_fwd, lo_r, sp.lolo_c >> 1)
+                lolo = next_lolo
+
+        return mags
+
+    def max3x3_update_parallel(self, mag, best_act, best_idx, frame_idx: int,
+                               is_first: bool, pool, row_workers: int):
+        h = mag.shape[0]
+        if pool is not None and row_workers > 1 and h >= 128:
+            _run_bands_pool(
+                pool, row_workers, h,
+                lambda _b, y0, y1: _max3x3_update_rows(
+                    mag, best_act, best_idx, frame_idx, is_first, y0, y1,
+                ),
+            )
+        else:
+            _max3x3_update(mag, best_act, best_idx, frame_idx, is_first)
+
+    def forward_select_parallel(self, ws: _NativeWorkspace, nlevels: int,
+                                max_level: int, need_lp: bool, active_row,
+                                decisions, frame_idx: int, targets: list,
+                                pool, row_workers: int, p2_scratches):
+        """Row-band parallel Pass 2 sparse coefficient extraction directly into targets."""
+        if pool is None or row_workers <= 1 or not p2_scratches:
+            return self.forward_select_into(
+                ws, nlevels, max_level, need_lp, active_row, decisions,
+                frame_idx, targets, is_packed=False,
+            )
+        plans = ws.plans
+        sp0 = plans[0]
+        r, c = sp0.in_r, sp0.in_c
+        descend_0 = need_lp or max_level > 1
+        src0 = ws.buf_a[:r, :c]
+        lo0 = ws.buf_b[:r, :c]
+        if descend_0:
+            if r >= 64:
+                _run_bands_pool(
+                    pool, row_workers, r,
+                    lambda _b, y0, y1: _colfilter_v5_rows(src0, lo0, self.h0o, r, c, y0, y1),
+                )
+            else:
+                _colfilter_v5(src0, lo0, self.h0o, r, c)
+
+        if active_row[0]:
+            dec0 = decisions[0]
+            tgt0 = targets[0]
+            if dec0.shape[0] >= 64:
+                _run_bands_pool(
+                    pool, row_workers, dec0.shape[0],
+                    lambda b, q0, q1: _level0_select_sparse_rows(
+                        src0, lo0, bool(descend_0), dec0, frame_idx,
+                        tgt0, False, self.h0o, self.h1o, r, c,
+                        p2_scratches[b][0][:2, :c], p2_scratches[b][1][:2, :c], q0, q1,
+                    ),
+                )
+            else:
+                _level0_select_sparse_rows(
+                    src0, lo0, bool(descend_0), dec0, frame_idx,
+                    tgt0, False, self.h0o, self.h1o, r, c,
+                    p2_scratches[0][0][:2, :c], p2_scratches[0][1][:2, :c], 0, dec0.shape[0],
+                )
+
+        if not descend_0:
+            return None
+
+        lolo = ws.buf_a[:r, :c]
+        if r >= 64:
+            _run_bands_pool(
+                pool, row_workers, r,
+                lambda _b, y0, y1: _colfilter_h5_span(lo0, lolo, self.h0o, c, y0, y1),
+            )
+        else:
+            _colfilter_h5(lo0, lolo, self.h0o, r, c)
+
+        for lvl in range(1, nlevels):
+            descend_k = need_lp or (lvl + 1 < max_level)
+            if not active_row[lvl] and not descend_k:
+                break
+            sp = plans[lvl]
+            lo_r = sp.lolo_r
+            lo = ws.buf_b[:lo_r, :sp.in_c]
+            if descend_k:
+                j_total = lo_r >> 1
+                if j_total >= 64:
+                    _run_bands_pool(
+                        pool, row_workers, j_total,
+                        lambda _b, j0, j1, _lolo=lolo, _lo=lo, _sp=sp: _coldfilt_v_rows(
+                            _lolo, _lo[2 * j0:2 * j1], self.h0b, self.h0a, True,
+                            _sp.xe_r_fwd, j0, j1, _sp.in_c,
+                        ),
+                    )
+                else:
+                    _coldfilt_v_rows(lolo, lo, self.h0b, self.h0a, True, sp.xe_r_fwd, 0, j_total, sp.in_c)
+
+            if active_row[lvl]:
+                dec_k = decisions[lvl]
+                tgt_k = targets[lvl]
+                if dec_k.shape[0] >= 64:
+                    _run_bands_pool(
+                        pool, row_workers, dec_k.shape[0],
+                        lambda b, q0, q1, _lolo=lolo, _lo=lo, _dk=bool(descend_k),
+                               _dec=dec_k, _tgt=tgt_k, _sp=sp: _levelk_select_sparse_rows(
+                            _lolo, _lo, _dk, _dec, frame_idx,
+                            _tgt, False, self.h0b, self.h0a, self.h1b, self.h1a,
+                            _sp.xe_r_fwd, _sp.xe_c_fwd, _sp.in_c,
+                            p2_scratches[b][0][:2, :_sp.in_c],
+                            p2_scratches[b][1][:2, :_sp.in_c], q0, q1,
+                        ),
+                    )
+                else:
+                    _levelk_select_sparse_rows(
+                        lolo, lo, bool(descend_k), dec_k, frame_idx,
+                        tgt_k, False, self.h0b, self.h0a, self.h1b, self.h1a,
+                        sp.xe_r_fwd, sp.xe_c_fwd, sp.in_c,
+                        p2_scratches[0][0][:2, :sp.in_c],
+                        p2_scratches[0][1][:2, :sp.in_c], 0, dec_k.shape[0],
+                    )
+
+            if not descend_k:
+                return None
+
+            next_lolo = ws.buf_a[:lo_r, :sp.lolo_c]
+            if lo_r >= 64:
+                _run_bands_pool(
+                    pool, row_workers, lo_r,
+                    lambda _b, y0, y1, _lo=lo, _nl=next_lolo, _sp=sp: _coldfilt_h_rows(
+                        _lo, _nl, self.h0b, self.h0a, True, _sp.xe_c_fwd,
+                        y0, y1, _sp.lolo_c >> 1,
+                    ),
+                )
+            else:
+                _coldfilt_h(lo, next_lolo, self.h0b, self.h0a, True, sp.xe_c_fwd, lo_r, sp.lolo_c >> 1)
+            lolo = next_lolo
+
+        return lolo.copy() if need_lp else None
+
+    def inverse_parallel(self, lp: np.ndarray, fused_high, plans,
+                         pool, row_workers: int) -> np.ndarray:
+        """Exact native inverse DTCWT with row-band parallel level-0 synthesis."""
+        if pool is None or row_workers <= 1 or len(fused_high) == 0 or plans[0].in_r < 128:
+            return self.inverse(lp, fused_high, plans)
+        nlevels = len(fused_high)
+        sp0 = plans[0]
+        buf_r = max(sp0.in_r, max((2 * p.lolo_r for p in plans[1:]), default=0))
+        buf_c = max(sp0.in_c, max((2 * p.lolo_c for p in plans[1:]), default=0))
+        z = np.empty((buf_r, buf_c), dtype=np.float32)
+        cur_h, cur_w = lp.shape
+        z[:cur_h, :cur_w] = lp
+
+        y1 = np.empty((buf_r, buf_c), dtype=np.float32)
+        y2 = np.empty((buf_r, buf_c), dtype=np.float32)
+
+        for lvl in range(nlevels - 1, 0, -1):
+            sp = plans[lvl]
+            hp = fused_high[lvl]
+            in_r, in_c = sp.lolo_r, sp.lolo_c
+            out_r = 2 * in_r
+            prev_hp = fused_high[lvl - 1]
+            exp_r, exp_c = 2 * prev_hp.shape[0], 2 * prev_hp.shape[1]
+            off_y = 1 if out_r != exp_r else 0
+            off_x = 1 if (2 * in_c) != exp_c else 0
+
+            quad = y2[:in_r, :in_c]
+            _c2q_pair(hp, quad, 0, 5, self._inverse_scale)
+            _colifilt_v_add(z[:in_r, :in_c], quad, y1[:out_r, :in_c],
+                            self.g0b, self.g0a, self.g1b, self.g1a, sp.xe_r_inv, in_r, in_c)
+
+            q_hl = np.empty((in_r, in_c), dtype=np.float32)
+            q_hh = z[:in_r, :in_c]
+            _c2q_pair(hp, q_hl, 2, 3, self._inverse_scale)
+            _c2q_pair(hp, q_hh, 1, 4, self._inverse_scale)
+            _colifilt_v_add(q_hl, q_hh, y2[:out_r, :in_c],
+                            self.g0b, self.g0a, self.g1b, self.g1a, sp.xe_r_inv, in_r, in_c)
+            del q_hl
+
+            _colifilt_h_add_trim(
+                y1[:out_r, :in_c], y2[:out_r, :in_c], z[:exp_r, :exp_c],
+                self.g0b, self.g0a, self.g1b, self.g1a, sp.xe_c_inv,
+                out_r, in_c, off_y, off_x, exp_r, exp_c,
+            )
+
+        r, c = sp0.in_r, sp0.in_c
+        hp0 = fused_high[0]
+        hp0_h = hp0.shape[0]
+        z0 = z[:r, :c]
+        y1_0 = y1[:r, :c]
+        y2_0 = y2[:r, :c]
+        scale = self._inverse_scale
+
+        _run_bands_pool(
+            pool, row_workers, hp0_h,
+            lambda _b, y0, y1_b: _c2q_pair_rows(hp0, y2_0, 0, 5, scale, y0, y1_b),
+        )
+        _run_bands_pool(
+            pool, row_workers, r,
+            lambda _b, y0, y1_b: _colfilter_v_add0_rows(
+                z0, y2_0, y1_0, self.g0o, self.g1o, r, c, y0, y1_b,
+            ),
+        )
+
+        q_hl = np.empty((r, c), dtype=np.float32)
+        _run_bands_pool(
+            pool, row_workers, hp0_h,
+            lambda _b, y0, y1_b: (
+                _c2q_pair_rows(hp0, q_hl, 2, 3, scale, y0, y1_b),
+                _c2q_pair_rows(hp0, z0, 1, 4, scale, y0, y1_b),
+            ),
+        )
+        _run_bands_pool(
+            pool, row_workers, r,
+            lambda _b, y0, y1_b: _colfilter_v_add0_rows(
+                q_hl, z0, y2_0, self.g0o, self.g1o, r, c, y0, y1_b,
+            ),
+        )
+        del q_hl
+
+        _run_bands_pool(
+            pool, row_workers, r,
+            lambda _b, y0, y1_b: _colfilter_h_add0_rows(
+                y1_0, y2_0, z0, self.g0o, self.g1o, c, y0, y1_b,
+            ),
+        )
+        del y1, y2
+        return z0
 
     def warmup(self, dtype, ndim: int, is_bgra: bool = False):
         """Load/compile every needed njit signature on the caller thread before pooling."""
