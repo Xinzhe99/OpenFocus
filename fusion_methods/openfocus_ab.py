@@ -149,42 +149,44 @@ def _ordered_frame_results(count, produce, workers, should_cancel):
             _check_cancel(cancelled)
             yield index, produce(index, cancelled)
         return
-    from core.registration import carry_warp_accelerator
+    from core.registration import carry_warp_accelerator, deferred_alignment_pipeline
 
-    produce = carry_warp_accelerator(produce)
-    scratch = capture_scratch()
-    with ThreadPoolExecutor(max_workers=workers, initializer=_worker_native_limit) as pool:
-        window = deque()
-        next_index = 0
-        try:
-            while next_index < min(workers, count):
-                window.append(pool.submit(run_with_scratch, scratch, produce, next_index, cancelled))
-                next_index += 1
-            index = 0
-            while window:
-                _check_cancel(cancelled)
-                for pending in window:
-                    if pending.done() and pending.exception() is not None:
-                        pending.result()
-                if not window[0].done():
-                    wait((window[0],), timeout=0.05)
-                    continue
-                future = window.popleft()
-                result = future.result()
-                del future
-                _check_cancel(cancelled)
-                yield index, result
-                del result
-                index += 1
-                _check_cancel(cancelled)
-                if next_index < count:
+    with deferred_alignment_pipeline() as timing_pipeline:
+        produce = timing_pipeline.wrap_producer(carry_warp_accelerator(produce))
+        scratch = capture_scratch()
+        with ThreadPoolExecutor(max_workers=workers, initializer=_worker_native_limit) as pool:
+            window = deque()
+            next_index = 0
+            try:
+                while next_index < min(workers, count):
                     window.append(pool.submit(run_with_scratch, scratch, produce, next_index, cancelled))
                     next_index += 1
-        finally:
-            stop.set()
-            for future in window:
-                future.cancel()
-            window.clear()
+                index = 0
+                while window:
+                    _check_cancel(cancelled)
+                    for pending in window:
+                        if pending.done() and pending.exception() is not None:
+                            pending.result()
+                    if not window[0].done():
+                        with timing_pipeline.wait_scope():
+                            wait((window[0],), timeout=0.05)
+                        continue
+                    future = window.popleft()
+                    result = future.result()
+                    del future
+                    _check_cancel(cancelled)
+                    yield index, result
+                    del result
+                    index += 1
+                    _check_cancel(cancelled)
+                    if next_index < count:
+                        window.append(pool.submit(run_with_scratch, scratch, produce, next_index, cancelled))
+                        next_index += 1
+            finally:
+                stop.set()
+                for future in window:
+                    future.cancel()
+                window.clear()
 
 
 def _prepare_frame(frame, img_resize, should_cancel):

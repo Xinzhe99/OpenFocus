@@ -314,3 +314,17 @@ def test_mark_refuses_the_stable_cuda_variant(tmp_path):
     with pytest.raises(gpu.VariantError, match="preview"):
         gpu.mark("cuda", str(bundle))
     assert not (bundle / "OpenFocus.gpu-variant").exists()
+
+
+def test_gpu_manifest_is_valid_and_uses_python_312():
+    manifest = gpu.load_manifest()
+    assert gpu.validate(manifest) == []
+    items = gpu.variants(manifest)
+    assert items
+    for item in items:
+        assert item["python"] == "3.12", item["name"]
+        assert item["wheel_cp"] == "cp312", item["name"]
+        assert "cp312" in item["torch_wheel"], item["name"]
+        for wheel in item.get("support_wheels") or ():
+            if "-cp3" in wheel:
+                assert "cp312" in wheel and "cp310" not in wheel, (item["name"], wheel)

@@ -426,7 +426,15 @@ def test_danmaku_translation_modes_hover_tooltip_and_popover(qapp):
         assert len(bullets) == 3
         text_foreign, is_trans = bullets["c_foreign"].bullet_text("auto", "zh")
         assert is_trans is True
-        assert text_foreign == "复眼细节太绝了！ \U0001f310"
+        assert text_foreign == "复眼细节太绝了！"
+        assert "\U0001f310" not in text_foreign
+
+        # Smooth CoarseTimer & DPR pixmap raster cache
+        assert overlay._anim_timer.interval() <= 16
+        assert overlay._anim_timer.timerType() == Qt.TimerType.CoarseTimer
+        pm = overlay._bullet_pixmap(bullets["c_native"], "堆栈非常干净", 2.0)
+        assert not pm.isNull()
+        assert pm.devicePixelRatio() == 2.0
 
         # Hover over translated bullet sets original tooltip; moving off clears it.
         b_foreign = bullets["c_foreign"]
@@ -442,6 +450,71 @@ def test_danmaku_translation_modes_hover_tooltip_and_popover(qapp):
         )
         overlay.mouseMoveEvent(move_ev)
         assert "Incredible compound eye detail!" in overlay.toolTip()
+
+        # Inline action rects inside the hovered pill allow direct upvote/downvote/comment/report
+        actions = overlay._inline_action_rects(b_foreign)
+        assert set(actions.keys()) == {"upvote", "downvote", "comment", "report"}
+        votes_direct: list[tuple[str, int]] = []
+        drawer_requests: list[bool] = []
+        overlay.comment_voted.connect(lambda cid, v: votes_direct.append((cid, v)))
+        overlay.comments_drawer_requested.connect(lambda: drawer_requests.append(True))
+
+        up_center = actions["upvote"].center()
+        overlay.mouseMoveEvent(
+            QMouseEvent(
+                QMouseEvent.Type.MouseMove,
+                up_center,
+                overlay.mapToGlobal(up_center),
+                Qt.MouseButton.NoButton,
+                Qt.MouseButton.NoButton,
+                Qt.KeyboardModifier.NoModifier,
+            )
+        )
+        assert overlay._hovered_action == "upvote"
+        overlay.mousePressEvent(
+            QMouseEvent(
+                QMouseEvent.Type.MouseButtonPress,
+                up_center,
+                overlay.mapToGlobal(up_center),
+                Qt.MouseButton.LeftButton,
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+            )
+        )
+        assert votes_direct == [("c_foreign", 1)]
+        assert b_foreign.upvotes == 3
+        assert overlay.popover.isVisible() is False
+
+        cmt_center = overlay._inline_action_rects(b_foreign)["comment"].center()
+        overlay.mousePressEvent(
+            QMouseEvent(
+                QMouseEvent.Type.MouseButtonPress,
+                cmt_center,
+                overlay.mapToGlobal(cmt_center),
+                Qt.MouseButton.LeftButton,
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+            )
+        )
+        assert drawer_requests == [True]
+
+        rep_center = overlay._inline_action_rects(b_foreign)["report"].center()
+        overlay.mousePressEvent(
+            QMouseEvent(
+                QMouseEvent.Type.MouseButtonPress,
+                rep_center,
+                overlay.mapToGlobal(rep_center),
+                Qt.MouseButton.LeftButton,
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+            )
+        )
+        assert overlay.popover.isVisible() is True
+        assert overlay.popover.report_panel.isVisible() is True
+        overlay.popover.dismiss()
+        # Reset vote back to original state for the remaining assertions
+        overlay._on_popover_vote("c_foreign", 0)
+        overlay.mouseMoveEvent(move_ev)
 
         assert overlay.open_popover_for("c_foreign") is True
         assert "复眼细节太绝了！" in overlay.popover.lbl_preview.text()
@@ -504,3 +577,133 @@ def test_danmaku_translation_modes_hover_tooltip_and_popover(qapp):
         overlay.deleteLater()
     finally:
         trans.set_language(prev_lang)
+
+
+def test_danmaku_sent_toast_and_forced_own_spawn(qapp):
+    clock_now = [1.0]
+    overlay = DanmakuOverlay(settings=DanmakuSettings(density="low"), clock=lambda: clock_now[0])
+    overlay.resize(640, 360)
+    overlay.show()
+    # Fill both lanes of low density
+    overlay.set_comments(
+        [
+            {"id": "d1", "content": "First lane occupied"},
+            {"id": "d2", "content": "Second lane occupied"},
+        ],
+        work_id="w1",
+    )
+    assert len(overlay.active_bullets) == 2
+
+    # User submits their own comment: forced spawn makes it appear inside viewport immediately with is_own=True
+    own = overlay.add_comment({"id": "local-mine", "content": "刚发送的弹幕！"}, immediate=True, is_own=True)
+    assert own is not None
+    assert own.is_own is True
+    assert own in overlay.active_bullets
+    assert 0.0 <= own.x < overlay.width()
+
+    overlay.show_toast("弹幕已发送", duration_sec=2.0)
+    assert overlay._toast_remaining == 2.0
+    assert overlay._anim_timer.isActive()
+    overlay.step_animation(1.2)
+    assert abs(overlay._toast_remaining - 0.8) < 1e-6
+    overlay.step_animation(1.0)
+    assert overlay._toast_remaining == 0.0
+    assert overlay._toast_text == ""
+    overlay.deleteLater()
+
+
+def test_danmaku_dirty_rect_idle_skip_busy_throttle_and_lru_cache(qapp):
+    from PyQt6.QtWidgets import QWidget
+
+    host = QWidget()
+    host.resize(640, 360)
+    overlay = DanmakuOverlay(
+        host,
+        settings=DanmakuSettings(density="medium"),
+        auto_retranslate=False,
+    )
+    # Unlaid-out child with width=100 defers initial spawn until valid geometry/show
+    overlay.set_comments([_StubComment(id="c1", work_id="w1", content="Deferred bullet")], work_id="w1")
+    assert overlay.active_bullets == []
+    assert len(overlay.queued_comments) == 1
+
+    overlay.setGeometry(0, 0, 640, 360)
+    host.show()
+    qapp.processEvents()
+    assert len(overlay.active_bullets) == 1
+    assert overlay._anim_timer.isActive() is True
+    assert overlay._anim_timer.interval() == 16
+
+    # fusion_busy throttles to ~30 FPS (33ms) CoarseTimer
+    overlay.set_fusion_busy(True)
+    assert overlay._anim_timer.interval() == 33
+    assert overlay._anim_timer.timerType() == Qt.TimerType.CoarseTimer
+    overlay.set_fusion_busy(False)
+    assert overlay._anim_timer.interval() == 16
+
+    # Idle tick when all active bullets are paused skips update()
+    updates: list[Any] = []
+    orig_update = overlay.update
+
+    def _spy_update(*args):
+        updates.append(args)
+        return orig_update(*args)
+
+    overlay.update = _spy_update  # type: ignore[method-assign]
+    b1 = overlay.active_bullets[0]
+    b1.paused = True
+    overlay.step_animation(0.016)
+    assert updates == []
+
+    # Resumed motion triggers dirty-rect update smaller than full widget
+    b1.paused = False
+    overlay.step_animation(0.016)
+    assert len(updates) == 1
+    assert len(updates[0]) == 1 and updates[0][0].width() < overlay.width()
+
+    # confirm_vote triggers repaint for inline count update
+    updates.clear()
+    overlay.confirm_vote("c1", 1, 9, 0)
+    assert len(updates) == 1
+
+    # mouseMoveEvent skips redundant cursor/tooltip updates when hovering unchanged target
+    cursor_calls: list[Any] = []
+    orig_set_cursor = overlay.setCursor
+    overlay.setCursor = lambda c: (cursor_calls.append(c), orig_set_cursor(c))  # type: ignore[method-assign]
+    pt = QPointF(b1.x + 8.0, b1.y + 8.0)
+    ev = QMouseEvent(
+        QMouseEvent.Type.MouseMove, pt, pt,
+        Qt.MouseButton.NoButton, Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
+    )
+    overlay.mouseMoveEvent(ev)
+    overlay.mouseMoveEvent(ev)
+    assert len(cursor_calls) == 1
+
+    # OrderedDict LRU eviction keeps MRU entries at cap 128
+    for idx in range(130):
+        item = _StubComment(id=f"k{idx}", work_id="w1", content=f"msg {idx}")
+        di = overlay._floating_item(item)
+        assert di is not None
+        overlay._measure_item(di)
+        overlay._bullet_pixmap(di, di.content, 1.0)
+    assert len(overlay._pixmap_cache) == 128
+    assert all(k[0] != "k0" for k in overlay._pixmap_cache)
+
+    # Empty active + queued uses single-shot spawn wake timer instead of running 60 FPS timer
+    overlay.set_comments([_StubComment(id="q1", work_id="w1", content="Queued only")], work_id="w1")
+    assert len(overlay.active_bullets) == 1
+    only = overlay.active_bullets[0]
+    only.x = -only.width - 20.0
+    overlay.step_animation(0.016)
+    assert overlay.active_bullets == []
+    assert len(overlay.queued_comments) == 1
+    assert overlay._anim_timer.isActive() is False
+    assert overlay._spawn_wake_timer.isActive() is True
+
+    # Minimized window stops timers
+    host.showMinimized()
+    qapp.processEvents()
+    assert overlay._anim_timer.isActive() is False
+    assert overlay._spawn_wake_timer.isActive() is False
+    host.close()
+    host.deleteLater()

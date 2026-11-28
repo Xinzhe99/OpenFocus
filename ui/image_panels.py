@@ -1,7 +1,8 @@
 from dataclasses import dataclass
+import math
 
-from PyQt6.QtCore import QRect, QSize, QTimer, Qt
-from PyQt6.QtGui import QImage, QPainter
+from PyQt6.QtCore import QPointF, QRect, QSignalBlocker, QSize, QTimer, Qt
+from PyQt6.QtGui import QColor, QIcon, QImage, QPainter, QPen, QPixmap, QPolygonF
 from PyQt6.QtWidgets import (
     QCheckBox,
     QHBoxLayout,
@@ -63,6 +64,76 @@ QLabel#livePreviewStatus {{
     border-top: 1px solid {t['border']};
     padding: 4px {SPACE['md']}px;
 }}
+QPushButton#zoomBarButton {{
+    background-color: transparent;
+    color: {t['textMuted']};
+    border: 1px solid {t['border']};
+    border-radius: 12px;
+    min-width: 26px;
+    height: 24px;
+    padding: 0 7px;
+    font-size: 9pt;
+    font-weight: {WEIGHT['semibold']};
+}}
+QPushButton#zoomBarButton:hover {{
+    background-color: {t['surfaceHover']};
+    color: {t['text']};
+    border-color: {t['borderStrong']};
+}}
+QPushButton#zoomBarButton:checked {{
+    background-color: {t['accentSoft']};
+    color: {t['accentSoftText']};
+    border-color: {t['accentSoftText']};
+}}
+QPushButton#zoomBarButton:disabled {{
+    color: {t['textFaint']};
+    border-color: {t['border']};
+    background-color: transparent;
+}}
+QPushButton#zoomReadoutButton {{
+    background-color: transparent;
+    color: {t['textMuted']};
+    border: 1px solid transparent;
+    border-radius: {RADIUS['sm']}px;
+    padding: 2px 6px;
+    min-width: 48px;
+    font-size: 9pt;
+    font-weight: {WEIGHT['medium']};
+}}
+QPushButton#zoomReadoutButton:hover:enabled {{
+    background-color: {t['surfaceHover']};
+    color: {t['text']};
+}}
+QPushButton#zoomReadoutButton:disabled {{
+    color: {t['textFaint']};
+}}
+QSlider#resultZoomSlider {{
+    min-height: 20px;
+}}
+QSlider#resultZoomSlider::groove:horizontal {{
+    height: 4px;
+    background-color: {t['border']};
+    border-radius: 2px;
+}}
+QSlider#resultZoomSlider::sub-page:horizontal {{
+    background-color: {t['accent']};
+    border-radius: 2px;
+}}
+QSlider#resultZoomSlider::handle:horizontal {{
+    background-color: {t['surface']};
+    border: 1.5px solid {t['borderStrong']};
+    width: 12px;
+    height: 12px;
+    margin: -5px 0;
+    border-radius: 6px;
+}}
+QSlider#resultZoomSlider::handle:horizontal:hover {{
+    border-color: {t['accent']};
+}}
+QSlider#resultZoomSlider::handle:horizontal:disabled {{
+    background-color: {t['surface']};
+    border-color: {t['border']};
+}}
 QPushButton#panelToggle {{
     background-color: transparent;
     color: {t['textMuted']};
@@ -76,12 +147,20 @@ QPushButton#panelToggle:checked {{
     color: {t['accentSoftText']};
     border-color: {t['accentSoftText']};
 }}
+QPushButton#panelToggle:disabled {{
+    color: {t['textFaint']};
+}}
 """
 
 
 def apply_panel_theme(widget, theme: str) -> None:
     """Re-apply the panel stylesheet after a theme switch."""
     widget.setStyleSheet(_panel_qss(theme))
+    if isinstance(widget, _ResultZoomBar):
+        widget.apply_theme(theme)
+    else:
+        for bar in widget.findChildren(_ResultZoomBar):
+            bar.apply_theme(theme)
 
 
 @dataclass
@@ -94,6 +173,9 @@ class SourcePanel:
     info_label: QLabel
     roi_btn: QPushButton
     sharpness_curve: "SharpnessCurveWidget"
+    show_aligned_btn: QPushButton
+    align_area_btn: QPushButton
+    clear_align_area_btn: QPushButton
 
 
 @dataclass
@@ -173,42 +255,218 @@ class _LiveFusionPreviewPage(QWidget):
         painter.drawImage(target, self._image)
 
 
+def _draw_fit_window_pixmap(color_hex: str) -> QPixmap:
+    """Render a crisp monochrome four-way fit-to-window icon for HiDPI displays."""
+    pm = QPixmap(28, 28)
+    pm.setDevicePixelRatio(2.0)
+    pm.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pm)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    col = QColor(color_hex)
+    painter.setPen(QPen(col, 1.35, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+    painter.setBrush(col)
+    # Center cross hairlines + four outward cardinal arrowheads on a 14x14 canvas
+    c = 7.0
+    painter.drawLine(QPointF(c, 3.3), QPointF(c, 10.7))
+    painter.drawLine(QPointF(3.3, c), QPointF(10.7, c))
+    arrows = (
+        QPolygonF([QPointF(c, 1.2), QPointF(c - 2.1, 3.8), QPointF(c + 2.1, 3.8)]),
+        QPolygonF([QPointF(c, 12.8), QPointF(c - 2.1, 10.2), QPointF(c + 2.1, 10.2)]),
+        QPolygonF([QPointF(1.2, c), QPointF(3.8, c - 2.1), QPointF(3.8, c + 2.1)]),
+        QPolygonF([QPointF(12.8, c), QPointF(10.2, c - 2.1), QPointF(10.2, c + 2.1)]),
+    )
+    painter.setPen(Qt.PenStyle.NoPen)
+    for poly in arrows:
+        painter.drawPolygon(poly)
+    painter.end()
+    return pm
+
+
+def _make_fit_window_icon(theme: str) -> QIcon:
+    """Build a multi-state monochrome icon matching Normal/Checked/Disabled panel states."""
+    t = palette(theme)
+    icon = QIcon()
+    normal_pm = _draw_fit_window_pixmap(t["textMuted"])
+    active_pm = _draw_fit_window_pixmap(t["accentSoftText"])
+    disabled_pm = _draw_fit_window_pixmap(t["textFaint"])
+    icon.addPixmap(normal_pm, QIcon.Mode.Normal, QIcon.State.Off)
+    icon.addPixmap(active_pm, QIcon.Mode.Normal, QIcon.State.On)
+    icon.addPixmap(disabled_pm, QIcon.Mode.Disabled, QIcon.State.Off)
+    icon.addPixmap(disabled_pm, QIcon.Mode.Disabled, QIcon.State.On)
+    return icon
+
+
 class _ResultZoomBar(QWidget):
     """Zoom controls whose signal connections follow the widget lifetime."""
+
+    _SLIDER_MAX = 1000
 
     def __init__(self, image_label):
         super().__init__()
         self._image_label = image_label
+        self._theme = "light"
         self.setObjectName("panelControlBar")
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(8, 2, 8, 2)
+        layout.setContentsMargins(8, 3, 8, 3)
+        layout.setSpacing(6)
         layout.addStretch()
+
+        self._zoom_100 = QPushButton("1:1")
+        self._zoom_100.setObjectName("zoomBarButton")
+        self._zoom_100.setCheckable(True)
+        self._zoom_100.setProperty("controlId", "result_zoom_100")
+
+        self._zoom_fit = QPushButton()
+        self._zoom_fit.setObjectName("zoomBarButton")
+        self._zoom_fit.setCheckable(True)
+        self._zoom_fit.setIconSize(QSize(14, 14))
+        self._zoom_fit.setProperty("controlId", "result_zoom_fit")
+
         self._zoom_out = QPushButton("−")
+        self._zoom_out.setObjectName("zoomBarButton")
+        self._zoom_out.setProperty("controlId", "result_zoom_out")
+
+        self._zoom_slider = QSlider(Qt.Orientation.Horizontal)
+        self._zoom_slider.setObjectName("resultZoomSlider")
+        self._zoom_slider.setRange(0, self._SLIDER_MAX)
+        self._zoom_slider.setFixedWidth(136)
+        self._zoom_slider.setProperty("controlId", "result_zoom_slider")
+
         self._zoom_in = QPushButton("+")
-        self._zoom_level = QLabel()
-        self._zoom_level.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._zoom_level.setMinimumWidth(55)
+        self._zoom_in.setObjectName("zoomBarButton")
+        self._zoom_in.setProperty("controlId", "result_zoom_in")
+
+        self._zoom_level = QPushButton()
+        self._zoom_level.setObjectName("zoomReadoutButton")
+        self._zoom_level.setFlat(True)
+        self._zoom_level.setProperty("controlId", "result_zoom_readout")
+
+        layout.addWidget(self._zoom_100)
+        layout.addWidget(self._zoom_fit)
         layout.addWidget(self._zoom_out)
-        layout.addWidget(self._zoom_level)
+        layout.addWidget(self._zoom_slider)
         layout.addWidget(self._zoom_in)
+        layout.addWidget(self._zoom_level)
+        layout.addStretch()
+
+        self._zoom_100.clicked.connect(self._on_zoom_100)
+        self._zoom_fit.clicked.connect(self._on_zoom_fit)
         self._zoom_out.clicked.connect(lambda: image_label.zoom_view(False))
         self._zoom_in.clicked.connect(lambda: image_label.zoom_view(True))
+        self._zoom_slider.sliderMoved.connect(lambda v: self._apply_slider_value(v, interactive=True))
+        self._zoom_slider.sliderReleased.connect(
+            lambda: self._apply_slider_value(self._zoom_slider.value(), interactive=False)
+        )
+        self._zoom_slider.valueChanged.connect(self._on_slider_value_changed)
+        self._zoom_level.clicked.connect(self._on_zoom_readout_clicked)
+
         image_label.viewStateChanged.connect(self._update_controls)
         trans.languageChanged.connect(self._translate_controls)
+        self.apply_theme(self._theme)
         self._translate_controls()
+
+    def apply_theme(self, theme: str) -> None:
+        self._theme = theme or "light"
+        self._zoom_fit.setIcon(_make_fit_window_icon(self._theme))
+
+    @classmethod
+    def _slider_to_zoom(cls, value: int, minimum: float, maximum: float) -> float:
+        if minimum <= 0.0 or maximum <= minimum:
+            return minimum
+        ratio = max(0.0, min(1.0, value / float(cls._SLIDER_MAX)))
+        return minimum * ((maximum / minimum) ** ratio)
+
+    @classmethod
+    def _zoom_to_slider(cls, zoom: float, minimum: float, maximum: float) -> int:
+        if minimum <= 0.0 or maximum <= minimum or zoom <= minimum:
+            return 0
+        if zoom >= maximum:
+            return cls._SLIDER_MAX
+        ratio = math.log(zoom / minimum) / math.log(maximum / minimum)
+        return max(0, min(cls._SLIDER_MAX, int(round(ratio * cls._SLIDER_MAX))))
+
+    def _on_zoom_100(self) -> None:
+        if hasattr(self._image_label, "zoom_to_actual_pixels"):
+            self._image_label.zoom_to_actual_pixels()
+
+    def _on_zoom_fit(self) -> None:
+        if hasattr(self._image_label, "zoom_to_fit"):
+            self._image_label.zoom_to_fit()
+        elif hasattr(self._image_label, "reset_view"):
+            self._image_label.reset_view()
+
+    def _on_zoom_readout_clicked(self) -> None:
+        zoom, _, _, available = self._image_label.view_zoom_state()
+        if not available:
+            return
+        actual_pct = (
+            self._image_label.actual_zoom_percent()
+            if hasattr(self._image_label, "actual_zoom_percent")
+            else zoom * 100.0
+        )
+        if abs(actual_pct - 100.0) <= 1.5:
+            self._on_zoom_fit()
+        else:
+            self._on_zoom_100()
+
+    def _apply_slider_value(self, value: int, *, interactive: bool) -> None:
+        _, minimum, maximum, available = self._image_label.view_zoom_state()
+        if not available or not hasattr(self._image_label, "set_view_zoom"):
+            return
+        target = self._slider_to_zoom(value, minimum, maximum)
+        self._image_label.set_view_zoom(target, interactive=interactive, show_indicator=True)
+
+    def _on_slider_value_changed(self, value: int) -> None:
+        if not self._zoom_slider.isSliderDown():
+            self._apply_slider_value(value, interactive=False)
 
     def _update_controls(self):
         zoom, minimum, maximum, available = self._image_label.view_zoom_state()
+        actual_pct = (
+            self._image_label.actual_zoom_percent()
+            if hasattr(self._image_label, "actual_zoom_percent")
+            else zoom * 100.0
+        )
+        self._zoom_100.setEnabled(available)
+        self._zoom_fit.setEnabled(available)
         self._zoom_out.setEnabled(available and zoom > minimum)
         self._zoom_in.setEnabled(available and zoom < maximum)
-        self._zoom_level.setText(f"{zoom:.2f}×" if available else "—")
-        self._zoom_level.setAccessibleName(
-            trans.t('result_zoom_level').format(zoom=f"{zoom:.2f}×")
-            if available else trans.t('result_zoom_empty'))
+        self._zoom_slider.setEnabled(available and maximum > minimum)
+        self._zoom_level.setEnabled(available)
+
+        is_100 = bool(available and abs(actual_pct - 100.0) <= 1.5)
+        is_fit = bool(available and abs(zoom - 1.0) <= 0.015 and not is_100)
+        with QSignalBlocker(self._zoom_100):
+            self._zoom_100.setChecked(is_100)
+        with QSignalBlocker(self._zoom_fit):
+            self._zoom_fit.setChecked(is_fit)
+        with QSignalBlocker(self._zoom_slider):
+            self._zoom_slider.setValue(
+                self._zoom_to_slider(zoom, minimum, maximum) if available else 0
+            )
+
+        if available:
+            pct_str = f"{actual_pct:.0f}%"
+            self._zoom_level.setText(pct_str)
+            self._zoom_level.setToolTip(
+                trans.t('result_zoom_level').format(zoom=f"{zoom:.2f}× ({pct_str})")
+            )
+            self._zoom_level.setAccessibleName(
+                trans.t('result_zoom_level').format(zoom=f"{zoom:.2f}×")
+            )
+        else:
+            self._zoom_level.setText("—")
+            self._zoom_level.setToolTip(trans.t('result_zoom_empty'))
+            self._zoom_level.setAccessibleName(trans.t('result_zoom_empty'))
 
     def _translate_controls(self):
-        for button, key in ((self._zoom_out, 'result_zoom_out'),
-                            (self._zoom_in, 'result_zoom_in')):
+        for button, key in (
+            (self._zoom_100, 'result_zoom_100'),
+            (self._zoom_fit, 'result_zoom_fit'),
+            (self._zoom_out, 'result_zoom_out'),
+            (self._zoom_slider, 'result_zoom_slider'),
+            (self._zoom_in, 'result_zoom_in'),
+        ):
             button.setToolTip(trans.t(key))
             button.setAccessibleName(trans.t(key))
         self._update_controls()
@@ -268,10 +526,44 @@ def create_source_panel() -> SourcePanel:
     layout.setSpacing(0)
 
     container.setObjectName("panelRoot")
-    title = QLabel(' ' + trans.t('panel_source_stack'))
-    title.setObjectName("panelTitle")
-    title.setFixedHeight(26)
+    title_bar = QWidget()
+    title_bar.setObjectName("panelTitleBar")
+    title_bar.setMinimumHeight(26)
+    title_layout = QHBoxLayout(title_bar)
+    title_layout.setContentsMargins(SPACE['md'], 0, 6, 0)
+    title_layout.setSpacing(6)
+
+    title = QLabel(trans.t('panel_source_stack'))
+    title.setObjectName("panelTitleText")
     title.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+
+    align_area_btn = QPushButton(trans.t('btn_align_area'))
+    align_area_btn.setObjectName("panelToggle")
+    align_area_btn.setCheckable(True)
+    align_area_btn.setEnabled(False)
+    align_area_btn.setToolTip(trans.t('btn_align_area_hint'))
+    align_area_btn.setProperty("controlId", "btn_align_area")
+
+    clear_align_area_btn = QPushButton("×")
+    clear_align_area_btn.setObjectName("panelToggle")
+    clear_align_area_btn.setFixedWidth(26)
+    clear_align_area_btn.setStyleSheet("padding: 2px 4px;")
+    clear_align_area_btn.setVisible(False)
+    clear_align_area_btn.setToolTip(trans.t('btn_clear_align_area_hint'))
+    clear_align_area_btn.setProperty("controlId", "btn_clear_align_area")
+
+    show_aligned_btn = QPushButton(trans.t('btn_show_aligned'))
+    show_aligned_btn.setObjectName("panelToggle")
+    show_aligned_btn.setCheckable(True)
+    show_aligned_btn.setEnabled(False)
+    show_aligned_btn.setToolTip(trans.t('btn_show_aligned_hint'))
+    show_aligned_btn.setProperty("controlId", "btn_show_aligned")
+
+    title_layout.addWidget(title)
+    title_layout.addStretch()
+    title_layout.addWidget(align_area_btn)
+    title_layout.addWidget(clear_align_area_btn)
+    title_layout.addWidget(show_aligned_btn)
 
     image_label = MagnifierLabel("Drag images here to add source files\nor use the image menu")
     image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -322,7 +614,7 @@ def create_source_panel() -> SourcePanel:
     sharpness_curve = SharpnessCurveWidget()
     sharpness_curve.setVisible(False)
 
-    layout.addWidget(title)
+    layout.addWidget(title_bar)
     layout.addWidget(image_label, 1)
     layout.addWidget(sharpness_curve)
     layout.addWidget(control_bar)
@@ -336,6 +628,9 @@ def create_source_panel() -> SourcePanel:
         info_label=info_label,
         roi_btn=roi_btn,
         sharpness_curve=sharpness_curve,
+        show_aligned_btn=show_aligned_btn,
+        align_area_btn=align_area_btn,
+        clear_align_area_btn=clear_align_area_btn,
     )
 
 

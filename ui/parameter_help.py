@@ -113,18 +113,25 @@ def set_help_caption(button, label):
     button.setToolTip(name)
 
 
+def create_help_button(parent, label, kind, *description_keys, size=26):
+    """Create a keyboard-accessible help button bound to *label* and *kind*."""
+    button = QPushButton('?', parent)
+    button.setObjectName('helpButton')
+    button.setProperty('parameterHelp', kind)
+    button.setFixedSize(size, size)
+    button.setStyleSheet(help_button_style())
+    caption = label.text() if hasattr(label, 'text') else str(label)
+    set_help_caption(button, caption)
+    button.clicked.connect(lambda: _show_help(button, label, kind, description_keys))
+    return button
+
+
 def add_help_row(form, label, editor, kind, *description_keys):
     """Put a keyboard-accessible help button beside an existing form field."""
     if isinstance(label, str):
         label = QLabel(label)
         label.setBuddy(editor)
-    button = QPushButton('?')
-    button.setObjectName('helpButton')
-    button.setProperty('parameterHelp', kind)
-    button.setFixedSize(26, 26)
-    button.setStyleSheet(help_button_style())
-    set_help_caption(button, label.text())
-    button.clicked.connect(lambda: _show_help(button, label, kind, description_keys))
+    button = create_help_button(form.parentWidget(), label, kind, *description_keys)
     field = QHBoxLayout()
     field.setSpacing(6)
     field.addWidget(editor, 1)

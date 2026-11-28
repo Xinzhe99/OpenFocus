@@ -67,9 +67,16 @@ def raw_sensor_shape(sizes):
 
 
 def raw_decode_bytes(sensor_width, sensor_height, output_nbytes=0, encoded_bytes=0):
-    """Conservative full-sensor native workspace plus output and encoded input."""
-    return (int(sensor_width) * int(sensor_height) * 64
-            + int(output_nbytes) + int(encoded_bytes) * 2)
+    """Conservative full-sensor LibRaw workspace plus output and encoded input.
+
+    LibRaw unpacks raw samples (2 B/px for CFA, up to 8 B/px for 4-channel
+    stacked sensors) and processes in a 4-channel uint16 image buffer (8 B/px)
+    with tiled demosaic scratch, then copies into the output array. Opening by
+    pathname streams from disk, so 1x encoded input covers compressed-buffer
+    headroom without inflating multi-megapixel RAW admission by ~4.5x.
+    """
+    return (int(sensor_width) * int(sensor_height) * 16
+            + int(output_nbytes) + int(encoded_bytes))
 
 
 @dataclass(frozen=True)
