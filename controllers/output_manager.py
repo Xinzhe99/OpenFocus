@@ -411,6 +411,8 @@ class OutputRecord:
     source_paths: tuple = ()
     fusion_details: Any = None
     registration_details: Any = None
+    source_output_names: tuple = ()
+    source_output_ids: tuple = ()
 
     @classmethod
     def create(cls, image, label: str, *, context=None, kind: str = "fusion",
@@ -631,6 +633,11 @@ class OutputManager:
             h, w = record.image.shape[:2]
             lines.append(trans.t('status_res_fmt').format(w, h))
         lines.extend(line for line in record.tooltip_details if line not in lines)
+        if record.source_output_names:
+            lineage = trans.t("stack_outputs_lineage").format(
+                sources=", ".join(record.source_output_names))
+            if lineage not in lines:
+                lines.append(lineage)
         details = record.registration_details or getattr(record.context, 'registration_details', None)
         lines.extend(line for line in registration_tooltip_lines(details) if line not in lines)
         if record.kind in ('fusion', 'compare'):
@@ -796,7 +803,8 @@ class OutputManager:
 
     def update_output_list_for_fusion(self, label: str, *, context=None,
                                       linear_dng_metadata=None, source_paths=(),
-                                      fusion_details=None, registration_details=None) -> None:
+                                      fusion_details=None, registration_details=None,
+                                      source_output_names=(), source_output_ids=()) -> None:
         window = self.window
 
         image = None
@@ -813,6 +821,10 @@ class OutputManager:
                 record.linear_dng_metadata = deepcopy(linear_dng_metadata)
             if source_paths:
                 record.source_paths = tuple(source_paths)
+            if source_output_names:
+                record.source_output_names = tuple(str(name) for name in source_output_names)
+            if source_output_ids:
+                record.source_output_ids = tuple(str(oid) for oid in source_output_ids)
         self._insert_output(image, label, record)
 
     def add_batch_outputs(self, paths, watermark_baked: bool = False) -> int:
@@ -1187,15 +1199,23 @@ class OutputManager:
         self._report_export_result(written, failed, folder)
         return not failed
 
-    def _write_record(self, record, path, labels):
+    def _write_record(self, record, path, labels, *, float32_tiff: bool = False):
         self._validate_export_path(path, record)
         cfg = scalebar.export_cfg(self.window, record=record)
         calibration = scalebar.calibration_px_um(self.window, record)
         state = self._annotation_state(record, labels)
-        return run_pixel_worker(self.window, trans.t('action_save'),
-                                lambda: self._write_record_pixels(record, path, labels, cfg, calibration, state))
+        return run_pixel_worker(
+            self.window,
+            trans.t('action_save'),
+            lambda: self._write_record_pixels(
+                record, path, labels, cfg, calibration, state, float32_tiff=float32_tiff
+            ),
+        )
 
-    def _write_record_pixels(self, record, path, labels, cfg, calibration, state, *, should_cancel=None):
+    def _write_record_pixels(
+        self, record, path, labels, cfg, calibration, state, *,
+        should_cancel=None, float32_tiff: bool = False,
+    ):
         image = resolve_frame(record.image, should_cancel=should_cancel)
         if image is None:
             raise ValueError(trans.t('msg_no_valid_image_text'))
@@ -1218,7 +1238,8 @@ class OutputManager:
         if metadata is not None:
             from utils.linear_dng import develop_linear
             image = develop_linear(image, metadata)
-        if image.ndim == 3 and image.shape[2] == 4 and os.path.splitext(path)[1].lower() != '.png':
+        ext = os.path.splitext(path)[1].lower()
+        if image.ndim == 3 and image.shape[2] == 4 and ext != '.png':
             raise ValueError(trans.t('transparent_desktop_unsupported').format(path=path))
         if not record.annotations_baked:
             image = labels.prepare_bgr_image('output', image, 0, output_id=record.output_id)
@@ -1226,23 +1247,30 @@ class OutputManager:
         wm_cfg = state.get('watermark')
         if wm_cfg:
             from utils import watermark
-            image = watermark.burn(image, wm_cfg)
+            wm_meta = watermark.context_exif_meta(self.window, target='output', record=record)
+            image = watermark.burn(image, wm_cfg, exif_meta=wm_meta, value=1)
+        if float32_tiff and ext in ('.tif', '.tiff'):
+            from utils.image_utils import to_normalized_float32
+            image = to_normalized_float32(image)
+        strip_exif = bool(getattr(self.window, 'strip_exif_on_export', False))
         from core.image_loader import _read_exif_bytes, _read_icc_profile
         baked_path = record.export_path if record.annotations_baked else ""
         if baked_path:
-            exif = _read_exif_bytes(baked_path)
+            exif = b"" if strip_exif else _read_exif_bytes(baked_path)
             profile = _read_icc_profile(baked_path)
         else:
             record_context = getattr(record, 'context', None)
-            exif = (getattr(record_context, 'source_exif', b'')
-                    or getattr(record, 'source_exif', b'') or b'')
+            exif = b"" if strip_exif else (
+                getattr(record_context, 'source_exif', b'')
+                or getattr(record, 'source_exif', b'') or b''
+            )
             profile = (getattr(record_context, 'icc_profile', b'')
                        or getattr(record, 'icc_profile', b''))
         if metadata is not None:
             from utils.image_utils import srgb_icc_profile
             profile = srgb_icc_profile()
-        if not imwrite_auto(path, image, get_imwrite_params(os.path.splitext(path)[1]),
-                            exif=exif, icc_profile=profile):
+        if not imwrite_auto(path, image, get_imwrite_params(ext),
+                            exif=exif, icc_profile=profile, strip_exif=strip_exif):
             raise OSError(trans.t('msg_save_failed_info_write'))
 
     def _mark_record_exported(self, record, image, path, annotations=None):
@@ -1619,9 +1647,43 @@ class OutputManager:
                 target_item, QItemSelectionModel.SelectionFlag.NoUpdate)
         return target_item
 
+    def stackable_selected_records(self, target_item=None) -> list[OutputRecord]:
+        """Selected image-bearing output records in chronological (oldest-first) order."""
+        window = self.window
+        selected = list(window.output_list.selectedItems())
+        if target_item is not None and target_item not in selected:
+            selected = [target_item]
+        # Rows are newest-first (row 0 = latest); sort descending by row so
+        # chronological / substack order (Substack 1 -> 2 -> 3) is preserved.
+        ordered = sorted(
+            ((window.output_list.row(item), item) for item in selected),
+            key=lambda pair: pair[0],
+            reverse=True,
+        )
+        records = []
+        for row, item in ordered:
+            if row < 0:
+                continue
+            record = self._share_record_for_item(item, attach=True)
+            if record is not None and record.kind != "aligned" and record.image is not None:
+                records.append(record)
+        return records
+
+    def stack_selected_outputs(self, records=None, *, composite_label: str | None = None,
+                               interactive: bool = True):
+        """Directly fuse 2+ selected output records into a new composite output."""
+        if records is None:
+            records = self.stackable_selected_records()
+        return self.window.render_manager.start_stack_outputs(
+            list(records),
+            composite_label=composite_label,
+            interactive=interactive,
+        )
+
     def _build_output_context_menu(self, target_item) -> QMenu:
         window = self.window
         menu = QMenu(window.output_list)
+        menu.setToolTipsVisible(True)
 
         delete_action = QAction(trans.t("action_delete"), menu)
         delete_action.triggered.connect(self.delete_selected_output_images)
@@ -1637,12 +1699,40 @@ class OutputManager:
         save_as_action.setEnabled(action_target is not None)
         menu.addAction(save_as_action)
 
+        record = self.record_for_item(action_target)
+        export_psd_action = QAction(trans.t("action_export_layered_psd"), menu)
+        export_psd_action.triggered.connect(
+            lambda: window.export_manager.export_layered_psd_dialog(action_target))
+        export_psd_action.setEnabled(record is not None and record.image is not None)
+        menu.addAction(export_psd_action)
+
+        contrast_action = QAction(trans.t("action_export_contrast_map"), menu)
+        contrast_action.triggered.connect(
+            lambda: window.export_manager.export_contrast_map_dialog(action_target))
+        contrast_action.setEnabled(record is not None and record.image is not None)
+        menu.addAction(contrast_action)
+
         retouch_action = QAction(trans.t("action_retouch"), menu)
         retouch_action.triggered.connect(
             lambda: window.show_retouch_dialog(action_target))
-        record = self.record_for_item(action_target)
         retouch_action.setEnabled(record is not None and record.retouchable)
         menu.addAction(retouch_action)
+
+        stackable = self.stackable_selected_records(target_item)
+        render_mgr = getattr(window, "render_manager", None)
+        render_busy = bool(
+            render_mgr is not None
+            and (getattr(render_mgr, "_render_worker_active", lambda: False)()
+                 or getattr(render_mgr, "_compare_mode", False)
+                 or getattr(render_mgr, "_substack_mode", False))
+        )
+        stack_outputs_action = QAction(trans.t("action_stack_selected_outputs"), menu)
+        stack_outputs_action.setToolTip(trans.t("action_stack_selected_outputs_hint"))
+        stack_outputs_action.setEnabled(len(stackable) >= 2 and not render_busy)
+        stack_outputs_action.triggered.connect(
+            lambda _checked=False, recs=tuple(stackable): self.stack_selected_outputs(list(recs))
+        )
+        menu.addAction(stack_outputs_action)
 
         share_menu = menu.addMenu(trans.t("menu_share"))
         preview_action = QAction(trans.t("share_copy_preview"), share_menu)
@@ -1810,9 +1900,14 @@ class OutputManager:
                 return
             default_filename = window.export_manager.filename_from_label(record.label)
             layered_filter = trans.t('layered_tiff_filter')
-            filters = ('PNG 8/16-bit (*.png);;TIFF 8/16-bit (*.tif *.tiff);;JPG 8-bit (*.jpg);;'
-                       'WebP 8-bit (*.webp);;BMP 8-bit (*.bmp);;'
-                       + trans.t('linear_dng_filter') + ';;' + layered_filter)
+            tiff32_filter = trans.t('export_filter_tiff32')
+            jp2_filter = trans.t('export_filter_jp2')
+            psd_filter = trans.t('layered_psd_filter')
+            filters = ('PNG 8/16-bit (*.png);;TIFF 8/16-bit (*.tif *.tiff);;'
+                       + tiff32_filter + ';;JPG 8-bit (*.jpg);;'
+                       + jp2_filter + ';;WebP 8-bit (*.webp);;BMP 8-bit (*.bmp);;'
+                       + trans.t('linear_dng_filter') + ';;' + layered_filter
+                       + ';;' + psd_filter)
             from utils.settings_store import (image_save_default, image_save_filter,
                                               remember_image_save)
             file_path, selected_filter = FileDialog.getSaveFileName(
@@ -1824,6 +1919,9 @@ class OutputManager:
             if selected_filter == layered_filter:
                 window.export_manager.export_layered_tiff(record, original, file_path)
                 return
+            if selected_filter == psd_filter or os.path.splitext(file_path)[1].lower() == '.psd':
+                window.export_manager.export_layered_psd(record, original, file_path)
+                return
             file_path = window.export_manager.normalize_export_path(file_path, selected_filter=selected_filter)
             if os.path.splitext(file_path)[1].lower() == '.dng':
                 if (record.linear_dng_metadata is None or record.annotations_baked
@@ -1833,7 +1931,7 @@ class OutputManager:
                     return
                 self.start_linear_dng_export(record, original, file_path, labels)
                 return
-            self._write_record(record, file_path, labels)
+            self._write_record(record, file_path, labels, float32_tiff=(selected_filter == tiff32_filter))
             self._mark_record_exported(original, record.image, file_path, self._annotation_state(record, labels))
             from utils.output_share import notify_saved_path
             notify_saved_path(window, file_path)
@@ -1903,7 +2001,21 @@ class OutputManager:
                 watermark_canvas=source_shape,
                 annotations_baked=bool(record is not None and record.annotations_baked))
             display_image = to_display_uint8(image)
-            window.lbl_result_img.set_display_pixmap(cv2_to_pixmap(display_image))
+            profile = b""
+            if metadata is None:
+                if record is not None:
+                    profile = (
+                        getattr(record, "icc_profile", b"")
+                        or getattr(getattr(record, "context", None), "icc_profile", b"")
+                        or b""
+                    )
+                else:
+                    ctx = getattr(window, "last_render_context", None)
+                    profile = getattr(ctx, "icc_profile", b"") or b""
+            apply_icc = bool(getattr(window, "enable_ui_icc_preview", True))
+            window.lbl_result_img.set_display_pixmap(
+                cv2_to_pixmap(display_image, icc_profile=profile, apply_icc=apply_icc)
+            )
             window.result_control_bar.setVisible(False)
             window.lbl_result_info.setText("-- / --")
 
@@ -2144,7 +2256,14 @@ class OutputManager:
             key = ('registered', getattr(record, 'output_id', None), id(frame),
                    self._registration_preview_generation)
             self._registration_region_key = key
-            pixmap = cv2_to_pixmap(image)
+            reg_profile = b""
+            if metadata is None and record is not None:
+                frame_iccs = getattr(record, "frame_icc_profiles", ()) or ()
+                reg_profile = (
+                    frame_iccs[index] if 0 <= index < len(frame_iccs) else b""
+                ) or getattr(record, "icc_profile", b"") or b""
+            apply_icc = bool(getattr(window, "enable_ui_icc_preview", True))
+            pixmap = cv2_to_pixmap(image, icc_profile=reg_profile, apply_icc=apply_icc)
             native = pixmap if isinstance(frame, np.ndarray) and image.shape[:2] == source_shape[:2] else None
             view.set_display_pixmap(pixmap, source_size=(source_shape[1], source_shape[0]),
                                     source_key=key, source_pixmap=native)
@@ -2190,17 +2309,24 @@ class OutputManager:
         baked = bool(record is not None and record.annotations_baked)
         metadata = (record.linear_dng_metadata if record is not None and record.kind == 'aligned'
                     else getattr(window, 'linear_dng_metadata', None))
+        reg_profile = b""
+        if metadata is None and record is not None and bool(getattr(window, "enable_ui_icc_preview", True)):
+            frame_iccs = getattr(record, "frame_icc_profiles", ()) or ()
+            reg_profile = (
+                frame_iccs[index] if 0 <= index < len(frame_iccs) else b""
+            ) or getattr(record, "icc_profile", b"") or b""
         worker = SourceRegionWorker(frame, key, target='registered', index=index,
             labels=None if baked else window.label_manager.snapshot(),
             scale_cfg=None if baked else scalebar.export_cfg(window, target='registered', record=record),
             watermark_cfg=watermark.export_cfg(window, target='registered', record=record),
-            metadata=metadata)
+            metadata=metadata,
+            icc_profile=reg_profile)
         self._registration_region_worker = worker
         _ACTIVE_REGISTRATION_REGION_WORKERS.add(worker)
 
         def ready(decoded_key, completed_request, pixels, rect):
             if not _window_unavailable(window) and decoded_key == self._registration_region_key:
-                window.lbl_result_img.set_source_region(cv2_to_pixmap(pixels), rect,
+                window.lbl_result_img.set_source_region(cv2_to_pixmap(pixels, apply_icc=False), rect,
                     source_key=decoded_key, request=completed_request)
 
         def failed(decoded_key, message):

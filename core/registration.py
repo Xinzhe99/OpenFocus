@@ -85,6 +85,86 @@ _warp_threads_lock = threading.Lock()
 _deferred_warp_threads = ContextVar('deferred_warp_threads', default=None)
 _deferred_ecc_gpu = ContextVar('deferred_ecc_gpu', default=None)
 
+_deferred_alignment_timers_lock = threading.Lock()
+_deferred_alignment_timers = []
+
+
+class DeferredAlignmentTimer:
+    """Measure wall-clock time spent inside deferred alignment warps.
+
+    Uses active-depth reference counting so concurrent producer threads and
+    nested warp stages accumulate the wall-clock union of warp intervals
+    without double-counting or exceeding the enclosing stage's elapsed time.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._active = 0
+        self._started = 0.0
+        self._elapsed = 0.0
+        self._warps = 0
+
+    def _enter(self):
+        with self._lock:
+            if self._active == 0:
+                self._started = time.monotonic()
+            self._active += 1
+            self._warps += 1
+
+    def _exit(self):
+        with self._lock:
+            self._active -= 1
+            if self._active == 0:
+                self._elapsed += max(0.0, time.monotonic() - self._started)
+
+    @property
+    def elapsed(self) -> float:
+        with self._lock:
+            if self._active > 0:
+                return self._elapsed + max(0.0, time.monotonic() - self._started)
+            return self._elapsed
+
+    @property
+    def warps(self) -> int:
+        with self._lock:
+            return self._warps
+
+
+@contextmanager
+def deferred_alignment_timer():
+    """Observe wall-clock time spent applying deferred alignment transforms."""
+    timer = DeferredAlignmentTimer()
+    with _deferred_alignment_timers_lock:
+        _deferred_alignment_timers.append(timer)
+    try:
+        yield timer
+    finally:
+        with _deferred_alignment_timers_lock:
+            try:
+                _deferred_alignment_timers.remove(timer)
+            except ValueError:
+                pass
+
+
+@contextmanager
+def measure_deferred_alignment():
+    """Attribute this block's wall-clock span to all active alignment timers."""
+    if not _deferred_alignment_timers:
+        yield
+        return
+    with _deferred_alignment_timers_lock:
+        timers = tuple(_deferred_alignment_timers)
+    if not timers:
+        yield
+        return
+    for timer in timers:
+        timer._enter()
+    try:
+        yield
+    finally:
+        for timer in timers:
+            timer._exit()
+
 
 @contextmanager
 def deferred_warp_threads(threads):
@@ -331,6 +411,127 @@ def _compute_valid_region_from_transforms(H_matrices, img_shape, margin=2):
 
 
 
+_INTERPOLATION_FLAGS = {
+    'lanczos': cv2.INTER_LANCZOS4,
+    'cubic': cv2.INTER_CUBIC,
+    'linear': cv2.INTER_LINEAR,
+}
+
+
+def interpolation_flag(interpolation: str) -> int:
+    """Resolve OpenFocus interpolation name to the corresponding OpenCV flag."""
+    key = 'lanczos' if interpolation is None else str(interpolation).lower()
+    if key not in _INTERPOLATION_FLAGS:
+        raise ValueError(f"Unsupported interpolation: {interpolation!r} (expected 'lanczos', 'cubic', or 'linear')")
+    return _INTERPOLATION_FLAGS[key]
+
+
+def normalize_alignment_roi(alignment_roi, img_shape):
+    """Validate and clamp an (x, y, w, h) alignment detection area to source dimensions."""
+    if alignment_roi is None:
+        return None
+    if len(alignment_roi) != 4:
+        raise ValueError('alignment_roi must be a 4-tuple (x, y, w, h)')
+    h, w = int(img_shape[0]), int(img_shape[1])
+    rx, ry, rw, rh = (int(round(float(v))) for v in alignment_roi)
+    rx = max(0, min(rx, max(0, w - 1)))
+    ry = max(0, min(ry, max(0, h - 1)))
+    rw = max(0, min(rw, w - rx))
+    rh = max(0, min(rh, h - ry))
+    if rw < 8 or rh < 8:
+        raise ValueError('alignment_roi must be at least 8x8 pixels within the source image')
+    return (rx, ry, rw, rh)
+
+
+def conjugate_roi_matrix(matrix, rx: int, ry: int):
+    """Translate a 3x3 transform estimated in ROI coordinates back to full-frame coordinates.
+
+    Computes ``T(rx, ry) @ M_roi @ T(-rx, -ry)`` in float64 precision.
+    """
+    m64 = np.asarray(matrix, dtype=np.float64)
+    if m64.shape == (2, 3):
+        m64 = np.vstack([m64, np.array([[0.0, 0.0, 1.0]], dtype=np.float64)])
+        is_affine = True
+    else:
+        is_affine = False
+    t_pos = np.array([[1.0, 0.0, float(rx)], [0.0, 1.0, float(ry)], [0.0, 0.0, 1.0]], dtype=np.float64)
+    t_neg = np.array([[1.0, 0.0, float(-rx)], [0.0, 1.0, float(-ry)], [0.0, 0.0, 1.0]], dtype=np.float64)
+    full = t_pos @ m64 @ t_neg
+    if abs(full[2, 2]) > 1e-12:
+        full = full / full[2, 2]
+    out = full[:2, :] if is_affine else full
+    return out.astype(np.asarray(matrix).dtype, copy=False)
+
+
+def validate_transform_bounds(
+    matrix,
+    img_shape,
+    *,
+    max_shift_x_ratio=None,
+    max_shift_y_ratio=None,
+    max_rotation_deg=None,
+    max_scale_change=None,
+    center=None,
+):
+    """Return a failure reason string if a 3x3 transform violates geometric bounds, else None."""
+    if (max_shift_x_ratio is None and max_shift_y_ratio is None
+            and max_rotation_deg is None and max_scale_change is None):
+        return None
+    h, w = float(img_shape[0]), float(img_shape[1])
+    cx, cy = (w / 2.0, h / 2.0) if center is None else (float(center[0]), float(center[1]))
+    m = np.asarray(matrix, dtype=np.float64).reshape(3, 3)
+    if not np.all(np.isfinite(m)) or abs(m[2, 2]) < 1e-12:
+        return 'motion outside limits'
+    m = m / m[2, 2]
+    p = m @ np.array([cx, cy, 1.0], dtype=np.float64)
+    if not np.all(np.isfinite(p)) or p[2] <= 1e-6:
+        return 'motion outside limits'
+    px, py = p[0] / p[2], p[1] / p[2]
+    dx = px - cx
+    dy = py - cy
+
+    # Local 2x2 Jacobian of projective map (H0.p / H2.p, H1.p / H2.p) at (cx, cy).
+    inv_w = 1.0 / p[2]
+    j00 = (m[0, 0] - px * m[2, 0]) * inv_w
+    j01 = (m[0, 1] - px * m[2, 1]) * inv_w
+    j10 = (m[1, 0] - py * m[2, 0]) * inv_w
+    j11 = (m[1, 1] - py * m[2, 1]) * inv_w
+    jac = np.array([[j00, j01], [j10, j11]], dtype=np.float64)
+    if not np.all(np.isfinite(jac)) or np.linalg.det(jac) <= 1e-6:
+        return 'motion outside limits'
+
+    if max_shift_x_ratio is not None:
+        rx = float(max_shift_x_ratio)
+        tol_x = 0.25 if rx == 0.0 else 1e-4
+        if abs(dx) > w * rx + tol_x:
+            return 'horizontal shift outside limits'
+    if max_shift_y_ratio is not None:
+        ry = float(max_shift_y_ratio)
+        tol_y = 0.25 if ry == 0.0 else 1e-4
+        if abs(dy) > h * ry + tol_y:
+            return 'vertical shift outside limits'
+
+    u, s, vt = np.linalg.svd(jac)
+    rot_mat = u @ vt
+    if np.linalg.det(rot_mat) < 0:
+        u[:, -1] *= -1
+        rot_mat = u @ vt
+    rot_deg = abs(math.degrees(math.atan2(rot_mat[1, 0], rot_mat[0, 0])))
+    scale_change = max(abs(float(s[0]) - 1.0), abs(float(s[1]) - 1.0))
+
+    if max_rotation_deg is not None:
+        rlim = float(max_rotation_deg)
+        tol_rot = 0.05 if rlim == 0.0 else 1e-4
+        if rot_deg > rlim + tol_rot:
+            return 'rotation outside limits'
+    if max_scale_change is not None:
+        slim = float(max_scale_change)
+        tol_scale = 0.002 if slim == 0.0 else 1e-4
+        if scale_change > slim + tol_scale:
+            return 'scale change outside limits'
+    return None
+
+
 def _registration_gray(image, *, is_rgb=False):
     if image.ndim == 2:
         return image
@@ -349,17 +550,18 @@ def _registration_gray(image, *, is_rgb=False):
 # ========== 单应性对齐算法实现（非线性） ==========
 
 
-def _align_homography_impl(input_source, output_path=None, img_filenames=None, downscale_width=1600, thread_count: int = 4, should_cancel=None, failure_policy='continue', *, defer_warps=False, plan_callback=None, dispatch_callback=None, accelerate_warp=True):
+def _align_homography_impl(input_source, output_path=None, img_filenames=None, downscale_width=1600, thread_count: int = 4, should_cancel=None, failure_policy='continue', *, defer_warps=False, plan_callback=None, dispatch_callback=None, accelerate_warp=True, alignment_roi=None, max_shift_x_ratio=None, max_shift_y_ratio=None, max_rotation_deg=None, max_scale_change=None, auto_crop=True, interpolation='lanczos'):
     """
     商业级图像对齐算法优化版
     特性：
     1. 传递对齐 (Sequential Alignment)：解决大景深下的特征丢失问题
     2. 金字塔加速 (Downscale Processing)：大幅提升特征检测速度
     3. 矩阵累积 (Matrix Chaining)：减少累积误差
-    4. Lanczos插值：保证画质清晰度
+    4. 可选插值（Lanczos / Bicubic / Bilinear）：兼顾画质与速度
     5. 并行计算优化 (Parallel Processing)：利用多核加速特征提取和图像变换
     """
     # Directory loading and source policy belong to ImageRegistration.process.
+    interpolation_flag(interpolation)
     images = input_source
 
     num_images = len(images)
@@ -370,6 +572,8 @@ def _align_homography_impl(input_source, output_path=None, img_filenames=None, d
 
     # --- 初始化 ---
     h_orig, w_orig = images[0].shape[:2]
+    roi = normalize_alignment_roi(alignment_roi, (h_orig, w_orig))
+    roi_center = ((roi[0] + roi[2] / 2.0, roi[1] + roi[3] / 2.0) if roi is not None else None)
     # 如果单张图像过大（任一边 >= 2048），强制将用于下采样的目标宽度设为 1024
     max_dim = max(h_orig, w_orig)
     if max_dim >= 2048:
@@ -392,14 +596,23 @@ def _align_homography_impl(input_source, output_path=None, img_filenames=None, d
     # --- 2. 并行特征提取 ---
     print("  - Step 1/3: Extracting features concurrently...")
 
+    from core.frame_resolution_cache import within_retention_limit
+    large_stack = not within_retention_limit(images)
+
     def get_features_task(img):
-        from core.source_frames import resolve_frame
+        from core.source_frames import resolve_frame, without_source_cache_growth
         from core.openfocus_alignment import _can_use_file_digest
         source = img
-        img = resolve_frame(img, should_cancel=should_cancel)
-        identity = (_perspective_source_file(source, should_cancel)
-                    if _can_use_file_digest(source)
-                    else _perspective_source(source, img, should_cancel))
+        use_file_digest = _can_use_file_digest(source)
+        identity = _perspective_source_file(source, should_cancel) if use_file_digest else None
+        cache_scope = without_source_cache_growth() if large_stack else nullcontext()
+        with cache_scope:
+            img = resolve_frame(img, should_cancel=should_cancel)
+        if identity is None:
+            identity = _perspective_source(source, img, should_cancel)
+        if roi is not None:
+            rx, ry, rw, rh = roi
+            img = img[ry:ry + rh, rx:rx + rw]
         # 在线程中创建独立的检测器，确保线程安全
         local_detector = cv2.SIFT_create()
         h, w = img.shape[:2]
@@ -407,6 +620,8 @@ def _align_homography_impl(input_source, output_path=None, img_filenames=None, d
         if scale < 1.0:
             # 使用 INTER_LINEAR 速度更快，对于特征检测通常足够
             img_small = cv2.resize(img, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_LINEAR)
+            # Release full-resolution source pixels before quantization and SIFT.
+            del img
         else:
             img_small = img
         if img_small.dtype != np.uint8:
@@ -490,17 +705,30 @@ def _align_homography_impl(input_source, output_path=None, img_filenames=None, d
             pts_last = np.float32([last_kps[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2) / last_scale
             H_local, mask = cv2.findHomography(pts_curr, pts_last, cv2.RANSAC, 5.0)
             _check_cancel(should_cancel)
-            estimated = H_local is not None
-            if H_local is None:
-                print(f"Frame {idx} alignment failed.")
+            if H_local is not None and roi is not None:
+                H_local = conjugate_roi_matrix(H_local, roi[0], roi[1])
+            bound_reason = (
+                validate_transform_bounds(
+                    H_local, (h_orig, w_orig),
+                    max_shift_x_ratio=max_shift_x_ratio,
+                    max_shift_y_ratio=max_shift_y_ratio,
+                    max_rotation_deg=max_rotation_deg,
+                    max_scale_change=max_scale_change,
+                    center=roi_center,
+                )
+                if H_local is not None else 'homography estimation failed'
+            )
+            estimated = bound_reason is None
+            if not estimated:
+                print(f"Frame {idx} alignment rejected ({bound_reason}).")
                 if failure_policy == 'fail':
-                    _report_alignment(idx, 'homography', 'failed', reason='homography estimation failed', reference_index=last_index, match_count=len(good_matches))
-                    raise RejectedAlignmentFrame('Homography', idx, 'homography estimation failed')
-                _report_alignment(idx, 'homography', 'fallback', reason='homography estimation failed',
+                    _report_alignment(idx, 'homography', 'failed', reason=bound_reason, reference_index=last_index, match_count=len(good_matches))
+                    raise RejectedAlignmentFrame('Homography', idx, bound_reason)
+                _report_alignment(idx, 'homography', 'fallback', reason=bound_reason,
                                   reference_index=last_index, transform=H_global,
                                   match_count=len(good_matches))
                 trajectory_failed = True
-                H_local = np.eye(3)
+                H_local = np.eye(3, dtype=np.float32)
             H_global = np.matmul(H_global, H_local)
             H_matrices.append(H_global.copy())
             if estimated:
@@ -518,32 +746,39 @@ def _align_homography_impl(input_source, output_path=None, img_filenames=None, d
     # --- 4. 并行应用变换与裁切 ---
     print("  - Step 3/3: Warping images concurrently...")
     
-    # 预先计算裁切区域，直接变换到目标区域，避免先变换后裁切的浪费
-    top, bottom, left, right = _compute_valid_region_from_transforms(H_matrices, (h_orig, w_orig))
-    _record_grouped_crop(top, bottom, left, right)
-    
-    do_crop = True
-    if top >= bottom or left >= right:
-        print("Warning: Invalid crop region, skipping crop.")
+    if auto_crop:
+        # 预先计算裁切区域，直接变换到目标区域，避免先变换后裁切的浪费
+        top, bottom, left, right = _compute_valid_region_from_transforms(H_matrices, (h_orig, w_orig))
+        _record_grouped_crop(top, bottom, left, right)
+        do_crop = True
+        if top >= bottom or left >= right:
+            print("Warning: Invalid crop region, skipping crop.")
+            do_crop = False
+            target_w, target_h = w_orig, h_orig
+            offset_x, offset_y = 0, 0
+        else:
+            target_w = right - left
+            target_h = bottom - top
+            offset_x = -left
+            offset_y = -top
+            print(f"    Optimized: Warping directly to cropped region ({target_w}x{target_h})...")
+    else:
+        top, bottom, left, right = 0, h_orig, 0, w_orig
+        _record_grouped_crop(top, bottom, left, right)
         do_crop = False
         target_w, target_h = w_orig, h_orig
         offset_x, offset_y = 0, 0
-    else:
-        target_w = right - left
-        target_h = bottom - top
-        offset_x = -left
-        offset_y = -top
-        print(f"    Optimized: Warping directly to cropped region ({target_w}x{target_h})...")
 
     # 构造裁切平移矩阵
     T_crop = np.array([[1, 0, offset_x], [0, 1, offset_y], [0, 0, 1]], dtype=np.float32)
 
-    with deferred_ecc_warp_accelerator(accelerate_warp and
+    with deferred_ecc_warp_accelerator(accelerate_warp and interpolation == 'lanczos' and
                                        (not defer_warps or output_path)) as warp:
         aligned_images = _apply_perspective_warps(
             images, H_matrices, T_crop if do_crop else None, (target_w, target_h),
             max_workers, should_cancel, defer_warps, method='homography', sources=source_identities,
-            bounds=(top, bottom, left, right), plan_callback=plan_callback)
+            bounds=(top, bottom, left, right), plan_callback=plan_callback,
+            interpolation=interpolation)
         _save_registration(aligned_images, output_path, img_filenames, should_cancel)
     warp_device = 'CPU'
     if warp is not None and warp.gpu_warps:
@@ -737,6 +972,7 @@ class PerspectiveWarp:
     dsize: tuple
     should_cancel: object = None
     method: str = ''
+    interpolation: str = 'lanczos'
 
     def _is_integer_crop(self, src_shape, src_dtype):
         a, b, tx, c, d, ty, p, q, r = self.matrix
@@ -797,7 +1033,7 @@ class PerspectiveWarp:
             return crop.copy(order='C')
         matrix = np.asarray(self.matrix, dtype=self.matrix_dtype).reshape(3, 3)
         backend = _deferred_ecc_gpu.get()
-        if backend is not None:
+        if backend is not None and self.interpolation == 'lanczos':
             # Direct RGB TIFF frames arrive as a reversed view of contiguous storage.
             bgr_rev = _is_bgr_rev(image)
             warp_src = image[..., ::-1] if bgr_rev else image
@@ -814,7 +1050,7 @@ class PerspectiveWarp:
         bgr_rev = _is_bgr_rev(image) and _native_kernels.available()
         src = image[..., ::-1] if bgr_rev else image
         threads = _warp_thread_budget()
-        warped = self._run_cv_warp(src, matrix, self.dsize, cv2.INTER_LANCZOS4, threads,
+        warped = self._run_cv_warp(src, matrix, self.dsize, interpolation_flag(self.interpolation), threads,
                                    destination=destination)
         _check_cancel(cancel_fn)
         if bgr_rev:
@@ -829,14 +1065,16 @@ class PerspectiveWarp:
         return warped
 
     def __call__(self, image):
-        self.source.validate_pixels(image, self.should_cancel)
-        return self._apply_to_image(image)
+        with measure_deferred_alignment():
+            self.source.validate_pixels(image, self.should_cancel)
+            return self._apply_to_image(image)
 
     def call_with_source(self, source_frame, image, *, should_cancel=None):
         """Validate against the original source descriptor before applying the warp."""
         cancel_fn = _merge_cancel_callbacks(self.should_cancel, should_cancel)
-        self.source.validate_pixels(image, cancel_fn, source=source_frame)
-        return self._apply_to_image(image, should_cancel=cancel_fn)
+        with measure_deferred_alignment():
+            self.source.validate_pixels(image, cancel_fn, source=source_frame)
+            return self._apply_to_image(image, should_cancel=cancel_fn)
 
     def _call_mapped_jpeg(self, source_frame, image, *, should_cancel=None):
         """Warp packed BGR pixels into an owned mapping with bounded CPU workspace."""
@@ -844,27 +1082,28 @@ class PerspectiveWarp:
         from core.resource_policy import ResourceLimitError, require_memory
 
         cancel_fn = _merge_cancel_callbacks(self.should_cancel, should_cancel)
-        integer_crop = self._is_integer_crop(image.shape, image.dtype)
-        required = 128 * 1024 + (0 if integer_crop else _perspective_cpu_tile_bytes(self.dsize))
-        try:
-            require_memory(required)
-        except ResourceLimitError:
-            from core.source_frames import SOURCE_CACHE
+        with measure_deferred_alignment():
+            integer_crop = self._is_integer_crop(image.shape, image.dtype)
+            required = 128 * 1024 + (0 if integer_crop else _perspective_cpu_tile_bytes(self.dsize))
+            try:
+                require_memory(required)
+            except ResourceLimitError:
+                from core.source_frames import SOURCE_CACHE
 
-            SOURCE_CACHE.clear()
-            gc.collect()
-            require_memory(required)
-        with frame_region(image) as pixels:
-            self.source.validate_pixels(pixels, cancel_fn, source=source_frame)
-            output = create_frame(_perspective_output_shape(image.shape, self.dsize), image.dtype)
-            # Close the written view before the root mapping enters the staged stack.
-            with frame_region(output, write=True, writeback=True) as destination:
-                _check_cancel(cancel_fn)
-                warped = self._apply_to_image(pixels, should_cancel=cancel_fn, destination=destination)
-                if warped is not destination:
-                    np.copyto(destination, warped)
-        _check_cancel(cancel_fn)
-        return output
+                SOURCE_CACHE.clear()
+                gc.collect()
+                require_memory(required)
+            with frame_region(image) as pixels:
+                self.source.validate_pixels(pixels, cancel_fn, source=source_frame)
+                output = create_frame(_perspective_output_shape(image.shape, self.dsize), image.dtype)
+                # Close the written view before the root mapping enters the staged stack.
+                with frame_region(output, write=True, writeback=True) as destination:
+                    _check_cancel(cancel_fn)
+                    warped = self._apply_to_image(pixels, should_cancel=cancel_fn, destination=destination)
+                    if warped is not destination:
+                        np.copyto(destination, warped)
+            _check_cancel(cancel_fn)
+            return output
 
     def _full_warp_crop(self, image, x, y, width, height, channels, should_cancel):
         from core import _alignment_kernels
@@ -890,10 +1129,7 @@ class PerspectiveWarp:
     def warp_region(self, source_or_image, x, y, width, height, *,
                     channels=None, should_cancel=None):
         """Compute one destination rectangle bit-identical to full warp[y:y+h, x:x+w]."""
-        from core import _alignment_kernels as _native_kernels
-        from core.openfocus_alignment import _is_bgr_rev, _run_row_bands, _validate_direct_rgb_source
-        from core.resource_policy import require_memory
-        from core.source_frames import _read_direct_rgb_tiff_region, is_direct_rgb_tiff, resolve_frame
+        from core.source_frames import is_direct_rgb_tiff, resolve_frame
 
         cancel_fn = _merge_cancel_callbacks(self.should_cancel, should_cancel)
         _check_cancel(cancel_fn)
@@ -903,13 +1139,27 @@ class PerspectiveWarp:
 
         direct_tiff = is_direct_rgb_tiff(source_or_image)
         image = None
+        if not direct_tiff:
+            image = (source_or_image if isinstance(source_or_image, np.ndarray)
+                     else resolve_frame(source_or_image, should_cancel=cancel_fn))
+        with measure_deferred_alignment():
+            return self._warp_region_resolved(
+                source_or_image, image, direct_tiff, x, y, width, height,
+                channels=channels, cancel_fn=cancel_fn,
+            )
+
+    def _warp_region_resolved(self, source_or_image, image, direct_tiff, x, y, width, height, *,
+                              channels=None, cancel_fn=None):
+        from core import _alignment_kernels as _native_kernels
+        from core.openfocus_alignment import _is_bgr_rev, _run_row_bands, _validate_direct_rgb_source
+        from core.resource_policy import require_memory
+        from core.source_frames import _read_direct_rgb_tiff_region, resolve_frame
+
         if direct_tiff:
             _validate_direct_rgb_source(self.source, source_or_image, cancel_fn)
         elif isinstance(source_or_image, np.ndarray):
-            image = source_or_image
             self.source.validate_pixels(image, cancel_fn)
         else:
-            image = resolve_frame(source_or_image, should_cancel=cancel_fn)
             self.source.validate_pixels(image, cancel_fn, source=source_or_image)
 
         src_shape = tuple(source_or_image.shape)
@@ -979,7 +1229,7 @@ class PerspectiveWarp:
             require_memory(math.prod(out_shape) * src_dtype.itemsize)
             return np.zeros(out_shape, dtype=src_dtype)
         backend = _deferred_ecc_gpu.get()
-        if backend is not None:
+        if backend is not None and self.interpolation == 'lanczos':
             if direct_tiff:
                 with source_or_image._open_direct_tiff() as stream:
                     with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as mm:
@@ -1012,7 +1262,7 @@ class PerspectiveWarp:
         M_sub_inv = T_src @ (M_inv @ T_shift)
 
         threads = _warp_thread_budget()
-        flags = cv2.INTER_LANCZOS4 | cv2.WARP_INVERSE_MAP
+        flags = interpolation_flag(self.interpolation) | cv2.WARP_INVERSE_MAP
         if direct_tiff:
             have_native = _native_kernels.available()
             src_ch = src_shape[2] if len(src_shape) == 3 else 1
@@ -1078,11 +1328,12 @@ def _perspective_cpu_tile_bytes(dsize):
 def _perspective_scratch_bytes(frame, warp, shape):
     from core.source_frames import SourceFrame
 
-    if (type(frame) is not SourceFrame or not frame._jpeg_components
+    if (type(frame) is not SourceFrame or frame._rgb_tiff_offset is not None
+            or not (frame._jpeg_components or frame.raw_sensor_shape)
             or frame.scale != 1.0 or frame.transforms):
         return None
-    # JPEG decode, orientation and resolution-cache reads all return packed
-    # pixels. OpenCV can borrow that input and write one independent output.
+    # Decoded JPEG and RAW sources resolve to packed C-contiguous BGR arrays.
+    # OpenCV can borrow that input and write one independent output.
     output = math.prod(shape) * frame.dtype.itemsize
     hash_bytes = 128 * 1024
     if warp._is_integer_crop(frame.shape, frame.dtype):
@@ -1106,6 +1357,7 @@ class PerspectiveStage:
     matrix_dtypes: tuple
     bounds: tuple
     dsize: tuple
+    interpolation: str = 'lanczos'
 
     def __post_init__(self):
         count = len(self.sources)
@@ -1115,7 +1367,8 @@ class PerspectiveStage:
                 or len(self.matrices) != count or len(self.matrix_dtypes) != count
                 or len(self.bounds) != 4 or len(self.dsize) != 2
                 or any(type(value) is not int or value <= 0 for value in self.dsize)
-                or any(type(value) is not int for value in self.bounds)):
+                or any(type(value) is not int for value in self.bounds)
+                or self.interpolation not in _INTERPOLATION_FLAGS):
             raise ValueError('Invalid perspective stage geometry')
         top, bottom, left, right = self.bounds
         height, width = self.sources[0].shape[:2]
@@ -1157,7 +1410,10 @@ class PerspectiveStage:
         self.validate_sources(images, should_cancel=should_cancel)
         frames = []
         for image, source, matrix, dtype in zip(images, self.sources, self.matrices, self.matrix_dtypes):
-            warp = PerspectiveWarp(source, matrix, dtype, self.dsize, should_cancel, method=self.method)
+            warp = PerspectiveWarp(
+                source, matrix, dtype, self.dsize, should_cancel,
+                method=self.method, interpolation=self.interpolation,
+            )
             shape = _perspective_output_shape(image.shape, self.dsize)
             frames.append(process_frame(image, warp, shape=shape, should_cancel=should_cancel,
                                         scratch_bytes=_perspective_scratch_bytes(image, warp, shape)))
@@ -1209,18 +1465,23 @@ class PerspectiveAlignmentPlan:
                 source['context'], source.get('digest_kind', 'pixel')) for source in item['sources'])
             stages.append(PerspectiveStage(item['method'], sources,
                 tuple(tuple(matrix) for matrix in item['matrices']), tuple(item['matrix_dtypes']),
-                tuple(item['bounds']), tuple(item['dsize'])))
+                tuple(item['bounds']), tuple(item['dsize']),
+                interpolation=item.get('interpolation', 'lanczos')))
         return cls(tuple(stages), data['parameters'], data['downscale_width'])
 
 
 def _apply_perspective_warps(images, matrices, crop, dsize, workers,
                              should_cancel, defer_warps, *, method, sources,
-                             bounds, plan_callback=None):
-    """Keep every stage's Lanczos resampling, matrix precision and crop."""
+                             bounds, plan_callback=None, interpolation='lanczos'):
+    """Keep every stage's resampling, matrix precision and crop."""
     final = tuple(crop @ matrix if crop is not None else matrix.copy() for matrix in matrices)
-    stage = PerspectiveStage(method, tuple(sources),
+    stage = PerspectiveStage(
+        method, tuple(sources),
         tuple(tuple(float(value) for value in matrix.flat) for matrix in final),
-        tuple(matrix.dtype.str for matrix in final), tuple(int(value) for value in bounds), dsize)
+        tuple(matrix.dtype.str for matrix in final),
+        tuple(int(value) for value in bounds), dsize,
+        interpolation=interpolation,
+    )
     if plan_callback is not None:
         plan_callback(stage)
     return stage.apply(images, defer_warps=defer_warps, should_cancel=should_cancel, workers=workers)
@@ -1536,19 +1797,25 @@ def apply_alignment_plan(sources, plan, *, defer_warps=False, should_cancel=None
         _report_openfocus_transform(transform, plan.reference_index)
     h, w = sources[0].shape[:2]
     left, top, right, bottom = 0, 0, w, h
-    bounds = [transform.valid_bounds for transform in plan.transforms]
-    left = max(bound[0] for bound in bounds)
-    top = max(bound[1] for bound in bounds)
-    right = min(bound[2] for bound in bounds)
-    bottom = min(bound[3] for bound in bounds)
-    if top >= bottom or left >= right:
-        raise ValueError('Registration transforms have no common valid crop')
+    if getattr(plan, 'auto_crop', True):
+        bounds = [transform.valid_bounds for transform in plan.transforms]
+        left = max(bound[0] for bound in bounds)
+        top = max(bound[1] for bound in bounds)
+        right = min(bound[2] for bound in bounds)
+        bottom = min(bound[3] for bound in bounds)
+        if top >= bottom or left >= right:
+            raise ValueError('Registration transforms have no common valid crop')
     _record_grouped_crop(top, bottom, left, right)
-    use_direct_region = apply_alignment is _ORIGINAL_APPLY_ALIGNMENT
+    plan_interp = getattr(plan, 'interpolation', None)
+    use_direct_region = apply_alignment is _ORIGINAL_APPLY_ALIGNMENT and plan_interp is None
     result = []
     for source, transform in zip(sources, plan.transforms):
         _check_cancel(should_cancel)
-        processor = partial(apply_alignment, transform=transform, should_cancel=should_cancel)
+        if plan_interp is not None:
+            processor = partial(apply_alignment, transform=transform, should_cancel=should_cancel,
+                                interpolation=plan_interp)
+        else:
+            processor = partial(apply_alignment, transform=transform, should_cancel=should_cancel)
         if defer_warps:
             from core.source_frames import process_frame, crop_frame
             aligned = process_frame(source, processor, should_cancel=should_cancel,
@@ -1572,8 +1839,10 @@ def apply_alignment_plan(sources, plan, *, defer_warps=False, should_cancel=None
 
 
 def _align_openfocus_impl(input_source, output_path=None, img_filenames=None, *,
-                        should_cancel=None, max_shift_ratio=.05, failure_policy='continue',
+                        should_cancel=None, max_shift_ratio=.05, max_shift_x_ratio=None,
+                        max_shift_y_ratio=None, failure_policy='continue',
                         reference_frame=1, rotation=0., magnification=3.,
+                        alignment_roi=None, auto_crop=True, interpolation=None,
                         defer_warps=False, plan_callback=None, dispatch_callback=None):
     """Wide detector using the verified search and sampling behavior."""
     from core.openfocus_alignment import _alignment_spill_bytes, estimate_alignment_plan
@@ -1609,8 +1878,12 @@ def _align_openfocus_impl(input_source, output_path=None, img_filenames=None, *,
         )
         try:
             with cache_reads, source_reads:
-                plan = estimate_alignment_plan(images, max_shift_ratio=max_shift_ratio,
+                plan = estimate_alignment_plan(
+                    images, max_shift_ratio=max_shift_ratio,
+                    max_shift_x_ratio=max_shift_x_ratio,
+                    max_shift_y_ratio=max_shift_y_ratio,
                     reference_frame=reference_frame, rotation=rotation, magnification=magnification,
+                    alignment_roi=alignment_roi, auto_crop=auto_crop, interpolation=interpolation,
                     should_cancel=should_cancel,
                     failure_policy=failure_policy)
         except RejectedAlignmentFrame as error:
@@ -1659,7 +1932,7 @@ class _EccStageBudget:
 
 
 def _plan_deferred_ecc(images, downscale_width, accelerate_ecc, preference, thread_count,
-                       should_cancel):
+                       should_cancel, *, alignment_roi=None):
     from core.openfocus_alignment import _hash_scratch_bytes, _is_bgr_rev
     from core.resource_policy import cpu_capacity, probe_resources, ram_ceiling, require_memory
     from core.source_frames import frame_resolution_bytes, is_direct_rgb_tiff
@@ -1675,7 +1948,7 @@ def _plan_deferred_ecc(images, downscale_width, accelerate_ecc, preference, thre
         h, w, scale = _ecc_resize_geometry(frame.shape, width)
         pixels = max(1, h) * max(1, w)
         max_pixels = max(max_pixels, pixels)
-        jpeg = _plan_jpeg_ecc(frame, width)
+        jpeg = None if alignment_roi is not None else _plan_jpeg_ecc(frame, width)
         if jpeg is not None:
             jpeg_inputs[id(frame)] = jpeg
             req = max(jpeg.workspace_bytes, 2 * pixels + 64 * 1024)
@@ -1687,9 +1960,11 @@ def _plan_deferred_ecc(images, downscale_width, accelerate_ecc, preference, thre
         decode = frame_resolution_bytes(frame)
         # Source hashing uses one band, independently of any pack that OpenCV
         # needs for resize or conversion. A direct TIFF still faults in pixels.
+        from core.source_frames import SourceFrame
         decoded = frame.nbytes if decode else 0
         packed = (0 if ((isinstance(frame, np.ndarray)
                          and (frame.flags.c_contiguous or _is_bgr_rev(frame)))
+                        or (type(frame) is SourceFrame and frame._rgb_tiff_offset is None)
                         or (is_direct_rgb_tiff(frame)
                             and frame._rgb_tiff_offset % frame.dtype.alignment == 0))
                   else frame.nbytes)
@@ -1702,7 +1977,7 @@ def _plan_deferred_ecc(images, downscale_width, accelerate_ecc, preference, thre
             # frames, and gracefully falls back if that headroom is absent.
             resize_scratch = 32 * (sum(frame.shape[:2]) + h + w * channels)
             prepare_cpu = max(prepare, decoded + packed + color + resize_scratch, color + gray)
-            if accelerate_ecc:
+            if accelerate_ecc and frame.dtype == np.uint8:
                 stripe_src_rows = min(frame.shape[0], math.ceil(_TILE_ROWS / max(scale, 1e-6)) + 2)
                 gpu_stripe = (
                     min(frame.nbytes, stripe_src_rows * frame.shape[1] * channels * itemsize)
@@ -1751,7 +2026,10 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
                     thread_count: int = 4, should_cancel=None, use_gpu: bool = False,
                     failure_policy='continue', *, defer_warps=False, plan_callback=None,
                     accelerate_ecc=True, stage_budget=None, dispatch_callback=None,
-                    progress_callback=None):
+                    progress_callback=None, alignment_roi=None,
+                    max_shift_x_ratio=None, max_shift_y_ratio=None,
+                    max_rotation_deg=None, max_scale_change=None,
+                    auto_crop=True, interpolation='lanczos'):
     """
     基于 ECC (增强相关系数) 的高精度图像栈对齐算法
     适用于：显微摄影、微距摄影中伴随呼吸效应的图像栈
@@ -1759,6 +2037,7 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
     优化：并行预处理、并行变换、合并裁切操作
     """
     # Directory loading and source policy belong to ImageRegistration.process.
+    interpolation_flag(interpolation)
     images = input_source
     if len(images):
         _report_reference('ecc')
@@ -1774,6 +2053,8 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
 
     # --- 2. 初始化 ---
     h_orig, w_orig = images[0].shape[:2]
+    roi = normalize_alignment_roi(alignment_roi, (h_orig, w_orig))
+    roi_center = ((roi[0] + roi[2] / 2.0, roi[1] + roi[3] / 2.0) if roi is not None else None)
     # 如果单张图像过大（任一边 >= 2048），强制将用于下采样的目标宽度设为 1024
     requested_width = downscale_width
     downscale_width = _ecc_width(images[0].shape, requested_width)
@@ -1816,14 +2097,18 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
     recent_pairs = OrderedDict() if len(images) > 2 else None
     recent_pairs_lock = threading.Lock()
 
+    from core.frame_resolution_cache import within_retention_limit
+    large_stack = not within_retention_limit(images)
+
     # 预处理函数：转灰度 + 降采样 + 高斯模糊 + 归一化
     def preprocess(source):
         from core.openfocus_alignment import _can_use_file_digest, _is_bgr_rev
-        from core.source_frames import resolve_frame, source_area_resizer
+        from core.source_frames import resolve_frame, source_area_resizer, without_source_cache_growth
         # Resizing during JPEG decode avoids loading and transferring full-size
         # color pixels. Keep OpenCL area resizing for sources that need it.
-        jpeg = (stage_budget.jpeg_inputs.get(id(source)) if stage_budget is not None
-                else _plan_jpeg_ecc(source, downscale_width))
+        jpeg = None if roi is not None else (
+            stage_budget.jpeg_inputs.get(id(source)) if stage_budget is not None
+            else _plan_jpeg_ecc(source, downscale_width))
         if jpeg is not None:
             pixels, identity = _decode_jpeg_ecc(source, jpeg, should_cancel)
             scale = jpeg.scale
@@ -1832,12 +2117,16 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
             # released as soon as resize or color conversion no longer needs it.
             use_file_digest = _can_use_file_digest(source)
             identity = _perspective_source_file(source, should_cancel) if use_file_digest else None
-            with source_area_resizer(area_gpu):
+            cache_scope = without_source_cache_growth() if large_stack else nullcontext()
+            with cache_scope, source_area_resizer(area_gpu):
                 pixels = resolve_frame(source, should_cancel=should_cancel)
             if identity is None:
                 identity = _perspective_source(source, pixels, should_cancel)
-            target_height, _, scale = _ecc_resize_geometry(pixels.shape, downscale_width)
             is_rgb = False
+            if roi is not None:
+                rx, ry, rw, rh = roi
+                pixels = pixels[ry:ry + rh, rx:rx + rw]
+            target_height, _, scale = _ecc_resize_geometry(pixels.shape, downscale_width)
             if scale < 1.0:
                 resized = None
                 # ExactAreaGpu only beats parallel CPU INTER_AREA on >=16MP 8-bit inputs;
@@ -1958,6 +2247,8 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
             else:
                 warp_matrix[0, 2] /= scale_factor
                 warp_matrix[1, 2] /= scale_factor
+            if roi is not None:
+                warp_matrix = conjugate_roi_matrix(warp_matrix, roi[0], roi[1])
         except cv2.error as exc:
             _check_cancel(should_cancel)
             if failure_policy == 'fail':
@@ -2023,6 +2314,35 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
     trajectory_failed = False
     for idx, (warp_matrix, cc) in enumerate(pair_transforms, start=1):
         _check_cancel(should_cancel)
+        # Validate per-pair transform against configured geometric limits.
+        bound_reason = None
+        if cc is not None:
+            if warp_mode == cv2.MOTION_AFFINE:
+                local_3x3 = np.vstack([warp_matrix, np.array([[0, 0, 1]], dtype=np.float32)])
+            else:
+                local_3x3 = warp_matrix
+            try:
+                pair_inv = np.linalg.inv(local_3x3.astype(np.float64))
+            except np.linalg.LinAlgError:
+                pair_inv = None
+            bound_reason = (
+                validate_transform_bounds(
+                    pair_inv, (h_orig, w_orig),
+                    max_shift_x_ratio=max_shift_x_ratio,
+                    max_shift_y_ratio=max_shift_y_ratio,
+                    max_rotation_deg=max_rotation_deg,
+                    max_scale_change=max_scale_change,
+                    center=roi_center,
+                )
+                if pair_inv is not None else 'motion outside limits'
+            )
+            if bound_reason is not None:
+                if failure_policy == 'fail':
+                    raise RejectedAlignmentFrame('ECC', idx, bound_reason)
+                print(f"Warning: ECC frame {idx} rejected ({bound_reason}). Assuming no motion.")
+                cc = None
+                warp_matrix = (np.eye(3, dtype=np.float32) if warp_mode == cv2.MOTION_HOMOGRAPHY
+                               else np.eye(2, 3, dtype=np.float32))
         # 矩阵累积：warp_matrix maps frame k-1 -> frame k, so the map
         # frame0 -> frame_k is Wk @ ... @ W1 — compose on the LEFT.
         # (The old right-side product W1 @ W2 @ ... left frame 3+ misaligned
@@ -2037,7 +2357,8 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
         # 记录变换矩阵（使用逆矩阵）
         H_inv = np.linalg.inv(H_global)
         H_matrices.append(H_inv.copy())
-        reason = ('ECC failed to converge' if cc is None else
+        reason = (bound_reason if bound_reason is not None else
+                  'ECC failed to converge' if cc is None else
                   'reference alignment fell back' if trajectory_failed else None)
         trajectory_failed = trajectory_failed or cc is None
         details = {'reference_index': idx - 1, 'transform': H_inv}
@@ -2050,22 +2371,28 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
     # --- 5. 并行应用变换与裁切 ---
     # print("  - Step 3/3: Warping and saving concurrently...")
 
-    # 计算公共有效区域
-    top, bottom, left, right = _compute_valid_region_from_transforms(H_matrices, (h_orig, w_orig))
-    _record_grouped_crop(top, bottom, left, right)
-    
-    do_crop = True
-    if top >= bottom or left >= right:
-        print("Warning: Invalid crop region, skipping crop.")
+    if auto_crop:
+        # 计算公共有效区域
+        top, bottom, left, right = _compute_valid_region_from_transforms(H_matrices, (h_orig, w_orig))
+        _record_grouped_crop(top, bottom, left, right)
+        do_crop = True
+        if top >= bottom or left >= right:
+            print("Warning: Invalid crop region, skipping crop.")
+            do_crop = False
+            target_w, target_h = w_orig, h_orig
+            offset_x, offset_y = 0, 0
+        else:
+            target_w = right - left
+            target_h = bottom - top
+            offset_x = -left
+            offset_y = -top
+            # print(f"    Optimized: Warping directly to cropped region ({target_w}x{target_h})...")
+    else:
+        top, bottom, left, right = 0, h_orig, 0, w_orig
+        _record_grouped_crop(top, bottom, left, right)
         do_crop = False
         target_w, target_h = w_orig, h_orig
         offset_x, offset_y = 0, 0
-    else:
-        target_w = right - left
-        target_h = bottom - top
-        offset_x = -left
-        offset_y = -top
-        # print(f"    Optimized: Warping directly to cropped region ({target_w}x{target_h})...")
 
     # 构造裁切平移矩阵
     T_crop = np.array([[1, 0, offset_x], [0, 1, offset_y], [0, 0, 1]], dtype=np.float32)
@@ -2103,12 +2430,13 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
                    frames=len(images), gpu_requested=True)
 
     if not HAS_CUPY:
-        with deferred_ecc_warp_accelerator(accelerate_ecc and
+        with deferred_ecc_warp_accelerator(accelerate_ecc and interpolation == 'lanczos' and
                                            (not defer_warps or output_path)) as warp:
             aligned_images = _apply_perspective_warps(
                 images, H_matrices, T_crop if do_crop else None, (target_w, target_h),
                 max_workers, should_cancel, defer_warps, method='ecc', sources=source_identities,
-                bounds=(top, bottom, left, right), plan_callback=plan_callback)
+                bounds=(top, bottom, left, right), plan_callback=plan_callback,
+                interpolation=interpolation)
             _save_registration(aligned_images, output_path, img_filenames, should_cancel)
         warp_device = 'CPU'
         if warp is not None and warp.gpu_warps:
@@ -2315,18 +2643,84 @@ class ImageRegistration:
     
     def __init__(self, method='homography', downscale_width=1024,
                  max_shift_ratio=None, brightness_reference='first',
-                 use_gpu=False, parameters=None, *, defer_warps=False, accelerate_ecc=True):
+                 use_gpu=False, parameters=None, *, defer_warps=False, accelerate_ecc=True,
+                 alignment_roi=None, max_shift_x_ratio=None, max_shift_y_ratio=None,
+                 max_rotation_deg=None, max_scale_change=None, auto_crop=None,
+                 interpolation=None):
         from core.algorithms import (alignment_steps, registration_parameter_specs,
                                      resolve_registration_parameters)
         self.method = method
         self.steps = alignment_steps(method)
-        values = resolve_registration_parameters(method, parameters)
+        spec_keys = {item.key for item in registration_parameter_specs(method)}
+        raw_params = dict(parameters) if parameters is not None else {}
+
+        # Extract optional geometric/resampling overrides even on methods whose
+        # declared parameter schema uses legacy keys (e.g. 'openfocus').
+        self.alignment_roi = alignment_roi
+        self.max_shift_x_ratio = max_shift_x_ratio
+        self.max_shift_y_ratio = max_shift_y_ratio
+        self.auto_crop = True if auto_crop is None else bool(auto_crop)
+        self.openfocus_interpolation = interpolation
+
+        if 'alignment_roi' in raw_params and 'alignment_roi' not in spec_keys:
+            if self.alignment_roi is None:
+                self.alignment_roi = raw_params.pop('alignment_roi')
+            else:
+                raw_params.pop('alignment_roi')
+
+        if 'max_shift_ratio' in spec_keys:
+            if 'max_shift_x_ratio' in raw_params:
+                val = float(raw_params.pop('max_shift_x_ratio'))
+                if self.max_shift_x_ratio is None:
+                    self.max_shift_x_ratio = val
+            if 'max_shift_y_ratio' in raw_params:
+                val = float(raw_params.pop('max_shift_y_ratio'))
+                if self.max_shift_y_ratio is None:
+                    self.max_shift_y_ratio = val
+            if 'max_rotation_deg' in raw_params:
+                val = float(raw_params.pop('max_rotation_deg'))
+                raw_params.setdefault('rotation', val)
+            if 'max_scale_change' in raw_params:
+                val = float(raw_params.pop('max_scale_change'))
+                raw_params.setdefault('magnification', val * 100.0)
+            if 'auto_crop' in raw_params:
+                val = bool(raw_params.pop('auto_crop'))
+                if auto_crop is None:
+                    self.auto_crop = val
+            if 'interpolation' in raw_params:
+                val = raw_params.pop('interpolation')
+                if self.openfocus_interpolation is None:
+                    self.openfocus_interpolation = val
+
+        values = resolve_registration_parameters(method, raw_params)
         if max_shift_ratio is not None:
-            # Historical constructor argument: only the OpenFocus aligner
-            # consumes it, and it used to be ignored for other methods.
-            if 'max_shift_ratio' in {item.key for item in registration_parameter_specs(method)}:
+            if 'max_shift_ratio' in spec_keys:
                 values['max_shift_ratio'] = max_shift_ratio
+            elif 'max_shift_x_ratio' in spec_keys and 'max_shift_y_ratio' in spec_keys:
+                values['max_shift_x_ratio'] = max_shift_ratio
+                values['max_shift_y_ratio'] = max_shift_ratio
+        if max_shift_x_ratio is not None and 'max_shift_x_ratio' in spec_keys:
+            values['max_shift_x_ratio'] = max_shift_x_ratio
+        if max_shift_y_ratio is not None and 'max_shift_y_ratio' in spec_keys:
+            values['max_shift_y_ratio'] = max_shift_y_ratio
+        if max_rotation_deg is not None:
+            if 'max_rotation_deg' in spec_keys:
+                values['max_rotation_deg'] = max_rotation_deg
+            elif 'rotation' in spec_keys:
+                values['rotation'] = max_rotation_deg
+        if max_scale_change is not None:
+            if 'max_scale_change' in spec_keys:
+                values['max_scale_change'] = max_scale_change
+            elif 'magnification' in spec_keys:
+                values['magnification'] = float(max_scale_change) * 100.0
+        if auto_crop is not None and 'auto_crop' in spec_keys:
+            values['auto_crop'] = bool(auto_crop)
+        if interpolation is not None and 'interpolation' in spec_keys:
+            values['interpolation'] = interpolation
+
         self.parameters = resolve_registration_parameters(method, values)
+        if self.openfocus_interpolation is not None:
+            interpolation_flag(self.openfocus_interpolation)
         self.downscale_width = int(downscale_width) if downscale_width is not None else 1024
         self.brightness_reference = brightness_reference if brightness_reference in ('first', 'last') else 'first'
         self.use_gpu = bool(use_gpu)
@@ -2337,6 +2731,7 @@ class ImageRegistration:
         self.alignment_plan = None
         self._perspective_stages = []
         self._dispatch = []
+        self._active_stage_roi = None
 
     @property
     def dispatch(self):
@@ -2470,11 +2865,25 @@ class ImageRegistration:
             if not deferred or self.steps != ('ecc',):
                 height, width = images[0].shape[:2]
                 channels = images[0].shape[2] if images[0].ndim == 3 else 1
-                # Other aligners and eager warps retain their existing shared budget.
                 from core.resource_policy import registration_working_set
                 from core.source_frames import frame_resolution_bytes
-                fixed, per_worker = registration_working_set(height, width,
-                    max(image.size * 16 + frame_resolution_bytes(image) for image in images))
+                if deferred and all(step in ('homography', 'ecc') for step in self.steps):
+                    # Deferred homography/combined estimation downscales each frame to
+                    # at most downscale_width (1024px for >=2048px sources) for SIFT
+                    # and never materializes full-resolution warps during registration.
+                    dw = 1024 if max(height, width) >= 2048 else self.downscale_width
+                    scale = min(1.0, dw / float(max(1, width)))
+                    scaled_px = max(1, round(height * scale) * round(width * scale))
+                    feature_scratch = scaled_px * 32 + 16 * 1024 * 1024
+                    fixed = 0
+                    per_worker = max(
+                        max(frame_resolution_bytes(image), image.nbytes) + feature_scratch
+                        for image in images
+                    )
+                else:
+                    # Other aligners and eager warps retain their existing shared budget.
+                    fixed, per_worker = registration_working_set(height, width,
+                        max(image.size * 16 + frame_resolution_bytes(image) for image in images))
                 plan = plan_execution(Workload(
                     algorithm='registration', frames=len(images), height=height,
                     width=width, channels=channels, itemsize=images[0].dtype.itemsize,
@@ -2488,6 +2897,7 @@ class ImageRegistration:
                            vram_budget=plan.vram_budget, gpu_requested=self.use_gpu)
             from core.algorithms import get_registration, resolve_runner
             result = images
+            stage_roi = self.alignment_roi
             for step in self.steps:
                 _check_cancel(should_cancel)
                 spec = get_registration(step)
@@ -2498,6 +2908,8 @@ class ImageRegistration:
                     result = materialize_frames(result, should_cancel,
                         thread_count=thread_count, resource_preference=resource_preference)
                 parameters = {item.key: self.parameters[item.key] for item in spec.parameters}
+                self._active_stage_roi = stage_roi
+                stage_count_before = len(self._perspective_stages)
                 with log_operation('registration_stage', method=step,
                                    parameters=parameters, provider='OpenCV',
                                    estimation_device='CPU', frames=len(result),
@@ -2508,8 +2920,10 @@ class ImageRegistration:
                         if step == 'ecc' and progress_callback is not None:
                             execution['progress_callback'] = progress_callback
                         if deferred and step == 'ecc':
-                            budget = _plan_deferred_ecc(result, self.downscale_width,
-                                self.accelerate_ecc, resource_preference, thread_count, should_cancel)
+                            budget = _plan_deferred_ecc(
+                                result, self.downscale_width,
+                                self.accelerate_ecc, resource_preference, thread_count,
+                                should_cancel, alignment_roi=stage_roi)
                             execution.update(thread_count=budget.workers, stage_budget=budget)
                         result = resolve_runner(spec.runner)(self, result,
                             **execution, **parameters)
@@ -2517,6 +2931,18 @@ class ImageRegistration:
                     except RegistrationCancelled:
                         operation.cancel()
                         raise
+                    finally:
+                        self._active_stage_roi = None
+                if stage_roi is not None and len(self._perspective_stages) > stage_count_before:
+                    top_b, bottom_b, left_b, right_b = self._perspective_stages[-1].bounds
+                    if top_b < bottom_b and left_b < right_b:
+                        rx, ry, rw, rh = stage_roi
+                        stage_h, stage_w = result[0].shape[:2]
+                        nx = max(0, rx - left_b)
+                        ny = max(0, ry - top_b)
+                        nw = min(rw, stage_w - nx)
+                        nh = min(rh, stage_h - ny)
+                        stage_roi = (nx, ny, nw, nh) if nw >= 8 and nh >= 8 else None
             if len(self._perspective_stages) == len(self.steps):
                 self.alignment_plan = PerspectiveAlignmentPlan(tuple(self._perspective_stages),
                     json.dumps(self.parameters, sort_keys=True, separators=(',', ':'), allow_nan=False),
@@ -2530,7 +2956,10 @@ class ImageRegistration:
                            input_source: Union[str, List[np.ndarray]], 
                            output_path: Optional[str] = None,
                            thread_count: int = 4,
-                           should_cancel=None, failure_policy='continue') -> List[np.ndarray]:
+                           should_cancel=None, failure_policy='continue',
+                           max_shift_x_ratio=None, max_shift_y_ratio=None,
+                           max_rotation_deg=None, max_scale_change=None,
+                           auto_crop=True, interpolation='lanczos') -> List[np.ndarray]:
         """
         单应性对齐配准（非线性）
         
@@ -2541,17 +2970,26 @@ class ImageRegistration:
         Returns:
             配准后的图像列表
         """
-        return _align_homography_impl(input_source, output_path, downscale_width=self.downscale_width,
+        roi = self._active_stage_roi if self._active_stage_roi is not None else self.alignment_roi
+        return _align_homography_impl(
+            input_source, output_path, downscale_width=self.downscale_width,
             thread_count=thread_count, should_cancel=should_cancel, failure_policy=failure_policy,
             defer_warps=self.defer_warps and not self.use_gpu, plan_callback=self._perspective_stages.append,
-            dispatch_callback=self._record_dispatch, accelerate_warp=self.accelerate_ecc)
+            dispatch_callback=self._record_dispatch, accelerate_warp=self.accelerate_ecc,
+            alignment_roi=roi,
+            max_shift_x_ratio=max_shift_x_ratio, max_shift_y_ratio=max_shift_y_ratio,
+            max_rotation_deg=max_rotation_deg, max_scale_change=max_scale_change,
+            auto_crop=auto_crop, interpolation=interpolation)
     
     def _process_ecc(self, 
                     input_source: Union[str, List[np.ndarray]], 
                     output_path: Optional[str] = None,
                     thread_count: int = 4,
                     should_cancel=None, failure_policy='continue', *, stage_budget=None,
-                    progress_callback=None) -> List[np.ndarray]:
+                    progress_callback=None,
+                    max_shift_x_ratio=None, max_shift_y_ratio=None,
+                    max_rotation_deg=None, max_scale_change=None,
+                    auto_crop=True, interpolation='lanczos') -> List[np.ndarray]:
         """
         ECC对齐配准（高精度、亚像素级）
         
@@ -2562,14 +3000,20 @@ class ImageRegistration:
         Returns:
             配准后的图像列表
         """
+        roi = self._active_stage_roi if self._active_stage_roi is not None else self.alignment_roi
         try:
             with _serial_ecc_native_threads() if stage_budget is not None else nullcontext():
-                return _align_ecc_impl(input_source, output_path, downscale_width=self.downscale_width,
+                return _align_ecc_impl(
+                    input_source, output_path, downscale_width=self.downscale_width,
                     thread_count=thread_count, should_cancel=should_cancel, use_gpu=self.use_gpu,
                     failure_policy=failure_policy, defer_warps=self.defer_warps,
                     plan_callback=self._perspective_stages.append, accelerate_ecc=self.accelerate_ecc,
                     stage_budget=stage_budget, dispatch_callback=self._record_dispatch,
-                    progress_callback=progress_callback)
+                    progress_callback=progress_callback,
+                    alignment_roi=roi,
+                    max_shift_x_ratio=max_shift_x_ratio, max_shift_y_ratio=max_shift_y_ratio,
+                    max_rotation_deg=max_rotation_deg, max_scale_change=max_scale_change,
+                    auto_crop=auto_crop, interpolation=interpolation)
         except RejectedAlignmentFrame as error:
             # Pair estimation may run on a pool thread. Record it in the caller's report.
             _report_alignment(error.frame_index, 'ecc', 'failed', reason=error.reason,

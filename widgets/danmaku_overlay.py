@@ -12,7 +12,7 @@ import math
 import time
 from typing import Any, Callable, Mapping, Sequence
 
-from PyQt6.QtCore import QEvent, QPoint, QPointF, QRect, QRectF, Qt, QTimer, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QEvent, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import (
     QColor,
     QFont,
@@ -24,7 +24,6 @@ from PyQt6.QtGui import (
     QPaintEvent,
     QPen,
     QPixmap,
-    QPolygonF,
 )
 from PyQt6.QtWidgets import (
     QBoxLayout,
@@ -51,6 +50,7 @@ from locales.gallery_i18n import (
     t_gallery,
     translate_report_reason,
 )
+from utils.community_icons import community_icon, community_icon_color, draw_community_icon
 from utils.design_tokens import FONT, RADIUS, SPACE, WEIGHT, palette, rgba
 from utils.frame_pixels import is_qobject_alive
 
@@ -299,9 +299,10 @@ class DanmakuActionPopover(QFrame):
         self.lbl_preview.setObjectName("danmakuPopoverPreview")
         self.lbl_preview.setWordWrap(False)
         self.lbl_preview.setMaximumWidth(220)
-        self.btn_close = QPushButton("\u2715", self)
+        self.btn_close = QPushButton("", self)
         self.btn_close.setObjectName("danmakuPopoverClose")
         self.btn_close.setFixedSize(20, 20)
+        self.btn_close.setIconSize(QSize(11, 11))
         self.btn_close.setFlat(True)
         self.btn_close.setCursor(Qt.CursorShape.PointingHandCursor)
         header.addWidget(self.lbl_preview, 1)
@@ -383,10 +384,23 @@ class DanmakuActionPopover(QFrame):
     def current_item(self) -> DanmakuItem | None:
         return self._item
 
+    def _sync_popover_icons(self) -> None:
+        item = self._item
+        vote = item.viewer_vote if item else 0
+        self.btn_close.setIcon(
+            community_icon("close", community_icon_color(self._theme, "muted"), size=12, stroke_width=1.5)
+        )
+        up_color = community_icon_color(self._theme, "on_accent" if vote == 1 else "primary")
+        down_color = community_icon_color(self._theme, "on_accent" if vote == -1 else "primary")
+        self.btn_upvote.setIcon(community_icon("arrow_up", up_color, size=12, stroke_width=1.5))
+        self.btn_upvote.setIconSize(QSize(12, 12))
+        self.btn_downvote.setIcon(community_icon("arrow_down", down_color, size=12, stroke_width=1.5))
+        self.btn_downvote.setIconSize(QSize(12, 12))
+
     def apply_theme(self, theme: str) -> None:
         self._theme = theme
-        p = palette("dark")
-        bg = rgba(p["surface"], 0.94)
+        p = palette(theme)
+        bg = rgba(p["surface"], 0.96 if theme == "light" else 0.94)
         border = p["borderStrong"]
         accent = p["accent"]
         danger = p["danger"]
@@ -419,6 +433,7 @@ class DanmakuActionPopover(QFrame):
             f" border: none; color: {p['textMuted']}; padding: 0; }}"
             f" QPushButton#danmakuPopoverClose:hover {{ color: {p['text']}; }}"
         )
+        self._sync_popover_icons()
 
     def retranslate(self) -> None:
         self.btn_close.setToolTip(gallery_tr("gallery_close"))
@@ -469,10 +484,11 @@ class DanmakuActionPopover(QFrame):
         self.btn_downvote.setEnabled(actionable)
         self.btn_report.setEnabled(actionable)
         self.report_panel.setEnabled(actionable)
-        self.btn_upvote.setText(f"\u25b2 {up}")
-        self.btn_downvote.setText(f"\u25bc {down}")
+        self.btn_upvote.setText(f"{up}")
+        self.btn_downvote.setText(f"{down}")
         self.btn_upvote.setChecked(vote == 1)
         self.btn_downvote.setChecked(vote == -1)
+        self._sync_popover_icons()
 
     def _fit_at_anchor(self) -> None:
         margin = SPACE["sm"]
@@ -722,8 +738,8 @@ class DanmakuComposerBar(QFrame):
 
     def apply_theme(self, theme: str) -> None:
         self._theme = theme
-        p = palette("dark")
-        bg = rgba(p["surface"], 0.92)
+        p = palette(theme)
+        bg = rgba(p["surface"], 0.96 if theme == "light" else 0.92)
         self.setStyleSheet(
             f"QFrame#gallery_danmaku_composer {{"
             f" background-color: {bg};"
@@ -835,9 +851,11 @@ class DanmakuOverlay(QWidget):
         self._pixmap_cache: OrderedDict[tuple[str, str, int, float, float, bool], QPixmap] = OrderedDict()
         self._prev_dirty_rect: QRect = QRect()
         self._pending_initial_spawn: bool = False
+        self._top_safe_margin: float = 14.0
         self._watched_window: QWidget | None = None
         self._ui_lang: str = current_ui_language()
-        dark_p = palette("dark")
+        self._theme: str = "dark"
+        dark_p = palette(self._theme)
         self._accent_color: QColor = QColor(dark_p["accent"])
         self._danger_color: QColor = QColor(dark_p["danger"])
 
@@ -1024,7 +1042,7 @@ class DanmakuOverlay(QWidget):
         font.setPixelSize(13)
         font.setWeight(QFont.Weight.Medium)
         metrics = QFontMetricsF(font)
-        self._toast_box_w = max(84.0, metrics.horizontalAdvance(f"\u2713  {text}") + 28.0)
+        self._toast_box_w = max(88.0, metrics.horizontalAdvance(text) + 46.0)
         self._toast_box_h = 30.0
         self._sync_timer()
         self._request_repaint()
@@ -1059,9 +1077,10 @@ class DanmakuOverlay(QWidget):
         return self.composer.is_open()
 
     def apply_theme(self, theme: str) -> None:
-        dark_p = palette("dark")
-        self._accent_color = QColor(dark_p["accent"])
-        self._danger_color = QColor(dark_p["danger"])
+        self._theme = theme if theme in ("light", "dark", "gray") else "dark"
+        p = palette(self._theme)
+        self._accent_color = QColor(p["accent"])
+        self._danger_color = QColor(p["danger"])
         self._invalidate_pixmap_cache()
         self.popover.apply_theme(theme)
         self.composer.apply_theme(theme)
@@ -1107,9 +1126,19 @@ class DanmakuOverlay(QWidget):
         item.width = max(48.0, metrics.horizontalAdvance(display_text) + pad_x)
         item.height = max(24.0, metrics.height() + pad_y)
 
+    def set_top_safe_margin(self, margin: float) -> None:
+        """Reserve top vertical inset so danmaku lanes stay clear of floating chrome."""
+        val = max(14.0, float(margin))
+        if abs(val - self._top_safe_margin) < 0.5:
+            return
+        self._top_safe_margin = val
+        self._recompute_tracks()
+        self._request_repaint(full=True)
+
     def _zone_bounds(self, row_height: float) -> tuple[float, float]:
-        top_margin = 14.0
         bottom_hud_reserve = 88.0
+        max_top = max(14.0, float(self.height()) - bottom_hud_reserve - row_height)
+        top_margin = min(self._top_safe_margin, max_top)
         usable = max(0.0, self.height() - top_margin - bottom_hud_reserve)
         pos = self._settings.position
         if pos == "top":
@@ -1663,7 +1692,15 @@ class DanmakuOverlay(QWidget):
         """Rasterize an unfocused danmaku pill into a DPR-scaled QPixmap for crisp sub-pixel motion."""
         rounded_alpha = round(self._settings.opacity, 3)
         rounded_dpr = round(max(1.0, dpr), 2)
-        cache_key = (item.comment_id, display_text, self._settings.font_size, rounded_alpha, rounded_dpr, item.is_own)
+        cache_key = (
+            item.comment_id,
+            display_text,
+            self._settings.font_size,
+            rounded_alpha,
+            rounded_dpr,
+            item.is_own,
+            self._theme,
+        )
         cached = self._pixmap_cache.get(cache_key)
         if cached is not None:
             self._pixmap_cache.move_to_end(cache_key)
@@ -1684,21 +1721,33 @@ class DanmakuOverlay(QWidget):
         p.setFont(self._font())
 
         local_rect = QRectF(0.0, 0.0, item.width, item.height)
-        pill_alpha = min(1.0, self._settings.opacity * (0.62 if item.is_own else 0.45))
-        text_alpha = min(1.0, self._settings.opacity * 0.96)
+        is_light = self._theme == "light"
+        if is_light:
+            pill_alpha = min(1.0, max(0.55, self._settings.opacity * (0.90 if item.is_own else 0.80)))
+            pill_fill = QColor(255, 255, 255, int(pill_alpha * 255))
+            border_color = QColor(self._accent_color if item.is_own else palette("light")["borderStrong"])
+            border_color.setAlpha(int(min(1.0, self._settings.opacity) * (220 if item.is_own else 190)))
+            text_color = QColor(17, 24, 39, int(min(1.0, self._settings.opacity * 0.98) * 255))
+        else:
+            pill_alpha = min(1.0, self._settings.opacity * (0.62 if item.is_own else 0.45))
+            pill_fill = QColor(15, 17, 21, int(pill_alpha * 255))
+            border_color = QColor(self._accent_color) if item.is_own else None
+            if border_color is not None:
+                border_color.setAlpha(int(min(1.0, self._settings.opacity) * 210))
+            text_color = QColor(255, 255, 255, int(min(1.0, self._settings.opacity * 0.96) * 255))
+
         path = QPainterPath()
         radius = min(local_rect.height() / 2.0, float(RADIUS["pill"]))
         path.addRoundedRect(local_rect, radius, radius)
 
-        p.fillPath(path, QColor(15, 17, 21, int(pill_alpha * 255)))
-        if item.is_own:
-            own_pen = QColor(self._accent_color)
-            own_pen.setAlpha(int(min(1.0, self._settings.opacity) * 210))
-            p.setPen(QPen(own_pen, 1.2))
+        p.fillPath(path, pill_fill)
+        if border_color is not None:
+            p.setPen(QPen(border_color, 1.2 if item.is_own else 1.0))
             p.drawPath(path)
-        p.setPen(QColor(0, 0, 0, int(text_alpha * 180)))
-        p.drawText(local_rect.translated(1.0, 1.0), Qt.AlignmentFlag.AlignCenter, display_text)
-        p.setPen(QColor(255, 255, 255, int(text_alpha * 255)))
+        if not is_light:
+            p.setPen(QColor(0, 0, 0, int(min(1.0, self._settings.opacity * 0.96) * 180)))
+            p.drawText(local_rect.translated(1.0, 1.0), Qt.AlignmentFlag.AlignCenter, display_text)
+        p.setPen(text_color)
         p.drawText(local_rect, Qt.AlignmentFlag.AlignCenter, display_text)
         p.end()
 
@@ -1717,9 +1766,11 @@ class DanmakuOverlay(QWidget):
     ) -> None:
         """Render divider and crisp inline upvote, downvote, comment, and report icons."""
         actionable = is_actionable_comment_id(item.comment_id)
+        is_light = self._theme == "light"
         mid_top = item.y + 5.0
         mid_bottom = item.y + item.height - 5.0
-        painter.setPen(QPen(QColor(255, 255, 255, 65), 1.0))
+        div_color = QColor(17, 24, 39, 55) if is_light else QColor(255, 255, 255, 65)
+        painter.setPen(QPen(div_color, 1.0))
         painter.drawLine(QPointF(div_x, mid_top), QPointF(div_x, mid_bottom))
 
         icon_font = QFont(self.font())
@@ -1727,7 +1778,13 @@ class DanmakuOverlay(QWidget):
         icon_font.setWeight(QFont.Weight.DemiBold)
         painter.setFont(icon_font)
 
-        muted = QColor(225, 230, 238, 220 if actionable else 110)
+        muted = (
+            QColor(55, 65, 81, 225 if actionable else 115)
+            if is_light
+            else QColor(225, 230, 238, 220 if actionable else 110)
+        )
+        default_hover_fg = QColor(17, 24, 39, 250) if is_light else QColor(255, 255, 255, 245)
+        default_hover_bg = QColor(17, 24, 39) if is_light else QColor(255, 255, 255)
         for key, r in action_rects.items():
             is_hovered = item.hovered and self._hovered_action == key
             is_active = (key == "upvote" and item.viewer_vote == 1) or (
@@ -1737,9 +1794,9 @@ class DanmakuOverlay(QWidget):
                 pill_bg = QColor(
                     accent_color if (key == "upvote" and is_active)
                     else danger_color if (key == "downvote" and is_active)
-                    else QColor(255, 255, 255)
+                    else default_hover_bg
                 )
-                pill_bg.setAlpha(180 if is_active else 38)
+                pill_bg.setAlpha(185 if is_active else (28 if is_light else 38))
                 btn_path = QPainterPath()
                 btn_path.addRoundedRect(r, r.height() / 2.0, r.height() / 2.0)
                 painter.fillPath(btn_path, pill_bg)
@@ -1748,64 +1805,63 @@ class DanmakuOverlay(QWidget):
                 QColor(255, 255, 255) if is_active
                 else QColor(accent_color) if (key == "upvote" and is_hovered)
                 else QColor(danger_color) if (key in ("downvote", "report") and is_hovered)
-                else QColor(255, 255, 255, 245) if is_hovered
+                else default_hover_fg if is_hovered
                 else muted
             )
             fg.setAlpha(int(min(1.0, base_alpha + 0.15) * fg.alpha()))
             painter.setPen(fg)
 
             if key == "upvote":
-                label = f"\u25b2 {item.upvotes}" if item.upvotes > 0 else "\u25b2"
-                painter.drawText(r, Qt.AlignmentFlag.AlignCenter, label)
+                if item.upvotes > 0:
+                    metrics = QFontMetricsF(icon_font)
+                    count_str = str(item.upvotes)
+                    count_w = metrics.horizontalAdvance(count_str)
+                    icon_size = 11.0
+                    gap = 3.0
+                    total_w = icon_size + gap + count_w
+                    start_x = r.center().x() - total_w / 2.0
+                    icon_rect = QRectF(start_x, r.center().y() - icon_size / 2.0, icon_size, icon_size)
+                    draw_community_icon(painter, "arrow_up", icon_rect, fg, stroke_width=1.45)
+                    txt_rect = QRectF(start_x + icon_size + gap, r.top(), count_w + 2.0, r.height())
+                    painter.drawText(txt_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, count_str)
+                else:
+                    icon_rect = QRectF(r.center().x() - 6.0, r.center().y() - 6.0, 12.0, 12.0)
+                    draw_community_icon(painter, "arrow_up", icon_rect, fg, stroke_width=1.45)
             elif key == "downvote":
-                painter.drawText(r, Qt.AlignmentFlag.AlignCenter, "\u25bc")
+                icon_rect = QRectF(r.center().x() - 6.0, r.center().y() - 6.0, 12.0, 12.0)
+                draw_community_icon(painter, "arrow_down", icon_rect, fg, stroke_width=1.45)
             elif key == "comment":
-                cx = r.center().x()
-                cy = r.center().y()
-                bubble = QRectF(cx - 5.5, cy - 4.5, 11.0, 8.0)
-                painter.setPen(QPen(fg, 1.4))
-                painter.drawRoundedRect(bubble, 2.2, 2.2)
-                tail = QPolygonF([
-                    QPointF(cx - 2.5, cy + 3.5),
-                    QPointF(cx - 3.5, cy + 6.0),
-                    QPointF(cx + 0.5, cy + 3.5),
-                ])
-                painter.drawPolyline(tail)
-                painter.drawLine(QPointF(cx - 2.8, cy - 0.5), QPointF(cx + 2.8, cy - 0.5))
+                icon_rect = QRectF(r.center().x() - 6.5, r.center().y() - 6.5, 13.0, 13.0)
+                draw_community_icon(painter, "comment", icon_rect, fg, stroke_width=1.4)
             elif key == "report":
-                cx = r.center().x()
-                cy = r.center().y()
-                painter.save()
-                painter.setPen(QPen(fg, 1.4))
-                painter.setBrush(fg)
-                painter.drawLine(QPointF(cx - 3.5, cy - 5.0), QPointF(cx - 3.5, cy + 5.0))
-                flag = QPolygonF([
-                    QPointF(cx - 3.5, cy - 4.5),
-                    QPointF(cx + 4.5, cy - 2.5),
-                    QPointF(cx - 3.5, cy + 0.5),
-                ])
-                painter.drawPolygon(flag)
-                painter.restore()
+                icon_rect = QRectF(r.center().x() - 6.0, r.center().y() - 6.0, 12.0, 12.0)
+                draw_community_icon(painter, "flag", icon_rect, fg, stroke_width=1.4)
 
     def _paint_toast(self, painter: QPainter, accent_color: QColor) -> None:
         if self._toast_remaining <= 0.0 or not self._toast_text:
             return
+        is_light = self._theme == "light"
         alpha = min(1.0, self._toast_remaining / 0.45) if self._toast_remaining < 0.45 else 1.0
         font = QFont(self.font())
         font.setPixelSize(13)
         font.setWeight(QFont.Weight.Medium)
         painter.setFont(font)
-        label = f"\u2713  {self._toast_text}"
         toast_rect = self._toast_rect()
         toast_path = QPainterPath()
         toast_path.addRoundedRect(toast_rect, toast_rect.height() / 2.0, toast_rect.height() / 2.0)
-        painter.fillPath(toast_path, QColor(15, 17, 21, int(alpha * 225)))
+        bg_fill = QColor(255, 255, 255, int(alpha * 242)) if is_light else QColor(15, 17, 21, int(alpha * 225))
+        painter.fillPath(toast_path, bg_fill)
         border = QColor(accent_color)
         border.setAlpha(int(alpha * 210))
         painter.setPen(QPen(border, 1.0))
         painter.drawPath(toast_path)
-        painter.setPen(QColor(255, 255, 255, int(alpha * 250)))
-        painter.drawText(toast_rect, Qt.AlignmentFlag.AlignCenter, label)
+
+        fg = QColor(17, 24, 39, int(alpha * 250)) if is_light else QColor(255, 255, 255, int(alpha * 250))
+        check_rect = QRectF(toast_rect.left() + 12.0, toast_rect.center().y() - 6.5, 13.0, 13.0)
+        draw_community_icon(painter, "check", check_rect, QColor(accent_color.red(), accent_color.green(), accent_color.blue(), int(alpha * 250)), stroke_width=1.7)
+        text_rect = QRectF(check_rect.right() + 6.0, toast_rect.top(), max(20.0, toast_rect.width() - 36.0), toast_rect.height())
+        painter.setPen(fg)
+        painter.drawText(text_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, self._toast_text)
 
     def paintEvent(self, _event: QPaintEvent | None) -> None:
         has_bullets = self._settings.enabled and bool(self._active)
@@ -1851,13 +1907,15 @@ class DanmakuOverlay(QWidget):
             for item in focused_items:
                 display_text, _ = item.bullet_text(mode, target_lang)
                 exp_rect, div_x, action_rects = self._expanded_layout(item)
-                pill_alpha = min(1.0, base_alpha * 0.84)
+                is_light = self._theme == "light"
+                pill_alpha = min(1.0, max(0.75, base_alpha * 0.92)) if is_light else min(1.0, base_alpha * 0.84)
                 text_alpha = min(1.0, base_alpha)
 
                 path = QPainterPath()
                 radius = min(exp_rect.height() / 2.0, float(RADIUS["pill"]))
                 path.addRoundedRect(exp_rect, radius, radius)
-                painter.fillPath(path, QColor(15, 17, 21, int(pill_alpha * 255)))
+                pill_fill = QColor(255, 255, 255, int(pill_alpha * 255)) if is_light else QColor(15, 17, 21, int(pill_alpha * 255))
+                painter.fillPath(path, pill_fill)
                 pen_color = QColor(accent_color)
                 pen_color.setAlpha(int(min(1.0, base_alpha) * 220))
                 painter.setPen(pen_color)
@@ -1865,9 +1923,11 @@ class DanmakuOverlay(QWidget):
 
                 text_rect = QRectF(exp_rect.left(), exp_rect.top(), item.width, exp_rect.height())
                 painter.setFont(base_font)
-                painter.setPen(QColor(0, 0, 0, int(text_alpha * 180)))
-                painter.drawText(text_rect.translated(1.0, 1.0), Qt.AlignmentFlag.AlignCenter, display_text)
-                painter.setPen(QColor(255, 255, 255, int(text_alpha * 255)))
+                if not is_light:
+                    painter.setPen(QColor(0, 0, 0, int(text_alpha * 180)))
+                    painter.drawText(text_rect.translated(1.0, 1.0), Qt.AlignmentFlag.AlignCenter, display_text)
+                text_fg = QColor(17, 24, 39, int(text_alpha * 255)) if is_light else QColor(255, 255, 255, int(text_alpha * 255))
+                painter.setPen(text_fg)
                 painter.drawText(text_rect, Qt.AlignmentFlag.AlignCenter, display_text)
 
                 self._paint_inline_actions(

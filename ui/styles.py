@@ -294,6 +294,43 @@ QPushButton#stepButton:hover {{
 }}
 QPushButton#stepButton:pressed {{ background-color: {t['surfaceActive']}; }}
 
+/* EXIF dynamic macro chip buttons and resolved live preview badge */
+QPushButton#macroChipButton {{
+    background-color: {t['surfaceSunken']};
+    color: {t['textMuted']};
+    border: 1px solid {t['border']};
+    border-radius: 11px;
+    padding: 1px 8px;
+    min-height: 20px;
+    max-height: 22px;
+    font-size: {f['caption']}pt;
+    font-weight: {WEIGHT['medium']};
+}}
+QPushButton#macroChipButton[hasSample="true"] {{
+    background-color: {t['accentSoft']};
+    color: {t['accentSoftText']};
+    border: 1px solid {t['controlBorder']};
+}}
+QPushButton#macroChipButton:hover {{
+    background-color: {t['accentSoft']};
+    color: {t['accentSoftText']};
+    border-color: {t['accent']};
+}}
+QPushButton#macroChipButton:pressed {{
+    background-color: {t['surfaceActive']};
+    color: {t['text']};
+    border-color: {t['accentPressed']};
+}}
+QLabel#macroPreviewLabel {{
+    background-color: {t['surfaceSunken']};
+    color: {t['text']};
+    border: 1px solid {t['border']};
+    border-left: 3px solid {t['accent']};
+    border-radius: {r['xs']}px;
+    padding: {s['xs']}px {s['sm']}px;
+    font-size: {f['caption']}pt;
+}}
+
 /* ===================== text inputs ===================== */
 QLineEdit, QPlainTextEdit, QTextEdit, QTextBrowser {{
     background-color: {t['controlBg']};
