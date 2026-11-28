@@ -647,9 +647,29 @@ class DepthVisualWorker(QThread):
             with heavy_job(self.isInterruptionRequested):
                 s, cache = self.snapshot, self.cache
                 index, mask, opts = s['index'], s['mask'], dict(s['color'])
+                height, width = index.shape[:2]
+                tw, th = s['preview_size']
+                work_edge = max(int(s['mesh_size']), int(tw), int(th), 1024)
+                work_scale = min(1.0, work_edge / float(max(height, width, 1)))
+                if work_scale < 1.0:
+                    ww = max(2, int(round(width * work_scale)))
+                    wh = max(2, int(round(height * work_scale)))
+                    grid = np.ix_(np.arange(wh) * height // wh, np.arange(ww) * width // ww)
+                    work_index = np.asarray(index[grid], dtype=np.float32)
+                    work_mask = mask[grid] if mask is not None else None
+                    if opts['overlay'] is not None:
+                        opts['overlay'] = opts['overlay'][grid]
+                else:
+                    ww, wh = width, height
+                    work_index = index
+                    work_mask = mask
                 retained = sum(value.nbytes for value in cache.values() if isinstance(value, np.ndarray))
-                textures = [s['texture'], opts['overlay']]
-                require_memory(retained + index.size * 72 + sum(t.nbytes * 5 for t in textures if t is not None))
+                tex_src = s['texture']
+                tex_bytes = 0
+                if not s['texture_color'] and tex_src is not None:
+                    ts = getattr(tex_src, 'shape', (wh, ww))
+                    tex_bytes = min(int(ts[0]) * int(ts[1]), 4096 * 4096) * 9
+                require_memory(retained + ww * wh * 72 + tex_bytes)
                 def checkpoint():
                     if self.isInterruptionRequested():
                         raise InterruptedError('cancelled')
@@ -659,16 +679,17 @@ class DepthVisualWorker(QThread):
                         cache[name + '_key'] = key
                     checkpoint()
                     return cache[name]
-                smooth_key = (s['map_key'], id(mask), opts['smooth'])
+                smooth_key = (s['map_key'], id(mask), ww, wh, opts['smooth'])
                 def smooth():
-                    values = smooth_index_map(index, opts['smooth'])
-                    return np.where(mask, values, np.nan) if mask is not None else values
+                    values = smooth_index_map(work_index, opts['smooth'])
+                    return np.where(work_mask, values, np.nan) if work_mask is not None else values
                 values = cached('smooth', smooth_key, smooth)
                 def develop(image, metadata, key):
                     if image is None or metadata is None:
                         return image
                     from utils.linear_dng import develop_linear
-                    return cached(key, (s[key + '_identity'], id(metadata)), lambda: develop_linear(image, metadata))
+                    return cached(key, (s[key + '_identity'], id(metadata), getattr(image, 'shape', ())),
+                                  lambda: develop_linear(image, metadata))
                 overlay = opts['overlay']
                 if (overlay is not None and opts['overlay_metadata'] is not None and
                         overlay.dtype == np.uint16 and overlay.ndim == 3 and overlay.shape[2] == 3):
@@ -676,7 +697,7 @@ class DepthVisualWorker(QThread):
                     opts['overlay_metadata'] = None
                 color_key = (smooth_key, opts['colormap'], repr(opts['stops']), opts['invert'],
                              opts['gamma'], s['overlay_identity'], id(s['color']['overlay_metadata']), opts['opacity'])
-                color = cached('color', color_key, lambda: _depth_color_pixels(index, mask, opts, values))
+                color = cached('color', color_key, lambda: _depth_color_pixels(work_index, work_mask, opts, values))
                 mesh_error = ''
                 try:
                     mesh_key = (smooth_key, s['physical'], s['z_enabled'], s['indices'], s['z0'], s['step'],
@@ -686,12 +707,12 @@ class DepthVisualWorker(QThread):
                             if (not s['z_enabled'] or s['pixel_size'] is None or
                                     not np.isfinite(s['pixel_size']) or s['pixel_size'] <= 0):
                                 raise ValueError(trans.t('depth_physical_missing'))
-                            height, _ = physical_depth(values, s['indices'], s['z0'], s['step'], s['direction'])
+                            height_m, _ = physical_depth(values, s['indices'], s['z0'], s['step'], s['direction'])
                             if opts['invert']:
-                                height = -height
+                                height_m = -height_m
                         else:
-                            height = 1.0 - values if opts['invert'] else values
-                        return build_height_field(height, s['mesh_size'])
+                            height_m = 1.0 - values if opts['invert'] else values
+                        return build_height_field(height_m, s['mesh_size'])
                     mesh_height = cached('mesh', mesh_key, mesh)
                     if s['texture_color']:
                         texture = cmap.colorize(values, opts['colormap'], invert=opts['invert'],
@@ -701,15 +722,25 @@ class DepthVisualWorker(QThread):
                         texture = s['texture']
                         if texture is not None:
                             texture = resolve_frame(texture, should_cancel=self.isInterruptionRequested)
+                        if texture is None or texture.shape[:2] != (height, width):
+                            raise ValueError(trans.t('depth_texture_unavailable'))
+                        if max(texture.shape[:2]) > 4096:
+                            tex_scale = 4096.0 / float(max(texture.shape[:2]))
+                            texture = cv2.resize(
+                                texture,
+                                (max(2, int(round(texture.shape[1] * tex_scale))),
+                                 max(2, int(round(texture.shape[0] * tex_scale)))),
+                                interpolation=cv2.INTER_AREA,
+                            )
                         texture = develop(texture, s['texture_metadata'], 'texture')
-                    if texture is None or texture.shape[:2] != index.shape[:2]:
+                    if texture is None or texture.size == 0:
                         raise ValueError(trans.t('depth_texture_unavailable'))
                     texture = to_display_uint8(texture)
                     if texture.ndim == 2:
                         texture = cv2.cvtColor(texture, cv2.COLOR_GRAY2BGR)
                     elif texture.shape[2] == 4:
                         texture = texture[:, :, :3]
-                    preview_height = (mesh_height / (max(index.shape[0] - 1, index.shape[1] - 1) * s['pixel_size'])
+                    preview_height = (mesh_height / (max(height - 1, width - 1) * s['pixel_size'])
                                       if s['physical'] else mesh_height)
                     tex = cv2.resize(texture, (preview_height.shape[1], preview_height.shape[0]),
                                      interpolation=cv2.INTER_AREA)
@@ -719,15 +750,14 @@ class DepthVisualWorker(QThread):
                     mesh_error = str(exc)
                     mesh_height = texture = preview_height = tex = None
                 checkpoint()
-                height, width = color.shape[:2]
-                tw, th = s['preview_size']
-                scale = min(tw / width, th / height, 1.0)
-                preview = (cv2.resize(color, (max(1, int(width * scale)), max(1, int(height * scale))),
+                ch, cw = color.shape[:2]
+                scale = min(tw / cw, th / ch, 1.0)
+                preview = (cv2.resize(color, (max(1, int(cw * scale)), max(1, int(ch * scale))),
                                       interpolation=cv2.INTER_AREA) if scale < 1.0 else color)
                 checkpoint()
                 self.ok.emit({'cache': cache, 'preview': preview, 'mesh': mesh_height,
                               'texture': texture, 'surface': preview_height, 'surface_texture': tex,
-                              'error': mesh_error, 'extent': (index.shape[0] - 1, index.shape[1] - 1),
+                              'error': mesh_error, 'extent': (height - 1, width - 1),
                               'relief': 1.0 if s['physical'] else s['relief']})
         except Exception as exc:
             if not self.isInterruptionRequested():
@@ -2282,8 +2312,11 @@ class DepthMapDialog(QDialog):
             self._resize_timer.start(0)
             return
         if outcome is None or outcome[1]:
+            err = outcome[1] if outcome else trans.t('depth_no_outcome')
             self._export_after_surface = False
-            self.status_lbl.setText(outcome[1] if outcome else trans.t('depth_no_outcome'))
+            self.status_lbl.setText(err)
+            if not self._map_only_view() and hasattr(self, 'lbl_surface_state'):
+                self.lbl_surface_state.setText(trans.t('depth_3d_failed').format(error=err))
             self._reconcile_controls()
             return
         result = outcome[0]
