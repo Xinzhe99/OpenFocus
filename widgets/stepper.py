@@ -1,6 +1,7 @@
 """Native numeric spin box with the constructor used by OpenFocus forms."""
 from typing import Optional
 
+from PyQt6.QtCore import QSize
 from PyQt6.QtWidgets import QDoubleSpinBox, QWidget
 
 
@@ -30,6 +31,18 @@ class StepperSpinBox(QDoubleSpinBox):
         self.setSingleStep(step)
         self.setKeyboardTracking(False)
         self.setValue(value)
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802
+        hint = super().minimumSizeHint()
+        if self.property("compactSpin"):
+            max_txt = self.textFromValue(self.maximum())
+            min_txt = self.textFromValue(self.minimum())
+            sample = max(max_txt, min_txt, key=len)
+            if len(sample) < 3:
+                sample = "100"
+            compact_w = max(58, self.fontMetrics().horizontalAdvance(sample) + 32)
+            return QSize(min(hint.width(), compact_w), hint.height())
+        return hint
 
     def textFromValue(self, value):
         text = super().textFromValue(value)
