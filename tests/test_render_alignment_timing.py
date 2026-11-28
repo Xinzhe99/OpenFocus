@@ -50,11 +50,14 @@ def test_deferred_alignment_timer_handles_concurrency_nesting_and_errors():
 
     # 2. Overlapping threads measure wall-clock union, never exceeding elapsed wall time.
     barrier = threading.Barrier(3)
+    worker_times = []
 
     def worker():
         barrier.wait()
+        wt0 = time.monotonic()
         with registration.measure_deferred_alignment():
-            time.sleep(0.06)
+            time.sleep(0.15)
+        worker_times.append(time.monotonic() - wt0)
 
     with registration.deferred_alignment_timer() as timer:
         t0 = time.monotonic()
@@ -65,8 +68,8 @@ def test_deferred_alignment_timer_handles_concurrency_nesting_and_errors():
             t.join()
         wall = time.monotonic() - t0
     assert timer.warps == 3
-    assert 0.045 <= timer.elapsed <= wall + 0.015
-    assert timer.elapsed < 0.14  # Must NOT sum to 3 * 0.06s = 0.18s
+    assert 0.12 <= timer.elapsed <= wall + 0.015
+    assert timer.elapsed < sum(worker_times) * 0.85  # Must measure union, not thread sum
 
     # 3. Exceptions inside measure_deferred_alignment must release active depth cleanly.
     with registration.deferred_alignment_timer() as timer:
