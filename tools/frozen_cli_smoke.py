@@ -119,7 +119,7 @@ def _check_language(executable: Path, environment: dict, code: str) -> None:
     while time.monotonic() < deadline:
         entries = _language_actions(executable, environment)
         titles = _call(executable, environment, "ui.find", "--window", "main",
-                       "--object-name", "panelTitle").get("matches", [])
+                       "--object-name", "panelTitleText").get("matches", [])
         expected = trans.translations[code]["panel_output"]
         if (entries[f"action_lang_{code}"].get("checked") and
                 any(item.get("text", "").strip() == expected for item in titles)):
