@@ -149,8 +149,13 @@ class CompareDialog(QDialog):
         self._ref_index = 0
         self._shared = self._collect_shared_settings()
         self._source_revision = int(getattr(window_main, "source_revision", 0))
+        self._source_content_revision = int(getattr(window_main, "source_content_revision", 0))
         self._workspace_outputs = [record for record in workspace_fusions(window_main)
-            if record.context.matches_stack(self._source_revision, self._source_indices)]
+            if record.context.matches_stack(
+                self._source_revision,
+                self._source_indices,
+                content_revision=self._source_content_revision,
+            )]
         manager = getattr(window_main, "label_manager", None)
         frame_ids = manager.frame_ids("input") if manager is not None else []
         self._frame_ids = [frame_ids[i] for i in self._source_indices] if frame_ids else None
@@ -1660,7 +1665,9 @@ class CompareDialog(QDialog):
                 filenames=self._source_names, algorithm=method,
                 alignment_options=alignment_steps(alignment),
                 aligned=alignment != "none", source_indices=self._source_indices,
-                source_revision=self._source_revision, frame_ids=self._frame_ids,
+                source_revision=self._source_revision,
+                source_content_revision=self._source_content_revision,
+                frame_ids=self._frame_ids,
                 parameters={**{key: value for key, value in self._shared.items() if key != 'method_options'},
                     **self._shared['method_options'][method],
                     'fusion_parameters': self._method_params[method]},

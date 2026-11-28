@@ -1610,3 +1610,51 @@ def test_reused_workspace_output_enables_adopt_output_in_full_mode_only(qapp, mo
             dialog.reject()
         _until(qapp, lambda: not dialog._has_workers())
         host.deleteLater()
+
+
+def test_checkbox_toggle_back_preserves_workspace_reuse_and_combo_width(qapp, monkeypatch):
+    import numpy as np
+    from PyQt6.QtWidgets import QComboBox
+    from core.compare_worker import AlignmentWorker
+
+    host = _make_workspace_host(qapp, alignment='ecc', fusion_method='openfocus_b')
+    host.source_content_revision = 42
+    saved = np.full((160, 560, 3), (15, 190, 25), dtype=np.uint8)
+    # Emulate adding workspace result before a frame checkbox toggle bumped source_revision.
+    record = _add_workspace_fusion(
+        host, 'openfocus_b', 'Workspace B', saved, alignment_options=('ecc',), clear_frames=True,
+    )
+    record.context.source_content_revision = 42
+    # Toggling a checkbox off and back on bumps source_revision (5 -> 7) while keeping
+    # source_content_revision at 42 and restoring the same checked indices.
+    host.source_revision = 7
+
+    worker_starts = []
+    monkeypatch.setattr(AlignmentWorker, 'start', lambda self, *a, **kw: worker_starts.append('align'))
+    monkeypatch.setattr(PreviewWorker, 'start', lambda self, *a, **kw: worker_starts.append(('preview', self.methods)))
+
+    dialog = CompareDialog(host)
+    try:
+        dialog.show()
+        _until(qapp, lambda: _finished(dialog) and dialog._canvases['openfocus_b'].can_show_full())
+        assert worker_starts == []
+        assert dialog._results['openfocus_b']['record'] is record
+
+        # Combo boxes inside algorithm cards keep a usable horizontal width.
+        for widgets in dialog.param_widgets.values():
+            for widget in widgets.values():
+                if isinstance(widget, QComboBox):
+                    assert widget.minimumWidth() >= 90
+
+        # Stack resize / reload bumps source_content_revision and invalidates stale outputs.
+        host.source_content_revision = 43
+        assert not record.context.matches_stack(
+            host.source_revision,
+            list(range(len(host.raw_images))),
+            content_revision=host.source_content_revision,
+        )
+    finally:
+        if not sip.isdeleted(dialog):
+            dialog.reject()
+        _until(qapp, lambda: not dialog._has_workers())
+        host.deleteLater()
