@@ -22,11 +22,15 @@ def _until(qapp, predicate):
 @pytest.fixture
 def algorithm_host(qapp, extension, monkeypatch):
     from main import OpenFocus
+    from ui.algorithm_combo import retranslate_fusion_combo
     from ui.right_panel import create_right_panel
 
     host = QWidget()
     host.experimental_features = True
+    host.legacy_features = True
     parts = create_right_panel()
+    retranslate_fusion_combo(parts.combo_fusion, none_label="radio_no_fusion",
+                             none_hint="radio_no_fusion_hint", window=host)
     for name in ("combo_fusion", "combo_align", "fusion_parameter_panel",
                  "registration_parameter_panel", "chk_base_correct",
                  "chk_exposure_match", "chk_reverse_order", "chk_quick_preview",
@@ -406,7 +410,7 @@ def test_method_dropdown_groups_families_in_a_stable_order(qapp, algorithm_host)
 
     assert groups == [
         (trans.t("group_openfocus_methods"), ["openfocus_a", "openfocus_b", "openfocus_c"]),
-        (trans.t("group_stackmff_methods"), ["stackmffv3", "stackmffv2", "stackmff"]),
+        (trans.t("group_stackmff_methods"), ["stackmffv4", "stackmffv3", "stackmffv2", "stackmff"]),
         (trans.t("group_other_methods"), ["guided_filter", "gfgfgf", "dct", "dtcwt", "extension"]),
     ]
 

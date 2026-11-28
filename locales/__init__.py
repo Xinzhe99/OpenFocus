@@ -7,6 +7,7 @@ from PyQt6.QtCore import QObject, pyqtSignal
 
 from .en import EN
 from ._retouch_macro import RETOUCH_MACRO_TRANSLATIONS
+from .stackmff_v4_i18n import get_stackmff_v4_pack
 
 
 def __getattr__(name):
@@ -1139,6 +1140,7 @@ def _apply_pack_overlays(code: str, table: dict) -> dict:
     export_3d = _export_3d_pack(code)
     if export_3d:
         table.update(export_3d)
+    table.update(get_stackmff_v4_pack(code))
     return table
 
 

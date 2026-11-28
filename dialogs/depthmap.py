@@ -1111,7 +1111,7 @@ class DepthMapDialog(QDialog):
 
         self.method_combo = QComboBox()
         from ui.algorithm_combo import fill_fusion_combo
-        fill_fusion_combo(self.method_combo, depth_algorithms())
+        fill_fusion_combo(self.method_combo, depth_algorithms(), window=self.window_main)
         self._apply_method_availability()
         default = self._current_window_method()
         index = self.method_combo.findData(default)

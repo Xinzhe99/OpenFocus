@@ -36,11 +36,15 @@ def test_experimental_default_toggle_and_stable_fallback(window):
     assert w.current_alignment_method() == 'ecc'
     assert {spec.id for spec in fusion_algorithms() if not spec.experimental} == {
         'openfocus_a', 'openfocus_b', 'openfocus_c',
-        'guided_filter', 'gfgfgf', 'dct', 'dtcwt'}
+        'guided_filter', 'gfgfgf', 'dct', 'dtcwt', 'stackmffv4'}
     assert {spec.id for spec in fusion_algorithms() if spec.experimental} == {
         'stackmff', 'stackmffv2', 'stackmffv3'}
     for spec in fusion_algorithms():
-        item = w.combo_fusion.model().item(w.combo_fusion.findData(spec.id))
+        index = w.combo_fusion.findData(spec.id)
+        if spec.legacy and not w.legacy_features:
+            assert index < 0
+            continue
+        item = w.combo_fusion.model().item(index)
         if spec.neural and not getattr(w, '_stackmff_available', True):
             assert not item.isEnabled()
         else:
@@ -57,23 +61,22 @@ def test_experimental_default_toggle_and_stable_fallback(window):
     dialog.chk_experimental_features.setChecked(True)
     dialog._apply()
     assert w.experimental_features and settings.value('ui/experimental_features', type=bool)
-    for method in ('guided_filter', 'gfgfgf', 'dct', 'stackmffv3'):
+    for method in ('guided_filter', 'gfgfgf', 'dct', 'stackmffv4'):
         item = w.combo_fusion.model().item(w.combo_fusion.findData(method))
         assert item.isEnabled()
     assert not w.ui_objs['mosaic_title'].isEnabled()
     assert not w.ui_objs['menu_dust_map'].isEnabled()
-    w.set_fusion_method('stackmffv3')
+    w.set_fusion_method('stackmffv4')
     w.set_alignment_method('openfocus')
-    assert w.current_fusion_method() == 'stackmffv3'
+    assert w.current_fusion_method() == 'stackmffv4'
 
     dialog = AdvancedSettingsDialog(w)
     dialog.chk_experimental_features.setChecked(False)
     dialog._apply()
     assert not w.experimental_features and not settings.value('ui/experimental_features', type=bool)
-    # Turning off experimental features falls back to Stable defaults instead of stranding the user.
-    assert w.current_fusion_method() == 'openfocus_b'
+    # Turning off experimental features falls back to Stable defaults for experimental alignment while keeping non-experimental fusion.
+    assert w.current_fusion_method() == 'stackmffv4'
     assert w.current_alignment_method() == 'ecc'
-    assert w._preferred_fusion_method == 'openfocus_b'
     assert w._preferred_alignment_method == 'ecc'
     assert w.btn_render.isEnabled()
     assert not w.ui_objs['mosaic_title'].isEnabled()
@@ -85,8 +88,8 @@ def test_experimental_default_toggle_and_stable_fallback(window):
     dialog = AdvancedSettingsDialog(w)
     dialog.chk_experimental_features.setChecked(True)
     dialog._apply()
-    w.set_fusion_method('stackmffv3')
-    assert w.current_fusion_method() == 'stackmffv3'
+    w.set_fusion_method('stackmffv4')
+    assert w.current_fusion_method() == 'stackmffv4'
     assert w.btn_render.isEnabled()
 
 
@@ -96,12 +99,14 @@ def test_disabling_experiments_keeps_stable_project_methods_and_updates_preferen
 
     w, settings = window
     w.experimental_features = True
+    w.legacy_features = True
     w._preferred_fusion_method = 'stackmffv3'
     w._preferred_alignment_method = 'openfocus'
     w.set_fusion_method('guided_filter')
     w.set_alignment_method('none')
     dialog = AdvancedSettingsDialog(w)
     dialog.chk_experimental_features.setChecked(False)
+    dialog.chk_legacy_features.setChecked(False)
     dialog._apply()
 
     assert w.current_fusion_method() == 'guided_filter'
@@ -198,19 +203,12 @@ def test_batch_accepts_fusion_with_experiments_off(window):
     dialog = BatchProcessingDialog(w)
     try:
         for method in ('openfocus_a', 'openfocus_b', 'openfocus_c',
-                       'guided_filter', 'gfgfgf', 'dct', 'dtcwt'):
+                       'guided_filter', 'gfgfgf', 'dct', 'dtcwt', 'stackmffv4'):
             index = dialog.fusion_combo.findData(method)
             assert dialog.fusion_combo.model().item(index).isEnabled()
             dialog.fusion_combo.setCurrentIndex(index)
             assert dialog.get_processing_settings()['fusion_method'] == method
-        from locales import trans
-        dialog.fusion_combo.setCurrentIndex(dialog.fusion_combo.findData('stackmffv3'))
-        with pytest.raises(ValueError) as error:
-            dialog.get_processing_settings()
-        assert trans.t('experimental_locked_hint') in str(error.value)
-        assert dialog.fusion_combo.currentData() == 'stackmffv3'
-        w.experimental_features = True
-        assert dialog.get_processing_settings()['fusion_method'] == 'stackmffv3'
+        assert dialog.fusion_combo.findData('stackmffv3') < 0
     finally:
         dialog.close()
         dialog.deleteLater()
@@ -239,11 +237,10 @@ def test_comparison_shows_missing_dependency_with_experiments_off(window, qapp, 
     assert trans.t('env_dtcwt_unavailable') in QToolTip.text()
     assert trans.t('experimental_locked_hint') not in QToolTip.text()
     assert not box.isChecked()
-    ai_box = dialog._checks['stackmffv3']
+    ai_box = dialog._checks['stackmffv4']
     assert not ai_box.isEnabled()
     QToolTip.hideText()
     QTest.mouseClick(ai_box.parentWidget(), Qt.MouseButton.LeftButton,
                      pos=ai_box.geometry().center())
-    assert trans.t('experimental_locked_hint') in QToolTip.text()
     assert trans.t('msg_stackmff_unavailable_text') in QToolTip.text()
     dialog.reject()

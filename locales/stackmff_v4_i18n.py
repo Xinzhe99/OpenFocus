@@ -1,0 +1,118 @@
+"""12-language localization overlay for StackMFF V4 Flash and Legacy Features toggle."""
+from __future__ import annotations
+
+STACKMFF_V4_TRANSLATIONS: dict[str, dict[str, str]] = {
+    "en": {
+        "radio_stackmff_v4": "StackMFF V4",
+        "radio_stackmff_v4_hint": "Lightweight streaming neural focus stacking (277K params, order-invariant, single-pass inference).",
+        "legacy_features": "Enable legacy features (StackMFF V1–V3)",
+        "legacy_features_hint": "Retained only for reproducing older projects. StackMFF V1–V3 are slower, consume far more memory on deep stacks, and have been superseded by StackMFF V4.",
+        "legacy_label": "Legacy",
+        "legacy_locked_hint": "Superseded by StackMFF V4. Enable legacy features in Settings -> Advanced Settings to use this model.",
+        "legacy_fallback_notice": "Legacy features disabled; switched to {method}.",
+    },
+    "zh": {
+        "radio_stackmff_v4": "StackMFF V4",
+        "radio_stackmff_v4_hint": "新一代流式轻量神经网络融合（277K 参数，帧序无关，单尺度高速推理）。",
+        "legacy_features": "启用遗留功能（StackMFF V1–V3）",
+        "legacy_features_hint": "仅用于复现历史工程。StackMFF V1–V3 推理较慢、深栈显存/内存开销大，已被 StackMFF V4 全面取代，不再建议使用。",
+        "legacy_label": "遗留",
+        "legacy_locked_hint": "该旧版模型已被 StackMFF V4 取代；如需复现历史工程，请在「设置 -> 高级设置」中启用遗留功能。",
+        "legacy_fallback_notice": "已关闭遗留功能，已切换回 {method}。",
+    },
+    "ja": {
+        "radio_stackmff_v4": "StackMFF V4",
+        "radio_stackmff_v4_hint": "軽量ストリーミングニューラル深度合成（277K パラメータ、順序不変、単一スケール高速推論）。",
+        "legacy_label": "レガシー",
+        "legacy_features": "レガシー機能を有効にする（StackMFF V1–V3）",
+        "legacy_features_hint": "過去のプロジェクト再現用です。StackMFF V1–V3 は低速でメモリ消費が大きく、StackMFF V4 に置き換えられました。",
+        "legacy_locked_hint": "StackMFF V4 に置き換えられました。「設定 -> 高度な設定」でレガシー機能を有効にすると使用できます。",
+        "legacy_fallback_notice": "レガシー機能を無効にしたため、{method} に切り替えました。",
+    },
+    "ko": {
+        "radio_stackmff_v4": "StackMFF V4",
+        "radio_stackmff_v4_hint": "경량 스트리밍 신경망 초점 스태킹(277K 파라미터, 순서 무관, 단일 스케일 고속 추론).",
+        "legacy_features": "레거시 기능 사용(StackMFF V1–V3)",
+        "legacy_features_hint": "이전 프로젝트 재현 전용입니다. StackMFF V1–V3는 속도가 느리고 메모리 사용량이 커 StackMFF V4로 대체되었습니다.",
+        "legacy_label": "레거시",
+        "legacy_locked_hint": "StackMFF V4로 대체되었습니다. 사용하려면 설정 -> 고급 설정에서 레거시 기능을 활성화하세요.",
+        "legacy_fallback_notice": "레거시 기능이 비활성화되어 {method}(으)로 전환했습니다.",
+    },
+    "de": {
+        "radio_stackmff_v4": "StackMFF V4",
+        "radio_stackmff_v4_hint": "Leichtgewichtiges Streaming-Neural-Focus-Stacking (277K Parameter, reihenfolgeinvariant, Einzelskalen-Inferenz).",
+        "legacy_features": "Legacy-Funktionen aktivieren (StackMFF V1–V3)",
+        "legacy_features_hint": "Nur zur Reproduktion älterer Projekte beibehalten. StackMFF V1–V3 sind langsamer, speicherintensiver und wurden durch StackMFF V4 ersetzt.",
+        "legacy_label": "Legacy",
+        "legacy_locked_hint": "Durch StackMFF V4 ersetzt. Aktivieren Sie Legacy-Funktionen unter Einstellungen -> Erweiterte Einstellungen.",
+        "legacy_fallback_notice": "Legacy-Funktionen deaktiviert; zu {method} gewechselt.",
+    },
+    "fr": {
+        "radio_stackmff_v4": "StackMFF V4",
+        "radio_stackmff_v4_hint": "Fusion neuronale légère en flux (277K paramètres, indépendante de l'ordre, inférence mono-échelle rapide).",
+        "legacy_features": "Activer les fonctions héritées (StackMFF V1–V3)",
+        "legacy_features_hint": "Conservé uniquement pour reproduire d'anciens projets. StackMFF V1–V3 sont plus lents et beaucoup plus gourmands en mémoire ; ils ont été remplacés par StackMFF V4.",
+        "legacy_label": "Hérité",
+        "legacy_locked_hint": "Remplacé par StackMFF V4. Activez les fonctions héritées dans Paramètres -> Paramètres avancés.",
+        "legacy_fallback_notice": "Fonctions héritées désactivées ; basculement vers {method}.",
+    },
+    "es": {
+        "radio_stackmff_v4": "StackMFF V4",
+        "radio_stackmff_v4_hint": "Fusión neuronal ligera en flujo (277K parámetros, invariante al orden, inferencia rápida de una escala).",
+        "legacy_features": "Habilitar funciones heredadas (StackMFF V1–V3)",
+        "legacy_features_hint": "Conservado solo para reproducir proyectos antiguos. StackMFF V1–V3 son más lentos, consumen mucha más memoria y han sido reemplazados por StackMFF V4.",
+        "legacy_label": "Heredado",
+        "legacy_locked_hint": "Reemplazado por StackMFF V4. Habilite las funciones heredadas en Configuración -> Configuración avanzada.",
+        "legacy_fallback_notice": "Funciones heredadas desactivadas; se cambió a {method}.",
+    },
+    "it": {
+        "radio_stackmff_v4": "StackMFF V4",
+        "radio_stackmff_v4_hint": "Fusione neurale leggera in streaming (277K parametri, indipendente dall'ordine, inferenza rapida a scala singola).",
+        "legacy_features": "Abilita funzionalità legacy (StackMFF V1–V3)",
+        "legacy_features_hint": "Mantenuto solo per riprodurre progetti precedenti. StackMFF V1–V3 sono più lenti, usano molta più memoria e sono stati sostituiti da StackMFF V4.",
+        "legacy_label": "Legacy",
+        "legacy_locked_hint": "Sostituito da StackMFF V4. Abilita le funzionalità legacy in Impostazioni -> Impostazioni avanzate.",
+        "legacy_fallback_notice": "Funzionalità legacy disattivate; passaggio a {method}.",
+    },
+    "nl": {
+        "radio_stackmff_v4": "StackMFF V4",
+        "radio_stackmff_v4_hint": "Lichtgewicht streaming neurale focus stacking (277K parameters, volgorde-invariant, snelle inferentie op één schaal).",
+        "legacy_features": "Verouderde functies inschakelen (StackMFF V1–V3)",
+        "legacy_features_hint": "Alleen behouden om oudere projecten te reproduceren. StackMFF V1–V3 zijn trager, verbruiken veel meer geheugen en zijn vervangen door StackMFF V4.",
+        "legacy_label": "Verouderd",
+        "legacy_locked_hint": "Vervangen door StackMFF V4. Schakel verouderde functies in via Instellingen -> Geavanceerde instellingen.",
+        "legacy_fallback_notice": "Verouderde functies uitgeschakeld; overgeschakeld naar {method}.",
+    },
+    "pl": {
+        "radio_stackmff_v4": "StackMFF V4",
+        "radio_stackmff_v4_hint": "Lekkie strumieniowe łączenie neuronowe (277K parametrów, niezależne od kolejności, szybka inferencja jednoskalowa).",
+        "legacy_features": "Włącz starsze funkcje (StackMFF V1–V3)",
+        "legacy_features_hint": "Zachowane wyłącznie do odtwarzania starszych projektów. Modele StackMFF V1–V3 są wolniejsze, zużywają znacznie więcej pamięci i zostały zastąpione przez StackMFF V4.",
+        "legacy_label": "Starszy",
+        "legacy_locked_hint": "Zastąpiony przez StackMFF V4. Włącz starsze funkcje w Ustawienia -> Ustawienia zaawansowane.",
+        "legacy_fallback_notice": "Wyłączono starsze funkcje; przełączono na {method}.",
+    },
+    "pt": {
+        "radio_stackmff_v4": "StackMFF V4",
+        "radio_stackmff_v4_hint": "Fusão neural leve em streaming (277K parâmetros, invariante à ordem, inferência rápida em escala única).",
+        "legacy_features": "Ativar recursos legados (StackMFF V1–V3)",
+        "legacy_features_hint": "Mantido apenas para reproduzir projetos antigos. StackMFF V1–V3 são mais lentos, consomem muito mais memória e foram substituídos pelo StackMFF V4.",
+        "legacy_label": "Legado",
+        "legacy_locked_hint": "Substituído pelo StackMFF V4. Ative os recursos legados em Configurações -> Configurações avançadas.",
+        "legacy_fallback_notice": "Recursos legados desativados; alterado para {method}.",
+    },
+    "ru": {
+        "radio_stackmff_v4": "StackMFF V4",
+        "radio_stackmff_v4_hint": "Лёгкое потоковое нейросетевое стекирование фокуса (277K параметров, не зависит от порядка, быстрый одномасштабный инференс).",
+        "legacy_features": "Включить устаревшие функции (StackMFF V1–V3)",
+        "legacy_features_hint": "Сохранено только для воспроизведения старых проектов. Модели StackMFF V1–V3 медленнее, требуют больше памяти и заменены на StackMFF V4.",
+        "legacy_label": "Устар.",
+        "legacy_locked_hint": "Заменено на StackMFF V4. Включите устаревшие функции в меню Настройки -> Расширенные настройки.",
+        "legacy_fallback_notice": "Устаревшие функции отключены; выполнено переключение на {method}.",
+    },
+}
+
+
+def get_stackmff_v4_pack(lang_code: str) -> dict[str, str]:
+    """Return StackMFF V4 & legacy toggle strings for a language pack."""
+    return STACKMFF_V4_TRANSLATIONS.get(lang_code, STACKMFF_V4_TRANSLATIONS["en"])

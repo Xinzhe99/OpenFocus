@@ -39,6 +39,7 @@ def _isolated_preview_size(qapp):
 def dialog(qapp):
     window = QWidget()
     window.experimental_features = True
+    window.legacy_features = True
     window.raw_images = make_two_focus_stack((160, 560))
     window.current_fusion_method = lambda: "openfocus_a"
     window.current_alignment_method = lambda: "none"
@@ -639,7 +640,7 @@ def test_method_checkboxes_follow_the_shared_family_groups(dialog):
         groups.setdefault(checkbox.parentWidget(), []).append(method)
     assert list(groups.values()) == [
         ["openfocus_a", "openfocus_b", "openfocus_c"],
-        ["stackmffv3", "stackmffv2", "stackmff"],
+        ["stackmffv4", "stackmffv3", "stackmffv2", "stackmff"],
         ["guided_filter", "gfgfgf", "dct", "dtcwt"],
     ]
 
@@ -654,6 +655,7 @@ def test_unavailable_methods_stay_visible_with_a_reason(
     monkeypatch.setattr(algorithm_combo, '_package_available', lambda _name: False)
     window = QWidget()
     window.experimental_features = True
+    window.legacy_features = True
     window.raw_images = make_two_focus_stack((160, 560))
     window.current_fusion_method = lambda: "stackmffv3"
     window.current_alignment_method = lambda: "none"
@@ -663,7 +665,7 @@ def test_unavailable_methods_stay_visible_with_a_reason(
     instance = CompareDialog(window)
     try:
         instance._preview_timer.stop()
-        for method in ("stackmffv3", "stackmffv2", "stackmff"):
+        for method in ("stackmffv4", "stackmffv3", "stackmffv2", "stackmff"):
             box = instance._checks[method]
             assert not box.isHidden()
             assert not box.isEnabled()

@@ -67,7 +67,7 @@ def _upstream_v2(frames):
 
 
 def test_recommended_default_is_openfocus_b():
-    assert fusion_algorithms()[0].id == "stackmffv3"
+    assert fusion_algorithms()[0].id == "stackmffv4"
     from ui.right_panel import FUSION_DEFAULT
     assert FUSION_DEFAULT == "openfocus_b"
 

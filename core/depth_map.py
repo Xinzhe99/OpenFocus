@@ -353,19 +353,34 @@ def _neural_depth_tiles(images, tile_size):
     return min(256, block // 2), coords
 
 
-def _plan_depth_tiles(images, use_gpu, thread_count, resource_preference):
+def _plan_depth_tiles(images, use_gpu, thread_count, resource_preference, *, linear_layers=False):
     from dataclasses import replace
     from core.resource_policy import plan_neural_tiles
-    from fusion_methods.neural_runtime import resolve_job_device, estimate_inference_bytes
+    from fusion_methods.neural_runtime import (
+        estimate_inference_bytes, estimate_linear_inference_bytes, resolve_job_device,
+    )
 
     h, w = images[0].shape[:2]
     channels = images[0].shape[2] if images[0].ndim == 3 else 1
     requested = max(h, w) if len(images) * h * w <= _NEURAL_WHOLE_FRAME_PIXELS else 1024
+    estimator = estimate_linear_inference_bytes if linear_layers else estimate_inference_bytes
     tile_size, plan = plan_neural_tiles(
         len(images), h, w, channels, requested, resolve_job_device(use_gpu),
-        estimate_inference_bytes, itemsize=max(image.dtype.itemsize for image in images),
+        estimator, itemsize=max(image.dtype.itemsize for image in images),
         preference=resource_preference, user_threads=thread_count)
     return replace(plan, tile_size=tile_size)
+
+
+def _plan_stackmffv4_depth(images, model_path, use_gpu, thread_count,
+                           resource_preference):
+    from fusion_methods.stackmffv4 import DEFAULT_WEIGHTS
+    from utils import resource_path
+    import os
+
+    if model_path is None:
+        model_path = resource_path("weights", os.path.basename(DEFAULT_WEIGHTS))
+    return _plan_depth_tiles(images, use_gpu, thread_count, resource_preference,
+                             linear_layers=True), model_path
 
 
 def _plan_neural_depth(images, model_path, use_gpu, thread_count,
@@ -406,6 +421,50 @@ def _plan_stackmffv2_depth(images, model_path, use_gpu, thread_count,
     if model_path is None:
         model_path = weights_path(os.path.basename(DEFAULT_WEIGHTS))
     return _plan_depth_tiles(images, use_gpu, thread_count, resource_preference), model_path
+
+
+def _measure_stackmffv4(images, progress, should_cancel,
+                        model_path=None, use_gpu=True, execution_plan=None,
+                        mode="soft"):
+    """Soft: expected frame position. Hard: per-pixel most probable frame."""
+    from fusion_methods.stackmffv4 import SOFT_SIGMA, model_probabilities, normalize_mode
+
+    mode = normalize_mode(mode)
+    h, w = images[0].shape[:2]
+    n = len(images)
+    tile_size = getattr(execution_plan, 'tile_size', None) or max(h, w)
+    overlap, coords = _neural_depth_tiles(images, tile_size)
+    indices = np.arange(n, dtype=np.float32)[:, None, None]
+
+    def measure(crops):
+        probabilities = model_probabilities(
+            crops, model_path, use_gpu, sigma=0.0 if mode == "hard" else SOFT_SIGMA,
+            should_cancel=should_cancel, execution_plan=execution_plan)
+        if mode == "hard":
+            return probabilities.argmax(0).astype(np.float32)
+        return (probabilities * indices).sum(0).astype(np.float32)
+
+    _tick(progress, 0, len(coords), should_cancel)
+    if len(coords) == 1:
+        result = measure(images)
+        _tick(progress, 1, 1, should_cancel)
+        return np.clip(result, 0, n - 1).astype(np.float32)
+
+    acc = np.zeros((h, w), np.float32)
+    wsum = np.zeros((h, w), np.float32)
+    for done, (x0, y0, x1, y1) in enumerate(coords):
+        _tick(None, done, len(coords), should_cancel)
+        crops = [img[y0:y1, x0:x1] for img in images]
+        fmap = measure(crops)
+        fh, fw = y1 - y0, x1 - x0
+        weight = _tile_weight(x0, y0, x1, y1, fw, fh, w, h, overlap)
+        acc[y0:y1, x0:x1] += fmap * weight
+        wsum[y0:y1, x0:x1] += weight
+        _tick(progress, done + 1, len(coords), should_cancel)
+    wsum[wsum == 0] = 1.0
+    result = np.clip(acc / wsum, 0, n - 1).astype(np.float32)
+    _tick(None, len(coords), len(coords), should_cancel)
+    return result
 
 
 def _measure_stackmffv3(images, progress, should_cancel,
@@ -536,7 +595,7 @@ def compute_focus_index(images: Sequence[np.ndarray], method: str, parameters=No
             _tick(None, 0, n, should_cancel)
             # Streaming depth methods normalize one grayscale frame/tile at a time,
             # avoiding O(N) full-resolution float32 conversion stacks for 16-bit inputs.
-            if method not in _STREAMING_DEPTH_METHODS and method not in ('stackmffv2', 'stackmffv3'):
+            if method not in _STREAMING_DEPTH_METHODS and method not in ('stackmffv2', 'stackmffv3', 'stackmffv4'):
                 if any(image.dtype == np.uint16 for image in images):
                     normalized = []
                     for image in images:

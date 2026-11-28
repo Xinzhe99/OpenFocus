@@ -97,6 +97,7 @@ _PERSISTED_FIELDS = {
     "render_complete_sound": ("ui/render_complete_sound", False, "bool"),
     "restore_last_stack": ("ui/restore_last_stack", False, "bool"),
     "experimental_features": ("ui/experimental_features", False, "bool"),
+    "legacy_features": ("ui/legacy_features", False, "bool"),
     "auto_error_reports": (REPORTS_AUTO_SEND_KEY, True, "bool"),
     "theme_mode": ("ui/theme", DEFAULT_THEME, "str"),
     "font_size_mode": ("ui/font_size_mode", "medium", "str"),

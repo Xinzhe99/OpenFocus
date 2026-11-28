@@ -208,6 +208,13 @@ class AdvancedSettingsDialog(QDialog):
         page_lay.addWidget(self.chk_experimental_features)
         _note(page_lay, trans.t("experimental_features_hint"))
 
+        self.chk_legacy_features = QCheckBox(trans.t("legacy_features"))
+        self.chk_legacy_features.setProperty("controlId", "chk_legacy_features")
+        self.chk_legacy_features.setChecked(bool(getattr(w, "legacy_features", False)))
+        self.chk_legacy_features.setToolTip(trans.t("legacy_features_hint"))
+        page_lay.addWidget(self.chk_legacy_features)
+        _note(page_lay, trans.t("legacy_features_hint"))
+
         privacy = _section(page_lay, trans.t('advanced_privacy'))
         self.chk_auto_error_reports = QCheckBox(trans.t('report_auto_setting'))
         self.chk_auto_error_reports.setProperty('controlId', 'chk_auto_error_reports')
@@ -1120,6 +1127,7 @@ class AdvancedSettingsDialog(QDialog):
     def _field_values(self):
         return {
             'experimental_features': self.chk_experimental_features.isChecked(),
+            'legacy_features': self.chk_legacy_features.isChecked(),
             'auto_error_reports': self.chk_auto_error_reports.isChecked(),
             'tile_enabled': self.chk_tile.isChecked(),
             'resource_preference': self.combo_resources.currentData(),
@@ -1322,6 +1330,10 @@ class AdvancedSettingsDialog(QDialog):
         if 'experimental_features' in draft and callable(apply_experimental):
             turned_off = self._initial_fields['experimental_features'] and not draft['experimental_features']
             apply_experimental(fallback_to_stable=turned_off)
+        apply_legacy = getattr(w, "apply_legacy_features", None)
+        if 'legacy_features' in draft and callable(apply_legacy):
+            legacy_turned_off = self._initial_fields['legacy_features'] and not draft['legacy_features']
+            apply_legacy(fallback_to_modern=legacy_turned_off)
         if draft.get('auto_error_reports') is False:
             from ui.report_retry import discard_automatic_reports
             discard_automatic_reports()
@@ -1374,7 +1386,7 @@ class AdvancedSettingsDialog(QDialog):
         log_action("settings.applied", changed=sorted(
             key for key in draft if previous[key] != draft[key]),
             usage_enabled=self.chk_usage.isChecked())
-        processing = set(draft) - {'experimental_features', 'auto_error_reports', 'restore_last_stack',
+        processing = set(draft) - {'experimental_features', 'legacy_features', 'auto_error_reports', 'restore_last_stack',
                                    'ask_load_scale', 'output_name_prefix', 'output_filename_template',
                                    'render_complete_sound', 'storage_directory'}
         if any(previous[key] != draft[key] for key in processing):

@@ -189,13 +189,16 @@ def _estimate_neural(estimate, itemsize, channels, threshold, block, source_byte
     from fusion_methods.neural_common import attention_inference_bytes
     from fusion_methods.neural_runtime import (UNIFIED_MEMORY_KINDS, VRAM_GATED_KINDS,
                                                candidate_devices, estimate_inference_bytes,
-                                               is_accelerator)
+                                               estimate_linear_inference_bytes, is_accelerator)
 
     count, height, width = estimate.frames, estimate.height, estimate.width
     snapshot = estimate.snapshot
     device = requested or 'CPU'
     accelerator = device if is_accelerator(device) else None
-    whole, whole_vram = attention_inference_bytes(count, height, width, channels, device)
+    linear_layers = (estimate.algorithm == 'stackmffv4')
+    estimator = estimate_linear_inference_bytes if linear_layers else estimate_inference_bytes
+    whole, whole_vram = attention_inference_bytes(count, height, width, channels, device,
+                                                  linear_layers=linear_layers)
     whole += source_bytes
     needs_tiles = (max(height, width) > threshold
                    or count * height * width * channels * itemsize > threshold**2 * 3
@@ -209,7 +212,8 @@ def _estimate_neural(estimate, itemsize, channels, threshold, block, source_byte
                 for kind in candidate_devices(device, probe_ort=False):
                     if kind == device or (kind not in UNIFIED_MEMORY_KINDS and kind != 'CPU'):
                         continue
-                    working, _ = attention_inference_bytes(count, height, width, channels, kind)
+                    working, _ = attention_inference_bytes(count, height, width, channels, kind,
+                                                           linear_layers=linear_layers)
                     working += source_bytes
                     if working <= ceiling or kind == 'CPU':
                         device = kind
@@ -225,12 +229,12 @@ def _estimate_neural(estimate, itemsize, channels, threshold, block, source_byte
     # Tiled GUI neural renders attempt to stage prepared sources before inference.
     # The un-staged path still performs its own admission on actual source buffers.
     tile_channels = 3 if estimate.algorithm != 'stackmffv2' else channels
-    streamed_crops = estimate.algorithm in ('stackmff', 'stackmffv3')
+    streamed_crops = estimate.algorithm in ('stackmff', 'stackmffv3', 'stackmffv4')
     minimum = min(block, 64)
     required_vram = 0
     try:
         block, plan = policy.plan_neural_tiles(
-            count, height, width, tile_channels, block, device, estimate_inference_bytes,
+            count, height, width, tile_channels, block, device, estimator,
             snapshot=snapshot, streamed_crops=streamed_crops)
         device = plan.device_kind
         working = plan.required_ram
@@ -238,7 +242,7 @@ def _estimate_neural(estimate, itemsize, channels, threshold, block, source_byte
     except policy.ResourceLimitError:
         block, device = minimum, 'CPU'
         working, _ = policy.neural_tile_bytes(
-            count, height, width, tile_channels, block, device, estimate_inference_bytes,
+            count, height, width, tile_channels, block, device, estimator,
             streamed_crops=streamed_crops)
     if estimate.algorithm == 'stackmffv2':
         from fusion_methods.stackmff_v2_tiled import tiled_output_bytes
@@ -251,11 +255,11 @@ def _estimate_neural(estimate, itemsize, channels, threshold, block, source_byte
                 break
             block = max(minimum, block // 2)
             working, device_bytes = policy.neural_tile_bytes(
-                count, height, width, tile_channels, block, device, estimate_inference_bytes)
+                count, height, width, tile_channels, block, device, estimator)
             required_vram = device_bytes if device in VRAM_GATED_KINDS else 0
     if accelerator in VRAM_GATED_KINDS and device == 'CPU':
         _, required_vram = policy.neural_tile_bytes(
-            count, height, width, tile_channels, minimum, accelerator, estimate_inference_bytes,
+            count, height, width, tile_channels, minimum, accelerator, estimator,
             streamed_crops=streamed_crops)
     return replace(estimate, fusion_ram=working, whole_ram=whole, tile=block,
                    accelerator=accelerator, device=device if requested else None,

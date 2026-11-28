@@ -102,7 +102,7 @@ class TestComputeFocusIndex:
 
     def test_supported_list_complete(self):
         assert {spec.id for spec in depth_algorithms()} == {
-            "dct", "dtcwt", "gfgfgf", "stackmffv3", "stackmffv2",
+            "dct", "dtcwt", "gfgfgf", "stackmffv4", "stackmffv3", "stackmffv2",
             "openfocus_b", "openfocus_c"}
 
 
