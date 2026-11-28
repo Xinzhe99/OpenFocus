@@ -332,8 +332,8 @@ Questions, ideas or feedback? Join our [Discord community](https://discord.gg/Ja
     <th align="center">Official account</th>
   </tr>
   <tr>
-    <td align="center" valign="top"><img src="assets/readme/wechat-group.png" alt="QR code for the OpenFocus WeChat group" width="260"></td>
-    <td align="center" valign="top"><img src="assets/readme/wechat-official-account.jpg" alt="QR code for the OpenFocus WeChat official account" width="260"></td>
+    <td align="center" valign="top"><img src="https://account.openfocus.top/v1/qr/wechat-group" alt="QR code for the OpenFocus WeChat group" width="260"></td>
+    <td align="center" valign="top"><img src="https://account.openfocus.top/v1/qr/wechat-official-account" alt="QR code for the OpenFocus WeChat official account" width="260"></td>
   </tr>
 </table>
 
@@ -345,8 +345,8 @@ Questions, ideas or feedback? Join our [Discord community](https://discord.gg/Ja
     <th align="center">PayPal · International</th>
   </tr>
   <tr>
-    <td align="center" valign="top"><img src="assets/readme/alipay-coffee.jpg" alt="Alipay QR code to support OpenFocus" width="260"></td>
-    <td align="center" valign="top"><a href="https://paypal.me/XinZEN0602"><img src="assets/readme/paypal-coffee.png" alt="PayPal QR code with the PayPal mark; scan or click to support OpenFocus" width="260"></a><br><a href="https://paypal.me/XinZEN0602">Scan or click to donate via PayPal</a></td>
+    <td align="center" valign="top"><img src="https://account.openfocus.top/v1/qr/alipay" alt="Alipay QR code to support OpenFocus" width="260"></td>
+    <td align="center" valign="top"><a href="https://paypal.me/XinZEN0602"><img src="https://account.openfocus.top/v1/qr/paypal" alt="PayPal QR code with the PayPal mark; scan or click to support OpenFocus" width="260"></a><br><a href="https://paypal.me/XinZEN0602">Scan or click to donate via PayPal</a></td>
   </tr>
 </table>
 

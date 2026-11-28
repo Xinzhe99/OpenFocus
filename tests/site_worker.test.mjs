@@ -1026,6 +1026,105 @@ test("negotiation selects the highest-priority supported language", async () => 
   }
 });
 
+test("contributors pages negotiate English/Chinese consistently with homepages", async () => {
+  const env = makeEnv();
+  let response = await run("https://openfocus.top/contributors/", {
+    headers: { "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8" },
+    env,
+  });
+  assert.equal(response.status, 302);
+  assert.equal(response.headers.get("Location"), "/zh/contributors/");
+
+  response = await run("https://openfocus.top/contributors", {
+    headers: { "Accept-Language": "en-US" },
+    env,
+  });
+  assert.equal(response.status, 302);
+  assert.equal(response.headers.get("Location"), "/contributors/");
+
+  response = await run("https://openfocus.top/contributors/?lang=en", {
+    headers: { "Accept-Language": "zh-CN", Cookie: "lang=zh" },
+    env,
+  });
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), "asset:/contributors/");
+  assert.equal(response.headers.get("Vary"), "Accept-Language, Cookie");
+  assert.equal(response.headers.get("Cache-Control"), "no-store");
+  assert.match(response.headers.get("Set-Cookie"), /^lang=en; Path=\/; Max-Age=31536000; SameSite=Lax; Secure$/);
+
+  response = await run("https://openfocus.top/zh/contributors/?lang=en&ref=gh", { env });
+  assert.equal(response.status, 302);
+  assert.equal(response.headers.get("Location"), "/contributors/?lang=en&ref=gh");
+  assert.match(response.headers.get("Set-Cookie"), /^lang=en;/);
+
+  response = await run("https://openfocus.top/zh/contributors/", { env });
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), "asset:/zh/contributors/");
+});
+
+test("contributors API serves sanitized JSON from R2, caches at edge, and excludes maintainer accounts", async () => {
+  installCache();
+  const payload = {
+    excluded_authors: ["Xinzhe99"],
+    opt_out_authors: ["optedOutUser"],
+    excluded_issues: [999],
+    contributors: [
+      {
+        handle: "Xinzhe99",
+        platform: "GitHub",
+        url: "https://github.com/Xinzhe99",
+        contributions: [{ issue: 1, version: "v1.0", date: "2026-01-01", en: "self", zh: "自提" }],
+      },
+      {
+        handle: "optedOutUser",
+        platform: "GitHub",
+        url: "https://github.com/optedOutUser",
+        contributions: [{ issue: 2, version: "v1.0", date: "2026-01-01", en: "optout", zh: "退出" }],
+      },
+      {
+        handle: "dependabot[bot]",
+        platform: "GitHub",
+        url: "https://github.com/dependabot",
+        contributions: [{ issue: 3, version: "v1.0", date: "2026-01-01", en: "bot", zh: "bot" }],
+      },
+      {
+        handle: "AlanRockefeller",
+        platform: "GitHub",
+        url: "https://github.com/AlanRockefeller",
+        contributions: [
+          { issue: 329, version: "next", date: "2026-11-28", en: "Fix regression", zh: "修复回归" },
+          { issue: 999, version: "next", date: "2026-11-28", en: "Hidden issue", zh: "隐藏" },
+        ],
+      },
+    ],
+  };
+  const key = "openfocus-meta/contributors.json";
+  const env = makeEnv({ [key]: new TextEncoder().encode(JSON.stringify(payload)) });
+
+  let response = await run("https://openfocus.top/api/contributors", { env });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("Cache-Control"), "no-store");
+  assert.equal(response.headers.get("X-Content-Type-Options"), "nosniff");
+  assert.equal(response.headers.get("X-OpenFocus-Contributors-Source"), "r2");
+  const data = await response.json();
+  assert.equal(data.contributors.length, 1);
+  assert.equal(data.contributors[0].handle, "AlanRockefeller");
+  assert.deepEqual(data.contributors[0].contributions.map((c) => c.issue), [329]);
+
+  const head = await run("https://openfocus.top/api/contributors", { method: "HEAD", env: makeEnv() });
+  assert.equal(head.status, 200);
+  assert.equal(await head.text(), "");
+
+  installCache();
+  assert.equal((await run("https://openfocus.top/api/contributors", { env: makeEnv() })).status, 404);
+  assert.equal((await run("https://openfocus.top/api/contributors", {
+    env: makeEnv({ [key]: new TextEncoder().encode("{not-json") }),
+  })).status, 503);
+  const denied = await run("https://openfocus.top/api/contributors", { method: "POST", env });
+  assert.equal(denied.status, 405);
+  assert.equal(denied.headers.get("Allow"), "GET, HEAD");
+});
+
 
 function analyticsDb() {
   const writes = [];
